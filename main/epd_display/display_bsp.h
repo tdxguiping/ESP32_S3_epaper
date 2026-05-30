@@ -39,7 +39,7 @@ typedef enum {
 
 // tag_tdx_a   need
 #ifndef EPD_type_
-#define EPD_type_ USER_EPD_TYPE
+#define EPD_type_ EPD_1600_1200_133
 #endif
 
  

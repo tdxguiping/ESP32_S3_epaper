@@ -487,12 +487,29 @@ esp_err_t example_start_file_server(const char *base_path)
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 
+    /* Increase HTTP server task stack for multipart upload, cast and OTA handlers. */
+    /* 增大 HTTP Server 任务栈，避免 multipart 上传、cast 和 OTA 处理时栈溢出。 */
+    config.stack_size = 24576;
+
+    /* Limit concurrent sockets to reduce memory pressure during large uploads. */
+    /* 限制并发连接数量，降低大文件上传期间的内存压力。 */
+    config.max_open_sockets = 4;
+
+    /* Keep enough URI handlers for static files, /dataUP, /ota and /ota_upload. */
+    /* 保留足够 handler，支持静态文件、/dataUP、/ota 和 /ota_upload。 */
+    config.max_uri_handlers = 16;
+
     /* Use the URI wildcard matching function in order to
-     * allow the same handler to respond to multiple different
-     * target URIs which match the wildcard scheme */
+    * allow the same handler to respond to multiple different
+    * target URIs which match the wildcard scheme */
     config.uri_match_fn = httpd_uri_match_wildcard;
 
-    ESP_LOGI(TAG, "Starting HTTP Server on port: '%d'", config.server_port);
+    ESP_LOGI(TAG, "Starting HTTP Server on port: '%d' stack=%u sockets=%u",
+            config.server_port,
+            (unsigned int)config.stack_size,
+            (unsigned int)config.max_open_sockets);
+
+
     if (httpd_start(&server, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start file server!");
         return ESP_FAIL;

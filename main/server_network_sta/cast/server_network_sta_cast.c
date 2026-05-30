@@ -242,13 +242,32 @@ static esp_err_t send_cast_result(httpd_req_t *req, bool ok, const char *message
 static esp_err_t ensure_dir(const char *path)
 {
     struct stat st = {0};
+
+    if (path == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     if (stat(path, &st) == 0) {
         return S_ISDIR(st.st_mode) ? ESP_OK : ESP_FAIL;
     }
+
+    errno = 0;
+
     if (mkdir(path, 0775) == 0 || errno == EEXIST) {
         return ESP_OK;
     }
-    ESP_LOGE(TAG, "cast mkdir failed path=%s errno=%d", path, errno);
+
+    int err = errno;
+
+    if (err == ENOTSUP || err == EOPNOTSUPP) {
+        /* SPIFFS does not support real directories, skip mkdir and keep flat paths. */
+        /* SPIFFS 不支持真实目录，跳过 mkdir，后续继续按扁平路径写入。 */
+        ESP_LOGW(TAG, "cast mkdir not supported, skip path=%s errno=%d", path, err);
+        return ESP_OK;
+    }
+
+    ESP_LOGE(TAG, "cast mkdir failed path=%s errno=%d", path, err);
+
     return ESP_FAIL;
 }
 

@@ -54,13 +54,22 @@ static char *alloc_request_body_buffer(size_t size)
         return body;
     }
 
-    /* English: Fall back to any 8-bit capable heap when PSRAM is disabled or unavailable. */
-    /* 中文：PSRAM 未开启或不可用时，退回到任意 8-bit 可访问堆内存。 */
+    /* Do not allocate large upload bodies from internal RAM when PSRAM allocation fails. */
+    /* PSRAM 申请失败时，大上传包不再退回内部 RAM，避免挤爆 WiFi/httpd 所需内存。 */
+    if (size > 128 * 1024) {
+        ESP_LOGE(TAG, "receive_data_redirect_handler: PSRAM alloc failed and body too large for internal RAM size=%u",
+                (unsigned int)size);
+        return NULL;
+    }
+
+    /* Small requests may still fall back to internal 8-bit heap. */
+    /* 小请求仍允许退回内部 8-bit 堆内存。 */
     body = (char *)heap_caps_malloc(size, MALLOC_CAP_8BIT);
     if (body != NULL) {
         ESP_LOGW(TAG, "receive_data_redirect_handler: body allocated from 8BIT heap ptr=%p size=%u",
-                 body, (unsigned int)size);
+                body, (unsigned int)size);
     }
+
     return body;
 }
 
