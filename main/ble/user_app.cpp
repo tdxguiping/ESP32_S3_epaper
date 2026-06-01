@@ -1,6 +1,8 @@
 #include "user_app.h"
 #include "tdx_cfg.h"
 
+#if USER_BLE_ENABLE
+
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,6 +15,8 @@
 #include "esp_gatts_api.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+
+#include "ble_data_handler.h"
 
 enum {
     SPP_IDX_SVC,
@@ -323,6 +327,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event,
             handle_cccd_write(idx, param);
         } else if (idx == TDX_BLE_SWITCH_MODE_VALUE_INDEX && !param->write.is_prep) {
             print_ble_received_data(param->write.value, param->write.len);
+            (void)User_QueueBleWriteBytes(param->write.value, param->write.len);
         }
 
         if (param->write.need_rsp) {
@@ -420,7 +425,35 @@ extern "C" void Init_Bl(void)
 
     ESP_ERROR_CHECK(esp_ble_gatts_register_callback(gatts_event_handler));
     ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_event_handler));
+    ESP_ERROR_CHECK(UserBleDataHandler_Init());
     ESP_ERROR_CHECK(esp_ble_gatts_app_register(TDX_BLE_APP_ID));
 
     ESP_LOGI(TDX_BLE_LOG_TAG, "BLE init done");
 }
+
+#else
+
+#include "esp_log.h"
+
+bool is_connected = false;
+
+extern "C" void Init_Bl(void)
+{
+    // English: Leave BLE startup as a no-op when USER_BLE_ENABLE is disabled.
+    // 中文：关闭 USER_BLE_ENABLE 时，蓝牙初始化保持空操作，避免拉起蓝牙协议栈。
+    ESP_LOGI("BLE", "BLE disabled by USER_BLE_ENABLE=0");
+}
+
+extern "C" void SendData_indicate(uint8_t *data, uint16_t len)
+{
+    (void)data;
+    (void)len;
+}
+
+extern "C" void Tdx01_indicate(uint8_t *data, uint16_t len)
+{
+    (void)data;
+    (void)len;
+}
+
+#endif

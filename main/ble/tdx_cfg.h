@@ -1,15 +1,22 @@
 #pragma once
 
+#include <stdint.h>
+
 #include "esp_bit_defs.h"
-#include "esp_bt_defs.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "driver/uart.h"
 
-// Enable this switch to keep the migrated BLE server isolated from the file server logic.
-// 打开这个开关可让移植过来的 BLE 服务独立于文件服务器逻辑，后续调试时只需要改这里。
+// Keep BLE optional so board bring-up can disable Bluetooth without editing BLE source files.
+// 中文：将蓝牙开关集中在这里，调试时不改蓝牙源码也能打开或关闭蓝牙功能。
+#ifndef USER_BLE_ENABLE
 #define USER_BLE_ENABLE 1
+#endif
+
+#if USER_BLE_ENABLE
+#include "esp_bt_defs.h"
+#endif
 
 // Keep all migrated BLE identifiers here so future app/protocol changes do not touch user_app.cpp.
 // 将移植过来的 BLE 标识集中放在这里，后续修改 APP 协议或设备名时不用改 user_app.cpp。
@@ -21,7 +28,18 @@
 #define TDX_BLE_SERVICE_INST_ID 0
 #define TDX_BLE_ATT_UUID_SIZE 16
 #define TDX_BLE_DATA_MAX_LEN 512
+#if USER_BLE_ENABLE
 #define TDX_BLE_TX_POWER_LOWEST ESP_PWR_LVL_N24
+#else
+#define TDX_BLE_TX_POWER_LOWEST 0
+#endif
+
+// Keep BLE JSON queue limits here so BLE write parsing can be tuned without touching the GATT callback.
+// 中文：将 BLE JSON 队列参数集中在这里，后续调整写入解析压力时不用修改 GATT 回调。
+#define USER_BLE_JSON_BUF_SIZE 1024
+#define USER_BLE_WRITE_QUEUE_LENGTH 4
+#define USER_BLE_WRITE_TASK_STACK_SIZE (4 * 1024)
+#define USER_BLE_WRITE_TASK_PRIORITY 5
 
 // Keep the original source project's attribute alias visible for protocol mapping checks.
 // 保留源工程里的属性别名，方便以后核对手机端写入的是哪一个协议通道。
@@ -110,6 +128,22 @@
 // 将 WiFi 保活时长限制集中在这里，避免手机指令请求无限制在线时间。
 #define SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS 1
 #define SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS 3600
+
+// Keep sleep/work-state NVS keys here so BLE, HTTP, and network timers share one saved runtime state.
+// 中文：将休眠和工作状态 NVS 键值集中在这里，保证 BLE、HTTP 和网络计时共用同一份运行状态。
+#define USER_WORK_STATE_NVS_NAMESPACE "work_state"
+#define USER_WORK_STATE_NVS_KEY "runtime"
+#define USER_WORK_STATE_DEFAULT_CONTINUE_SECONDS (5 * 60)
+#define USER_WORK_STATE_DEFAULT_STANDBY_SECONDS 15
+#define USER_WORK_STATE_MIN_CONTINUE_SECONDS (5 * 60)
+#define USER_WORK_STATE_MAX_CONTINUE_SECONDS (60 * 60)
+#define USER_WORK_STATE_TASK_STACK_SIZE (3 * 1024)
+#define USER_WORK_STATE_TASK_PRIORITY 3
+
+extern uint16_t sleep_time;
+extern uint32_t working_time;
+extern uint32_t server_required_continue_work_time;
+extern uint32_t wifi_standby_time_s;
 
 // Keep the ping URI here so heartbeat routing can change without touching GET resource handlers.
 // 将 ping 路径集中在这里，后续调整心跳路由时不用修改 GET 资源处理函数。
@@ -215,5 +249,5 @@
 #define USER_LED_MID_BLINK_MS 500
 #define USER_LED_SLOW_BLINK_MS 1000
 #define USER_LED_SUCCESS_HOLD_MS 1000
-#define USER_LED_STATUS_TASK_STACK_SIZE (2 * 1024)
+#define USER_LED_STATUS_TASK_STACK_SIZE (4 * 1024)
 #define USER_LED_STATUS_TASK_PRIORITY 3

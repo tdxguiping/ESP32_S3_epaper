@@ -22,6 +22,7 @@
 #include "file_serving_example_common.h"
 #include "led_status.h"
 #include "server_network_sta.h"
+#include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "user_app.h"
 
@@ -38,6 +39,7 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ESP_ERROR_CHECK(ServerNetworkStaWifiWorkTime_Init());
     ESP_ERROR_CHECK(UserLedStatus_Init());
 #if USER_BLE_ENABLE
     // Start BLE after NVS/event loop so BT state and callbacks have the required system services.

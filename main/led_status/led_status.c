@@ -81,11 +81,18 @@ static void UserLedStatus_Task(void *arg)
             set_green(true);
             vTaskDelay(pdMS_TO_TICKS(500));
             break;
-        case USER_LED_STATE_TRANSFER:
-        case USER_LED_STATE_EPD_REFRESH:
-            blink_green(pdMS_TO_TICKS(USER_LED_FAST_BLINK_MS));
-            break;
-        case USER_LED_STATE_SUCCESS:
+            case USER_LED_STATE_TRANSFER:
+                /* Blink red while receiving upload data. */
+                /* 上传接收过程中闪红灯。 */
+                blink_red(pdMS_TO_TICKS(USER_LED_FAST_BLINK_MS));
+                break;
+
+            case USER_LED_STATE_EPD_REFRESH:
+                /* Blink red while refreshing the e-paper display. */
+                /* 墨水屏刷新过程中闪红灯。 */
+                blink_red(pdMS_TO_TICKS(USER_LED_MID_BLINK_MS));
+                break;
+            case USER_LED_STATE_SUCCESS:
             set_red(false);
             set_green(true);
             vTaskDelay(pdMS_TO_TICKS(USER_LED_SUCCESS_HOLD_MS));

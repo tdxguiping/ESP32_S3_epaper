@@ -10,12 +10,194 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_wifi_time";
-static int s_wifi_work_seconds = 0;
 static TickType_t s_wifi_work_start_tick = 0;
 static TickType_t s_last_network_data_tick = 0;
+static TaskHandle_t s_work_state_task = NULL;
+
+// English: Keep these globals compatible with the old sleep/work-time flow for BLE and HTTP handlers.
+// 中文：保留旧工程的休眠和工作时间全局变量，供 BLE 与 HTTP 处理流程共用。
+uint32_t working_time = 0;
+uint32_t server_required_continue_work_time = USER_WORK_STATE_DEFAULT_CONTINUE_SECONDS;
+uint32_t wifi_standby_time_s = USER_WORK_STATE_DEFAULT_STANDBY_SECONDS;
+
+// English: Store all runtime sleep/work values in one NVS blob so future power-mode changes stay centralized.
+// 中文：把运行时休眠和工作时间一起保存到一个 NVS blob，方便以后集中修改功耗策略。
+typedef struct __attribute__((packed)) {
+    uint16_t sleep_time_value;
+    uint32_t working_time_value;
+    uint32_t server_required_continue_work_time_value;
+    uint32_t wifi_standby_time_s_value;
+} user_work_state_nvs_blob_t;
+
+static uint32_t clamp_continue_seconds(uint32_t seconds)
+{
+    if (seconds < USER_WORK_STATE_MIN_CONTINUE_SECONDS) {
+        return USER_WORK_STATE_MIN_CONTINUE_SECONDS;
+    }
+    if (seconds > USER_WORK_STATE_MAX_CONTINUE_SECONDS) {
+        return USER_WORK_STATE_MAX_CONTINUE_SECONDS;
+    }
+    return seconds;
+}
+
+static void log_work_state_blob(const char *label, const user_work_state_nvs_blob_t *blob)
+{
+    if (blob == NULL) {
+        return;
+    }
+    ESP_LOGI(TAG,
+             "%s sleep_time=%u working_time=%lu continue=%lu standby=%lu",
+             label != NULL ? label : "work_state",
+             (unsigned int)blob->sleep_time_value,
+             (unsigned long)blob->working_time_value,
+             (unsigned long)blob->server_required_continue_work_time_value,
+             (unsigned long)blob->wifi_standby_time_s_value);
+}
+
+static user_work_state_nvs_blob_t make_work_state_blob(void)
+{
+    user_work_state_nvs_blob_t blob = {
+        .sleep_time_value = sleep_time,
+        .working_time_value = working_time,
+        .server_required_continue_work_time_value = server_required_continue_work_time,
+        .wifi_standby_time_s_value = wifi_standby_time_s,
+    };
+    return blob;
+}
+
+static void apply_work_state_blob(const user_work_state_nvs_blob_t *blob)
+{
+    if (blob == NULL) {
+        return;
+    }
+
+    sleep_time = blob->sleep_time_value;
+    working_time = 0;
+    server_required_continue_work_time = clamp_continue_seconds(blob->server_required_continue_work_time_value);
+    wifi_standby_time_s = blob->wifi_standby_time_s_value != 0 ?
+                          blob->wifi_standby_time_s_value :
+                          USER_WORK_STATE_DEFAULT_STANDBY_SECONDS;
+
+    s_wifi_work_start_tick = xTaskGetTickCount();
+    s_last_network_data_tick = s_wifi_work_start_tick;
+    ESP_LOGI(TAG,
+             "restore globals sleep_time=%u working_time=%lu continue=%lu standby=%lu",
+             (unsigned int)sleep_time,
+             (unsigned long)working_time,
+             (unsigned long)server_required_continue_work_time,
+             (unsigned long)wifi_standby_time_s);
+}
+
+static esp_err_t load_work_state_from_nvs(user_work_state_nvs_blob_t *blob, size_t *stored_size)
+{
+    nvs_handle_t handle = 0;
+    size_t size = 0;
+
+    if (blob == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t ret = nvs_open(USER_WORK_STATE_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "open work state nvs failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = nvs_get_blob(handle, USER_WORK_STATE_NVS_KEY, NULL, &size);
+    if (ret == ESP_OK && size == sizeof(*blob)) {
+        ret = nvs_get_blob(handle, USER_WORK_STATE_NVS_KEY, blob, &size);
+    } else if (ret == ESP_OK) {
+        ESP_LOGW(TAG, "work state blob size mismatch stored=%u expected=%u",
+                 (unsigned int)size, (unsigned int)sizeof(*blob));
+        ret = ESP_ERR_INVALID_SIZE;
+    }
+    nvs_close(handle);
+
+    if (stored_size != NULL) {
+        *stored_size = size;
+    }
+    return ret;
+}
+
+static esp_err_t save_work_state_to_nvs(void)
+{
+    nvs_handle_t handle = 0;
+    user_work_state_nvs_blob_t blob = make_work_state_blob();
+
+    esp_err_t ret = nvs_open(USER_WORK_STATE_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "open work state nvs for write failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = nvs_set_blob(handle, USER_WORK_STATE_NVS_KEY, &blob, sizeof(blob));
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    }
+    nvs_close(handle);
+
+    if (ret == ESP_OK) {
+        user_work_state_nvs_blob_t read_blob = {0};
+        size_t stored_size = 0;
+        log_work_state_blob("save value", &blob);
+        esp_err_t read_ret = load_work_state_from_nvs(&read_blob, &stored_size);
+        if (read_ret == ESP_OK && memcmp(&blob, &read_blob, sizeof(blob)) == 0) {
+            ESP_LOGI(TAG, "work state verify ok stored_size=%u", (unsigned int)stored_size);
+        } else {
+            ESP_LOGW(TAG, "work state verify failed read_ret=%s stored_size=%u",
+                     esp_err_to_name(read_ret), (unsigned int)stored_size);
+        }
+    } else {
+        ESP_LOGE(TAG, "save work state failed: %s", esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+static uint32_t update_working_time_seconds(void)
+{
+    TickType_t now = xTaskGetTickCount();
+    if (s_wifi_work_start_tick == 0) {
+        s_wifi_work_start_tick = now;
+    }
+    working_time = (uint32_t)(((now - s_wifi_work_start_tick) * portTICK_PERIOD_MS) / 1000U);
+    return working_time;
+}
+
+static void work_state_task(void *arg)
+{
+    (void)arg;
+
+    while (true) {
+        uint32_t elapsed = update_working_time_seconds();
+        server_required_continue_work_time = clamp_continue_seconds(server_required_continue_work_time);
+
+        if (elapsed > server_required_continue_work_time) {
+#if USER_BLE_ENABLE
+            // English: BLE-enabled builds stay awake here; add real deep sleep only after BLE reconnect policy is decided.
+            // 中文：BLE 打开时这里只保持在线；等蓝牙重连策略明确后再接入真正深睡。
+            ESP_LOGI(TAG,
+                     "working_time timeout but BLE build keeps WiFi active elapsed=%lu target=%lu standby=%lu",
+                     (unsigned long)elapsed,
+                     (unsigned long)server_required_continue_work_time,
+                     (unsigned long)wifi_standby_time_s);
+#else
+            ESP_LOGI(TAG,
+                     "working_time timeout, deep-sleep/power-off hook is not enabled elapsed=%lu target=%lu standby=%lu",
+                     (unsigned long)elapsed,
+                     (unsigned long)server_required_continue_work_time,
+                     (unsigned long)wifi_standby_time_s);
+#endif
+            working_time = server_required_continue_work_time > 20 ? server_required_continue_work_time - 20 : 0;
+            s_wifi_work_start_tick = xTaskGetTickCount() - pdMS_TO_TICKS(working_time * 1000U);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
 
 static const char *find_json_key(const char *body, const char *key)
 {
@@ -113,12 +295,73 @@ static esp_err_t send_wifi_work_time_result(httpd_req_t *req, bool ok, const cha
 
 void ServerNetworkStaWifiWorkTime_OnNetworkData(void)
 {
+    working_time = 0;
     s_last_network_data_tick = xTaskGetTickCount();
-    if (s_wifi_work_seconds > 0) {
-        ESP_LOGI(TAG, "network activity keeps WiFi alive seconds=%d elapsed_ms=%u",
-                 s_wifi_work_seconds,
+    s_wifi_work_start_tick = s_last_network_data_tick;
+    if (server_required_continue_work_time > 0) {
+        ESP_LOGI(TAG, "network activity reset working_time continue=%lu elapsed_ms=%u",
+                 (unsigned long)server_required_continue_work_time,
                  (unsigned int)((s_last_network_data_tick - s_wifi_work_start_tick) * portTICK_PERIOD_MS));
     }
+}
+
+esp_err_t ServerNetworkStaWifiWorkTime_Init(void)
+{
+    user_work_state_nvs_blob_t blob = {0};
+    size_t stored_size = 0;
+
+    s_wifi_work_start_tick = xTaskGetTickCount();
+    s_last_network_data_tick = s_wifi_work_start_tick;
+
+    esp_err_t ret = load_work_state_from_nvs(&blob, &stored_size);
+    if (ret == ESP_OK) {
+        log_work_state_blob("read value", &blob);
+        apply_work_state_blob(&blob);
+    } else {
+        sleep_time = 0;
+        working_time = 0;
+        server_required_continue_work_time = USER_WORK_STATE_DEFAULT_CONTINUE_SECONDS;
+        wifi_standby_time_s = USER_WORK_STATE_DEFAULT_STANDBY_SECONDS;
+        ESP_LOGW(TAG, "use default work state ret=%s stored_size=%u continue=%lu standby=%lu",
+                 esp_err_to_name(ret), (unsigned int)stored_size,
+                 (unsigned long)server_required_continue_work_time,
+                 (unsigned long)wifi_standby_time_s);
+        ret = save_work_state_to_nvs();
+    }
+
+    if (s_work_state_task == NULL) {
+        BaseType_t task_ret = xTaskCreate(work_state_task,
+                                          "work_state",
+                                          USER_WORK_STATE_TASK_STACK_SIZE,
+                                          NULL,
+                                          USER_WORK_STATE_TASK_PRIORITY,
+                                          &s_work_state_task);
+        if (task_ret != pdPASS) {
+            ESP_LOGE(TAG, "create work_state task failed");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    return ret;
+}
+
+esp_err_t ServerNetworkStaWifiWorkTime_SetAndSave(uint32_t seconds)
+{
+    if (seconds == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    server_required_continue_work_time = clamp_continue_seconds(seconds);
+    wifi_standby_time_s = seconds;
+    working_time = 0;
+    s_wifi_work_start_tick = xTaskGetTickCount();
+    s_last_network_data_tick = s_wifi_work_start_tick;
+
+    ESP_LOGI(TAG, "set work time requested=%lu continue=%lu standby=%lu",
+             (unsigned long)seconds,
+             (unsigned long)server_required_continue_work_time,
+             (unsigned long)wifi_standby_time_s);
+    return save_work_state_to_nvs();
 }
 
 esp_err_t ServerNetworkStaWifiWorkTime_ProcessJson(httpd_req_t *req,
@@ -138,16 +381,16 @@ esp_err_t ServerNetworkStaWifiWorkTime_ProcessJson(httpd_req_t *req,
         return send_wifi_work_time_result(req, false, "set wifi work time failed");
     }
 
-    // Store the requested online window and reset the activity timer for future power-mode integration.
-    // 保存本次请求的在线窗口并重置活动计时，方便后续接入低功耗管理时直接使用。
-    s_wifi_work_seconds = seconds;
-    s_wifi_work_start_tick = xTaskGetTickCount();
-    s_last_network_data_tick = s_wifi_work_start_tick;
+    esp_err_t set_ret = ServerNetworkStaWifiWorkTime_SetAndSave((uint32_t)seconds);
+    if (set_ret != ESP_OK) {
+        ESP_LOGE(TAG, "set_wifi_work_time save failed: %s", esp_err_to_name(set_ret));
+        return send_wifi_work_time_result(req, false, "set wifi work time failed");
+    }
 
-    ESP_LOGI(TAG, "set_wifi_work_time updated seconds=%d max=%d start_tick=%u",
-             s_wifi_work_seconds,
+    ESP_LOGI(TAG, "set_wifi_work_time updated seconds=%d max=%d working_time=%lu",
+             seconds,
              SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS,
-             (unsigned int)s_wifi_work_start_tick);
-    ESP_LOGI(TAG, "set_wifi_work_time power manager hook is not present, WiFi/HTTP stay controlled by current project flow");
+             (unsigned long)update_working_time_seconds());
+    ESP_LOGI(TAG, "set_wifi_work_time saved, deep-sleep entry is not enabled in current project flow");
     return send_wifi_work_time_result(req, true, NULL);
 }
