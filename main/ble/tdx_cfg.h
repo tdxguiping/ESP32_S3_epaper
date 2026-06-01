@@ -68,6 +68,10 @@
 // 将移植的 /dataUP 上传 body 限制集中在这里，方便统一调整网页上传容量。
 #define SERVER_NETWORK_STA_DATAUP_MAX_BODY_SIZE (2 * 1024 * 1024)
 
+// Keep large buffer fallback limit here so HTTP and EPD avoid exhausting internal RAM.
+// 中文：将大缓冲退回内部 RAM 的上限集中在这里，避免 HTTP 和 EPD 挤爆内部内存。
+#define USER_INTERNAL_RAM_FALLBACK_MAX_SIZE (128 * 1024)
+
 // Keep /dataUP parser string limits here because they must match the old web page form field sizes.
 // 将 /dataUP 解析字符串限制集中在这里，因为它们需要匹配旧网页表单字段大小。
 #define SERVER_NETWORK_STA_DATAUP_FIELD_NAME_MAX 32
@@ -82,7 +86,7 @@
 
 // Keep OTA upload limits here so the partition size and HTTP body policy can be checked together.
 // 将 OTA 上传限制集中在这里，方便和 Flash OTA 分区大小一起核对。
-#define SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE (6 * 1024 * 1024)
+#define SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE (5 * 1024 * 1024)
 #define SERVER_NETWORK_STA_OTA_BOUNDARY_MAX 96
 #define SERVER_NETWORK_STA_OTA_VERSION_MAX 40
 

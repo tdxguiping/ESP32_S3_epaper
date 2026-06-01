@@ -56,6 +56,14 @@ static esp_err_t copy_display_buffer(epd_display_job_t *job, const uint8_t *disp
     /* 中文：复制显示数据，因为 receive_data_redirect_handler 分发完成后会释放 HTTP body。 */
     uint8_t *copy = (uint8_t *)heap_caps_malloc(display_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (copy == NULL) {
+        if (display_size > USER_INTERNAL_RAM_FALLBACK_MAX_SIZE) {
+            ESP_LOGE(TAG, "display PSRAM alloc failed, size too large for internal RAM size=%u",
+                     (unsigned int)display_size);
+            return ESP_ERR_NO_MEM;
+        }
+
+        // English: Only small display buffers may fall back to internal RAM.
+        // 中文：只有小显示缓冲允许退回内部 RAM，避免大图挤占系统内存。
         copy = (uint8_t *)heap_caps_malloc(display_size, MALLOC_CAP_8BIT);
     }
     if (copy == NULL) {

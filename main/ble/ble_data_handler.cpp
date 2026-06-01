@@ -7,10 +7,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_app_desc.h"
 #include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_ota_ops.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "ch583_wifi_uart_protocol.h"
 #include "nvs.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
@@ -144,6 +148,54 @@ static void send_simple_result(const char *func, int result, const char *message
     ble_send_json(json);
 }
 
+void send_base_info_to_mobile(void)
+{
+    char ip_str[sizeof("255.255.255.255")] = "0.0.0.0";
+    char json_str[384] = {0};
+    const esp_app_desc_t *app = esp_app_get_description();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_netif_ip_info_t ip = {};
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+
+    if (netif == NULL) {
+        netif = esp_netif_next_unsafe(NULL);
+    }
+    if (netif != NULL && esp_netif_get_ip_info(netif, &ip) == ESP_OK) {
+        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip.ip));
+    } else {
+        ESP_LOGW(TAG, "send_base_info_to_mobile no netif IP, use %s", ip_str);
+    }
+
+    working_time = 0;
+    snprintf(json_str, sizeof(json_str),
+             "{\"result\":0,\"message\":\"wifi info\",\"stage\":\"%s\","
+             "\"project\":\"%s\","
+             "\"version\":\"%s\","
+             "\"date\":\"%s\","
+             "\"time\":\"%s\","
+             "\"idf\":\"%s\","
+             "\"running\":\"%s\"}",
+             ip_str,
+             app != NULL ? app->project_name : "",
+             app != NULL ? app->version : "",
+             app != NULL ? app->date : "",
+             app != NULL ? app->time : "",
+             app != NULL ? app->idf_ver : "",
+             running != NULL ? running->label : "");
+
+    // English: Send base information through the same BLE notify path used by the old project.
+    // 中文：通过 BLE notify 回传基础信息，保持手机端协议兼容。
+#if (USER_BLE_ENABLE == 1)
+    SendData_indicate((uint8_t *)json_str, strlen(json_str));
+    printf("JSON:\n%s\n", json_str);
+#else
+    ch583_wifi_uart_send_wifi_data((const char *)json_str);
+#endif
+
+    ESP_LOGI(TAG, "base info sent ip=%s running=%s",
+             ip_str, running != NULL ? running->label : "");
+}
+
 static bool is_valid_wifi_text(const char *text, size_t max_len)
 {
     size_t len = 0;
@@ -164,7 +216,7 @@ static esp_err_t save_wifi_config_to_nvs(const char *ssid, const char *password)
     }
 
     // English: Store WiFi credentials in the namespace read by the current Server Network STA path.
-    // 中文：把 WiFi 账号保存到当前 Server Network STA 启动路径读取的 NVS 命名空间。
+    // 中文：把 WiFi 账号保存到 Server Network STA 使用的 NVS 命名空间。
     esp_err_t ret = nvs_open("nvs.net80211", NVS_READWRITE, &handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "open nvs.net80211 failed: %s", esp_err_to_name(ret));
@@ -225,10 +277,10 @@ static bool handle_wifi_wakeup_json(const char *json_text)
         return false;
     }
 
-    // English: Keep this hook lightweight because the current project has no separate wakeup manager.
-    // 中文：当前项目还没有独立唤醒管理器，这里只确认收到唤醒指令并返回结果。
+    // English: Reply with current base information when the phone wakes or queries the device.
+    // 中文：手机唤醒或查询设备时，回传当前基础信息。
     ESP_LOGI(TAG, "BLE wifi_wakeup received");
-    send_simple_result("wifi_wakeup_result", 0, NULL);
+    send_base_info_to_mobile();
     return true;
 }
 

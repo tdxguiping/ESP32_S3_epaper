@@ -13,6 +13,7 @@
 */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
 #include <sys/unistd.h>
@@ -512,6 +513,8 @@ esp_err_t example_start_file_server(const char *base_path)
 
     if (httpd_start(&server, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start file server!");
+        free(server_data);
+        server_data = NULL;
         return ESP_FAIL;
     }
 

@@ -152,10 +152,44 @@ static char hex_to_char(uint8_t hex)
     return hex < 10 ? (char)('0' + hex) : (char)('A' + hex - 10);
 }
 
+static esp_err_t read_ble_mac(uint8_t mac[6])
+{
+    if (mac == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t ret = esp_read_mac(mac, ESP_MAC_BT);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TDX_BLE_LOG_TAG, "read BLE MAC failed: %s", esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+extern "C" void get_ble_mac_no_colon(char *out, size_t out_size)
+{
+    if (out == NULL || out_size == 0) {
+        return;
+    }
+
+    out[0] = '\0';
+    uint8_t mac[6] = {};
+    if (read_ble_mac(mac) != ESP_OK) {
+        return;
+    }
+
+    // English: Format the local BLE MAC without colons for phone-side heartbeat matching.
+    // 中文：把本机 BLE MAC 格式化为无冒号字符串，便于手机端心跳匹配设备。
+    snprintf(out, out_size, "%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
 static void init_broadcast_data(void)
 {
     uint8_t mac[6] = {};
-    esp_read_mac(mac, ESP_MAC_BT);
+    if (read_ble_mac(mac) != ESP_OK) {
+        return;
+    }
+
     ESP_LOGI(TDX_BLE_LOG_TAG, "Bluetooth MAC: %02x:%02x:%02x:%02x:%02x:%02x",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
@@ -442,6 +476,13 @@ extern "C" void Init_Bl(void)
     // English: Leave BLE startup as a no-op when USER_BLE_ENABLE is disabled.
     // 中文：关闭 USER_BLE_ENABLE 时，蓝牙初始化保持空操作，避免拉起蓝牙协议栈。
     ESP_LOGI("BLE", "BLE disabled by USER_BLE_ENABLE=0");
+}
+
+extern "C" void get_ble_mac_no_colon(char *out, size_t out_size)
+{
+    if (out != NULL && out_size > 0) {
+        out[0] = '\0';
+    }
 }
 
 extern "C" void SendData_indicate(uint8_t *data, uint16_t len)

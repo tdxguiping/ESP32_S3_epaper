@@ -56,7 +56,7 @@ static char *alloc_request_body_buffer(size_t size)
 
     /* Do not allocate large upload bodies from internal RAM when PSRAM allocation fails. */
     /* PSRAM 申请失败时，大上传包不再退回内部 RAM，避免挤爆 WiFi/httpd 所需内存。 */
-    if (size > 128 * 1024) {
+    if (size > USER_INTERNAL_RAM_FALLBACK_MAX_SIZE) {
         ESP_LOGE(TAG, "receive_data_redirect_handler: PSRAM alloc failed and body too large for internal RAM size=%u",
                 (unsigned int)size);
         return NULL;
@@ -128,6 +128,7 @@ static bool read_request_body_to_buffer(httpd_req_t *req, char *body, size_t bod
     }
 
     size_t received_total = 0;
+    size_t last_log_received = 0;
     while (received_total < body_len) {
         int received = httpd_req_recv(req, body + received_total, body_len - received_total);
         if (received <= 0) {
@@ -136,8 +137,11 @@ static bool read_request_body_to_buffer(httpd_req_t *req, char *body, size_t bod
             return false;
         }
         received_total += received;
-        ESP_LOGI(TAG, "receive_data_redirect_handler: recv progress received=%u remaining=%u",
-                 (unsigned int)received_total, (unsigned int)(body_len - received_total));
+        if ((received_total - last_log_received) >= 64 * 1024 || received_total == body_len) {
+            ESP_LOGI(TAG, "receive_data_redirect_handler: recv progress received=%u remaining=%u",
+                     (unsigned int)received_total, (unsigned int)(body_len - received_total));
+            last_log_received = received_total;
+        }
     }
     body[body_len] = '\0';
     return true;
