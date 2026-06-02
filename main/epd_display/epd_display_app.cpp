@@ -16,6 +16,7 @@ static const char *TAG = "epd_display";
 typedef struct {
     uint8_t *data;
     size_t size;
+    uint8_t epd_which_one;
 } epd_display_job_t;
 
 uint16_t sleep_time = 0;
@@ -97,6 +98,7 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
             continue;
         }
 
+        ePaperDisplay.Set_EPD_which_one(job.epd_which_one);
 #if (EPD_type_ == EPD_800_480_4s_75)
         ePaperDisplay.EPD_Init();
         ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
@@ -160,7 +162,7 @@ esp_err_t ServerNetworkStaEpdDisplay_Init(void)
 #endif
 }
 
-esp_err_t ServerNetworkStaEpdDisplay_Queue(const uint8_t *display_buf, size_t display_size)
+esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, size_t display_size, uint8_t epd_which_one)
 {
 #if USER_EPD_ENABLE
     if (s_epd_display_queue == NULL) {
@@ -173,6 +175,7 @@ esp_err_t ServerNetworkStaEpdDisplay_Queue(const uint8_t *display_buf, size_t di
     if (ret != ESP_OK) {
         return ret;
     }
+    job.epd_which_one = (epd_which_one == 2) ? 2 : 1;
 
     epd_display_job_t old_job = {};
     if (xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
@@ -196,4 +199,9 @@ esp_err_t ServerNetworkStaEpdDisplay_Queue(const uint8_t *display_buf, size_t di
     ESP_LOGW(TAG, "EPD display queue ignored because USER_EPD_ENABLE=0");
     return ESP_OK;
 #endif
+}
+
+esp_err_t ServerNetworkStaEpdDisplay_Queue(const uint8_t *display_buf, size_t display_size)
+{
+    return ServerNetworkStaEpdDisplay_QueueToScreen(display_buf, display_size, 1);
 }

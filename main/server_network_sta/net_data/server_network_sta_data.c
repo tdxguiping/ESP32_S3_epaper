@@ -15,6 +15,7 @@
 #include "freertos/semphr.h"
 #include "led_status.h"
 #include "network_ota_upload.h"
+#include "server_network_sta_cast2pic.h"
 #include "server_network_sta_cast.h"
 #include "server_network_sta_delete.h"
 #include "server_network_sta_saved_images.h"
@@ -455,7 +456,10 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
     } else if (is_multipart) {
         ESP_LOGI(TAG, "receive_data_redirect_handler: dispatch multipart uri=%s len=%u",
                  uri != NULL ? uri : "<null>", (unsigned int)remaining);
-        resp_ret = ServerNetworkStaCast_Process(req, body, remaining, content_type, s_base_path);
+        resp_ret = ServerNetworkStaCast2Pic_Process(req, body, remaining, content_type, s_base_path);
+        if (resp_ret == ESP_ERR_NOT_SUPPORTED) {
+            resp_ret = ServerNetworkStaCast_Process(req, body, remaining, content_type, s_base_path);
+        }
         if (resp_ret == ESP_ERR_NOT_SUPPORTED) {
             resp_ret = ServerNetworkStaUpload_Process(req, body, remaining, content_type, s_base_path);
         }
