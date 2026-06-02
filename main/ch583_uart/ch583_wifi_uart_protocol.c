@@ -61,8 +61,7 @@ typedef struct {
     const char *arg;
 } ch583_wifi_frame_t;
 
-// Keep the TX sequence independent because the protocol says each sender owns its own SEQ counter.
-// 独立维护 WiFi 端发送序号，因为协议规定每个发送方都要维护自己的 SEQ 计数。
+// Keep the TX sequence independent because each sender owns its own SEQ counter.
 static uint16_t s_tx_seq;
 static SemaphoreHandle_t s_tx_mutex;
 
@@ -72,21 +71,22 @@ static uint16_t s_last_tx_seq;
 static uint8_t s_last_tx_bad_crc_retry_count;
 static bool s_last_tx_retry_valid;
 
-// Cache partial UART bytes so frames split across uart_read_bytes calls can still be parsed.
-// 缓存分多次收到的串口字节，保证跨 uart_read_bytes 的协议帧也能被正确解析。
+// Cache partial UART bytes so split frames can still be parsed.
 static bool s_in_frame;
 static bool s_wait_frame_start_hash;
 static char s_frame_body[CH583_WIFI_MAX_FRAME_BODY_LEN + 1];
 static size_t s_frame_body_len;
 
-// Keep only one BLE_DATA split message because V1 does not allow interleaved split transfers.
-// 只缓存一组 BLE_DATA 分包，因为 V1 协议不允许多组分包交错发送。
+// Keep only one BLE_DATA split message because V1 does not allow interleaved transfers.
 static bool s_ble_join_active;
 static uint16_t s_ble_expected_part;
 static uint16_t s_ble_total;
 static size_t s_ble_len;
 static char s_ble_buf[CH583_WIFI_MAX_BLE_MESSAGE_LEN + 1];
 static char s_ble_mac[CH583_WIFI_BLE_MAC_LEN + 1];
+static bool s_ble_mac_loaded;
+
+static bool ch583_wifi_is_upper_hex_string(const char *text, size_t len);
 
 static uint16_t ch583_wifi_crc16_ccitt_false(const char *data, size_t len)
 {
@@ -106,11 +106,28 @@ static uint16_t ch583_wifi_crc16_ccitt_false(const char *data, size_t len)
     return crc;
 }
 
+static void ch583_wifi_load_ble_mac_from_nvs(void)
+{
+    char saved_mac[CH583_WIFI_BLE_MAC_LEN + 1] = {0};
+
+    if (s_ble_mac_loaded) {
+        return;
+    }
+    s_ble_mac_loaded = true;
+
+    (void)app_nvs_read_str(CH583_BLE_MAC_NVS_KEY, saved_mac, sizeof(saved_mac), "");
+    if (strlen(saved_mac) == CH583_WIFI_BLE_MAC_LEN &&
+        ch583_wifi_is_upper_hex_string(saved_mac, CH583_WIFI_BLE_MAC_LEN)) {
+        memcpy(s_ble_mac, saved_mac, CH583_WIFI_BLE_MAC_LEN);
+        s_ble_mac[CH583_WIFI_BLE_MAC_LEN] = '\0';
+        printf("CH583_PROTO BLE_MAC load nvs=%s\r\n", s_ble_mac);
+    }
+}
+
 static void ch583_wifi_tx_mutex_init(void)
 {
     if (s_tx_mutex == NULL) {
         // Create the TX mutex lazily so every WiFi-to-CH583 protocol frame uses the same serialized path.
-        // 延迟创建 TX 互斥锁，让所有 WiFi 发给 CH583 的协议帧都经过同一条串行发送路径。
         s_tx_mutex = xSemaphoreCreateMutex();
     }
 }
@@ -132,11 +149,9 @@ static int ch583_wifi_write_frame_text(const char *frame_text, size_t frame_len)
     vTaskDelay(pdMS_TO_TICKS(CH583_WIFI_UART_TX_SILENCE_MS));
 
     // Write one complete protocol frame through the UART driver so console logs are less likely to split it.
-    // 通过 UART 驱动一次写入完整协议帧，降低控制台日志把帧内容打断的概率。
     ret = uart_write_bytes(CH583_WIFI_UART_PORT, frame_text, frame_len);
 
     // Wait until the frame leaves the UART TX FIFO before allowing later debug text to print.
-    // 等待协议帧真正离开 UART 发送 FIFO，再允许后续调试文本输出。
     uart_wait_tx_done(CH583_WIFI_UART_PORT, pdMS_TO_TICKS(100));
     // vTaskDelay(pdMS_TO_TICKS(CH583_WIFI_UART_TX_SILENCE_MS));
 
@@ -199,7 +214,7 @@ static int ch583_wifi_send_frame(const char *cmd, const char *arg)
     crc = ch583_wifi_crc16_ccitt_false(body, (size_t)body_len);
     //printf("CH583_PROTO tx seq=%u cmd=%s arg=%s crc=%04X\r\n", (unsigned int)s_tx_seq, cmd, arg ? arg : "", crc);
 
-    frame_len = snprintf(frame_text, sizeof(frame_text), "@#%s|CRC=%04X^&", body, crc);
+    frame_len = snprintf(frame_text, sizeof(frame_text), "@#%s|CRC=%04X^&\n\r", body, crc);
     if (frame_len <= 0 || frame_len >= (int)sizeof(frame_text)) {
         printf("CH583_PROTO tx frame overflow cmd=%s\r\n", cmd);
         return -1;
@@ -349,7 +364,6 @@ static void ch583_wifi_handle_reply_status(const ch583_wifi_frame_t *frame)
     }
 
     // Any non-BAD_CRC reply for the cached frame means this send attempt is finished.
-    // 对缓存帧收到非 BAD_CRC 回复时，认为本次发送已经结束，不再重发。
     s_last_tx_retry_valid = false;
 }
 
@@ -495,7 +509,6 @@ static void ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame, ch583_wi
         ch583_wifi_send_ack(frame->seq);
         if (ble_data_callback != NULL) {
             // Pass only ARG Data to the WiFi JSON handler, not the whole UART protocol frame.
-            // 只把 ARG 里的 Data 传给 WiFi JSON 处理函数，不把整条串口协议帧传进去。
             ble_data_callback(frame->arg);
         }
         return;
@@ -546,7 +559,6 @@ static void ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame, ch583_wi
                (unsigned int)s_ble_len);
         if (ble_data_callback != NULL) {
             // Pass the reassembled ARG Data as one string so upper JSON logic sees the original BLE write.
-            // 将分包重组后的 ARG Data 作为一个字符串传出，让上层 JSON 逻辑看到原始 BLE 写入内容。
             ble_data_callback(s_ble_buf);
         }
         ch583_wifi_reset_ble_join();
@@ -574,10 +586,12 @@ static void ch583_wifi_handle_ble_mac(const ch583_wifi_frame_t *frame)
         return;
     }
 
-    // Save the last CH583 BLE MAC so later WiFi logic can identify the connected frontend path.
-    // 保存最近一次 CH583 BLE MAC，方便后续 WiFi 逻辑识别当前连接的前端通道。
+    // Save the last CH583 BLE MAC so later WiFi logic can identify the frontend path.
     memcpy(s_ble_mac, frame->arg, CH583_WIFI_BLE_MAC_LEN);
     s_ble_mac[CH583_WIFI_BLE_MAC_LEN] = '\0';
+    s_ble_mac_loaded = true;
+    (void)app_nvs_write_str(CH583_BLE_MAC_NVS_KEY, s_ble_mac);
+    printf("CH583_PROTO BLE_MAC saved=%s\r\n", s_ble_mac);
     ch583_wifi_send_ack(frame->seq);
 }
 
@@ -693,13 +707,13 @@ int ch583_wifi_uart_send_wifi_data(const char *message)
                (unsigned int)CH583_WIFI_MAX_WIFI_DATA_LEN);
         return -1;
     }
-    // Send WiFi-to-frontend data as a single WIFI_DATA frame because the protocol does not support splitting it.
-    // 按协议要求用单帧 WIFI_DATA 回传 WiFi 到前端的数据，不做分包发送。
+    // Send WiFi-to-frontend data as one WIFI_DATA frame.
     return ch583_wifi_send_frame("WIFI_DATA", message);
 }
 
 const char *ch583_wifi_uart_get_ble_mac(void)
 {
+    ch583_wifi_load_ble_mac_from_nvs();
     return s_ble_mac[0] != '\0' ? s_ble_mac : NULL;
 }
 
@@ -734,8 +748,7 @@ int ch583_wifi_uart_send_gpio_read(const char *port, int pin)
 
 int ch583_wifi_uart_test_gpio_pa1_high(void)
 {    // Send the fixed GPIO test command through the same V1 frame builder used by real protocol replies.
-    // 通过真实协议回复共用的 V1 组帧函数发送固定 GPIO 测试命令，方便确认 CH583 是否执行。
-
+    // 闁俺绻冮惇鐔风杽閸楀繗顔呴崶鐐差槻閸忚京鏁ら惃?V1 缂佸嫬鎶氶崙鑺ユ殶閸欐垿鈧礁娴愮€?GPIO 濞村鐦崨鎴掓姢閿涘本鏌熸笟璺ㄢ€樼拋?CH583 閺勵垰鎯侀幍褑顢戦妴?
     static uint8_t u8dat=0;
 
     u8dat++;

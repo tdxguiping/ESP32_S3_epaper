@@ -18,14 +18,12 @@ static TickType_t s_wifi_work_start_tick = 0;
 static TickType_t s_last_network_data_tick = 0;
 static TaskHandle_t s_work_state_task = NULL;
 
-// English: Keep these globals compatible with the old sleep/work-time flow for BLE and HTTP handlers.
-// 中文：保留旧工程的休眠和工作时间全局变量，供 BLE 与 HTTP 处理流程共用。
+// Keep these globals compatible with the old sleep/work-time flow for BLE and HTTP handlers.
 uint32_t working_time = 0;
 uint32_t server_required_continue_work_time = USER_WORK_STATE_DEFAULT_CONTINUE_SECONDS;
 uint32_t wifi_standby_time_s = USER_WORK_STATE_DEFAULT_STANDBY_SECONDS;
 
-// English: Store all runtime sleep/work values in one NVS blob so future power-mode changes stay centralized.
-// 中文：把运行时休眠和工作时间一起保存到一个 NVS blob，方便以后集中修改功耗策略。
+// Store all runtime sleep/work values in one NVS blob so future power-mode changes stay centralized.
 typedef struct __attribute__((packed)) {
     uint16_t sleep_time_value;
     uint32_t working_time_value;
@@ -157,6 +155,82 @@ static esp_err_t save_work_state_to_nvs(void)
     return ret;
 }
 
+static bool parse_app_nvs_u32(const char *value, uint32_t *out_value)
+{
+    char *end_ptr = NULL;
+    unsigned long parsed = 0;
+
+    if (value == NULL || out_value == NULL || value[0] == '\0') {
+        return false;
+    }
+
+    errno = 0;
+    parsed = strtoul(value, &end_ptr, 10);
+    if (errno != 0 || end_ptr == value || *end_ptr != '\0' || parsed > UINT32_MAX) {
+        return false;
+    }
+
+    *out_value = (uint32_t)parsed;
+    return true;
+}
+
+static esp_err_t save_work_time_vars_to_app_nvs(void)
+{
+    char value[16];
+    esp_err_t ret = ESP_OK;
+    esp_err_t write_ret = ESP_OK;
+
+    snprintf(value, sizeof(value), "%lu", (unsigned long)server_required_continue_work_time);
+    write_ret = app_nvs_write_str(SERVER_REQUIRED_CONTINUE_WORK_TIME_NVS_KEY, value);
+    if (write_ret != ESP_OK && ret == ESP_OK) {
+        ret = write_ret;
+    }
+
+    snprintf(value, sizeof(value), "%lu", (unsigned long)wifi_standby_time_s);
+    write_ret = app_nvs_write_str(WIFI_STANDBY_TIME_S_NVS_KEY, value);
+    if (write_ret != ESP_OK && ret == ESP_OK) {
+        ret = write_ret;
+    }
+
+    ESP_LOGI(TAG, "save app nvs continue=%lu standby=%lu ret=%s",
+             (unsigned long)server_required_continue_work_time,
+             (unsigned long)wifi_standby_time_s,
+             esp_err_to_name(ret));
+    return ret;
+}
+
+static void load_work_time_vars_from_app_nvs(void)
+{
+    char value[16];
+    char default_value[16];
+    uint32_t parsed = 0;
+
+    snprintf(default_value, sizeof(default_value), "%lu",
+             (unsigned long)server_required_continue_work_time);
+    if (app_nvs_read_str(SERVER_REQUIRED_CONTINUE_WORK_TIME_NVS_KEY,
+                         value,
+                         sizeof(value),
+                         default_value) == ESP_OK &&
+        parse_app_nvs_u32(value, &parsed)) {
+        server_required_continue_work_time = clamp_continue_seconds(parsed);
+    }
+
+    snprintf(default_value, sizeof(default_value), "%lu",
+             (unsigned long)wifi_standby_time_s);
+    if (app_nvs_read_str(WIFI_STANDBY_TIME_S_NVS_KEY,
+                         value,
+                         sizeof(value),
+                         default_value) == ESP_OK &&
+        parse_app_nvs_u32(value, &parsed) &&
+        parsed != 0) {
+        wifi_standby_time_s = parsed;
+    }
+
+    ESP_LOGI(TAG, "load app nvs continue=%lu standby=%lu",
+             (unsigned long)server_required_continue_work_time,
+             (unsigned long)wifi_standby_time_s);
+}
+
 static uint32_t update_working_time_seconds(void)
 {
     TickType_t now = xTaskGetTickCount();
@@ -173,12 +247,16 @@ static void work_state_task(void *arg)
 
     while (true) {
         uint32_t elapsed = update_working_time_seconds();
-        server_required_continue_work_time = clamp_continue_seconds(server_required_continue_work_time);
+        uint32_t clamped_continue_time = clamp_continue_seconds(server_required_continue_work_time);
+        if (clamped_continue_time != server_required_continue_work_time) {
+            server_required_continue_work_time = clamped_continue_time;
+            (void)save_work_state_to_nvs();
+            (void)save_work_time_vars_to_app_nvs();
+        }
 
         if (elapsed > server_required_continue_work_time) {
 #if USER_BLE_ENABLE
             // English: BLE-enabled builds stay awake here; add real deep sleep only after BLE reconnect policy is decided.
-            // 中文：BLE 打开时这里只保持在线；等蓝牙重连策略明确后再接入真正深睡。
             ESP_LOGI(TAG,
                      "working_time timeout but BLE build keeps WiFi active elapsed=%lu target=%lu standby=%lu",
                      (unsigned long)elapsed,
@@ -329,6 +407,12 @@ esp_err_t ServerNetworkStaWifiWorkTime_Init(void)
         ret = save_work_state_to_nvs();
     }
 
+    load_work_time_vars_from_app_nvs();
+    esp_err_t app_nvs_ret = save_work_time_vars_to_app_nvs();
+    if (ret == ESP_OK && app_nvs_ret != ESP_OK) {
+        ret = app_nvs_ret;
+    }
+
     if (s_work_state_task == NULL) {
         BaseType_t task_ret = xTaskCreate(work_state_task,
                                           "work_state",
@@ -361,7 +445,12 @@ esp_err_t ServerNetworkStaWifiWorkTime_SetAndSave(uint32_t seconds)
              (unsigned long)seconds,
              (unsigned long)server_required_continue_work_time,
              (unsigned long)wifi_standby_time_s);
-    return save_work_state_to_nvs();
+    esp_err_t ret = save_work_state_to_nvs();
+    esp_err_t app_nvs_ret = save_work_time_vars_to_app_nvs();
+    if (ret == ESP_OK && app_nvs_ret != ESP_OK) {
+        ret = app_nvs_ret;
+    }
+    return ret;
 }
 
 esp_err_t ServerNetworkStaWifiWorkTime_ProcessJson(httpd_req_t *req,

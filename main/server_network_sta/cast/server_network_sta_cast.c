@@ -1,4 +1,4 @@
-#include "server_network_sta_cast.h"
+﻿#include "server_network_sta_cast.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -9,6 +9,7 @@
 #include <sys/unistd.h>
 
 #include "esp_log.h"
+#include "esp_spiffs.h"
 #include "epd_display_app.h"
 #include "tdx_cfg.h"
 
@@ -144,8 +145,6 @@ static bool extract_multipart_part(const char *body, size_t body_len,
             part->data = data_start;
             part->len = data_end - data_start;
             (void)get_disposition_value(part_start, headers_len, "filename", part->filename, sizeof(part->filename));
-            ESP_LOGI(TAG, "cast part found name=%s filename=%s len=%u",
-                     wanted_name, part->filename[0] ? part->filename : "<none>", (unsigned int)part->len);
             return true;
         }
 
@@ -234,7 +233,6 @@ static esp_err_t send_cast_result(httpd_req_t *req, bool ok, const char *message
                  error != NULL ? error : "");
     }
 
-    ESP_LOGI(TAG, "cast response: %s", json);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, json);
 }
@@ -261,7 +259,7 @@ static esp_err_t ensure_dir(const char *path)
 
     if (err == ENOTSUP || err == EOPNOTSUPP) {
         /* SPIFFS does not support real directories, skip mkdir and keep flat paths. */
-        /* SPIFFS 不支持真实目录，跳过 mkdir，后续继续按扁平路径写入。 */
+        /* SPIFFS 涓嶆敮鎸佺湡瀹炵洰褰曪紝璺宠繃 mkdir锛屽悗缁户缁寜鎵佸钩璺緞鍐欏叆銆?*/
         ESP_LOGW(TAG, "cast mkdir not supported, skip path=%s errno=%d", path, err);
         return ESP_OK;
     }
@@ -281,9 +279,34 @@ static esp_err_t write_file_exact(const char *path, const char *data, size_t len
 
     size_t written = fwrite(data, 1, len, fp);
     fclose(fp);
-    ESP_LOGI(TAG, "cast write path=%s len=%u written=%u",
-             path, (unsigned int)len, (unsigned int)written);
     return written == len ? ESP_OK : ESP_FAIL;
+}
+
+static esp_err_t check_cast_save_space(const char *base_path, size_t bin_len, size_t image_len)
+{
+    size_t total = 0;
+    size_t used = 0;
+
+    if (base_path == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t info_ret = esp_spiffs_info(NULL, &total, &used);
+    if (info_ret != ESP_OK || total < used) {
+        ESP_LOGW(TAG, "cast spiffs info failed base=%s ret=%s total=%u used=%u, continue without space check",
+                 base_path, esp_err_to_name(info_ret), (unsigned int)total, (unsigned int)used);
+        return ESP_OK;
+    }
+
+    size_t free_bytes = total - used;
+    size_t required_bytes = bin_len + image_len + SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES;
+
+    if (free_bytes < required_bytes) {
+        ESP_LOGE(TAG, "cast not enough storage free=%u required=%u",
+                 (unsigned int)free_bytes, (unsigned int)required_bytes);
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
 }
 
 static esp_err_t save_one_cast_file(const char *dir_path, const char *file_name,
@@ -318,7 +341,6 @@ static esp_err_t save_one_cast_file(const char *dir_path, const char *file_name,
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "cast saved final=%s size=%u", final_path, (unsigned int)len);
     return ESP_OK;
 }
 
@@ -332,9 +354,13 @@ static esp_err_t save_cast_files(const char *base_path, const cast_meta_t *meta,
     snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", base_path);
     snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", base_path);
 
-    ESP_LOGI(TAG, "cast ensure dirs bin_dir=%s jpg_dir=%s", bin_dir, jpg_dir);
     if (ensure_dir(bin_dir) != ESP_OK || ensure_dir(jpg_dir) != ESP_OK) {
         return ESP_ERR_NOT_FOUND;
+    }
+    // English: Check free storage before writing temp files so cast fails before partial saves.
+    esp_err_t space_ret = check_cast_save_space(base_path, bin_part->len, image_part->len);
+    if (space_ret != ESP_OK) {
+        return space_ret;
     }
     if (save_one_cast_file(bin_dir, meta->file_name, ".bin", bin_part->data, bin_part->len) != ESP_OK) {
         return ESP_FAIL;
@@ -364,8 +390,6 @@ static esp_err_t record_last_success_cast(const char *base_path, const cast_meta
     }
 
     // Write last_cast only after save/show work succeeds so reboot recovery never points to a broken cast.
-    // 只在保存和显示流程成功后写入 last_cast，避免重启恢复时指向损坏的投图文件。
-    ESP_LOGI(TAG, "cast record last file=%s data=%s", record_path, record_json);
     return write_file_exact(record_path, record_json, strlen(record_json));
 }
 
@@ -385,6 +409,7 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
     multipart_part_t bin_part = {0};
     multipart_part_t image_part = {0};
     cast_meta_t meta = {0};
+    bool response_sent = false;
 
     if (!extract_boundary(content_type, boundary, sizeof(boundary))) {
         return ESP_ERR_NOT_SUPPORTED;
@@ -410,9 +435,6 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
     copy_part_text(&file_name_part, meta.file_name, sizeof(meta.file_name));
     meta.save = parse_bool_field(&save_part, true);
     meta.show = parse_bool_field(&show_part, true);
-
-    ESP_LOGI(TAG, "cast meta func=%s fileName=%s save=%d show=%d",
-             meta.func, meta.file_name, meta.save ? 1 : 0, meta.show ? 1 : 0);
 
     if (!file_name_is_safe(meta.file_name)) {
         return send_cast_result(req, false, "cast failed", "invalid_fileName");
@@ -444,28 +466,40 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
         return send_cast_result(req, false, "cast failed", "save_required_for_last_cast");
     }
 
-    esp_err_t save_ret = save_cast_files(base_path, &meta, &bin_part, &image_part);
-    if (save_ret == ESP_ERR_NOT_FOUND) {
-        return send_cast_result(req, false, "cast failed", "sd_not_ready");
-    }
-    if (save_ret != ESP_OK) {
-        return send_cast_result(req, false, "cast failed", "save_failed");
+    esp_err_t resp_ret = send_cast_result(req, true, NULL, NULL);
+    response_sent = true;
+    if (resp_ret != ESP_OK) {
+        ESP_LOGW(TAG, "cast early response failed ret=%s", esp_err_to_name(resp_ret));
+        return resp_ret;
     }
 
     if (meta.show) {
-        ESP_LOGI(TAG, "cast show requested fileName=%s bin_len=%u queue display",
-                 meta.file_name, (unsigned int)bin_part.len);
         esp_err_t display_ret = ServerNetworkStaEpdDisplay_Queue((const uint8_t *)bin_part.data, bin_part.len);
         if (display_ret != ESP_OK) {
-            ESP_LOGE(TAG, "cast display queue failed fileName=%s ret=%s",
+            ESP_LOGE(TAG, "cast display queue after response failed fileName=%s ret=%s",
                      meta.file_name, esp_err_to_name(display_ret));
-            return send_cast_result(req, false, "cast failed", "show_failed");
+            return ESP_OK;
         }
     }
 
-    if (record_last_success_cast(base_path, &meta) != ESP_OK) {
-        return send_cast_result(req, false, "cast failed", "record_last_cast_failed");
+    esp_err_t save_ret = save_cast_files(base_path, &meta, &bin_part, &image_part);
+    if (save_ret == ESP_ERR_NOT_FOUND) {
+        ESP_LOGE(TAG, "cast save after response failed: sd_not_ready");
+        return response_sent ? ESP_OK : send_cast_result(req, false, "cast failed", "sd_not_ready");
+    }
+    if (save_ret == ESP_ERR_NO_MEM) {
+        ESP_LOGE(TAG, "cast save after response failed: storage_not_enough");
+        return response_sent ? ESP_OK : send_cast_result(req, false, "cast failed", "storage_not_enough");
+    }
+    if (save_ret != ESP_OK) {
+        ESP_LOGE(TAG, "cast save after response failed ret=%s", esp_err_to_name(save_ret));
+        return response_sent ? ESP_OK : send_cast_result(req, false, "cast failed", "save_failed");
     }
 
-    return send_cast_result(req, true, NULL, NULL);
+    if (record_last_success_cast(base_path, &meta) != ESP_OK) {
+        ESP_LOGE(TAG, "cast record last after response failed");
+        return response_sent ? ESP_OK : send_cast_result(req, false, "cast failed", "record_last_cast_failed");
+    }
+
+    return ESP_OK;
 }

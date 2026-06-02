@@ -13,9 +13,14 @@
 */
 
 #include "esp_event.h"
+#include "esp_flash.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_err.h"
+#include "esp_partition.h"
+#include "esp_system.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #include "ch583_uart_app.h"
 #include "epd_display_app.h"
@@ -26,24 +31,197 @@
 #include "tdx_cfg.h"
 #include "user_app.h"
 
+#include <string.h>
+
 /* This example demonstrates how to create file server
  * using esp_http_server. This file has only startup code.
  * Look in file_server.c for the implementation.
  */
 
 static const char *TAG = "example";
+int g_app_reset_reason = ESP_RST_low_power_No_Disp;
+
+static const char *reset_reason_to_str(esp_reset_reason_t reason)
+{
+    switch (reason) {
+    case ESP_RST_UNKNOWN:
+        return "unknown";
+    case ESP_RST_POWERON:
+        return "poweron";
+    case ESP_RST_EXT:
+        return "external";
+    case ESP_RST_SW:
+        return "software";
+    case ESP_RST_PANIC:
+        return "panic";
+    case ESP_RST_INT_WDT:
+        return "int_wdt";
+    case ESP_RST_TASK_WDT:
+        return "task_wdt";
+    case ESP_RST_WDT:
+        return "wdt";
+    case ESP_RST_DEEPSLEEP:
+        return "deepsleep";
+    case ESP_RST_BROWNOUT:
+        return "brownout";
+    case ESP_RST_SDIO:
+        return "sdio";
+    case ESP_RST_USB:
+        return "usb";
+    case ESP_RST_JTAG:
+        return "jtag";
+    case ESP_RST_EFUSE:
+        return "efuse";
+    case ESP_RST_PWR_GLITCH:
+        return "pwr_glitch";
+    case ESP_RST_CPU_LOCKUP:
+        return "cpu_lockup";
+    default:
+        return "invalid";
+    }
+}
+
+void print_base_info(void)
+{
+    uint32_t flash_size = 0;
+    esp_reset_reason_t reason = esp_reset_reason();
+    g_app_reset_reason = (int)reason;
+
+    if (g_app_reset_reason == ESP_RST_POWERON) {
+        g_app_reset_reason = ESP_RST_low_power_No_Disp;
+    } else {
+        g_app_reset_reason = ESP_RST_low_power_No_Disp;
+    }
+
+    size_t ram_total = heap_caps_get_total_size(MALLOC_CAP_8BIT);
+    size_t ram_free = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    size_t internal_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+    size_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t heap_8bit_free = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    size_t heap_8bit_min = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+    size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t internal_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    size_t dma_free = heap_caps_get_free_size(MALLOC_CAP_DMA);
+    size_t dma_largest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+    size_t iram_free = heap_caps_get_free_size(MALLOC_CAP_IRAM_8BIT);
+    size_t iram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_IRAM_8BIT);
+    size_t internal_8bit_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t internal_8bit_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+    if (esp_flash_get_size(NULL, &flash_size) != ESP_OK) {
+        flash_size = 0;
+    }
+
+    LOG_Purple("-----Reset----------- %d (%s) app=%d", reason, reset_reason_to_str(reason), g_app_reset_reason);
+    LOG_Purple("Flash total         : %u bytes (%u MB)",
+               (unsigned int)flash_size,
+               (unsigned int)(flash_size / 1024 / 1024));
+    LOG_Purple("RAM total           : total=%u free=%u", (unsigned int)ram_total, (unsigned int)ram_free);
+    LOG_Purple("Internal RAM total  : total=%u free=%u min=%u",
+               (unsigned int)internal_total,
+               (unsigned int)internal_free,
+               (unsigned int)internal_min);
+    LOG_Purple("Internal heap       : free=%u min=%u", (unsigned int)internal_free, (unsigned int)internal_min);
+    LOG_Purple("PSRAM               : total=%u free=%u", (unsigned int)psram_total, (unsigned int)psram_free);
+    LOG_Purple("Default 8-bit heap  : free=%u min=%u", (unsigned int)heap_8bit_free, (unsigned int)heap_8bit_min);
+    LOG_Purple("DMA heap            : free=%u largest=%u", (unsigned int)dma_free, (unsigned int)dma_largest);
+    LOG_Purple("IRAM 8-bit heap     : free=%u largest=%u", (unsigned int)iram_free, (unsigned int)iram_largest);
+    LOG_Purple("Internal 8-bit heap : free=%u largest=%u",
+               (unsigned int)internal_8bit_free,
+               (unsigned int)internal_8bit_largest);
+
+    const esp_partition_t *nvs_part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA,
+        ESP_PARTITION_SUBTYPE_DATA_NVS,
+        "nvs");
+    if (nvs_part != NULL) {
+        LOG_Purple("NVS partition       : label=%s offset=0x%06x size=%u bytes (0x%x)",
+                   nvs_part->label,
+                   (unsigned int)nvs_part->address,
+                   (unsigned int)nvs_part->size,
+                   (unsigned int)nvs_part->size);
+    } else {
+        LOG_Purple("NVS partition       : not found");
+    }
+
+    nvs_stats_t nvs_stats = {0};
+    esp_err_t nvs_ret = nvs_get_stats(NULL, &nvs_stats);
+    if (nvs_ret == ESP_OK) {
+        LOG_Purple("NVS entries         : used=%u free=%u available=%u total=%u namespace=%u",
+                   (unsigned int)nvs_stats.used_entries,
+                   (unsigned int)nvs_stats.free_entries,
+                   (unsigned int)nvs_stats.available_entries,
+                   (unsigned int)nvs_stats.total_entries,
+                   (unsigned int)nvs_stats.namespace_count);
+    } else {
+        LOG_Purple("NVS entries         : nvs_get_stats failed ret=%d(%s)",
+                   nvs_ret,
+                   esp_err_to_name(nvs_ret));
+    }
+
+    // English: Print the restored work-state globals here because this project does not keep User_PrintWorkStateNvs().
+    // 中文：当前项目没有保留 User_PrintWorkStateNvs()，这里直接打印已恢复的工作状态全局变量。
+    LOG_Purple("Work state          : sleep=%u working=%lu continue=%lu standby=%lu",
+               (unsigned int)sleep_time,
+               (unsigned long)working_time,
+               (unsigned long)server_required_continue_work_time,
+               (unsigned long)wifi_standby_time_s);
+}
 
 void app_main(void)
 {
+    /* Hide ESP-IDF WiFi internal INFO logs, keep warnings and errors. */
+    /* 关闭 ESP-IDF WiFi 内部 INFO 日志，只保留警告和错误。 */
+    esp_log_level_set("wifi_init", ESP_LOG_WARN);
+
+    /* Hide net80211 ROM/version INFO logs. */
+    /* 关闭 net80211 ROM 版本等 INFO 日志。 */
+    esp_log_level_set("net80211", ESP_LOG_WARN);
+
+    /* Hide most WiFi driver INFO logs. */
+    /* 关闭大部分 WiFi 驱动 INFO 日志。 */
+    esp_log_level_set("wifi", ESP_LOG_ERROR);
+    esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
+    esp_log_level_set("pp", ESP_LOG_WARN);
+    esp_log_level_set("phy_init", ESP_LOG_WARN);
+    esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
+    esp_log_level_set("mdns_mem", ESP_LOG_WARN);
+
+
+
     ESP_LOGI(TAG, "Starting example");
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(ServerNetworkStaWifiWorkTime_Init());
+    char random_value[8] = {0};
+    app_nvs_read_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
+                     random_value,
+                     sizeof(random_value),
+                     "false");
+    g_slideshow_random_enable = (strcmp(random_value, "true") == 0) ? 1 : 0;
+    app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
+                      g_slideshow_random_enable ? "true" : "false");
+    ESP_LOGI(TAG, "slideshow random config=%s enable=%u",
+             random_value, (unsigned int)g_slideshow_random_enable);
+
+
+    esp_log_level_set("wifi_init", ESP_LOG_WARN);
+    esp_log_level_set("net80211", ESP_LOG_WARN);
+    esp_log_level_set("wifi", ESP_LOG_ERROR);
+    esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
+    esp_log_level_set("pp", ESP_LOG_WARN);
+    esp_log_level_set("phy_init", ESP_LOG_WARN);
+    esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
+    esp_log_level_set("mdns_mem", ESP_LOG_WARN);
+
+
+    print_base_info();
     ESP_ERROR_CHECK(UserLedStatus_Init());
 #if USER_BLE_ENABLE
     // Start BLE after NVS/event loop so BT state and callbacks have the required system services.
-    // 在 NVS 和事件循环初始化之后启动 BLE，保证蓝牙状态和回调依赖的系统服务已经就绪。
+    // 中文：在 NVS 和事件循环初始化之后启动 BLE，保证蓝牙状态和回调依赖的系统服务已经就绪。
     Init_Bl();
 #endif
     ESP_ERROR_CHECK(Ch583UartApp_Init());
@@ -56,7 +234,7 @@ void app_main(void)
     ESP_ERROR_CHECK(example_mount_storage(base_path));
 
     // Force the old read_value=0x02 path here: Server Network STA only, then start the HTTP file server.
-    // 在这里固定旧工程 read_value=0x02 路径：只进入 Server Network STA，然后启动 HTTP 文件服务器。
+    // 中文：在这里固定旧工程 read_value=0x02 路径：只进入 Server Network STA，然后启动 HTTP 文件服务器。
     uint8_t network_ret = User_Network_mode_app_init(base_path);
     ESP_LOGI(TAG, "Server Network STA init result=0x%02x", network_ret);
     if (network_ret != SERVER_NETWORK_STA_OK) {
@@ -65,5 +243,5 @@ void app_main(void)
         return;
     }
     UserLedStatus_Set(USER_LED_STATE_SERVER_READY);
-    ESP_LOGI(TAG, "Server Network STA file server started");
+    ESP_LOGI(TAG, "Server Version=2.2.3");
 }

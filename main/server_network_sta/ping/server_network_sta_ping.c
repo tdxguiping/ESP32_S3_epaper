@@ -24,6 +24,9 @@ esp_err_t ServerNetworkStaPing_ProcessGet(httpd_req_t *req)
     char json[128] = {0};
 
     get_ble_mac_no_colon(ble_mac, sizeof(ble_mac));
+    if (ble_mac[0] == '\0') {
+        ESP_LOGW(TAG, "ping Ble_MAC empty, CH583 BLE_MAC not received yet");
+    }
     ESP_LOGI(TAG, "ping request uri=%s method=GET Ble_MAC=%s", req->uri, ble_mac);
     snprintf(json, sizeof(json),
              "{\"func\":\"ping_result\",\"result\":0,\"message\":\"ok\",\"Ble_MAC\":\"%s\"}",

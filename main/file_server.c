@@ -546,7 +546,9 @@ esp_err_t example_start_file_server(const char *base_path)
     httpd_register_uri_handler(server, &file_delete);
 
     esp_err_t dataup_ret = server_network_sta_net_data_register_handlers(server, server_data->base_path);
-    ESP_LOGI(TAG, "Register migrated receive_data_redirect_handler ret=%s", esp_err_to_name(dataup_ret));
+    if (dataup_ret != ESP_OK) {
+        ESP_LOGE(TAG, "dataUP handlers failed ret=%s", esp_err_to_name(dataup_ret));
+    }
 
     return ESP_OK;
 }

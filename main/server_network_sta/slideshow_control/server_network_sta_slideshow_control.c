@@ -302,6 +302,11 @@ esp_err_t ServerNetworkStaSlideshowControl_ProcessJson(httpd_req_t *req,
     if (write_control_file(control_path, &control) != ESP_OK) {
         return send_set_slideshow_result(req, false, "set slideshow failed");
     }
+    esp_err_t random_save_ret = app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
+                                                  control.random ? "true" : "false");
+    g_slideshow_random_enable = control.random ? 1 : 0;
+    ESP_LOGI(TAG, "set_slideshow save random=%d ret=%s",
+             g_slideshow_random_enable, esp_err_to_name(random_save_ret));
 
     if (control.sw == 1) {
         ESP_LOGI(TAG, "set_slideshow enabled, display task is not present in current project");

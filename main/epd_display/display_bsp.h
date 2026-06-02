@@ -20,6 +20,14 @@ enum ColorSelection {
     ColorGreen
 };
 
+enum Four_Color_s {
+    ColBlack = 0x00,
+    ColWhite = 0x55,
+    ColYellow = 0xAA,
+    ColRed = 0xFF
+};
+
+
 typedef enum {
     TARGET_MASTER = 0,
     TARGET_SLAVE  = 1,
@@ -31,18 +39,20 @@ typedef enum {
 
 #define EPD_800_480 1 // 3色
 #define EPD_1024_600 2  // 6色
-#define EPD_1600_1200_79 3  // 6色
-#define EPD_1600_1200_133 4 // 6色
+#define EPD_1600_1200_79 3  // 6色  960000 bytes
+#define EPD_1600_1200_133 4 // 6色    960000 bytes
 
-#define EPD_1360_480_1085 5 // 4 色  10.85
-#define EPD_800_480_4s_75  6 // 4 色  7.5
+#define EPD_1360_480_1085 5 // 4 色  10.85   40800 bytes
+#define EPD_800_480_4s_75  6 // 4 色  7.5  96000 bytes
 
 // tag_tdx_a   need
 #ifndef EPD_type_
-#define EPD_type_ EPD_1600_1200_133
+#define EPD_type_   EPD_800_480_4s_75
 #endif
 
- 
+// Keep the old display driver's board switch defined here so copied code has a stable board path.
+#define Hardware_Version_ 2
+
 
 #define EPD_DC_PIN      8
 #define EPD_CS_PIN      9
@@ -57,7 +67,6 @@ typedef enum {
 #define EPD2_CS_PIN      14
 #define EPD2_RST_PIN     47
 #define EPD2_BUSY_PIN    48
-
 
 
 #define R00_PSR         0x00

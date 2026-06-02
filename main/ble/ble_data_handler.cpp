@@ -6,24 +6,53 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
 
+#include "cJSON.h"
+#include "ch583_wifi_uart_protocol.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
-#include "ch583_wifi_uart_protocol.h"
 #include "nvs.h"
+#include "server_network_sta.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "user_app.h"
 
-#if USER_BLE_ENABLE
-
 static const char *TAG = "ble_data";
 
+typedef struct {
+    char func[32];
+    char ssid[64];
+    char key[64];
+} wifi_config_json_t;
+
+typedef struct {
+    char func[32];
+    int time;
+} wifi_work_time_json_t;
+
+static wifi_config_json_t wifi_cfg;
+static wifi_work_time_json_t wifi_work_time_cfg;
+static uint8_t Bl_Data_Ready = 0;
+static uint8_t Wifi_connect_OK = 0;
+uint8_t net_connect_OK = 0;
+static uint8_t wifi_config_had_doing = 0;
+bool WiFi_config_net = false;
+bool WiFi_config_from_ch583 = false;
+bool WiFi_config_from_ble = false;
+
+#ifndef max_working_time
+#define max_working_time 60*60
+#define min_working_time 5*60
+#endif
+
+#if USER_BLE_ENABLE
 typedef struct {
     uint16_t len;
     uint8_t data[USER_BLE_JSON_BUF_SIZE];
@@ -31,100 +60,7 @@ typedef struct {
 
 static QueueHandle_t s_ble_write_queue = NULL;
 static TaskHandle_t s_ble_write_task = NULL;
-
-static const char *find_json_key(const char *body, const char *key)
-{
-    char pattern[64];
-    const char *pos = body;
-
-    if (body == NULL || key == NULL) {
-        return NULL;
-    }
-
-    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    while ((pos = strstr(pos, pattern)) != NULL) {
-        const char *after = pos + strlen(pattern);
-        while (*after == ' ' || *after == '\t' || *after == '\r' || *after == '\n') {
-            after++;
-        }
-        if (*after == ':') {
-            return pos;
-        }
-        pos += strlen(pattern);
-    }
-    return NULL;
-}
-
-static bool extract_json_string(const char *body, const char *key, char *out, size_t out_size)
-{
-    const char *pos = find_json_key(body, key);
-    size_t len = 0;
-
-    if (pos == NULL || out == NULL || out_size == 0) {
-        return false;
-    }
-
-    pos += strlen(key) + 2;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != ':') {
-        return false;
-    }
-    pos++;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != '"') {
-        return false;
-    }
-    pos++;
-
-    while (pos[len] != '\0' && pos[len] != '"' && len + 1 < out_size) {
-        out[len] = pos[len];
-        len++;
-    }
-    out[len] = '\0';
-    return len > 0 && pos[len] == '"';
-}
-
-static bool json_func_equals(const char *body, const char *func)
-{
-    char value[48];
-    return extract_json_string(body, "func", value, sizeof(value)) && strcmp(value, func) == 0;
-}
-
-static bool parse_json_int_field(const char *body, const char *key, int *out)
-{
-    const char *pos = find_json_key(body, key);
-    char *end_ptr = NULL;
-    long value = 0;
-
-    if (pos == NULL || out == NULL) {
-        return false;
-    }
-
-    pos += strlen(key) + 2;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != ':') {
-        return false;
-    }
-    pos++;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-
-    errno = 0;
-    value = strtol(pos, &end_ptr, 10);
-    if (errno != 0 || end_ptr == pos || value < INT32_MIN || value > INT32_MAX) {
-        return false;
-    }
-
-    *out = (int)value;
-    return true;
-}
+#endif
 
 static void ble_send_json(const char *json)
 {
@@ -132,10 +68,26 @@ static void ble_send_json(const char *json)
         return;
     }
     ESP_LOGI(TAG, "BLE TX JSON: %s", json);
+#if USER_BLE_ENABLE
     SendData_indicate((uint8_t *)json, (uint16_t)strlen(json));
+#else
+    ch583_wifi_uart_send_wifi_data(json);
+#endif
 }
 
-static void send_simple_result(const char *func, int result, const char *message)
+static void ch583_send_json(const char *json)
+{
+    if (json == NULL) {
+        return;
+    }
+    ESP_LOGI(TAG, "CH583 TX JSON: %s", json);
+    ch583_wifi_uart_send_wifi_data(json);
+}
+
+static void send_simple_result_with_sender(void (*send_json)(const char *),
+                                           const char *func,
+                                           int result,
+                                           const char *message)
 {
     char json[192];
 
@@ -145,55 +97,53 @@ static void send_simple_result(const char *func, int result, const char *message
         snprintf(json, sizeof(json), "{\"func\":\"%s\",\"result\":%d,\"message\":\"%s\"}",
                  func, result, message);
     }
-    ble_send_json(json);
+    send_json(json);
 }
 
 void send_base_info_to_mobile(void)
 {
-    char ip_str[sizeof("255.255.255.255")] = "0.0.0.0";
-    char json_str[384] = {0};
-    const esp_app_desc_t *app = esp_app_get_description();
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    esp_netif_ip_info_t ip = {};
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        char ip_str[sizeof("255.255.255.255")];
+        char json_str[384];
+        const esp_app_desc_t *app = esp_app_get_description();
+        const esp_partition_t *running = esp_ota_get_running_partition();
 
-    if (netif == NULL) {
-        netif = esp_netif_next_unsafe(NULL);
-    }
-    if (netif != NULL && esp_netif_get_ip_info(netif, &ip) == ESP_OK) {
-        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip.ip));
-    } else {
-        ESP_LOGW(TAG, "send_base_info_to_mobile no netif IP, use %s", ip_str);
-    }
+        esp_netif_ip_info_t ip;
+        esp_netif_t *esp_netif;
+        // we can use esp_netif_next_unsafe since we one time initialize the network and we don't de-init
+        esp_netif = esp_netif_next_unsafe(NULL);
+        if(esp_netif != NULL) {
+            esp_netif_get_ip_info(esp_netif, &ip);
+            esp_netif = esp_netif_next_unsafe(esp_netif);
+            net_connect_OK =1;
+            working_time = 0;
+            snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip.ip));
+            snprintf(json_str, sizeof(json_str),
+                     "{\"result\":0,\"message\":\"wifi info\",\"stage\":\"%s\","
+                     "\"project\":\"%s\","
+                     "\"version\":\"%s\","
+                     "\"date\":\"%s\","
+                     "\"time\":\"%s\","
+                     "\"idf\":\"%s\","
+                     "\"running\":\"%s\"}",
+                     ip_str,
+                     app != NULL ? app->project_name : "",
+                     app != NULL ? app->version : "",
+                     app != NULL ? app->date : "",
+                     app != NULL ? app->time : "",
+                     app != NULL ? app->idf_ver : "",
+                     running != NULL ? running->label : "");
+            #if(USER_BLE_ENABLE == 1)
+             SendData_indicate((uint8_t *)json_str, strlen(json_str));
+             printf("JSON:\n%s\n", json_str);
+            #else
+             ch583_wifi_uart_send_wifi_data((const char *)json_str);
+            #endif
 
-    working_time = 0;
-    snprintf(json_str, sizeof(json_str),
-             "{\"result\":0,\"message\":\"wifi info\",\"stage\":\"%s\","
-             "\"project\":\"%s\","
-             "\"version\":\"%s\","
-             "\"date\":\"%s\","
-             "\"time\":\"%s\","
-             "\"idf\":\"%s\","
-             "\"running\":\"%s\"}",
-             ip_str,
-             app != NULL ? app->project_name : "",
-             app != NULL ? app->version : "",
-             app != NULL ? app->date : "",
-             app != NULL ? app->time : "",
-             app != NULL ? app->idf_ver : "",
-             running != NULL ? running->label : "");
+            //printf("  ETHIP: " IPSTR "\r\n", IP2STR(&ip.ip));
+            //printf("  ETHMASK: " IPSTR "\r\n", IP2STR(&ip.netmask));
+            //printf("  ETHGW: " IPSTR "\r\n", IP2STR(&ip.gw));
 
-    // English: Send base information through the same BLE notify path used by the old project.
-    // 中文：通过 BLE notify 回传基础信息，保持手机端协议兼容。
-#if (USER_BLE_ENABLE == 1)
-    SendData_indicate((uint8_t *)json_str, strlen(json_str));
-    printf("JSON:\n%s\n", json_str);
-#else
-    ch583_wifi_uart_send_wifi_data((const char *)json_str);
-#endif
-
-    ESP_LOGI(TAG, "base info sent ip=%s running=%s",
-             ip_str, running != NULL ? running->label : "");
+        }
 }
 
 static bool is_valid_wifi_text(const char *text, size_t max_len)
@@ -215,8 +165,6 @@ static esp_err_t save_wifi_config_to_nvs(const char *ssid, const char *password)
         return ESP_ERR_INVALID_ARG;
     }
 
-    // English: Store WiFi credentials in the namespace read by the current Server Network STA path.
-    // 中文：把 WiFi 账号保存到 Server Network STA 使用的 NVS 命名空间。
     esp_err_t ret = nvs_open("nvs.net80211", NVS_READWRITE, &handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "open nvs.net80211 failed: %s", esp_err_to_name(ret));
@@ -232,108 +180,372 @@ static esp_err_t save_wifi_config_to_nvs(const char *ssid, const char *password)
     }
     nvs_close(handle);
 
-    ESP_LOGI(TAG, "BLE WiFi config save ret=%s ssid=%s password_len=%u",
-             esp_err_to_name(ret), ssid, (unsigned int)strlen(password));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi config save failed ret=%s", esp_err_to_name(ret));
+    }
     return ret;
 }
 
-static bool handle_wifi_config_json(const char *json_text)
+class SsidManager {
+public:
+    static SsidManager& GetInstance()
+    {
+        static SsidManager instance;
+        return instance;
+    }
+
+    void Clear()
+    {
+        nvs_handle_t nvs_handle = 0;
+        esp_err_t ret = nvs_open("wifi", NVS_READWRITE, &nvs_handle);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "SsidManager Clear open wifi failed: %s", esp_err_to_name(ret));
+            return;
+        }
+
+        for (int i = 0; i < 10; i++) {
+            char ssid_key[16];
+            char password_key[16];
+            if (i == 0) {
+                snprintf(ssid_key, sizeof(ssid_key), "ssid");
+                snprintf(password_key, sizeof(password_key), "password");
+            } else {
+                snprintf(ssid_key, sizeof(ssid_key), "ssid%d", i);
+                snprintf(password_key, sizeof(password_key), "password%d", i);
+            }
+            (void)nvs_erase_key(nvs_handle, ssid_key);
+            (void)nvs_erase_key(nvs_handle, password_key);
+        }
+        ret = nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "SsidManager Clear failed: %s", esp_err_to_name(ret));
+        }
+    }
+
+    void AddSsid(const std::string& ssid, const std::string& password)
+    {
+        nvs_handle_t nvs_handle = 0;
+        esp_err_t ret = nvs_open("wifi", NVS_READWRITE, &nvs_handle);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "SsidManager AddSsid open wifi failed: %s", esp_err_to_name(ret));
+            return;
+        }
+
+        ret = nvs_set_str(nvs_handle, "ssid", ssid.c_str());
+        if (ret == ESP_OK) {
+            ret = nvs_set_str(nvs_handle, "password", password.c_str());
+        }
+        if (ret == ESP_OK) {
+            ret = nvs_commit(nvs_handle);
+        }
+        nvs_close(nvs_handle);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "SsidManager AddSsid failed: %s", esp_err_to_name(ret));
+        }
+    }
+};
+
+class WifiConfigurationAp {
+public:
+    static WifiConfigurationAp& GetInstance()
+    {
+        static WifiConfigurationAp instance;
+        return instance;
+    }
+
+    void Save(const std::string& ssid, const std::string& password)
+    {
+        SsidManager::GetInstance().AddSsid(ssid, password);
+        (void)save_wifi_config_to_nvs(ssid.c_str(), password.c_str());
+    }
+};
+
+static void User_Network_mode_app_init(void)
 {
-    char ssid[33] = {0};
-    char password[65] = {0};
-
-    if (!json_func_equals(json_text, "wifi_config") &&
-        !json_func_equals(json_text, "set_wifi") &&
-        find_json_key(json_text, "ssid") == NULL) {
-        return false;
+    esp_err_t ret = esp_wifi_disconnect();
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_INIT && ret != ESP_ERR_WIFI_NOT_STARTED) {
+        ESP_LOGW(TAG, "disconnect old WiFi before reconfig failed: %s", esp_err_to_name(ret));
     }
 
-    bool got_ssid = extract_json_string(json_text, "ssid", ssid, sizeof(ssid));
-    bool got_password = extract_json_string(json_text, "password", password, sizeof(password));
-    if (!got_password) {
-        got_password = extract_json_string(json_text, "pswd", password, sizeof(password));
+    ret = esp_wifi_stop();
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_INIT && ret != ESP_ERR_WIFI_NOT_STARTED) {
+        ESP_LOGW(TAG, "stop old WiFi before reconfig failed: %s", esp_err_to_name(ret));
     }
 
-    ESP_LOGI(TAG, "BLE wifi_config got_ssid=%d got_password=%d ssid=%s password_len=%u",
-             got_ssid ? 1 : 0, got_password ? 1 : 0, ssid, (unsigned int)strlen(password));
-
-    if (!got_ssid || !got_password) {
-        send_simple_result("wifi_config_result", 1, "invalid wifi config");
-        return true;
-    }
-
-    esp_err_t ret = save_wifi_config_to_nvs(ssid, password);
-    if (ret == ESP_OK) {
-        send_simple_result("wifi_config_result", 0, NULL);
-    } else {
-        send_simple_result("wifi_config_result", 1, "save wifi config failed");
-    }
-    return true;
+    (void)::User_Network_mode_app_init("/data");
 }
 
-static bool handle_wifi_wakeup_json(const char *json_text)
+static uint8_t check_net_state(void)
 {
-    if (!json_func_equals(json_text, "wifi_wakeup")) {
-        return false;
-    }
+    esp_netif_ip_info_t ip = {};
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
 
-    // English: Reply with current base information when the phone wakes or queries the device.
-    // 中文：手机唤醒或查询设备时，回传当前基础信息。
-    ESP_LOGI(TAG, "BLE wifi_wakeup received");
-    send_base_info_to_mobile();
-    return true;
+    if (netif == NULL) {
+        netif = esp_netif_next_unsafe(NULL);
+    }
+    if (netif != NULL && esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0) {
+        return 1;
+    }
+    return 0;
 }
 
-static bool handle_wifi_work_time_json(const char *json_text)
+int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
 {
-    int seconds = 0;
+    cJSON *root = NULL;
+    cJSON *item_func = NULL;
+    cJSON *item_ssid = NULL;
+    cJSON *item_key = NULL;
+    char reply_json[160];
 
-    if (!json_func_equals(json_text, "set_wifi_work_time")) {
-        return false;
+    if (json_str == NULL || out == NULL) {
+        LOG_ERROR("Invalid parameter");
+        return -1;
     }
 
-    if (!parse_json_int_field(json_text, "seconds", &seconds)) {
-        (void)parse_json_int_field(json_text, "time", &seconds);
+    /* 涓枃娉ㄩ噴锛?      鍏堟竻绌鸿緭鍑虹粨鏋勪綋锛岄伩鍏嶆畫鐣欐棫鏁版嵁    */
+    memset(out, 0, sizeof(*out));
+
+    root = cJSON_Parse(json_str);
+    if (root == NULL) {
+                LOG_Purple("%s>%d  Invalid JSON",__func__,__LINE__);
+        return -1;
     }
 
-    if (seconds < SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS ||
-        seconds > SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS) {
-        send_simple_result("set_wifi_work_time_result", 1, "set wifi work time failed");
-        return true;
+    item_func = cJSON_GetObjectItem(root, "func");
+    item_ssid = cJSON_GetObjectItem(root, "ssid");
+    item_key = cJSON_GetObjectItem(root, "key");
+
+    /* 涓枃娉ㄩ噴锛?      妫€鏌ュ瓧娈垫槸鍚﹀瓨鍦ㄤ笖鏄瓧绗︿覆    */
+
+    if (!cJSON_IsString(item_func) || item_func->valuestring == NULL ||
+        !cJSON_IsString(item_ssid) || item_ssid->valuestring == NULL ||
+        !cJSON_IsString(item_key) || item_key->valuestring == NULL) {
+        cJSON_Delete(root);
+                LOG_Purple("%s>%d  Invalid JSON",__func__,__LINE__);
+        return -1;
     }
 
-    esp_err_t ret = ServerNetworkStaWifiWorkTime_SetAndSave((uint32_t)seconds);
-    ESP_LOGI(TAG, "BLE set_wifi_work_time seconds=%d ret=%s", seconds, esp_err_to_name(ret));
-    if (ret == ESP_OK) {
-        send_simple_result("set_wifi_work_time_result", 0, NULL);
-    } else {
-        send_simple_result("set_wifi_work_time_result", 1, "set wifi work time failed");
+    /* 涓枃娉ㄩ噴锛?
+       瀹夊叏鎷疯礉鍒拌緭鍑虹粨鏋勪綋
+    */
+    snprintf(out->func, sizeof(out->func), "%s", item_func->valuestring);
+    snprintf(out->ssid, sizeof(out->ssid), "%s", item_ssid->valuestring);
+    snprintf(out->key, sizeof(out->key), "%s", item_key->valuestring);
+
+    cJSON_Delete(root);
+    Bl_Data_Ready =1;
+
+    if(wifi_config_had_doing == 0)
+    {
+            auto& wifi_ap = WifiConfigurationAp::GetInstance();
+            std::string wifi_ssid = out->ssid;
+            std::string wifi_password = out->key;
+            // 3. 鎶婄粨鏋勪綋鐨勫€煎杩?JSON            
+            snprintf(reply_json, sizeof(reply_json),
+                     "{\"result\":0,\"message\":\"Find wifi\",\"stage\":\"%s\"}",
+                     wifi_cfg.ssid);
+
+             WiFi_config_net =true;
+
+            #if(USER_BLE_ENABLE == 1)
+             SendData_indicate((uint8_t *)reply_json, strlen(reply_json));
+            // 杈撳嚭缁撴灉
+             printf("JSON:\n%s\n", reply_json);
+            #else
+             ch583_wifi_uart_send_wifi_data((const char *)reply_json);
+            #endif
+
+            printf("The Wifi info parsed ok, save to NVS\n\r");
+            SsidManager::GetInstance().Clear();
+            wifi_ap.Save(wifi_ssid, wifi_password);
+            Wifi_connect_OK =1;
+            User_Network_mode_app_init();
+
+            //LOG_Purple("esp_restart .. %s>%d",__func__,__LINE__);
+            //vTaskDelay(pdMS_TO_TICKS(1000));                    
+            //esp_restart();                            // Restart device to apply new WiFi configuration
     }
-    return true;
+    return 0;
 }
 
-static void User_HandleWifiJsonText(const char *json_text)
+int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
+{
+    cJSON *root = NULL;
+    cJSON *item_func = NULL;
+
+    if (json_str == NULL || out == NULL) {
+        LOG_ERROR("Invalid parameter");
+        return -1;
+    }
+
+    
+    memset(out, 0, sizeof(*out));
+
+    root = cJSON_Parse(json_str);
+    if (root == NULL) {
+        LOG_Purple("%s>%d  Invalid JSON",__func__,__LINE__);
+        return -1;
+    }
+
+    item_func = cJSON_GetObjectItem(root, "func");
+
+    
+    if (!cJSON_IsString(item_func) || item_func->valuestring == NULL) {
+        cJSON_Delete(root);
+        LOG_ERROR("xxInvalid JSON");
+        return -1;
+    }
+
+    snprintf(out->func, sizeof(out->func), "%s", item_func->valuestring);
+    if (strcmp(out->func, "wifi_wakeup") == 0) {
+        printf("wakeup-ok\r\n");
+    }
+    else
+    {
+        printf("wakeup-fail\r\n");
+        return -1;
+    }
+    cJSON_Delete(root);
+    if(check_net_state()==1)
+    {
+       send_base_info_to_mobile();
+    }
+   else
+    {
+        char reply_json[160];
+        snprintf(reply_json, sizeof(reply_json),
+                    "{\"result\":0,\"message\":\"wakeup No-WiFi\",\"stage\":\"error\"}");
+
+            #if(USER_BLE_ENABLE == 1)
+             SendData_indicate((uint8_t *)reply_json, strlen(reply_json));
+                // 杈撳嚭缁撴灉
+                printf("JSON:\n%s\n", reply_json);
+            #else
+             ch583_wifi_uart_send_wifi_data((const char *)reply_json);
+            #endif
+    }
+    return 0;
+}
+
+int parse_wifi_work_time_json(const char *json_str, wifi_work_time_json_t *out)
+{
+    cJSON *root = NULL;
+    cJSON *item_func = NULL;
+    cJSON *item_time = NULL;
+    char reply_json[160];
+
+    if (json_str == NULL || out == NULL) {
+        LOG_ERROR("Invalid parameter");
+        return -1;
+    }
+
+    memset(out, 0, sizeof(*out));
+
+    root = cJSON_Parse(json_str);
+    if (root == NULL) {
+        LOG_Purple("%s>%d  Invalid JSON",__func__,__LINE__);
+        return -1;
+    }
+
+    item_func = cJSON_GetObjectItem(root, "func");
+    item_time = cJSON_GetObjectItem(root, "time");
+
+    if (!cJSON_IsString(item_func) || item_func->valuestring == NULL || !cJSON_IsNumber(item_time)) {
+        cJSON_Delete(root);
+                LOG_Purple("%s>%d  Invalid JSON",__func__,__LINE__);
+        return -1;
+    }
+
+    snprintf(out->func, sizeof(out->func), "%s", item_func->valuestring);
+    out->time = item_time->valueint;
+
+    if (strcmp(out->func, "wifi_standby") != 0 || out->time <= 0) {
+        cJSON_Delete(root);
+        LOG_ERROR("wifi_standby JSON invalid");
+        return -1;
+    }
+
+    server_required_continue_work_time = (uint32_t)out->time;
+    if(server_required_continue_work_time < min_working_time) {
+            LOG_Purple("%s>%d too small= %d<%d>",__func__,__LINE__,(uint16_t)server_required_continue_work_time,min_working_time);
+            server_required_continue_work_time = min_working_time;
+        }
+    else if(server_required_continue_work_time > max_working_time) {
+            LOG_Purple("%s>%d too big= %d<%d>",__func__,__LINE__,(uint16_t)server_required_continue_work_time,max_working_time);
+            server_required_continue_work_time = max_working_time;
+        }
+
+
+    cJSON_Delete(root);
+
+    snprintf(reply_json, sizeof(reply_json),
+             "{\"result\":0,\"message\":\"wifi-work-time\",\"stage\":\"%d\"}",
+             out->time);
+    
+
+
+            #if(USER_BLE_ENABLE == 1)
+             SendData_indicate((uint8_t *)reply_json, strlen(reply_json));
+             printf("JSON:\n%s\n", reply_json);
+            #else
+             ch583_wifi_uart_send_wifi_data((const char *)reply_json);
+            #endif
+
+    return 0;
+}
+
+static void handle_wifi_json_text_with_sender(const char *json_text,
+                                              void (*send_json)(const char *),
+                                              bool reply_to_ch583)
 {
     if (json_text == NULL || json_text[0] == '\0') {
-        send_simple_result("ble_json_result", 1, "empty json");
+        send_simple_result_with_sender(send_json, "ble_json_result", 1, "empty json");
         return;
     }
 
-    ESP_LOGI(TAG, "BLE RX JSON: %s", json_text);
+    ESP_LOGI(TAG, "RX JSON ch583=%d: %s", reply_to_ch583 ? 1 : 0, json_text);
 
-    if (handle_wifi_config_json(json_text)) {
+    if (reply_to_ch583) {
+        WiFi_config_from_ch583 = true;
+    } else {
+        WiFi_config_from_ble = true;
+    }
+    if (parse_wifi_config_json(json_text, &wifi_cfg) == 0) {
+        printf("ssid=%s\n", wifi_cfg.ssid);
+        printf("password=%s\n", wifi_cfg.key);
         return;
     }
-    if (handle_wifi_wakeup_json(json_text)) {
+    if (reply_to_ch583) {
+        WiFi_config_from_ch583 = false;
+    } else {
+        WiFi_config_from_ble = false;
+    }
+    if (parse_wifi_wakeup_json(json_text, &wifi_cfg) == 0) {
+        printf("wakeup ok\r\n");
         return;
     }
-    if (handle_wifi_work_time_json(json_text)) {
+    if (parse_wifi_work_time_json(json_text, &wifi_work_time_cfg) == 0) {
+        (void)ServerNetworkStaWifiWorkTime_SetAndSave(server_required_continue_work_time);
+        printf("func=%s\n", wifi_work_time_cfg.func);
+        printf("time=%d\n", wifi_work_time_cfg.time);
         return;
     }
 
-    send_simple_result("ble_json_result", 1, "unsupported func");
+    send_simple_result_with_sender(send_json, "ble_json_result", 1, "unsupported func");
 }
 
+void User_HandleWifiJsonText(const char *json_text)
+{
+    handle_wifi_json_text_with_sender(json_text, ble_send_json, false);
+}
+
+void User_HandleWifiJsonTextFromCh583(const char *json_text)
+{
+    handle_wifi_json_text_with_sender(json_text, ch583_send_json, true);
+}
+
+#if USER_BLE_ENABLE
 static void User_HandleWifiJsonBytes(const uint8_t *json_data, uint16_t json_len)
 {
     char json_text[USER_BLE_JSON_BUF_SIZE + 1];
@@ -425,5 +637,17 @@ esp_err_t User_QueueBleWriteBytes(const uint8_t *data, uint16_t len)
     ESP_LOGI(TAG, "BLE write queued len=%u", (unsigned int)msg->len);
     return ESP_OK;
 }
+#else
+esp_err_t UserBleDataHandler_Init(void)
+{
+    ESP_LOGI(TAG, "BLE data handler disabled by USER_BLE_ENABLE=0");
+    return ESP_OK;
+}
 
+esp_err_t User_QueueBleWriteBytes(const uint8_t *data, uint16_t len)
+{
+    (void)data;
+    (void)len;
+    return ESP_ERR_NOT_SUPPORTED;
+}
 #endif

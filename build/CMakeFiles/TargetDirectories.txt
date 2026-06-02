@@ -552,6 +552,13 @@ H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/espressif__mdns/CMakeFiles/install.dir
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/espressif__mdns/CMakeFiles/install/local.dir
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/espressif__mdns/CMakeFiles/install/strip.dir
+H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/json/CMakeFiles/__idf_json.dir
+H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/json/CMakeFiles/edit_cache.dir
+H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/json/CMakeFiles/rebuild_cache.dir
+H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/json/CMakeFiles/list_install_components.dir
+H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/json/CMakeFiles/install.dir
+H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/json/CMakeFiles/install/local.dir
+H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/json/CMakeFiles/install/strip.dir
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_eth/CMakeFiles/__idf_esp_eth.dir
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_eth/CMakeFiles/edit_cache.dir
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_eth/CMakeFiles/rebuild_cache.dir

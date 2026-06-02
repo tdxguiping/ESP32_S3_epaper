@@ -61,7 +61,6 @@ static void UserLedStatus_Task(void *arg)
     for (;;) {
         user_led_state_t state = s_led_state;
         if (state != last_state) {
-            ESP_LOGI(TAG, "LED state change old=%d new=%d", (int)last_state, (int)state);
             last_state = state;
         }
 
@@ -144,8 +143,6 @@ esp_err_t UserLedStatus_Init(void)
         }
     }
 
-    ESP_LOGI(TAG, "LED init ok green_gpio=%d red_gpio=%d on_level=%d",
-             (int)USER_LED_GREEN_PIN, (int)USER_LED_RED_PIN, USER_LED_ON_LEVEL);
     return ESP_OK;
 #else
     ESP_LOGW(TAG, "LED status disabled by USER_LED_STATUS_ENABLE");
@@ -157,7 +154,6 @@ void UserLedStatus_Set(user_led_state_t state)
 {
 #if USER_LED_STATUS_ENABLE
     s_led_state = state;
-    ESP_LOGI(TAG, "LED set state=%d", (int)state);
 #else
     (void)state;
 #endif

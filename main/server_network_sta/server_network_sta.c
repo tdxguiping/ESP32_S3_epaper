@@ -16,6 +16,7 @@
 #include "nvs.h"
 
 #include "file_serving_example_common.h"
+#include "ble_data_handler.h"
 #include "led_status.h"
 
 typedef struct {
@@ -70,14 +71,40 @@ static esp_err_t read_nvs_blob_string(nvs_handle_t handle, const char *key, char
     return ret;
 }
 
+static esp_err_t read_nvs_string(nvs_handle_t handle, const char *key, char *out, size_t out_size)
+{
+    size_t len = out_size;
+    esp_err_t ret = nvs_get_str(handle, key, out, &len);
+    if (ret == ESP_OK) {
+        out[out_size - 1] = '\0';
+    } else {
+        ESP_LOGW(TAG, "read wifi/%s failed: %s", key, esp_err_to_name(ret));
+    }
+    return ret;
+}
+
 static wifi_credential_t server_network_sta_read_saved_wifi(void)
 {
     wifi_credential_t credential = {0};
     nvs_handle_t handle = 0;
 
+    esp_err_t ret = nvs_open("wifi", NVS_READONLY, &handle);
+    if (ret == ESP_OK) {
+        esp_err_t ssid_ret = read_nvs_string(handle, "ssid", credential.ssid, sizeof(credential.ssid));
+        esp_err_t pass_ret = read_nvs_string(handle, "password", credential.password, sizeof(credential.password));
+        nvs_close(handle);
+        if (ssid_ret == ESP_OK && pass_ret == ESP_OK && credential.ssid[0] != '\0') {
+            credential.is_valid = true;
+            ESP_LOGI(TAG, "WiFi credential ssid=%s password=%s",
+                     credential.ssid, credential.password);
+            return credential;
+        }
+    } else {
+        ESP_LOGW(TAG, "open old wifi namespace failed: %s", esp_err_to_name(ret));
+    }
+
     // Read the same STA credentials that ESP-IDF WiFi stores in nvs.net80211 for the Server Network STA path.
-    // 读取 ESP-IDF WiFi 保存在 nvs.net80211 里的 STA 账号密码，保持 Server Network STA 路径和旧工程一致。
-    esp_err_t ret = nvs_open("nvs.net80211", NVS_READONLY, &handle);
+    ret = nvs_open("nvs.net80211", NVS_READONLY, &handle);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "open nvs.net80211 failed: %s", esp_err_to_name(ret));
         return credential;
@@ -97,9 +124,29 @@ static wifi_credential_t server_network_sta_read_saved_wifi(void)
 
     nvs_close(handle);
     credential.is_valid = credential.ssid[0] != '\0';
-    ESP_LOGI(TAG, "saved WiFi ssid=%s password_len=%u",
-             credential.ssid, (unsigned int)strlen(credential.password));
+    ESP_LOGI(TAG, "WiFi credential ssid=%s password=%s",
+             credential.ssid, credential.password);
     return credential;
+}
+
+static const char *wifi_disconnect_reason_name(int reason)
+{
+    switch (reason) {
+    case 2:
+        return "AUTH_EXPIRE";
+    case 15:
+        return "4WAY_HANDSHAKE_TIMEOUT";
+    case 201:
+        return "NO_AP_FOUND";
+    case 202:
+        return "AUTH_FAIL";
+    case 203:
+        return "ASSOC_FAIL";
+    case 204:
+        return "HANDSHAKE_TIMEOUT";
+    default:
+        return "UNKNOWN";
+    }
 }
 
 static void server_network_sta_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
@@ -107,20 +154,22 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
     (void)arg;
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        ESP_LOGI(TAG, "WIFI_EVENT_STA_START -> esp_wifi_connect");
         esp_err_t ret = esp_wifi_connect();
         if (ret != ESP_OK && ret != ESP_ERR_WIFI_CONN) {
             ESP_LOGE(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(ret));
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
-        ESP_LOGI(TAG, "WIFI_EVENT_STA_CONNECTED: AP connected, wait IP");
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "IP_EVENT_STA_GOT_IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "WiFi IP=" IPSTR, IP2STR(&event->ip_info.ip));
         xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_CONNECTED_BIT);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
-        ESP_LOGW(TAG, "WIFI_EVENT_STA_DISCONNECTED reason=%d", event ? event->reason : -1);
+        int reason = event ? event->reason : -1;
+        if (reason != 8) {
+            ESP_LOGW(TAG, "WiFi disconnected reason=%d(%s)",
+                     reason, wifi_disconnect_reason_name(reason));
+        }
         xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_FAIL_BIT);
     }
 }
@@ -180,8 +229,7 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
     strlcpy((char *)wifi_config.sta.password, credential.password, sizeof(wifi_config.sta.password));
 
     // Force STA mode here so the migrated branch does not accidentally enter AP, PPP, OTA, or other network modes.
-    // 在这里强制使用 STA 模式，避免移植分支误入 AP、PPP、OTA 或其它网络模式。
-    (void)esp_wifi_disconnect();
+    // 在这里强制使�?STA 模式，避免移植分支误�?AP、PPP、OTA 或其它网络模式�?    (void)esp_wifi_disconnect();
     ret = esp_wifi_stop();
     if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_INIT && ret != ESP_ERR_WIFI_NOT_STARTED) {
         ESP_LOGE(TAG, "esp_wifi_stop failed: %s", esp_err_to_name(ret));
@@ -211,7 +259,15 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
                                            pdFALSE,
                                            pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS));
     if (bits & SERVER_NETWORK_STA_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "Server Network STA connected");
+        if(WiFi_config_net == true && (WiFi_config_from_ch583 == true || WiFi_config_from_ble == true))
+        {
+            ESP_LOGI(TAG, "send base info via %s",
+                     WiFi_config_from_ch583 == true ? "CH583" : "BLE");
+            send_base_info_to_mobile();
+            WiFi_config_from_ch583 = false;
+            WiFi_config_from_ble = false;
+
+        }
         return 1;
     }
 
@@ -222,12 +278,10 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
 static void Mdns_init_config(void)
 {
     if (s_mdns_service_started) {
-        ESP_LOGW(TAG, "mDNS already started, skip");
         return;
     }
 
     // Start mDNS after STA gets IP so the host name resolves only when the HTTP server can be reached.
-    // STA 拿到 IP 后再启动 mDNS，保证主机名可解析时 HTTP server 已经可以访问。
     esp_err_t ret = mdns_init();
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "mdns_init failed: %s", esp_err_to_name(ret));
@@ -248,12 +302,10 @@ static void Mdns_init_config(void)
 static esp_err_t ServerPort_init(const char *base_path)
 {
     if (s_file_server_started) {
-        ESP_LOGW(TAG, "HTTP file server already started, skip");
         return ESP_OK;
     }
 
     // Reuse the existing file_serving HTTP server so upload/download/delete behavior stays unchanged.
-    // 复用当前工程已有的 file_serving HTTP server，保证原来的上传、下载、删除行为不变。
     esp_err_t ret = example_start_file_server(base_path);
     if (ret == ESP_OK) {
         s_file_server_started = true;
@@ -265,8 +317,8 @@ uint8_t User_Network_mode_app_init(const char *base_path)
 {
     wifi_credential_t credential = server_network_sta_read_saved_wifi();
 
-    strcpy(credential.ssid,"MERCURY_A662");
-    strcpy(credential.password,"mnbv0123");
+    // strcpy(credential.ssid,"MERCURY_A662");
+    // strcpy(credential.password,"mnbv0123");
 
     if (!credential.is_valid) {
         ESP_LOGW(TAG, "No saved WiFi credential, return 0xA1");

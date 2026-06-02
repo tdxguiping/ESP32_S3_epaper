@@ -761,7 +761,20 @@ void ePaperPort::EPD_sleep(void) {
 
 #elif (EPD_type_  ==  EPD_800_480_4s_75 )
 
+	EPD_SendCommand(0x04);   //Power on
+  	EPD_Check_Busy();   
+ 
+	EPD_SendCommand(0x12); //Update  
+    EPD_SendData(0x00); 	
+	EPD_Check_Busy();
 
+	EPD_SendCommand(0x02); //Power off
+	EPD_SendData(0x00);
+	EPD_Check_Busy();
+  
+	EPD_SendCommand(0x07); //Power off
+	EPD_SendData(0xA5);
+   //delay_ms(200); 
 
     LOG_Purple("error %s>%d",__func__,__LINE__);
 #else

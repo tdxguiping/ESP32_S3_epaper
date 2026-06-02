@@ -1,11 +1,14 @@
 #include "user_app.h"
 #include "tdx_cfg.h"
 
+#include <stdio.h>
+#include <string.h>
+
+#include "ch583_wifi_uart_protocol.h"
+
 #if USER_BLE_ENABLE
 
 #include <inttypes.h>
-#include <stdio.h>
-#include <string.h>
 
 #include "esp_bt.h"
 #include "esp_bt_defs.h"
@@ -172,16 +175,20 @@ extern "C" void get_ble_mac_no_colon(char *out, size_t out_size)
     }
 
     out[0] = '\0';
+#if USER_BLE_ENABLE
     uint8_t mac[6] = {};
-    if (read_ble_mac(mac) != ESP_OK) {
-        return;
+    if (esp_read_mac(mac, ESP_MAC_BT) == ESP_OK) {
+        snprintf(out, out_size, "%02X%02X%02X%02X%02X%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     }
-
-    // English: Format the local BLE MAC without colons for phone-side heartbeat matching.
-    // 中文：把本机 BLE MAC 格式化为无冒号字符串，便于手机端心跳匹配设备。
-    snprintf(out, out_size, "%02X%02X%02X%02X%02X%02X",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+#else
+    const char *mac = ch583_wifi_uart_get_ble_mac();
+    if (mac != NULL) {
+        snprintf(out, out_size, "%s", mac);
+    }
+#endif
 }
+
 
 static void init_broadcast_data(void)
 {
@@ -253,8 +260,7 @@ static void print_ble_received_data(const uint8_t *data, uint16_t len)
 static void dump_handle_table(void)
 {
     // Print the GATT handle table once so phone-side UUID problems can be matched to ESP-IDF handles.
-    // 属性表创建后打印一次 GATT handle，方便以后把手机端 UUID 问题对应到 ESP-IDF handle。
-    for (int i = 0; i < SPP_IDX_NB; i++) {
+    // 灞炴€ц〃鍒涘缓鍚庢墦鍗颁竴娆?GATT handle锛屾柟渚夸互鍚庢妸鎵嬫満绔?UUID 闂瀵瑰簲鍒?ESP-IDF handle銆?    for (int i = 0; i < SPP_IDX_NB; i++) {
         ESP_LOGI(TDX_BLE_LOG_TAG, "handle_table[%02d]=0x%04X", i, spp_handle_table[i]);
     }
 }
@@ -341,8 +347,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event,
     case ESP_GATTS_REG_EVT:
         init_broadcast_data();
         // Log this stage before configuring raw advertising data so init failures show the last completed step.
-        // 配置原始广播数据前打印阶段日志，初始化失败时可以看出最后完成到哪一步。
-        ESP_LOGI(TDX_BLE_LOG_TAG, "Register OK app_id=%u, device_name=%s",
+        // 閰嶇疆鍘熷骞挎挱鏁版嵁鍓嶆墦鍗伴樁娈垫棩蹇楋紝鍒濆鍖栧け璐ユ椂鍙互鐪嬪嚭鏈€鍚庡畬鎴愬埌鍝竴姝ャ€?        ESP_LOGI(TDX_BLE_LOG_TAG, "Register OK app_id=%u, device_name=%s",
                  param->reg.app_id, TDX_BLE_DEVICE_NAME);
         esp_ble_gap_set_device_name(TDX_BLE_DEVICE_NAME);
         esp_ble_gap_config_adv_data_raw(spp_adv_data, sizeof(spp_adv_data));
@@ -440,8 +445,7 @@ extern "C" void Init_Bl(void)
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
 
     // Keep each BLE init stage logged so board bring-up can identify the exact failing API.
-    // 每个 BLE 初始化阶段都打印日志，方便上板调试时定位具体失败在哪个 API。
-    ESP_LOGI(TDX_BLE_LOG_TAG, "BLE init start");
+    // 姣忎釜 BLE 鍒濆鍖栭樁娈甸兘鎵撳嵃鏃ュ織锛屾柟渚夸笂鏉胯皟璇曟椂瀹氫綅鍏蜂綋澶辫触鍦ㄥ摢涓?API銆?    ESP_LOGI(TDX_BLE_LOG_TAG, "BLE init start");
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
     ESP_LOGI(TDX_BLE_LOG_TAG, "Classic BT memory released");
     ESP_ERROR_CHECK(esp_bt_controller_init(&bt_cfg));
@@ -474,16 +478,23 @@ bool is_connected = false;
 extern "C" void Init_Bl(void)
 {
     // English: Leave BLE startup as a no-op when USER_BLE_ENABLE is disabled.
-    // 中文：关闭 USER_BLE_ENABLE 时，蓝牙初始化保持空操作，避免拉起蓝牙协议栈。
-    ESP_LOGI("BLE", "BLE disabled by USER_BLE_ENABLE=0");
+    // 涓枃锛氬叧闂?USER_BLE_ENABLE 鏃讹紝钃濈墮鍒濆鍖栦繚鎸佺┖鎿嶄綔锛岄伩鍏嶆媺璧疯摑鐗欏崗璁爤銆?    ESP_LOGI("BLE", "BLE disabled by USER_BLE_ENABLE=0");
 }
 
 extern "C" void get_ble_mac_no_colon(char *out, size_t out_size)
 {
-    if (out != NULL && out_size > 0) {
-        out[0] = '\0';
+    if (out == NULL || out_size == 0) {
+        return;
+    }
+
+    out[0] = '\0';
+    const char *mac = ch583_wifi_uart_get_ble_mac();
+    if (mac != NULL) {
+        snprintf(out, out_size, "%s", mac);
     }
 }
+
+
 
 extern "C" void SendData_indicate(uint8_t *data, uint16_t len)
 {

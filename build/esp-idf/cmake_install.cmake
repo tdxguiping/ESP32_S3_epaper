@@ -324,6 +324,11 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
+  include("H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/json/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
   include("H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_eth/cmake_install.cmake")
 endif()
 

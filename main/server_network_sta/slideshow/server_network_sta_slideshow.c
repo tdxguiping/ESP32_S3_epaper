@@ -331,6 +331,11 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
         save_slideshow_control(bin_dir, &request) != ESP_OK) {
         return send_start_slideshow_result(req, false, "save config failed");
     }
+    esp_err_t random_save_ret = app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
+                                                  request.random ? "true" : "false");
+    g_slideshow_random_enable = request.random ? 1 : 0;
+    ESP_LOGI(TAG, "start_slideshow save random=%d ret=%s",
+             g_slideshow_random_enable, esp_err_to_name(random_save_ret));
 
     ESP_LOGI(TAG, "start_slideshow ready count=%u interval=%d random=%d run_mode=%d",
              (unsigned int)request.file_count,

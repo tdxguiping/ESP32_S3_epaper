@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ble_data_handler.h"
 #include "ch583_wifi_uart_protocol.h"
 #include "driver/uart.h"
 #include "esp_log.h"
@@ -21,12 +22,14 @@ static void Ch583Uart_HandleBleDataText(const char *data)
 {
     if (data == NULL || data[0] == '\0') {
         ESP_LOGI(TAG, "CH583 BLE_DATA empty");
+        User_HandleWifiJsonTextFromCh583("");
         return;
     }
 
     // Keep CH583 BLE_DATA visible during bring-up until the current project has a real command dispatcher.
     /* 中文：当前工程接入真实命令分发前先打印 CH583 BLE_DATA，便于确认协议链路。 */
-    ESP_LOGI(TAG, "CH583 BLE_DATA text=%s", data);
+    // ESP_LOGI(TAG, "CH583 BLE_DATA text=%s", data);
+    User_HandleWifiJsonTextFromCh583(data);
 }
 
 static void User_UartEventTask(void *arg)
@@ -88,8 +91,7 @@ static void User_UartReceiveTask(void *arg)
         }
 
         data[len] = '\0';
-        ESP_LOGI(TAG, "RX len=%d first=0x%02x", len, data[0]);
-
+        //  ESP_LOGI(TAG, "RX len=%d first=0x%02x", len, data[0]);
         // Feed UART bytes to the copied CH583 V1 protocol parser while keeping this module independent.
         /* 中文：将串口字节送入复制过来的 CH583 V1 协议解析器，并保持本模块独立。 */
         ch583_wifi_uart_process_bytes(data, (size_t)len, Ch583Uart_HandleBleDataText);
@@ -180,6 +182,8 @@ esp_err_t Ch583UartApp_Init(void)
                 NULL,
                 2,
                 NULL);
+
+    (void)ch583_wifi_uart_get_ble_mac();
 
     s_ch583_uart_started = true;
     ESP_LOGI(TAG, "CH583 UART started port=%d tx=%d rx=%d baud=%d rx_buf=%d tx_buf=%d event_queue=%d",

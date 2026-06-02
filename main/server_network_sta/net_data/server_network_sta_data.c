@@ -1,4 +1,4 @@
-#include "server_network_sta_data.h"
+﻿#include "server_network_sta_data.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -28,34 +28,17 @@ static const char *TAG = "server_sta_data";
 static char s_base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX] = {0};
 static SemaphoreHandle_t s_upload_mutex;
 
-static void log_upload_heap_state(const char *stage)
-{
-    /* English: Print heap state before and after large network body allocation. */
-    /* 中文：在大网络包申请前后打印堆状态，方便判断是否缺少连续内存。 */
-    ESP_LOGI(TAG,
-             "heap %s free_8bit=%u largest_8bit=%u free_internal=%u largest_internal=%u free_spiram=%u largest_spiram=%u",
-             stage != NULL ? stage : "<null>",
-             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
-             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
-             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-}
-
 static char *alloc_request_body_buffer(size_t size)
 {
     /* English: Prefer PSRAM for full upload bodies so internal RAM remains available for WiFi and HTTP server tasks. */
-    /* 中文：完整上传包优先放到 PSRAM，保留内部 RAM 给 WiFi 和 HTTP Server 任务使用。 */
+    /* 涓枃锛氬畬鏁翠笂浼犲寘浼樺厛鏀惧埌 PSRAM锛屼繚鐣欏唴閮?RAM 缁?WiFi 鍜?HTTP Server 浠诲姟浣跨敤銆?*/
     char *body = (char *)heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (body != NULL) {
-        ESP_LOGI(TAG, "receive_data_redirect_handler: body allocated from PSRAM ptr=%p size=%u",
-                 body, (unsigned int)size);
         return body;
     }
 
     /* Do not allocate large upload bodies from internal RAM when PSRAM allocation fails. */
-    /* PSRAM 申请失败时，大上传包不再退回内部 RAM，避免挤爆 WiFi/httpd 所需内存。 */
+    /* PSRAM 鐢宠澶辫触鏃讹紝澶т笂浼犲寘涓嶅啀閫€鍥炲唴閮?RAM锛岄伩鍏嶆尋鐖?WiFi/httpd 鎵€闇€鍐呭瓨銆?*/
     if (size > USER_INTERNAL_RAM_FALLBACK_MAX_SIZE) {
         ESP_LOGE(TAG, "receive_data_redirect_handler: PSRAM alloc failed and body too large for internal RAM size=%u",
                 (unsigned int)size);
@@ -63,11 +46,10 @@ static char *alloc_request_body_buffer(size_t size)
     }
 
     /* Small requests may still fall back to internal 8-bit heap. */
-    /* 小请求仍允许退回内部 8-bit 堆内存。 */
+    /* 灏忚姹備粛鍏佽閫€鍥炲唴閮?8-bit 鍫嗗唴瀛樸€?*/
     body = (char *)heap_caps_malloc(size, MALLOC_CAP_8BIT);
     if (body != NULL) {
-        ESP_LOGW(TAG, "receive_data_redirect_handler: body allocated from 8BIT heap ptr=%p size=%u",
-                body, (unsigned int)size);
+        ESP_LOGW(TAG, "body alloc fallback internal len=%u", (unsigned int)size);
     }
 
     return body;
@@ -128,7 +110,6 @@ static bool read_request_body_to_buffer(httpd_req_t *req, char *body, size_t bod
     }
 
     size_t received_total = 0;
-    size_t last_log_received = 0;
     while (received_total < body_len) {
         int received = httpd_req_recv(req, body + received_total, body_len - received_total);
         if (received <= 0) {
@@ -137,13 +118,9 @@ static bool read_request_body_to_buffer(httpd_req_t *req, char *body, size_t bod
             return false;
         }
         received_total += received;
-        if ((received_total - last_log_received) >= 64 * 1024 || received_total == body_len) {
-            ESP_LOGI(TAG, "receive_data_redirect_handler: recv progress received=%u remaining=%u",
-                     (unsigned int)received_total, (unsigned int)(body_len - received_total));
-            last_log_received = received_total;
-        }
     }
     body[body_len] = '\0';
+    ESP_LOGI(TAG, "recv done len=%u", (unsigned int)body_len);
     return true;
 }
 
@@ -448,21 +425,16 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
     if (is_multipart) {
         UserLedStatus_Set(USER_LED_STATE_TRANSFER);
     }
-    log_upload_heap_state("before_body_alloc");
     char *body = alloc_request_body_buffer(remaining + 1);
     if (body == NULL) {
         if (upload_mutex_locked) {
             xSemaphoreGive(s_upload_mutex);
         }
-        log_upload_heap_state("body_alloc_failed");
-        ESP_LOGE(TAG, "receive_data_redirect_handler: body alloc failed uri=%s len=%u need=%u",
-                 uri != NULL ? uri : "<null>", (unsigned int)remaining, (unsigned int)(remaining + 1));
+        ESP_LOGE(TAG, "body alloc failed len=%u", (unsigned int)remaining);
         httpd_resp_send_500(req);
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "receive_data_redirect_handler: body alloc ok uri=%s len=%u ptr=%p",
-             uri != NULL ? uri : "<null>", (unsigned int)remaining, body);
     if (!read_request_body_to_buffer(req, body, remaining + 1, remaining)) {
         heap_caps_free(body);
         if (upload_mutex_locked) {
@@ -504,15 +476,10 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         resp_ret = send_invalid_json_response(req, "get_saved_images");
     }
 
-    ESP_LOGI(TAG, "receive_data_redirect_handler: free body uri=%s ptr=%p len=%u ret=%s",
-             uri != NULL ? uri : "<null>", body, (unsigned int)remaining, esp_err_to_name(resp_ret));
     heap_caps_free(body);
-    log_upload_heap_state("after_body_free");
 
     if (upload_mutex_locked) {
         xSemaphoreGive(s_upload_mutex);
-        ESP_LOGI(TAG, "receive_data_redirect_handler: upload slot released uri=%s ret=%s",
-                 uri != NULL ? uri : "<null>", esp_err_to_name(resp_ret));
     }
 
     if (is_multipart) {
@@ -529,13 +496,13 @@ esp_err_t server_network_sta_net_data_register_handlers(httpd_handle_t server, c
     if (s_upload_mutex == NULL) {
         s_upload_mutex = xSemaphoreCreateMutex();
         if (s_upload_mutex == NULL) {
-            ESP_LOGE(TAG, "server_network_sta_net_data_register_handlers: create upload mutex failed");
+            ESP_LOGE(TAG, "net handlers: upload mutex failed");
             return ESP_ERR_NO_MEM;
         }
     }
 
     // Register /dataUP with the migrated receive_data_redirect_handler so old web requests use one receive path.
-    // 将 /dataUP 注册到移植的 receive_data_redirect_handler，让旧网页请求统一走这一条收包路径。
+    // 涓枃锛氬皢 /dataUP 娉ㄥ唽鍒扮Щ妞嶇殑鎺ユ敹鍑芥暟锛岃鏃х綉椤佃姹傜粺涓€璧拌繖涓€鏉℃敹鍖呰矾寰勩€?
     httpd_uri_t dataup = {
         .uri = "/dataUP",
         .method = HTTP_POST,
@@ -544,14 +511,13 @@ esp_err_t server_network_sta_net_data_register_handlers(httpd_handle_t server, c
     };
 
     esp_err_t ret = httpd_register_uri_handler(server, &dataup);
-    ESP_LOGI(TAG, "server_network_sta_net_data_register_handlers: register /dataUP ret=%s base_path=%s",
-             esp_err_to_name(ret), s_base_path);
     if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "register /dataUP failed ret=%s", esp_err_to_name(ret));
         return ret;
     }
 
     // Register OTA upload endpoints on the same receive dispatcher so firmware and image uploads share diagnostics.
-    // 将 OTA 上传接口也注册到同一个接收分发函数，便于固件上传和图片上传共用调试日志。
+    // 涓枃锛歄TA 涓婁紶鎺ュ彛涔熸敞鍐屽埌鍚屼竴鎺ユ敹鍑芥暟锛屼究浜庡浐浠朵笂浼犲拰鍥剧墖涓婁紶鍏辩敤璇婃柇鏃ュ織銆?
     httpd_uri_t ota = {
         .uri = "/ota",
         .method = HTTP_POST,
@@ -559,13 +525,13 @@ esp_err_t server_network_sta_net_data_register_handlers(httpd_handle_t server, c
         .user_ctx = NULL,
     };
     ret = httpd_register_uri_handler(server, &ota);
-    ESP_LOGI(TAG, "server_network_sta_net_data_register_handlers: register /ota ret=%s", esp_err_to_name(ret));
     if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "register /ota failed ret=%s", esp_err_to_name(ret));
         return ret;
     }
 
     // Keep the old project's /ota_upload alias for tools that still post firmware to that URI.
-    // 保留旧项目的 /ota_upload 别名，兼容仍然向该 URI 上传固件的工具。
+    // 涓枃锛氫繚鐣欐棫椤圭洰鐨?/ota_upload 鍒悕锛屽吋瀹逛粛鐒跺悜璇?URI 涓婁紶鍥轰欢鐨勫伐鍏枫€?
     httpd_uri_t ota_upload = {
         .uri = "/ota_upload",
         .method = HTTP_POST,
@@ -573,6 +539,11 @@ esp_err_t server_network_sta_net_data_register_handlers(httpd_handle_t server, c
         .user_ctx = NULL,
     };
     ret = httpd_register_uri_handler(server, &ota_upload);
-    ESP_LOGI(TAG, "server_network_sta_net_data_register_handlers: register /ota_upload ret=%s", esp_err_to_name(ret));
-    return ret;
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "register /ota_upload failed ret=%s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "POST handlers ready: /dataUP /ota /ota_upload base=%s", s_base_path);
+    return ESP_OK;
 }
