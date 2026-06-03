@@ -119,7 +119,7 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
     gpio_config_t gpio_conf = {};
     gpio_conf.intr_type = GPIO_INTR_DISABLE;
     gpio_conf.mode = GPIO_MODE_OUTPUT;
-    gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_)| (0x1ULL << EPD2_DC_PIN)| (0x1ULL << EPD2_CS_PIN)| (0x1ULL << EPD2_RST_PIN)| (0x1ULL << EPD2_BUSY_PIN);
+    gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_) | (0x1ULL << EPD2_DC_PIN) | (0x1ULL << EPD2_CS_PIN) | (0x1ULL << EPD2_RST_PIN);
     gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
@@ -131,6 +131,10 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
     gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
     #endif
+
+    gpio_set_level((gpio_num_t)EPD2_RST_PIN, 1);
+    gpio_set_level((gpio_num_t)EPD2_DC_PIN, 0);
+    gpio_set_level((gpio_num_t)EPD2_CS_PIN, 1);
     
     EPD_interface_init();
     Set_ResetIOLevel(1);
@@ -228,7 +232,7 @@ void ePaperPort::Set_CS2IOLevel(uint8_t level) {
     }   
     else
     {
-        gpio_set_level((gpio_num_t)EPD2_CS_PIN, level ? 1 : 0);
+        (void)level;
     }        
 }
 
@@ -355,21 +359,37 @@ uint8_t ePaperPort::EPD_SPI_Read(void) {
 }
 
 void ePaperPort::EPD_Select_None(void) {
+    if (EPD_which_one_ == 2) {
+        Set_CSIOLevel(1);
+        return;
+    }
     Set_CSIOLevel(1);
     Set_CS2IOLevel(1);
 }
 
 void ePaperPort::EPD_Select_Master(void) {
+    if (EPD_which_one_ == 2) {
+        Set_CSIOLevel(0);
+        return;
+    }
     Set_CSIOLevel(0);
     Set_CS2IOLevel(1);
 }
 
 void ePaperPort::EPD_Select_Slave(void) {
+    if (EPD_which_one_ == 2) {
+        Set_CSIOLevel(0);
+        return;
+    }
     Set_CSIOLevel(1);
     Set_CS2IOLevel(0);
 }
 
 void ePaperPort::EPD_Select_Both(void) {
+    if (EPD_which_one_ == 2) {
+        Set_CSIOLevel(0);
+        return;
+    }
     Set_CSIOLevel(0);
     Set_CS2IOLevel(0);
 }

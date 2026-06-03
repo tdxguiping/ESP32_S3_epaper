@@ -9,8 +9,10 @@
 #include <sys/unistd.h>
 
 #include "esp_log.h"
+#include "esp_vfs_fat.h"
 #include "esp_spiffs.h"
 #include "epd_display_app.h"
+#include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_cast";
@@ -284,13 +286,23 @@ static esp_err_t write_file_exact(const char *path, const char *data, size_t len
 
 static esp_err_t check_cast_save_space(const char *base_path, size_t bin_len, size_t image_len)
 {
-    size_t total = 0;
-    size_t used = 0;
-
     if (base_path == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
+#ifdef CONFIG_EXAMPLE_MOUNT_SD_CARD
+    uint64_t total_bytes = 0;
+    uint64_t free_bytes64 = 0;
+    esp_err_t info_ret = esp_vfs_fat_info(base_path, &total_bytes, &free_bytes64);
+    if (info_ret != ESP_OK) {
+        ESP_LOGW(TAG, "cast fatfs info failed base=%s ret=%s, continue without space check",
+                 base_path, esp_err_to_name(info_ret));
+        return ESP_OK;
+    }
+    size_t free_bytes = (size_t)free_bytes64;
+#else
+    size_t total = 0;
+    size_t used = 0;
     esp_err_t info_ret = esp_spiffs_info(NULL, &total, &used);
     if (info_ret != ESP_OK || total < used) {
         ESP_LOGW(TAG, "cast spiffs info failed base=%s ret=%s total=%u used=%u, continue without space check",
@@ -299,6 +311,7 @@ static esp_err_t check_cast_save_space(const char *base_path, size_t bin_len, si
     }
 
     size_t free_bytes = total - used;
+#endif
     size_t required_bytes = bin_len + image_len + SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES;
 
     if (free_bytes < required_bytes) {
@@ -393,6 +406,126 @@ static esp_err_t record_last_success_cast(const char *base_path, const cast_meta
     return write_file_exact(record_path, record_json, strlen(record_json));
 }
 
+static const char *find_json_key(const char *body, const char *key)
+{
+    char pattern[64];
+    const char *pos = body;
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    while ((pos = strstr(pos, pattern)) != NULL) {
+        const char *after = pos + strlen(pattern);
+        while (*after == ' ' || *after == '\t' || *after == '\r' || *after == '\n') {
+            after++;
+        }
+        if (*after == ':') {
+            return pos;
+        }
+        pos += strlen(pattern);
+    }
+    return NULL;
+}
+
+static bool parse_json_int(const char *body, const char *key, int *out)
+{
+    const char *pos = find_json_key(body, key);
+    char *end_ptr = NULL;
+    long value = 0;
+    if (pos == NULL || out == NULL) {
+        return false;
+    }
+
+    pos += strlen(key) + 2;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != ':') {
+        return false;
+    }
+    pos++;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+
+    value = strtol(pos, &end_ptr, 10);
+    if (end_ptr == pos) {
+        return false;
+    }
+    *out = (int)value;
+    return true;
+}
+
+static bool parse_json_bool(const char *body, const char *key, bool *out)
+{
+    const char *pos = find_json_key(body, key);
+    if (pos == NULL || out == NULL) {
+        return false;
+    }
+
+    pos += strlen(key) + 2;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != ':') {
+        return false;
+    }
+    pos++;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+
+    if (strncmp(pos, "true", 4) == 0 || *pos == '1') {
+        *out = true;
+        return true;
+    }
+    if (strncmp(pos, "false", 5) == 0 || *pos == '0') {
+        *out = false;
+        return true;
+    }
+    return false;
+}
+
+static void read_slideshow_control_values(const char *control_path, int *interval, bool *random)
+{
+    FILE *fp = fopen(control_path, "rb");
+    if (fp == NULL) {
+        return;
+    }
+
+    char buf[192] = {0};
+    size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    buf[len] = '\0';
+
+    parse_json_int(buf, "interval", interval);
+    parse_json_bool(buf, "random", random);
+}
+
+static esp_err_t stop_slideshow_for_cast(const char *base_path)
+{
+    char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
+    char json[160];
+    int interval = 60;
+    bool random = false;
+
+    snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", base_path, TDX_SLIDESHOW_CONTROL_FILE);
+    read_slideshow_control_values(control_path, &interval, &random);
+
+    int json_len = snprintf(json, sizeof(json),
+                            "{\"sw\":0,\"interval\":%d,\"random\":%s,\"run_mode\":%d}",
+                            interval,
+                            random ? "true" : "false",
+                            TDX_SLIDESHOW_RUN_MODE);
+    if (json_len < 0 || (size_t)json_len >= sizeof(json)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    esp_err_t ret = write_file_exact(control_path, json, strlen(json));
+    if (ret == ESP_OK) {
+        ServerNetworkStaSlideshow_Stop();
+    }
+    ESP_LOGI(TAG, "cast stop slideshow ret=%s path=%s", esp_err_to_name(ret), control_path);
+    return ret;
+}
+
 esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
                                        const char *body,
                                        size_t body_len,
@@ -410,6 +543,7 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
     multipart_part_t image_part = {0};
     cast_meta_t meta = {0};
     bool response_sent = false;
+    bool slideshow_stopped = false;
 
     if (!extract_boundary(content_type, boundary, sizeof(boundary))) {
         return ESP_ERR_NOT_SUPPORTED;
@@ -480,6 +614,11 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
                      meta.file_name, esp_err_to_name(display_ret));
             return ESP_OK;
         }
+        if (stop_slideshow_for_cast(base_path) == ESP_OK) {
+            slideshow_stopped = true;
+        } else {
+            ESP_LOGW(TAG, "cast stop slideshow failed");
+        }
     }
 
     esp_err_t save_ret = save_cast_files(base_path, &meta, &bin_part, &image_part);
@@ -494,6 +633,12 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
     if (save_ret != ESP_OK) {
         ESP_LOGE(TAG, "cast save after response failed ret=%s", esp_err_to_name(save_ret));
         return response_sent ? ESP_OK : send_cast_result(req, false, "cast failed", "save_failed");
+    }
+
+    if (meta.show && !slideshow_stopped) {
+        if (stop_slideshow_for_cast(base_path) != ESP_OK) {
+            ESP_LOGW(TAG, "cast stop slideshow after save failed");
+        }
     }
 
     if (record_last_success_cast(base_path, &meta) != ESP_OK) {

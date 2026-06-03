@@ -47,11 +47,13 @@ typedef enum {
 
 // tag_tdx_a   need
 #ifndef EPD_type_
-#define EPD_type_   EPD_800_480_4s_75
+#define EPD_type_   EPD_1600_1200_133
 #endif
 
-// Keep the old display driver's board switch defined here so copied code has a stable board path.
-#define Hardware_Version_ 2
+// Keep the old display driver's board switch overridable from tdx_cfg.h.
+#ifndef Hardware_Version_
+#define Hardware_Version_ 1
+#endif
 
 
 #define EPD_DC_PIN      8

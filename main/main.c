@@ -27,6 +27,7 @@
 #include "file_serving_example_common.h"
 #include "led_status.h"
 #include "server_network_sta.h"
+#include "server_network_sta_slideshow.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "user_app.h"
@@ -231,7 +232,14 @@ void app_main(void)
 
     /* Initialize file storage */
     const char* base_path = "/data";
-    ESP_ERROR_CHECK(example_mount_storage(base_path));
+    esp_err_t storage_ret = example_mount_storage(base_path);
+    if (storage_ret == ESP_OK) {
+        esp_err_t slideshow_ret = ServerNetworkStaSlideshow_StartSaved(base_path);
+        ESP_LOGI(TAG, "startup slideshow start ret=%s", esp_err_to_name(slideshow_ret));
+    } else {
+        ESP_LOGE(TAG, "Storage mount failed ret=%s, continue without startup slideshow",
+                 esp_err_to_name(storage_ret));
+    }
 
     // Force the old read_value=0x02 path here: Server Network STA only, then start the HTTP file server.
     // 中文：在这里固定旧工程 read_value=0x02 路径：只进入 Server Network STA，然后启动 HTTP 文件服务器。

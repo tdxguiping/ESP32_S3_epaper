@@ -22,6 +22,7 @@ extern "C" {
 #endif
 
 esp_err_t example_mount_storage(const char *base_path);
+void example_print_storage_info(const char *base_path);
 
 esp_err_t example_start_file_server(const char *base_path);
 

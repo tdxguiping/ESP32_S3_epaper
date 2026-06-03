@@ -21,6 +21,7 @@
 #include "server_network_sta_saved_images.h"
 #include "server_network_sta_slideshow.h"
 #include "server_network_sta_slideshow_control.h"
+#include "server_network_sta_snapshot.h"
 #include "server_network_sta_upload.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
@@ -169,6 +170,12 @@ static esp_err_t process_small_json_request(httpd_req_t *req, const char *body, 
     if (!body_looks_like_json(body, body_len)) {
         ESP_LOGW(TAG, "process_small_json_request: invalid non-json body");
         return send_invalid_json_response(req, "get_saved_images");
+    }
+
+    esp_err_t snapshot_ret = ServerNetworkStaSnapshot_ProcessJson(req, body, body_len, s_base_path);
+    if (snapshot_ret != ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGI(TAG, "process_small_json_request: get_snapshot ret=%s", esp_err_to_name(snapshot_ret));
+        return snapshot_ret;
     }
 
     esp_err_t saved_ret = ServerNetworkStaSavedImages_ProcessJson(req, body, body_len, s_base_path);

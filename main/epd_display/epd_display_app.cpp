@@ -139,9 +139,7 @@ esp_err_t ServerNetworkStaEpdDisplay_Init(void)
         }
     }
 
-    ESP_LOGI(TAG, "EPD startup init begin");
-    ePaperDisplay.EPD_Init();
-    ESP_LOGI(TAG, "EPD startup init done");
+    ESP_LOGI(TAG, "EPD startup init skip, init on first display");
 
     if (s_epd_display_task == NULL) {
         BaseType_t task_ret = xTaskCreate(ServerNetworkStaEpdDisplay_Task,

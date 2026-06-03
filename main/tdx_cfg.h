@@ -24,6 +24,7 @@
 #include "esp_bt_defs.h"
 #endif
 
+
 // Keep all migrated BLE identifiers here so future app/protocol changes do not touch user_app.cpp.
 #define TDX_BLE_LOG_TAG "BLE"
 #define TDX_BLE_PROFILE_NUM 1
@@ -179,6 +180,9 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 
 // Keep EPD display enable here so network cast/upload can be tested without editing receive code.
 #define USER_EPD_ENABLE 1
+
+// Keep the copied display driver's board switch here. 2 configures both EPD1 and EPD2 GPIO paths.
+#define Hardware_Version_ 2
 
 // Keep EPD panel geometry here because the copied display driver and network bin size must match.
 #define USER_EPD_WIDTH 1600

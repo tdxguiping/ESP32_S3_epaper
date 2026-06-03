@@ -3,15 +3,23 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/unistd.h>
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "esp_random.h"
+#include "epd_display_app.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_slide";
+#define SLIDESHOW_TASK_STACK_SIZE (12 * 1024)
+#define SLIDESHOW_TASK_PRIORITY 4
 
 typedef struct {
     char file_names[TDX_SLIDESHOW_MAX_FILES][TDX_SLIDESHOW_FILE_NAME_MAX_LEN];
@@ -19,6 +27,15 @@ typedef struct {
     int interval;
     bool random;
 } slideshow_request_t;
+
+typedef struct {
+    char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
+    slideshow_request_t request;
+    size_t current_index;
+} slideshow_runtime_t;
+
+static TaskHandle_t s_slideshow_task = NULL;
+static volatile bool s_slideshow_stop = false;
 
 static bool json_func_equals(const char *body, const char *func)
 {
@@ -157,8 +174,11 @@ static bool parse_file_names(const char *body, slideshow_request_t *request)
         pos++;
         file_name[len] = '\0';
 
-        if (!file_name_is_safe(file_name) || request->file_count >= TDX_SLIDESHOW_MAX_FILES) {
+        if (!file_name_is_safe(file_name)) {
             return false;
+        }
+        if (request->file_count >= TDX_SLIDESHOW_MAX_FILES) {
+            continue;
         }
         strlcpy(request->file_names[request->file_count], file_name,
                 sizeof(request->file_names[request->file_count]));
@@ -228,6 +248,324 @@ static esp_err_t write_text_file(const char *path, const char *data)
     return written == len ? ESP_OK : ESP_FAIL;
 }
 
+static esp_err_t queue_slideshow_file(const char *base_path, const char *file_name)
+{
+    char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
+    struct stat st = {0};
+
+    if (base_path == NULL || !file_name_is_safe(file_name)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    snprintf(path, sizeof(path), "%s/bin_img/%s.bin", base_path, file_name);
+    if (stat(path, &st) != 0 || st.st_size <= 0) {
+        ESP_LOGE(TAG, "slideshow first file missing path=%s", path);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    uint8_t *buf = (uint8_t *)heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (buf == NULL) {
+        buf = (uint8_t *)heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_8BIT);
+    }
+    if (buf == NULL) {
+        ESP_LOGE(TAG, "slideshow first file alloc failed path=%s size=%u",
+                 path, (unsigned int)st.st_size);
+        return ESP_ERR_NO_MEM;
+    }
+
+    FILE *fp = fopen(path, "rb");
+    if (fp == NULL) {
+        heap_caps_free(buf);
+        ESP_LOGE(TAG, "slideshow first file open failed path=%s errno=%d", path, errno);
+        return ESP_FAIL;
+    }
+
+    size_t read_len = fread(buf, 1, (size_t)st.st_size, fp);
+    fclose(fp);
+    if (read_len != (size_t)st.st_size) {
+        heap_caps_free(buf);
+        ESP_LOGE(TAG, "slideshow first file read failed path=%s expect=%u actual=%u",
+                 path, (unsigned int)st.st_size, (unsigned int)read_len);
+        return ESP_FAIL;
+    }
+
+    esp_err_t ret = ServerNetworkStaEpdDisplay_Queue(buf, read_len);
+    heap_caps_free(buf);
+    ESP_LOGI(TAG, "slideshow first display queue file=%s size=%u ret=%s",
+             file_name, (unsigned int)read_len, esp_err_to_name(ret));
+    return ret;
+}
+
+static size_t slideshow_next_index(const slideshow_request_t *request, size_t current_index)
+{
+    if (request == NULL || request->file_count == 0) {
+        return 0;
+    }
+    if (request->random) {
+        return (size_t)(esp_random() % request->file_count);
+    }
+    return (current_index + 1) % request->file_count;
+}
+
+static void save_next_file_name(const slideshow_request_t *request, size_t next_index)
+{
+    if (request == NULL || request->file_count == 0 || next_index >= request->file_count) {
+        return;
+    }
+    esp_err_t ret = app_nvs_write_str(TDX_SLIDESHOW_NVS_LAST_FILE_KEY, request->file_names[next_index]);
+    ESP_LOGI(TAG, "slideshow save next file=%s ret=%s",
+             request->file_names[next_index], esp_err_to_name(ret));
+}
+
+static size_t find_file_index(const slideshow_request_t *request, const char *file_name)
+{
+    if (request == NULL || file_name == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < request->file_count; i++) {
+        if (strcmp(request->file_names[i], file_name) == 0) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+static size_t get_saved_start_index(const slideshow_request_t *request)
+{
+    char file_name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
+    esp_err_t ret = app_nvs_read_str(TDX_SLIDESHOW_NVS_LAST_FILE_KEY,
+                                     file_name,
+                                     sizeof(file_name),
+                                     "");
+    if (ret != ESP_OK || file_name[0] == '\0') {
+        return 0;
+    }
+    return find_file_index(request, file_name);
+}
+
+static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_request_t *request)
+{
+    char config_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
+    struct stat st = {0};
+
+    if (base_path == NULL || request == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(request, 0, sizeof(*request));
+
+    snprintf(config_path, sizeof(config_path), "%s/bin_img/%s", base_path, TDX_SLIDESHOW_CONFIG_FILE);
+    if (stat(config_path, &st) != 0 || st.st_size <= 0) {
+        ESP_LOGE(TAG, "slideshow config missing path=%s", config_path);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    char *json = (char *)malloc((size_t)st.st_size + 1);
+    if (json == NULL) {
+        ESP_LOGE(TAG, "slideshow config alloc failed size=%u", (unsigned int)st.st_size);
+        return ESP_ERR_NO_MEM;
+    }
+
+    FILE *fp = fopen(config_path, "rb");
+    if (fp == NULL) {
+        free(json);
+        ESP_LOGE(TAG, "slideshow config open failed path=%s errno=%d", config_path, errno);
+        return ESP_FAIL;
+    }
+
+    size_t read_len = fread(json, 1, (size_t)st.st_size, fp);
+    fclose(fp);
+    json[read_len] = '\0';
+    if (read_len != (size_t)st.st_size || !parse_file_names(json, request)) {
+        free(json);
+        ESP_LOGE(TAG, "slideshow config parse failed path=%s", config_path);
+        return ESP_FAIL;
+    }
+    parse_json_int(json, "interval", &request->interval);
+    if (request->interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS ||
+        request->interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
+        request->interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
+    }
+    request->random = parse_json_bool_default(json, "random", false);
+    free(json);
+    return ESP_OK;
+}
+
+static bool read_slideshow_control_on(const char *base_path, int *interval, bool *random)
+{
+    char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
+    char buf[256] = {0};
+    int sw = 0;
+
+    if (base_path == NULL) {
+        return false;
+    }
+
+    snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", base_path, TDX_SLIDESHOW_CONTROL_FILE);
+    FILE *fp = fopen(control_path, "rb");
+    if (fp == NULL) {
+        ESP_LOGI(TAG, "slideshow control missing path=%s", control_path);
+        return false;
+    }
+
+    size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    buf[len] = '\0';
+
+    if (!parse_json_int(buf, "sw", &sw)) {
+        ESP_LOGI(TAG, "slideshow control has no sw path=%s json=%s", control_path, buf);
+        return false;
+    }
+    if (interval != NULL) {
+        parse_json_int(buf, "interval", interval);
+    }
+    if (random != NULL) {
+        *random = parse_json_bool_default(buf, "random", *random);
+    }
+    ESP_LOGI(TAG, "slideshow control read sw=%d interval=%d random=%d json=%s",
+             sw,
+             interval != NULL ? *interval : 0,
+             random != NULL && *random ? 1 : 0,
+             buf);
+    return sw == 1;
+}
+
+static void slideshow_task(void *arg)
+{
+    slideshow_runtime_t *runtime = (slideshow_runtime_t *)arg;
+    if (runtime == NULL) {
+        s_slideshow_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "slideshow task start count=%u interval=%d random=%d index=%u",
+             (unsigned int)runtime->request.file_count,
+             runtime->request.interval,
+             runtime->request.random ? 1 : 0,
+             (unsigned int)runtime->current_index);
+
+    while (!s_slideshow_stop && runtime->request.file_count > 0) {
+        if (runtime->current_index >= runtime->request.file_count) {
+            runtime->current_index = 0;
+        }
+
+        const char *file_name = runtime->request.file_names[runtime->current_index];
+        esp_err_t display_ret = queue_slideshow_file(runtime->base_path, file_name);
+        if (display_ret == ESP_OK) {
+            size_t next_index = slideshow_next_index(&runtime->request, runtime->current_index);
+            save_next_file_name(&runtime->request, next_index);
+            runtime->current_index = next_index;
+        } else {
+            ESP_LOGW(TAG, "slideshow display failed file=%s ret=%s",
+                     file_name, esp_err_to_name(display_ret));
+            runtime->current_index = slideshow_next_index(&runtime->request, runtime->current_index);
+        }
+
+        int interval = runtime->request.interval;
+        if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
+            interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
+        }
+        for (int i = 0; i < interval && !s_slideshow_stop; i++) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
+
+    ESP_LOGI(TAG, "slideshow task stop");
+    free(runtime);
+    s_slideshow_task = NULL;
+    vTaskDelete(NULL);
+}
+
+void ServerNetworkStaSlideshow_Stop(void)
+{
+    s_slideshow_stop = true;
+}
+
+static esp_err_t start_slideshow_runtime(const char *base_path,
+                                         const slideshow_request_t *request,
+                                         size_t start_index)
+{
+    if (base_path == NULL || request == NULL || request->file_count == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ServerNetworkStaSlideshow_Stop();
+    for (int i = 0; i < 30 && s_slideshow_task != NULL; i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    slideshow_runtime_t *runtime = (slideshow_runtime_t *)calloc(1, sizeof(*runtime));
+    if (runtime == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    strlcpy(runtime->base_path, base_path, sizeof(runtime->base_path));
+    memcpy(&runtime->request, request, sizeof(runtime->request));
+    runtime->current_index = start_index < request->file_count ? start_index : 0;
+    s_slideshow_stop = false;
+
+    BaseType_t task_ret = xTaskCreate(slideshow_task,
+                                      "slideshow",
+                                      SLIDESHOW_TASK_STACK_SIZE,
+                                      runtime,
+                                      SLIDESHOW_TASK_PRIORITY,
+                                      &s_slideshow_task);
+    if (task_ret != pdPASS) {
+        free(runtime);
+        s_slideshow_task = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+esp_err_t ServerNetworkStaSlideshow_ShowFirst(const char *base_path)
+{
+    slideshow_request_t *request = (slideshow_request_t *)calloc(1, sizeof(*request));
+    if (request == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t ret = read_slideshow_config_file(base_path, request);
+    if (ret != ESP_OK) {
+        free(request);
+        return ret;
+    }
+    ret = queue_slideshow_file(base_path, request->file_names[0]);
+    free(request);
+    return ret;
+}
+
+esp_err_t ServerNetworkStaSlideshow_StartSaved(const char *base_path)
+{
+    slideshow_request_t *request = (slideshow_request_t *)calloc(1, sizeof(*request));
+    if (request == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t ret = read_slideshow_config_file(base_path, request);
+    if (ret != ESP_OK) {
+        free(request);
+        return ret;
+    }
+
+    int interval = request->interval;
+    bool random = request->random;
+    if (!read_slideshow_control_on(base_path, &interval, &random)) {
+        ServerNetworkStaSlideshow_Stop();
+        free(request);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (interval >= TDX_SLIDESHOW_INTERVAL_MIN_SECONDS &&
+        interval <= TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
+        request->interval = interval;
+    }
+    request->random = random;
+    size_t start_index = get_saved_start_index(request);
+    ret = start_slideshow_runtime(base_path, request, start_index);
+    free(request);
+    return ret;
+}
+
 static esp_err_t save_slideshow_config(const char *bin_dir, const slideshow_request_t *request)
 {
     char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
@@ -274,7 +612,7 @@ static esp_err_t save_slideshow_control(const char *bin_dir, const slideshow_req
     char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
     char json[160];
     snprintf(path, sizeof(path), "%s/%s", bin_dir, TDX_SLIDESHOW_CONTROL_FILE);
-    snprintf(json, sizeof(json), "{\"enable\":true,\"interval\":%d,\"random\":%s,\"run_mode\":%d}",
+    snprintf(json, sizeof(json), "{\"sw\":1,\"interval\":%d,\"random\":%s,\"run_mode\":%d}",
              request->interval,
              request->random ? "true" : "false",
              TDX_SLIDESHOW_RUN_MODE);
@@ -342,10 +680,10 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
              request.interval,
              request.random ? 1 : 0,
              TDX_SLIDESHOW_RUN_MODE);
-    if (TDX_SLIDESHOW_RUN_MODE == TDX_SLIDESHOW_RUN_MODE_DEEP_SLEEP) {
-        ESP_LOGI(TAG, "start_slideshow deep sleep mode configured, display recovery task is not present in current project");
-    } else {
-        ESP_LOGI(TAG, "start_slideshow software mode configured, display task is not present in current project");
+
+    esp_err_t start_ret = start_slideshow_runtime(base_path, &request, 0);
+    if (start_ret != ESP_OK) {
+        ESP_LOGW(TAG, "start_slideshow runtime start failed ret=%s", esp_err_to_name(start_ret));
     }
 
     return send_start_slideshow_result(req, true, NULL);

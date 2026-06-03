@@ -9,6 +9,7 @@
 #include <sys/unistd.h>
 
 #include "esp_log.h"
+#include "esp_vfs_fat.h"
 #include "esp_spiffs.h"
 #include "epd_display_app.h"
 #include "tdx_cfg.h"
@@ -276,8 +277,22 @@ static esp_err_t save_one_cast2pic_file(const char *dir_path, const char *file_n
     return ESP_OK;
 }
 
-static esp_err_t check_save_space(size_t required_len)
+static esp_err_t check_save_space(const char *base_path, size_t required_len)
 {
+#ifdef CONFIG_EXAMPLE_MOUNT_SD_CARD
+    uint64_t total_bytes = 0;
+    uint64_t free_bytes = 0;
+    if (base_path == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t info_ret = esp_vfs_fat_info(base_path, &total_bytes, &free_bytes);
+    if (info_ret != ESP_OK) {
+        ESP_LOGW(TAG, "cast2pic fatfs info failed base=%s ret=%s, continue without space check",
+                 base_path, esp_err_to_name(info_ret));
+        return ESP_OK;
+    }
+    return free_bytes >= (required_len + SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES) ? ESP_OK : ESP_ERR_NO_MEM;
+#else
     size_t total = 0;
     size_t used = 0;
     esp_err_t info_ret = esp_spiffs_info(NULL, &total, &used);
@@ -285,6 +300,7 @@ static esp_err_t check_save_space(size_t required_len)
         return ESP_OK;
     }
     return (total - used) >= (required_len + SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES) ? ESP_OK : ESP_ERR_NO_MEM;
+#endif
 }
 
 static esp_err_t save_cast2pic_files(const char *base_path,
@@ -306,8 +322,8 @@ static esp_err_t save_cast2pic_files(const char *base_path,
     for (size_t i = 0; i < meta->image_count; i++) {
         required_len += meta->images[i].bin_part.len + meta->images[i].image_part.len;
     }
-    if (check_save_space(required_len) != ESP_OK) {
-        *error_out = "storage_not_ready";
+    if (check_save_space(base_path, required_len) != ESP_OK) {
+        *error_out = "storage_not_enough";
         return ESP_ERR_NO_MEM;
     }
 

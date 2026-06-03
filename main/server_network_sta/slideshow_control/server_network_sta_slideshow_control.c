@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 
 #include "esp_log.h"
+#include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_slide_ctl";
@@ -309,8 +310,12 @@ esp_err_t ServerNetworkStaSlideshowControl_ProcessJson(httpd_req_t *req,
              g_slideshow_random_enable, esp_err_to_name(random_save_ret));
 
     if (control.sw == 1) {
-        ESP_LOGI(TAG, "set_slideshow enabled, display task is not present in current project");
+        esp_err_t start_ret = ServerNetworkStaSlideshow_StartSaved(base_path);
+        if (start_ret != ESP_OK) {
+            ESP_LOGW(TAG, "set_slideshow runtime start failed ret=%s", esp_err_to_name(start_ret));
+        }
     } else {
+        ServerNetworkStaSlideshow_Stop();
         ESP_LOGI(TAG, "set_slideshow disabled, current displayed image is unchanged");
     }
     return send_set_slideshow_result(req, true, NULL);

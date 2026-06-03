@@ -9,10 +9,13 @@
 #include <sys/unistd.h>
 
 #include "esp_log.h"
+#include "esp_vfs_fat.h"
+#include "esp_spiffs.h"
 #include "epd_display_app.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_upload";
+#define SERVER_NETWORK_STA_UPLOAD_WRITE_CHUNK 4096
 
 typedef struct {
     bool present;
@@ -233,7 +236,11 @@ static esp_err_t send_upload_result(httpd_req_t *req, bool ok, const char *messa
     const char *file_name = (meta != NULL && meta->file_name[0]) ? meta->file_name : "";
 
     strlcpy(message_text, message != NULL ? message : "", sizeof(message_text));
-    strlcpy(error_text, error != NULL ? error : "", sizeof(error_text));
+    if (ok && (error == NULL || error[0] == '\0')) {
+        strlcpy(error_text, "no error", sizeof(error_text));
+    } else {
+        strlcpy(error_text, error != NULL ? error : "", sizeof(error_text));
+    }
     if (file_name[0] != '\0') {
         snprintf(bin_file, sizeof(bin_file), "%s.bin", file_name);
         snprintf(image_file, sizeof(image_file), "%s.jpg", file_name);
@@ -264,13 +271,26 @@ static esp_err_t send_upload_result(httpd_req_t *req, bool ok, const char *messa
 static esp_err_t ensure_dir(const char *path)
 {
     struct stat st = {0};
+    if (path == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     if (stat(path, &st) == 0) {
         return S_ISDIR(st.st_mode) ? ESP_OK : ESP_FAIL;
     }
+
+    errno = 0;
     if (mkdir(path, 0775) == 0 || errno == EEXIST) {
         return ESP_OK;
     }
-    ESP_LOGE(TAG, "upload mkdir failed path=%s errno=%d", path, errno);
+
+    int err = errno;
+    if (err == ENOTSUP || err == EOPNOTSUPP) {
+        ESP_LOGW(TAG, "upload mkdir not supported, skip path=%s errno=%d", path, err);
+        return ESP_OK;
+    }
+
+    ESP_LOGE(TAG, "upload mkdir failed path=%s errno=%d", path, err);
     return ESP_FAIL;
 }
 
@@ -282,11 +302,78 @@ static esp_err_t write_file_exact(const char *path, const char *data, size_t len
         return ESP_FAIL;
     }
 
-    size_t written = fwrite(data, 1, len, fp);
+    size_t written_total = 0;
+    while (written_total < len) {
+        size_t remain = len - written_total;
+        size_t chunk = remain > SERVER_NETWORK_STA_UPLOAD_WRITE_CHUNK ?
+                       SERVER_NETWORK_STA_UPLOAD_WRITE_CHUNK : remain;
+        errno = 0;
+        size_t written = fwrite(data + written_total, 1, chunk, fp);
+        if (written != chunk) {
+            int err = errno;
+            int file_error = ferror(fp);
+            fclose(fp);
+            ESP_LOGE(TAG, "upload write failed path=%s offset=%u chunk=%u written=%u errno=%d ferror=%d",
+                     path,
+                     (unsigned int)written_total,
+                     (unsigned int)chunk,
+                     (unsigned int)written,
+                     err,
+                     file_error);
+            return ESP_FAIL;
+        }
+        written_total += written;
+    }
+
+    if (fflush(fp) != 0) {
+        int err = errno;
+        fclose(fp);
+        ESP_LOGE(TAG, "upload flush failed path=%s errno=%d", path, err);
+        return ESP_FAIL;
+    }
+
     fclose(fp);
     ESP_LOGI(TAG, "upload write path=%s len=%u written=%u",
-             path, (unsigned int)len, (unsigned int)written);
-    return written == len ? ESP_OK : ESP_FAIL;
+             path, (unsigned int)len, (unsigned int)written_total);
+    return ESP_OK;
+}
+
+static esp_err_t check_upload_save_space(const char *base_path, size_t bin_len, size_t image_len)
+{
+    if (base_path == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+#ifdef CONFIG_EXAMPLE_MOUNT_SD_CARD
+    uint64_t total_bytes = 0;
+    uint64_t free_bytes64 = 0;
+    esp_err_t info_ret = esp_vfs_fat_info(base_path, &total_bytes, &free_bytes64);
+    if (info_ret != ESP_OK) {
+        ESP_LOGW(TAG, "upload fatfs info failed base=%s ret=%s, continue without space check",
+                 base_path, esp_err_to_name(info_ret));
+        return ESP_OK;
+    }
+    size_t free_bytes = (size_t)free_bytes64;
+#else
+    size_t total = 0;
+    size_t used = 0;
+    esp_err_t info_ret = esp_spiffs_info(NULL, &total, &used);
+    if (info_ret != ESP_OK || total < used) {
+        ESP_LOGW(TAG, "upload spiffs info failed base=%s ret=%s total=%u used=%u, continue without space check",
+                 base_path, esp_err_to_name(info_ret), (unsigned int)total, (unsigned int)used);
+        return ESP_OK;
+    }
+
+    size_t free_bytes = total - used;
+#endif
+    size_t required_bytes = bin_len + image_len + SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES;
+
+    if (free_bytes < required_bytes) {
+        ESP_LOGE(TAG, "upload not enough storage free=%u required=%u",
+                 (unsigned int)free_bytes, (unsigned int)required_bytes);
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
 }
 
 static esp_err_t save_one_upload_file(const char *dir_path, const char *file_name,
@@ -338,6 +425,10 @@ static esp_err_t save_upload_files(const char *base_path, const upload_meta_t *m
     ESP_LOGI(TAG, "upload ensure dirs bin_dir=%s jpg_dir=%s", bin_dir, jpg_dir);
     if (ensure_dir(bin_dir) != ESP_OK || ensure_dir(jpg_dir) != ESP_OK) {
         return ESP_ERR_NOT_FOUND;
+    }
+    esp_err_t space_ret = check_upload_save_space(base_path, bin_part->len, image_part->len);
+    if (space_ret != ESP_OK) {
+        return space_ret;
     }
     if (save_one_upload_file(bin_dir, meta->file_name, ".bin", bin_part->data, bin_part->len) != ESP_OK) {
         return ESP_FAIL;
@@ -434,6 +525,9 @@ esp_err_t ServerNetworkStaUpload_Process(httpd_req_t *req,
         esp_err_t save_ret = save_upload_files(base_path, &meta, &bin_part, &image_part);
         if (save_ret == ESP_ERR_NOT_FOUND) {
             return send_upload_result(req, false, "sd not ready", "sd_not_ready", &meta);
+        }
+        if (save_ret == ESP_ERR_NO_MEM) {
+            return send_upload_result(req, false, "storage not enough", "storage_not_enough", &meta);
         }
         if (save_ret != ESP_OK) {
             return send_upload_result(req, false, "save failed", "save_failed", &meta);
