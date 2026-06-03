@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <dirent.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include "esp_log.h"
 #include "esp_err.h"
@@ -38,6 +39,61 @@ static const char *TAG = "example_mount";
 #define STORAGE_MOUNT_RETRY_COUNT 3
 #define STORAGE_MOUNT_RETRY_DELAY_MS 1000
 #define STORAGE_MOUNT_POWER_READY_DELAY_MS 1500
+
+static esp_err_t ensure_storage_dir(const char *path)
+{
+    struct stat st = {0};
+    if (path == NULL || path[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (stat(path, &st) == 0) {
+        return S_ISDIR(st.st_mode) ? ESP_OK : ESP_FAIL;
+    }
+
+    if (mkdir(path, 0775) == 0 || errno == EEXIST) {
+        ESP_LOGI(TAG, "Storage dir create: %s", path);
+        return ESP_OK;
+    }
+
+    int err = errno;
+    if (err == ENOTSUP || err == EOPNOTSUPP) {
+        ESP_LOGW(TAG, "Storage mkdir not supported, skip path=%s errno=%d", path, err);
+        return ESP_OK;
+    }
+
+    ESP_LOGE(TAG, "Storage mkdir failed path=%s errno=%d", path, err);
+    return ESP_FAIL;
+}
+
+static void ensure_default_storage_dirs(const char *base_path)
+{
+    static const char *dirs[] = {
+        "01_sys_init_img",
+        "02_sys_ap_img",
+        "03_sys_ap_html",
+        "04_sys_ai_img",
+        "05_user_ai_img",
+        "06_user_foundation_img",
+        "cast_img",
+        "bin_img",
+        "jpg_img",
+    };
+
+    if (base_path == NULL || base_path[0] == '\0') {
+        return;
+    }
+
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+        char path[128];
+        int len = snprintf(path, sizeof(path), "%s/%s", base_path, dirs[i]);
+        if (len < 0 || len >= (int)sizeof(path)) {
+            ESP_LOGW(TAG, "Storage default dir path too long base=%s name=%s", base_path, dirs[i]);
+            continue;
+        }
+        (void)ensure_storage_dir(path);
+    }
+}
 
 static bool path_has_suffix(const char *path, const char *suffix)
 {
@@ -337,6 +393,7 @@ esp_err_t example_mount_storage(const char* base_path)
     }
 
     sdmmc_card_print_info(stdout, card);
+    ensure_default_storage_dirs(base_path);
     example_print_storage_info(base_path);
     return ESP_OK;
 }
@@ -375,6 +432,7 @@ esp_err_t example_mount_storage(const char* base_path)
     }
 
     ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
+    ensure_default_storage_dirs(base_path);
     example_print_storage_info(base_path);
     return ESP_OK;
 }

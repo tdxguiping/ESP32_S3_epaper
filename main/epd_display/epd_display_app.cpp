@@ -25,6 +25,17 @@ EventGroupHandle_t sleep_group = NULL;
 static QueueHandle_t s_epd_display_queue = NULL;
 static TaskHandle_t s_epd_display_task = NULL;
 
+static void log_heap_watermark(const char *point)
+{
+    ESP_LOGI(TAG,
+             "heap %s free=%u min=%u psram=%u internal=%u",
+             point,
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+}
+
 ePaperPort ePaperDisplay(USER_EPD_MOSI_PIN,
                          USER_EPD_SCK_PIN,
                          USER_EPD_DC_PIN,
@@ -76,6 +87,7 @@ static esp_err_t copy_display_buffer(epd_display_job_t *job, const uint8_t *disp
     job->data = copy;
     job->size = display_size;
     ESP_LOGI(TAG, "display buffer copied ptr=%p size=%u", copy, (unsigned int)display_size);
+    log_heap_watermark("display_queue");
     return ESP_OK;
 }
 
@@ -90,6 +102,7 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
         }
 
         ESP_LOGI(TAG, "EPD display task start ptr=%p size=%u", job.data, (unsigned int)job.size);
+        log_heap_watermark("epd_start");
         UserLedStatus_Set(USER_LED_STATE_EPD_REFRESH);
         if (job.data == NULL || job.size == 0) {
             ESP_LOGW(TAG, "EPD display task skip empty job");
@@ -116,6 +129,7 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
 
         ESP_LOGI(TAG, "EPD display task done ptr=%p size=%u", job.data, (unsigned int)job.size);
         release_epd_job(&job);
+        log_heap_watermark("epd_end");
         UserLedStatus_Set(USER_LED_STATE_SUCCESS);
     }
 }

@@ -1,6 +1,7 @@
 ﻿#include "server_network_sta_cast.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +9,7 @@
 #include <sys/stat.h>
 #include <sys/unistd.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "esp_spiffs.h"
@@ -16,6 +18,17 @@
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_cast";
+
+static void log_heap_watermark(const char *point)
+{
+    ESP_LOGI(TAG,
+             "heap %s free=%u min=%u psram=%u internal=%u",
+             point,
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+}
 
 typedef struct {
     bool present;
@@ -227,16 +240,51 @@ static esp_err_t send_cast_result(httpd_req_t *req, bool ok, const char *message
 {
     char json[160];
     if (ok) {
-        snprintf(json, sizeof(json), "{\"func\":\"cast_result\",\"result\":0}");
+        snprintf(json, sizeof(json), "{\"func\":\"cast_result\",\"result\":\"success\"}");
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"cast_result\",\"result\":1,\"message\":\"%s\",\"error\":\"%s\"}",
+                 "{\"func\":\"cast_result\",\"result\":\"failure\",\"message\":\"%s\",\"error\":\"%s\"}",
                  message != NULL ? message : "cast failed",
                  error != NULL ? error : "");
     }
 
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, json);
+}
+
+static esp_err_t send_cast_chunk(httpd_req_t *req, const char *json)
+{
+    if (req == NULL || json == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    ESP_LOGI(TAG, "cast chunk: %s", json);
+    return httpd_resp_send_chunk(req, json, strlen(json));
+}
+
+static esp_err_t send_cast_received_chunk(httpd_req_t *req, const cast_meta_t *meta)
+{
+    char json[192];
+    snprintf(json,
+             sizeof(json),
+             "{\"func\":\"cast_received\",\"result\":\"success\",\"fileName\":\"%s\"}\n",
+             meta != NULL ? meta->file_name : "");
+    return send_cast_chunk(req, json);
+}
+
+static esp_err_t send_cast_final_chunk(httpd_req_t *req, bool ok, const char *message, const char *error)
+{
+    char json[224];
+    if (ok) {
+        snprintf(json, sizeof(json),
+                 "{\"func\":\"cast_result\",\"result\":\"success\",\"message\":\"saved\"}\n");
+    } else {
+        snprintf(json,
+                 sizeof(json),
+                 "{\"func\":\"cast_result\",\"result\":\"failure\",\"message\":\"%s\",\"error\":\"%s\"}\n",
+                 message != NULL ? message : "cast failed",
+                 error != NULL ? error : "");
+    }
+    return send_cast_chunk(req, json);
 }
 
 static esp_err_t ensure_dir(const char *path)
@@ -424,11 +472,11 @@ static const char *find_json_key(const char *body, const char *key)
     return NULL;
 }
 
-static bool parse_json_int(const char *body, const char *key, int *out)
+static bool parse_json_u32(const char *body, const char *key, uint32_t *out)
 {
     const char *pos = find_json_key(body, key);
     char *end_ptr = NULL;
-    long value = 0;
+    unsigned long value = 0;
     if (pos == NULL || out == NULL) {
         return false;
     }
@@ -444,12 +492,16 @@ static bool parse_json_int(const char *body, const char *key, int *out)
     while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
         pos++;
     }
-
-    value = strtol(pos, &end_ptr, 10);
-    if (end_ptr == pos) {
+    if (*pos == '-') {
         return false;
     }
-    *out = (int)value;
+
+    errno = 0;
+    value = strtoul(pos, &end_ptr, 10);
+    if (errno != 0 || end_ptr == pos || value > UINT32_MAX) {
+        return false;
+    }
+    *out = (uint32_t)value;
     return true;
 }
 
@@ -483,7 +535,7 @@ static bool parse_json_bool(const char *body, const char *key, bool *out)
     return false;
 }
 
-static void read_slideshow_control_values(const char *control_path, int *interval, bool *random)
+static void read_slideshow_control_values(const char *control_path, uint32_t *interval, bool *random)
 {
     FILE *fp = fopen(control_path, "rb");
     if (fp == NULL) {
@@ -495,7 +547,7 @@ static void read_slideshow_control_values(const char *control_path, int *interva
     fclose(fp);
     buf[len] = '\0';
 
-    parse_json_int(buf, "interval", interval);
+    parse_json_u32(buf, "interval", interval);
     parse_json_bool(buf, "random", random);
 }
 
@@ -503,15 +555,15 @@ static esp_err_t stop_slideshow_for_cast(const char *base_path)
 {
     char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
     char json[160];
-    int interval = 60;
+    uint32_t interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
     bool random = false;
 
     snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", base_path, TDX_SLIDESHOW_CONTROL_FILE);
     read_slideshow_control_values(control_path, &interval, &random);
 
     int json_len = snprintf(json, sizeof(json),
-                            "{\"sw\":0,\"interval\":%d,\"random\":%s,\"run_mode\":%d}",
-                            interval,
+                            "{\"sw\":0,\"interval\":%lu,\"random\":%s,\"run_mode\":%d}",
+                            (unsigned long)interval,
                             random ? "true" : "false",
                             TDX_SLIDESHOW_RUN_MODE);
     if (json_len < 0 || (size_t)json_len >= sizeof(json)) {
@@ -542,7 +594,6 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
     multipart_part_t bin_part = {0};
     multipart_part_t image_part = {0};
     cast_meta_t meta = {0};
-    bool response_sent = false;
     bool slideshow_stopped = false;
 
     if (!extract_boundary(content_type, boundary, sizeof(boundary))) {
@@ -600,10 +651,10 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
         return send_cast_result(req, false, "cast failed", "save_required_for_last_cast");
     }
 
-    esp_err_t resp_ret = send_cast_result(req, true, NULL, NULL);
-    response_sent = true;
+    httpd_resp_set_type(req, "application/x-ndjson");
+    esp_err_t resp_ret = send_cast_received_chunk(req, &meta);
     if (resp_ret != ESP_OK) {
-        ESP_LOGW(TAG, "cast early response failed ret=%s", esp_err_to_name(resp_ret));
+        ESP_LOGW(TAG, "cast received response failed ret=%s", esp_err_to_name(resp_ret));
         return resp_ret;
     }
 
@@ -612,6 +663,8 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
         if (display_ret != ESP_OK) {
             ESP_LOGE(TAG, "cast display queue after response failed fileName=%s ret=%s",
                      meta.file_name, esp_err_to_name(display_ret));
+            (void)send_cast_final_chunk(req, false, "cast failed", "display_queue_failed");
+            httpd_resp_send_chunk(req, NULL, 0);
             return ESP_OK;
         }
         if (stop_slideshow_for_cast(base_path) == ESP_OK) {
@@ -624,16 +677,23 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
     esp_err_t save_ret = save_cast_files(base_path, &meta, &bin_part, &image_part);
     if (save_ret == ESP_ERR_NOT_FOUND) {
         ESP_LOGE(TAG, "cast save after response failed: sd_not_ready");
-        return response_sent ? ESP_OK : send_cast_result(req, false, "cast failed", "sd_not_ready");
+        (void)send_cast_final_chunk(req, false, "cast failed", "sd_not_ready");
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
     }
     if (save_ret == ESP_ERR_NO_MEM) {
         ESP_LOGE(TAG, "cast save after response failed: storage_not_enough");
-        return response_sent ? ESP_OK : send_cast_result(req, false, "cast failed", "storage_not_enough");
+        (void)send_cast_final_chunk(req, false, "cast failed", "storage_not_enough");
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
     }
     if (save_ret != ESP_OK) {
         ESP_LOGE(TAG, "cast save after response failed ret=%s", esp_err_to_name(save_ret));
-        return response_sent ? ESP_OK : send_cast_result(req, false, "cast failed", "save_failed");
+        (void)send_cast_final_chunk(req, false, "cast failed", "save_failed");
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
     }
+    log_heap_watermark("save_done");
 
     if (meta.show && !slideshow_stopped) {
         if (stop_slideshow_for_cast(base_path) != ESP_OK) {
@@ -643,8 +703,12 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
 
     if (record_last_success_cast(base_path, &meta) != ESP_OK) {
         ESP_LOGE(TAG, "cast record last after response failed");
-        return response_sent ? ESP_OK : send_cast_result(req, false, "cast failed", "record_last_cast_failed");
+        (void)send_cast_final_chunk(req, false, "cast failed", "record_last_cast_failed");
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
     }
 
+    (void)send_cast_final_chunk(req, true, NULL, NULL);
+    httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }

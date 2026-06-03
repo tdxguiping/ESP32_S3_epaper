@@ -49,7 +49,7 @@ static esp_err_t send_saved_images_error(httpd_req_t *req)
     ESP_LOGW(TAG, "get_saved_images failed");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req,
-                              "{\"func\":\"get_saved_images_result\",\"result\":1,\"message\":\"read saved images failed\"}");
+                              "{\"func\":\"get_saved_images_result\",\"result\":\"failure\",\"message\":\"read saved images failed\"}");
 }
 
 static esp_err_t send_saved_images_empty(httpd_req_t *req)
@@ -57,7 +57,7 @@ static esp_err_t send_saved_images_empty(httpd_req_t *req)
     ESP_LOGI(TAG, "get_saved_images empty result");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req,
-                              "{\"func\":\"get_saved_images_result\",\"result\":0,\"images\":[]}");
+                              "{\"func\":\"get_saved_images_result\",\"result\":\"success\",\"images\":[]}");
 }
 
 esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
@@ -99,7 +99,7 @@ esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
     size_t used = 0;
     int count = 0;
     int written = snprintf(json, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX,
-                           "{\"func\":\"get_saved_images_result\",\"result\":0,\"images\":[");
+                           "{\"func\":\"get_saved_images_result\",\"result\":\"success\",\"images\":[");
     if (written < 0 || (size_t)written >= SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX) {
         free(json);
         closedir(dir);

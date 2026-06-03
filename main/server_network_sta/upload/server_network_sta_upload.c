@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <sys/unistd.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "esp_spiffs.h"
@@ -16,6 +17,17 @@
 
 static const char *TAG = "server_sta_upload";
 #define SERVER_NETWORK_STA_UPLOAD_WRITE_CHUNK 4096
+
+static void log_heap_watermark(const char *point)
+{
+    ESP_LOGI(TAG,
+             "heap %s free=%u min=%u psram=%u internal=%u",
+             point,
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+}
 
 typedef struct {
     bool present;
@@ -247,9 +259,9 @@ static esp_err_t send_upload_result(httpd_req_t *req, bool ok, const char *messa
     }
 
     int json_len = snprintf(json, sizeof(json),
-                            "{\"func\":\"upload_result\",\"result\":%d,\"message\":\"%s\",\"fileName\":\"%s\","
+                            "{\"func\":\"upload_result\",\"result\":\"%s\",\"message\":\"%s\",\"fileName\":\"%s\","
                             "\"bin_file\":\"%s\",\"image_file\":\"%s\",\"save\":%s,\"show\":%s,\"error\":\"%s\"}",
-                            ok ? 1 : 0,
+                            ok ? "success" : "failure",
                             message_text,
                             file_name,
                             bin_file,
@@ -261,7 +273,7 @@ static esp_err_t send_upload_result(httpd_req_t *req, bool ok, const char *messa
         ESP_LOGE(TAG, "upload response json too long file=%s", file_name);
         httpd_resp_set_type(req, "application/json");
         return httpd_resp_sendstr(req,
-                                  "{\"func\":\"upload_result\",\"result\":0,\"message\":\"upload response too long\",\"error\":\"response_too_long\"}");
+                                  "{\"func\":\"upload_result\",\"result\":\"failure\",\"message\":\"upload response too long\",\"error\":\"response_too_long\"}");
     }
     ESP_LOGI(TAG, "upload response: %s", json);
     httpd_resp_set_type(req, "application/json");
@@ -532,6 +544,7 @@ esp_err_t ServerNetworkStaUpload_Process(httpd_req_t *req,
         if (save_ret != ESP_OK) {
             return send_upload_result(req, false, "save failed", "save_failed", &meta);
         }
+        log_heap_watermark("save_done");
     }
 
     return send_upload_result(req, true, "upload success", "", &meta);

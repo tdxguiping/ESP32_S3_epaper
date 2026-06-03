@@ -24,7 +24,7 @@ static const char *TAG = "server_sta_slide";
 typedef struct {
     char file_names[TDX_SLIDESHOW_MAX_FILES][TDX_SLIDESHOW_FILE_NAME_MAX_LEN];
     size_t file_count;
-    int interval;
+    uint32_t interval;
     bool random;
 } slideshow_request_t;
 
@@ -83,6 +83,39 @@ static bool parse_json_int(const char *body, const char *key, int *out)
         return false;
     }
     *out = (int)value;
+    return true;
+}
+
+static bool parse_json_u32(const char *body, const char *key, uint32_t *out)
+{
+    const char *pos = find_json_key(body, key);
+    char *end_ptr = NULL;
+    unsigned long value = 0;
+    if (pos == NULL || out == NULL) {
+        return false;
+    }
+
+    pos += strlen(key) + 2;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != ':') {
+        return false;
+    }
+    pos++;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos == '-') {
+        return false;
+    }
+
+    errno = 0;
+    value = strtoul(pos, &end_ptr, 10);
+    if (errno != 0 || end_ptr == pos || value > UINT32_MAX) {
+        return false;
+    }
+    *out = (uint32_t)value;
     return true;
 }
 
@@ -192,10 +225,10 @@ static esp_err_t send_start_slideshow_result(httpd_req_t *req, bool ok, const ch
 {
     char json[160];
     if (ok) {
-        snprintf(json, sizeof(json), "{\"func\":\"start_slideshow_result\",\"result\":0}");
+        snprintf(json, sizeof(json), "{\"func\":\"start_slideshow_result\",\"result\":\"success\"}");
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"start_slideshow_result\",\"result\":1,\"message\":\"%s\"}",
+                 "{\"func\":\"start_slideshow_result\",\"result\":\"failure\",\"message\":\"%s\"}",
                  message != NULL ? message : "start slideshow failed");
     }
 
@@ -317,6 +350,19 @@ static void save_next_file_name(const slideshow_request_t *request, size_t next_
              request->file_names[next_index], esp_err_to_name(ret));
 }
 
+static void wait_slideshow_interval_seconds(uint32_t interval)
+{
+    if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
+        interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
+    }
+
+    TickType_t last_wake_tick = xTaskGetTickCount();
+    const TickType_t one_second_ticks = pdMS_TO_TICKS(1000);
+    for (uint32_t elapsed_s = 0; elapsed_s < interval && !s_slideshow_stop; elapsed_s++) {
+        vTaskDelayUntil(&last_wake_tick, one_second_ticks);
+    }
+}
+
 static size_t find_file_index(const slideshow_request_t *request, const char *file_name)
 {
     if (request == NULL || file_name == NULL) {
@@ -355,7 +401,7 @@ static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_req
 
     snprintf(config_path, sizeof(config_path), "%s/bin_img/%s", base_path, TDX_SLIDESHOW_CONFIG_FILE);
     if (stat(config_path, &st) != 0 || st.st_size <= 0) {
-        ESP_LOGE(TAG, "slideshow config missing path=%s", config_path);
+        ESP_LOGI(TAG, "slideshow config missing path=%s", config_path);
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -380,7 +426,7 @@ static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_req
         ESP_LOGE(TAG, "slideshow config parse failed path=%s", config_path);
         return ESP_FAIL;
     }
-    parse_json_int(json, "interval", &request->interval);
+    parse_json_u32(json, "interval", &request->interval);
     if (request->interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS ||
         request->interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
         request->interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
@@ -390,7 +436,7 @@ static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_req
     return ESP_OK;
 }
 
-static bool read_slideshow_control_on(const char *base_path, int *interval, bool *random)
+static bool read_slideshow_control_on(const char *base_path, uint32_t *interval, bool *random)
 {
     char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
     char buf[256] = {0};
@@ -416,14 +462,14 @@ static bool read_slideshow_control_on(const char *base_path, int *interval, bool
         return false;
     }
     if (interval != NULL) {
-        parse_json_int(buf, "interval", interval);
+        parse_json_u32(buf, "interval", interval);
     }
     if (random != NULL) {
         *random = parse_json_bool_default(buf, "random", *random);
     }
-    ESP_LOGI(TAG, "slideshow control read sw=%d interval=%d random=%d json=%s",
+    ESP_LOGI(TAG, "slideshow control read sw=%d interval=%lu random=%d json=%s",
              sw,
-             interval != NULL ? *interval : 0,
+             interval != NULL ? (unsigned long)*interval : 0UL,
              random != NULL && *random ? 1 : 0,
              buf);
     return sw == 1;
@@ -438,9 +484,9 @@ static void slideshow_task(void *arg)
         return;
     }
 
-    ESP_LOGI(TAG, "slideshow task start count=%u interval=%d random=%d index=%u",
+    ESP_LOGI(TAG, "slideshow task start count=%u interval=%lu random=%d index=%u",
              (unsigned int)runtime->request.file_count,
-             runtime->request.interval,
+             (unsigned long)runtime->request.interval,
              runtime->request.random ? 1 : 0,
              (unsigned int)runtime->current_index);
 
@@ -461,13 +507,7 @@ static void slideshow_task(void *arg)
             runtime->current_index = slideshow_next_index(&runtime->request, runtime->current_index);
         }
 
-        int interval = runtime->request.interval;
-        if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
-            interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
-        }
-        for (int i = 0; i < interval && !s_slideshow_stop; i++) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
+        wait_slideshow_interval_seconds(runtime->request.interval);
     }
 
     ESP_LOGI(TAG, "slideshow task stop");
@@ -548,7 +588,7 @@ esp_err_t ServerNetworkStaSlideshow_StartSaved(const char *base_path)
         return ret;
     }
 
-    int interval = request->interval;
+    uint32_t interval = request->interval;
     bool random = request->random;
     if (!read_slideshow_control_on(base_path, &interval, &random)) {
         ServerNetworkStaSlideshow_Stop();
@@ -595,8 +635,8 @@ static esp_err_t save_slideshow_config(const char *bin_dir, const slideshow_requ
     }
 
     written = snprintf(json + used, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX - used,
-                       "],\"interval\":%d,\"random\":%s}",
-                       request->interval, request->random ? "true" : "false");
+                       "],\"interval\":%lu,\"random\":%s}",
+                       (unsigned long)request->interval, request->random ? "true" : "false");
     if (written < 0 || used + (size_t)written >= SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX) {
         free(json);
         return ESP_FAIL;
@@ -612,8 +652,8 @@ static esp_err_t save_slideshow_control(const char *bin_dir, const slideshow_req
     char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
     char json[160];
     snprintf(path, sizeof(path), "%s/%s", bin_dir, TDX_SLIDESHOW_CONTROL_FILE);
-    snprintf(json, sizeof(json), "{\"sw\":1,\"interval\":%d,\"random\":%s,\"run_mode\":%d}",
-             request->interval,
+    snprintf(json, sizeof(json), "{\"sw\":1,\"interval\":%lu,\"random\":%s,\"run_mode\":%d}",
+             (unsigned long)request->interval,
              request->random ? "true" : "false",
              TDX_SLIDESHOW_RUN_MODE);
     return write_text_file(path, json);
@@ -628,7 +668,7 @@ static esp_err_t parse_start_slideshow_request(const char *body, slideshow_reque
     if (!parse_file_names(body, request)) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (!parse_json_int(body, "interval", &request->interval) ||
+    if (!parse_json_u32(body, "interval", &request->interval) ||
         request->interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS ||
         request->interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
         return ESP_ERR_INVALID_SIZE;
@@ -675,9 +715,9 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
     ESP_LOGI(TAG, "start_slideshow save random=%d ret=%s",
              g_slideshow_random_enable, esp_err_to_name(random_save_ret));
 
-    ESP_LOGI(TAG, "start_slideshow ready count=%u interval=%d random=%d run_mode=%d",
+    ESP_LOGI(TAG, "start_slideshow ready count=%u interval=%lu random=%d run_mode=%d",
              (unsigned int)request.file_count,
-             request.interval,
+             (unsigned long)request.interval,
              request.random ? 1 : 0,
              TDX_SLIDESHOW_RUN_MODE);
 

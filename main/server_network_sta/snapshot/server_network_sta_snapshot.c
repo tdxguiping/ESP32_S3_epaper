@@ -2,6 +2,7 @@
 
 #include <dirent.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +17,7 @@ static const char *TAG = "server_sta_snap";
 
 typedef struct {
     int sw;
-    int interval;
+    uint32_t interval;
     bool random;
     char file_names[TDX_SLIDESHOW_MAX_FILES][TDX_SLIDESHOW_FILE_NAME_MAX_LEN];
     size_t file_count;
@@ -98,6 +99,38 @@ static bool parse_json_int(const char *body, const char *key, int *out)
         return false;
     }
     *out = (int)value;
+    return true;
+}
+
+static bool parse_json_u32(const char *body, const char *key, uint32_t *out)
+{
+    const char *pos = find_json_key(body, key);
+    char *end_ptr = NULL;
+    unsigned long value = 0;
+    if (pos == NULL || out == NULL) {
+        return false;
+    }
+
+    pos += strlen(key) + 2;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != ':') {
+        return false;
+    }
+    pos++;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos == '-') {
+        return false;
+    }
+
+    value = strtoul(pos, &end_ptr, 10);
+    if (end_ptr == pos || value > UINT32_MAX) {
+        return false;
+    }
+    *out = (uint32_t)value;
     return true;
 }
 
@@ -207,7 +240,7 @@ static void read_slideshow_state(const char *base_path, snapshot_slideshow_t *sl
 
     if (read_text_file(config_path, config_buf, sizeof(config_buf))) {
         parse_slideshow_file_names(config_buf, slideshow);
-        parse_json_int(config_buf, "interval", &slideshow->interval);
+        parse_json_u32(config_buf, "interval", &slideshow->interval);
         parse_json_bool(config_buf, "random", &slideshow->random);
     }
 
@@ -219,7 +252,7 @@ static void read_slideshow_state(const char *base_path, snapshot_slideshow_t *sl
         } else if (parse_json_bool(control_buf, "enable", &enable)) {
             slideshow->sw = enable ? 1 : 0;
         }
-        parse_json_int(control_buf, "interval", &slideshow->interval);
+        parse_json_u32(control_buf, "interval", &slideshow->interval);
         parse_json_bool(control_buf, "random", &slideshow->random);
     }
 
@@ -262,7 +295,7 @@ static esp_err_t append_images_json(char *json, size_t json_size, size_t *used, 
 
     DIR *dir = opendir(jpg_dir);
     if (dir == NULL) {
-        return append_text(json, json_size, used, "\"images\":[\"NULL\"]");
+        return append_text(json, json_size, used, "\"images\":[]");
     }
 
     ESP_RETURN_ON_ERROR(append_text(json, json_size, used, "\"images\":["), TAG, "append images begin failed");
@@ -300,9 +333,6 @@ static esp_err_t append_images_json(char *json, size_t json_size, size_t *used, 
     }
     closedir(dir);
 
-    if (count == 0) {
-        ESP_RETURN_ON_ERROR(append_text(json, json_size, used, "\"NULL\""), TAG, "append null image failed");
-    }
     return append_text(json, json_size, used, "]");
 }
 
@@ -317,9 +347,7 @@ static esp_err_t append_slideshow_json(char *json, size_t json_size, size_t *use
                         TAG,
                         "append slideshow begin failed");
 
-    if (slideshow->file_count == 0) {
-        ESP_RETURN_ON_ERROR(append_text(json, json_size, used, "\"NULL\""), TAG, "append null slideshow failed");
-    } else {
+    if (slideshow->file_count > 0) {
         for (size_t i = 0; i < slideshow->file_count; i++) {
             ESP_RETURN_ON_ERROR(append_format(json,
                                               json_size,
@@ -335,8 +363,8 @@ static esp_err_t append_slideshow_json(char *json, size_t json_size, size_t *use
     return append_format(json,
                          json_size,
                          used,
-                         "],\"interval\":%d,\"random\":%s}}",
-                         slideshow->interval,
+                         "],\"interval\":%lu,\"random\":%s}}",
+                         (unsigned long)slideshow->interval,
                          slideshow->random ? "true" : "false");
 }
 
@@ -353,7 +381,7 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
     char *json = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
     if (json == NULL) {
         httpd_resp_set_type(req, "application/json");
-        return httpd_resp_sendstr(req, "{\"func\":\"get_snapshot_result\",\"result\":1}");
+        return httpd_resp_sendstr(req, "{\"func\":\"get_snapshot_result\",\"result\":\"failure\"}");
     }
 
     snapshot_slideshow_t slideshow;
@@ -361,7 +389,7 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
 
     size_t used = 0;
     esp_err_t ret = append_text(json, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX, &used,
-                                "{\"func\":\"get_snapshot_result\",\"result\":0,");
+                                "{\"func\":\"get_snapshot_result\",\"result\":\"success\",");
     if (ret == ESP_OK) {
         ret = append_images_json(json, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX, &used, base_path);
     }
@@ -372,7 +400,7 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
     if (ret != ESP_OK) {
         free(json);
         httpd_resp_set_type(req, "application/json");
-        return httpd_resp_sendstr(req, "{\"func\":\"get_snapshot_result\",\"result\":1}");
+        return httpd_resp_sendstr(req, "{\"func\":\"get_snapshot_result\",\"result\":\"failure\"}");
     }
 
     ESP_LOGI(TAG, "get_snapshot images/slideshow response len=%u sw=%d files=%u",

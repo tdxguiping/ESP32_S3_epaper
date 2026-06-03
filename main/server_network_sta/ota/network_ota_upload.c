@@ -10,6 +10,7 @@
 #include "esp_app_desc.h"
 #include "esp_app_format.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_image_format.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -24,6 +25,17 @@ static const char *TAG = "net-ota-upload";
 #define OTA_UPLOAD_MAX_BODY_SIZE (6 * 1024 * 1024)
 #define POWER_MODE_TRUE true
 #define POWER_MODE_FALSE false
+
+static void log_heap_watermark(const char *point)
+{
+    ESP_LOGI(TAG,
+             "heap %s free=%u min=%u psram=%u internal=%u",
+             point,
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+}
 
 typedef struct {
     const char *data;
@@ -300,6 +312,7 @@ static esp_err_t ota_stream_finish(httpd_req_t *req)
     }
 
     esp_err_t ret = httpd_resp_send_chunk(req, NULL, 0);
+    log_heap_watermark("ota_end");
     ESP_LOGI(TAG, "finish ota stream ret=%s", esp_err_to_name(ret));
     return ret;
 }
@@ -575,6 +588,7 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
     multipart_field_t firmware_field = {0};
     ota_upload_meta_t meta = {0};
 
+    log_heap_watermark("ota_start");
     ota_stream_begin(req);
     send_ota_eventf(req, "body_received", 0, "body_received", ESP_OK,
                     ",\"body_len\":%u",

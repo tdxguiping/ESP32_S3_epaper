@@ -30,6 +30,17 @@ static const char *TAG = "server_sta_data";
 static char s_base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX] = {0};
 static SemaphoreHandle_t s_upload_mutex;
 
+static void log_heap_watermark(const char *point)
+{
+    ESP_LOGI(TAG,
+             "heap %s free=%u min=%u psram=%u internal=%u",
+             point,
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+}
+
 static char *alloc_request_body_buffer(size_t size)
 {
     /* English: Prefer PSRAM for full upload bodies so internal RAM remains available for WiFi and HTTP server tasks. */
@@ -136,7 +147,7 @@ static esp_err_t send_invalid_json_response(httpd_req_t *req, const char *func)
 {
     char json[160] = {0};
     snprintf(json, sizeof(json),
-             "{\"func\":\"%s\",\"result\":1,\"message\":\"invalid_Json\",\"stage\":\"receive_data_redirect_handler\"}",
+             "{\"func\":\"%s\",\"result\":\"failure\",\"message\":\"invalid_Json\",\"stage\":\"receive_data_redirect_handler\"}",
              func != NULL ? func : "get_saved_images");
     return send_json_response(req, json);
 }
@@ -156,10 +167,10 @@ static bool body_looks_like_json(const char *body, size_t body_len)
     return false;
 }
 
-static esp_err_t send_ping_result_response(httpd_req_t *req)
+static esp_err_t send_unsupported_func_response(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "send_ping_result_response: receive dispatcher alive");
-    return send_json_response(req, "{\"func\":\"ping_result\",\"result\":0,\"message\":\"Server Network STA receive ok\"}");
+    ESP_LOGI(TAG, "send_unsupported_func_response");
+    return send_json_response(req, "{\"func\":\"unknown_result\",\"result\":\"failure\",\"message\":\"unsupported func\"}");
 }
 
 static esp_err_t process_small_json_request(httpd_req_t *req, const char *body, size_t body_len)
@@ -209,7 +220,7 @@ static esp_err_t process_small_json_request(httpd_req_t *req, const char *body, 
     }
 
     ESP_LOGW(TAG, "process_small_json_request: unsupported json command");
-    return send_ping_result_response(req);
+    return send_unsupported_func_response(req);
 }
 
 static bool header_value_contains(const char *headers, size_t headers_len, const char *name, const char *value)
@@ -395,7 +406,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
                 return NetworkOtaUpload_SendErrorAndFinish(req, "upload_busy", "upload_busy", ESP_ERR_TIMEOUT);
             }
             return send_json_response(req,
-                                      "{\"result\":1,\"message\":\"upload_busy\",\"error\":\"upload_busy\"}");
+                                      "{\"result\":\"failure\",\"message\":\"upload_busy\",\"error\":\"upload_busy\"}");
         }
         upload_mutex_locked = true;
         ESP_LOGI(TAG, "receive_data_redirect_handler: upload slot acquired uri=%s",
@@ -430,6 +441,10 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
 
     bool is_multipart = (strstr(content_type, "multipart/form-data") != NULL);
     bool is_small_json = (!is_multipart && remaining <= SERVER_NETWORK_STA_SMALL_JSON_BODY_MAX);
+    bool log_heap_request = is_network_ota || is_multipart;
+    if (!is_network_ota && is_multipart) {
+        log_heap_watermark("dataUP_enter");
+    }
     if (is_multipart) {
         UserLedStatus_Set(USER_LED_STATE_TRANSFER);
     }
@@ -442,9 +457,15 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         httpd_resp_send_500(req);
         return ESP_ERR_NO_MEM;
     }
+    if (log_heap_request) {
+        log_heap_watermark("body_alloc");
+    }
 
     if (!read_request_body_to_buffer(req, body, remaining + 1, remaining)) {
         heap_caps_free(body);
+        if (log_heap_request) {
+            log_heap_watermark("body_free");
+        }
         if (upload_mutex_locked) {
             xSemaphoreGive(s_upload_mutex);
         }
@@ -476,7 +497,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
             resp_ret = process_multipart_upload_request(req, body, remaining, content_type);
             if (resp_ret == ESP_OK) {
                 resp_ret = send_json_response(req,
-                                              "{\"result\":0,\"message\":\"upload_success\",\"stage\":\"dataUP\"}");
+                                              "{\"result\":\"success\",\"message\":\"upload_success\",\"stage\":\"dataUP\"}");
             } else {
                 httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save failed");
             }
@@ -488,6 +509,9 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
     }
 
     heap_caps_free(body);
+    if (log_heap_request) {
+        log_heap_watermark("body_free");
+    }
 
     if (upload_mutex_locked) {
         xSemaphoreGive(s_upload_mutex);

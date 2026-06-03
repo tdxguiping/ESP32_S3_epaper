@@ -1,6 +1,7 @@
 #include "server_network_sta_delete.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -138,10 +139,10 @@ static esp_err_t send_delete_result(httpd_req_t *req, bool ok, const char *messa
 {
     char json[160];
     if (ok) {
-        snprintf(json, sizeof(json), "{\"func\":\"delete_result\",\"result\":0}");
+        snprintf(json, sizeof(json), "{\"func\":\"delete_result\",\"result\":\"success\"}");
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"delete_result\",\"result\":1,\"message\":\"%s\"}",
+                 "{\"func\":\"delete_result\",\"result\":\"failure\",\"message\":\"%s\"}",
                  message != NULL ? message : "delete failed");
     }
 
@@ -207,11 +208,11 @@ static bool extract_json_string_value(const char *body, const char *key, char *o
     return true;
 }
 
-static bool parse_json_int_default(const char *body, const char *key, int default_value, int *out)
+static bool parse_json_u32_default(const char *body, const char *key, uint32_t default_value, uint32_t *out)
 {
     const char *pos = find_json_key(body, key);
     char *end_ptr = NULL;
-    long value = 0;
+    unsigned long value = 0;
     if (out == NULL) {
         return false;
     }
@@ -232,16 +233,20 @@ static bool parse_json_int_default(const char *body, const char *key, int defaul
     while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
         pos++;
     }
+    if (*pos == '-') {
+        *out = default_value;
+        return false;
+    }
 
     errno = 0;
-    value = strtol(pos, &end_ptr, 10);
+    value = strtoul(pos, &end_ptr, 10);
     if (errno != 0 || end_ptr == pos ||
         value < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS ||
         value > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
         *out = default_value;
         return false;
     }
-    *out = (int)value;
+    *out = (uint32_t)value;
     return true;
 }
 
@@ -349,9 +354,9 @@ static void cleanup_slideshow_if_deleted(const char *base_path, const delete_req
 
     size_t used = 0;
     size_t kept = 0;
-    int interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
+    uint32_t interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
     bool random = parse_json_bool_default(buf, "random", false);
-    (void)parse_json_int_default(buf, "interval", TDX_SLIDESHOW_INTERVAL_MIN_SECONDS, &interval);
+    (void)parse_json_u32_default(buf, "interval", TDX_SLIDESHOW_INTERVAL_MIN_SECONDS, &interval);
 
     // Preserve slideshow timing fields while removing deleted names from the queue.
     // 删除轮播队列中的目标文件名时保留 interval/random，避免影响已有轮播设置。
@@ -392,8 +397,8 @@ static void cleanup_slideshow_if_deleted(const char *base_path, const delete_req
     }
 
     written = snprintf(json + used, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX - used,
-                       "],\"interval\":%d,\"random\":%s}",
-                       interval, random ? "true" : "false");
+                       "],\"interval\":%lu,\"random\":%s}",
+                       (unsigned long)interval, random ? "true" : "false");
     if (written >= 0 && used + (size_t)written < SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX) {
         fp = fopen(config_path, "wb");
         if (fp != NULL) {
@@ -407,8 +412,8 @@ static void cleanup_slideshow_if_deleted(const char *base_path, const delete_req
         fp = fopen(control_path, "wb");
         if (fp != NULL) {
             char control[160];
-            snprintf(control, sizeof(control), "{\"sw\":0,\"interval\":%d,\"random\":%s,\"run_mode\":%d}",
-                     interval, random ? "true" : "false", TDX_SLIDESHOW_RUN_MODE);
+            snprintf(control, sizeof(control), "{\"sw\":0,\"interval\":%lu,\"random\":%s,\"run_mode\":%d}",
+                     (unsigned long)interval, random ? "true" : "false", TDX_SLIDESHOW_RUN_MODE);
             fwrite(control, 1, strlen(control), fp);
             fclose(fp);
             ESP_LOGI(TAG, "delete disabled slideshow because list is empty");

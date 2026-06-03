@@ -107,8 +107,8 @@
 // Keep slideshow limits and state file names here so JSON parsing and saved config stay in sync.
 #define TDX_SLIDESHOW_FILE_NAME_MAX_LEN 48
 #define TDX_SLIDESHOW_MAX_FILES 50
-#define TDX_SLIDESHOW_INTERVAL_MIN_SECONDS 1
-#define TDX_SLIDESHOW_INTERVAL_MAX_SECONDS 3600
+#define TDX_SLIDESHOW_INTERVAL_MIN_SECONDS 60
+#define TDX_SLIDESHOW_INTERVAL_MAX_SECONDS (7U * 24U * 60U * 60U) // 7 days
 #define TDX_SLIDESHOW_CONFIG_FILE "slideshow_config.txt"
 #define TDX_SLIDESHOW_CONTROL_FILE "show_control.txt"
 #define TDX_SLIDESHOW_AFTER_DISPLAY_WAIT_MS 12000

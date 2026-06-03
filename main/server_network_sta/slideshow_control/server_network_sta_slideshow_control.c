@@ -1,6 +1,7 @@
 #include "server_network_sta_slideshow_control.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,7 +16,7 @@ static const char *TAG = "server_sta_slide_ctl";
 
 typedef struct {
     int sw;
-    int interval;
+    uint32_t interval;
     bool random;
 } slideshow_control_t;
 
@@ -79,6 +80,39 @@ static bool parse_json_int(const char *body, const char *key, int *out)
     return true;
 }
 
+static bool parse_json_u32(const char *body, const char *key, uint32_t *out)
+{
+    const char *pos = find_json_key(body, key);
+    char *end_ptr = NULL;
+    unsigned long value = 0;
+    if (pos == NULL || out == NULL) {
+        return false;
+    }
+
+    pos += strlen(key) + 2;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != ':') {
+        return false;
+    }
+    pos++;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos == '-') {
+        return false;
+    }
+
+    errno = 0;
+    value = strtoul(pos, &end_ptr, 10);
+    if (errno != 0 || end_ptr == pos || value > UINT32_MAX) {
+        return false;
+    }
+    *out = (uint32_t)value;
+    return true;
+}
+
 static bool parse_json_bool_optional(const char *body, const char *key, bool *out, bool *present)
 {
     const char *pos = find_json_key(body, key);
@@ -119,10 +153,10 @@ static esp_err_t send_set_slideshow_result(httpd_req_t *req, bool ok, const char
 {
     char json[160];
     if (ok) {
-        snprintf(json, sizeof(json), "{\"func\":\"set_slideshow_result\",\"result\":0}");
+        snprintf(json, sizeof(json), "{\"func\":\"set_slideshow_result\",\"result\":\"success\"}");
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"set_slideshow_result\",\"result\":1,\"message\":\"%s\"}",
+                 "{\"func\":\"set_slideshow_result\",\"result\":\"failure\",\"message\":\"%s\"}",
                  message != NULL ? message : "set slideshow failed");
     }
 
@@ -151,7 +185,7 @@ static bool read_existing_bool(const char *path, const char *key, bool default_v
     return default_value;
 }
 
-static int read_existing_interval(const char *path, int default_value)
+static uint32_t read_existing_interval(const char *path, uint32_t default_value)
 {
     FILE *fp = fopen(path, "rb");
     if (fp == NULL) {
@@ -163,8 +197,8 @@ static int read_existing_interval(const char *path, int default_value)
     fclose(fp);
     buf[len] = '\0';
 
-    int interval = default_value;
-    if (parse_json_int(buf, "interval", &interval) &&
+    uint32_t interval = default_value;
+    if (parse_json_u32(buf, "interval", &interval) &&
         interval >= TDX_SLIDESHOW_INTERVAL_MIN_SECONDS &&
         interval <= TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
         return interval;
@@ -215,9 +249,9 @@ static bool slideshow_config_has_files(const char *config_path)
 static esp_err_t write_control_file(const char *control_path, const slideshow_control_t *control)
 {
     char json[160];
-    snprintf(json, sizeof(json), "{\"sw\":%d,\"interval\":%d,\"random\":%s,\"run_mode\":%d}",
+    snprintf(json, sizeof(json), "{\"sw\":%d,\"interval\":%lu,\"random\":%s,\"run_mode\":%d}",
              control->sw,
-             control->interval,
+             (unsigned long)control->interval,
              control->random ? "true" : "false",
              TDX_SLIDESHOW_RUN_MODE);
 
@@ -247,7 +281,7 @@ static esp_err_t parse_set_slideshow_request(const char *body,
         return ESP_ERR_INVALID_ARG;
     }
 
-    bool interval_present = parse_json_int(body, "interval", &control->interval);
+    bool interval_present = parse_json_u32(body, "interval", &control->interval);
     if (control->sw == 1 && !interval_present) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -264,8 +298,8 @@ static esp_err_t parse_set_slideshow_request(const char *body,
     if (!parse_json_bool_optional(body, "random", &control->random, &random_present)) {
         return ESP_ERR_INVALID_ARG;
     }
-    ESP_LOGI(TAG, "set_slideshow parsed sw=%d interval=%d random=%d random_present=%d",
-             control->sw, control->interval, control->random ? 1 : 0, random_present ? 1 : 0);
+    ESP_LOGI(TAG, "set_slideshow parsed sw=%d interval=%lu random=%d random_present=%d",
+             control->sw, (unsigned long)control->interval, control->random ? 1 : 0, random_present ? 1 : 0);
     return ESP_OK;
 }
 

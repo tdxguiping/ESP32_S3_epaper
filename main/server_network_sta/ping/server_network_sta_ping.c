@@ -29,7 +29,7 @@ esp_err_t ServerNetworkStaPing_ProcessGet(httpd_req_t *req)
     }
     ESP_LOGI(TAG, "ping request uri=%s method=GET Ble_MAC=%s", req->uri, ble_mac);
     snprintf(json, sizeof(json),
-             "{\"func\":\"ping_result\",\"result\":0,\"message\":\"ok\",\"Ble_MAC\":\"%s\"}",
+             "{\"func\":\"ping_result\",\"result\":\"success\",\"message\":\"ok\",\"Ble_MAC\":\"%s\"}",
              ble_mac);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, json);
