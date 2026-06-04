@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_random.h"
+#include "file_serving_example_common.h"
 #include "epd_display_app.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -225,10 +226,10 @@ static esp_err_t send_start_slideshow_result(httpd_req_t *req, bool ok, const ch
 {
     char json[160];
     if (ok) {
-        snprintf(json, sizeof(json), "{\"func\":\"start_slideshow_result\",\"result\":\"success\"}");
+        snprintf(json, sizeof(json), "{\"func\":\"start_slideshow_result\",\"result\":0}");
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"start_slideshow_result\",\"result\":\"failure\",\"message\":\"%s\"}",
+                 "{\"func\":\"start_slideshow_result\",\"result\":1,\"message\":\"%s\"}",
                  message != NULL ? message : "start slideshow failed");
     }
 
@@ -241,6 +242,9 @@ static esp_err_t ensure_bin_dir(const char *base_path, char *bin_dir, size_t bin
 {
     struct stat st = {0};
     snprintf(bin_dir, bin_dir_size, "%s/bin_img", base_path);
+    if (!example_storage_supports_directories()) {
+        return ESP_OK;
+    }
     if (stat(bin_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
         ESP_LOGE(TAG, "slideshow bin dir missing: %s", bin_dir);
         return ESP_ERR_NOT_FOUND;

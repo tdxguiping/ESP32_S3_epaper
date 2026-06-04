@@ -10,6 +10,7 @@
 #include <sys/unistd.h>
 
 #include "esp_log.h"
+#include "file_serving_example_common.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_delete";
@@ -139,10 +140,10 @@ static esp_err_t send_delete_result(httpd_req_t *req, bool ok, const char *messa
 {
     char json[160];
     if (ok) {
-        snprintf(json, sizeof(json), "{\"func\":\"delete_result\",\"result\":\"success\"}");
+        snprintf(json, sizeof(json), "{\"func\":\"delete_result\",\"result\":0}");
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"delete_result\",\"result\":\"failure\",\"message\":\"%s\"}",
+                 "{\"func\":\"delete_result\",\"result\":1,\"message\":\"%s\"}",
                  message != NULL ? message : "delete failed");
     }
 
@@ -445,7 +446,8 @@ esp_err_t ServerNetworkStaDelete_ProcessJson(httpd_req_t *req,
     snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", base_path);
     snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", base_path);
 
-    if ((stat(bin_dir, &st) != 0 || !S_ISDIR(st.st_mode)) &&
+    if (example_storage_supports_directories() &&
+        (stat(bin_dir, &st) != 0 || !S_ISDIR(st.st_mode)) &&
         (stat(jpg_dir, &st) != 0 || !S_ISDIR(st.st_mode))) {
         ESP_LOGE(TAG, "delete image dirs missing bin=%s jpg=%s", bin_dir, jpg_dir);
         return send_delete_result(req, false, "delete failed");

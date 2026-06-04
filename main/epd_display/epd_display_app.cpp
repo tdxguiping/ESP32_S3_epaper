@@ -106,31 +106,59 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
         UserLedStatus_Set(USER_LED_STATE_EPD_REFRESH);
         if (job.data == NULL || job.size == 0) {
             ESP_LOGW(TAG, "EPD display task skip empty job");
-            release_epd_job(&job);
             UserLedStatus_Set(USER_LED_STATE_OPERATION_FAIL);
-            continue;
-        }
+        } else {
+            ePaperDisplay.Set_EPD_which_one(job.epd_which_one);
+            ESP_LOGI(TAG, "EPD target=%u", (unsigned int)job.epd_which_one);
 
-        ePaperDisplay.Set_EPD_which_one(job.epd_which_one);
-#if (EPD_type_ == EPD_800_480_4s_75)
-        ePaperDisplay.EPD_Init();
-        ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
-        ePaperDisplay.Epaper_Update_and_Deepsleep();
-#elif (EPD_type_ == EPD_1360_480_1085)
-        ePaperDisplay.EPD_Init();
-        ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
-        ePaperDisplay.Epaper_Update();
-#else
-        ePaperDisplay.EPD_Init();
-        ePaperDisplay.NT61522_Init_display();
-        ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
-        ePaperDisplay.NT61522_Display();
-#endif
+
+        #if(EPD_type_ ==  EPD_800_480)                    
+            ePaperDisplay.EPD_Init();
+            ePaperDisplay.NT61522_Init_display();
+            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
+            ePaperDisplay.Epaper_Update();	
+
+        #elif(EPD_type_ ==  EPD_1024_600)                    
+            ePaperDisplay.EPD_Init();
+            ePaperDisplay.NT61522_Init_display();
+            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
+            ePaperDisplay.NT61522_Display();
+
+        #elif(EPD_type_ ==  EPD_1600_1200_79)
+            ePaperDisplay.EPD_Init();
+            ePaperDisplay.NT61522_Init_display();
+            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
+            ePaperDisplay.NT61522_Display();
+
+        #elif(EPD_type_ ==  EPD_1600_1200_133)
+            ePaperDisplay.EPD_Init();
+            ePaperDisplay.NT61522_Init_display();
+            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
+            ePaperDisplay.NT61522_Display();
+
+        #elif(EPD_type_ ==  EPD_1360_480_1085)                    
+            ePaperDisplay.EPD_Init();
+            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
+            ePaperDisplay.Epaper_Update();	
+
+        #elif(EPD_type_ ==  EPD_800_480_4s_75)                    
+            ePaperDisplay.EPD_Init();
+            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
+            ePaperDisplay.Epaper_Update_and_Deepsleep();		
+        #else
+            ePaperDisplay.EPD_Init();
+            ePaperDisplay.NT61522_Init_display();
+            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
+            ePaperDisplay.NT61522_Display();
+        #endif
+
+
+            UserLedStatus_Set(USER_LED_STATE_SUCCESS);
+        }
 
         ESP_LOGI(TAG, "EPD display task done ptr=%p size=%u", job.data, (unsigned int)job.size);
         release_epd_job(&job);
         log_heap_watermark("epd_end");
-        UserLedStatus_Set(USER_LED_STATE_SUCCESS);
     }
 }
 
@@ -189,18 +217,11 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, s
     }
     job.epd_which_one = (epd_which_one == 2) ? 2 : 1;
 
-    epd_display_job_t old_job = {};
     if (xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
-        if (xQueueReceive(s_epd_display_queue, &old_job, 0) == pdTRUE) {
-            ESP_LOGW(TAG, "display queue full, drop old job ptr=%p size=%u",
-                     old_job.data, (unsigned int)old_job.size);
-            release_epd_job(&old_job);
-        }
-        if (xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
-            ESP_LOGE(TAG, "display queue send failed ptr=%p size=%u", job.data, (unsigned int)job.size);
-            release_epd_job(&job);
-            return ESP_ERR_TIMEOUT;
-        }
+        ESP_LOGE(TAG, "display queue full, keep old jobs and reject new ptr=%p size=%u",
+                 job.data, (unsigned int)job.size);
+        release_epd_job(&job);
+        return ESP_ERR_TIMEOUT;
     }
 
     ESP_LOGI(TAG, "display job queued ptr=%p size=%u", job.data, (unsigned int)job.size);
@@ -216,4 +237,101 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, s
 esp_err_t ServerNetworkStaEpdDisplay_Queue(const uint8_t *display_buf, size_t display_size)
 {
     return ServerNetworkStaEpdDisplay_QueueToScreen(display_buf, display_size, 1);
+}
+
+
+// at file  epd_display_app.cpp 
+// 写一个测试函数 （只用于临时测试），并在 main.c 中调用
+// void test_epd_display_EPD_1600_1200_79(void)
+
+// 函数 test_epd_display_EPD_1600_1200_79 
+// 功能如下
+
+// 1， 临时申请一个        960000 bytes 的变量
+//     这个变量的前 10%，全部写成 0x00
+//     接下去的10%，全部写成 0x02
+//     接下去的10%，全部写成 0x03
+//     接下去的10%，全部写成 0x04
+//     接下去的10%，全部写成 0x05
+//     接下去的10%，全部写成 0x06
+//     余下的，全部写成 0x05
+    
+//    发信息给 函数 ServerNetworkStaEpdDisplay_Task 
+//    将刚刚 申请的 变量
+//    传给这个函数
+
+   
+//    在函数 ServerNetworkStaEpdDisplay_Task 中
+//    调用 EPD 显示
+
+void test_epd_display_EPD_1600_1200_79(void)
+{
+    static const size_t test_size = 960000;
+    static const size_t block_size = test_size / 10;
+    static const uint8_t block_values[] = {0x00, 0x02, 0x03, 0x04, 0x05, 0x06, 0x03, 0x04, 0x05, 0x06};
+
+    uint8_t *test_buf = (uint8_t *)heap_caps_malloc(test_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (test_buf == NULL) {
+        ESP_LOGE(TAG, "EPD test alloc failed size=%u", (unsigned int)test_size);
+        return;
+    }
+
+    LOG_Purple("%s>%d",__func__,__LINE__);
+
+    for (size_t i = 0; i < sizeof(block_values); ++i) {
+        memset(test_buf + (i * block_size), block_values[i], block_size);
+    }
+    // memset(test_buf + (sizeof(block_values) * block_size),
+    //        0x05,
+    //        test_size - (sizeof(block_values) * block_size));
+
+    epd_display_job_t job = {};
+    job.data = test_buf;
+    job.size = test_size;
+    job.epd_which_one = 1;
+
+    if (s_epd_display_queue == NULL ||
+        xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+        ESP_LOGE(TAG, "EPD 1600x1200 test queue failed");
+        release_epd_job(&job);
+        return;
+    }
+
+    ESP_LOGI(TAG, "EPD 1600x1200 test queued size=%u", (unsigned int)test_size);
+}
+
+void test_epd_display_EPD_EPD_1024_600(void)
+{
+    static const size_t test_size = 307200;
+    static const size_t block_size = test_size / 10;
+    static const uint8_t block_values[] = {0x00, 0x02, 0x03, 0x04, 0x05, 0x06};
+
+    uint8_t *test_buf = (uint8_t *)heap_caps_malloc(test_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (test_buf == NULL) {
+        ESP_LOGE(TAG, "EPD 1024x600 test alloc failed size=%u", (unsigned int)test_size);
+        return;
+    }
+
+    LOG_Purple("%s>%d", __func__, __LINE__);
+
+    for (size_t i = 0; i < sizeof(block_values); ++i) {
+        memset(test_buf + (i * block_size), block_values[i], block_size);
+    }
+    memset(test_buf + (sizeof(block_values) * block_size),
+           0x05,
+           test_size - (sizeof(block_values) * block_size));
+
+    epd_display_job_t job = {};
+    job.data = test_buf;
+    job.size = test_size;
+    job.epd_which_one = 1;
+
+    if (s_epd_display_queue == NULL ||
+        xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+        ESP_LOGE(TAG, "EPD 1024x600 test queue failed");
+        release_epd_job(&job);
+        return;
+    }
+
+    ESP_LOGI(TAG, "EPD 1024x600 test queued size=%u", (unsigned int)test_size);
 }

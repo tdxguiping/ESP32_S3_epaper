@@ -11,6 +11,7 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "file_serving_example_common.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "led_status.h"
@@ -147,7 +148,7 @@ static esp_err_t send_invalid_json_response(httpd_req_t *req, const char *func)
 {
     char json[160] = {0};
     snprintf(json, sizeof(json),
-             "{\"func\":\"%s\",\"result\":\"failure\",\"message\":\"invalid_Json\",\"stage\":\"receive_data_redirect_handler\"}",
+             "{\"func\":\"%s\",\"result\":1,\"message\":\"invalid_Json\",\"stage\":\"receive_data_redirect_handler\"}",
              func != NULL ? func : "get_saved_images");
     return send_json_response(req, json);
 }
@@ -170,7 +171,7 @@ static bool body_looks_like_json(const char *body, size_t body_len)
 static esp_err_t send_unsupported_func_response(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "send_unsupported_func_response");
-    return send_json_response(req, "{\"func\":\"unknown_result\",\"result\":\"failure\",\"message\":\"unsupported func\"}");
+    return send_json_response(req, "{\"func\":\"unknown_result\",\"result\":1,\"message\":\"unsupported func\"}");
 }
 
 static esp_err_t process_small_json_request(httpd_req_t *req, const char *body, size_t body_len)
@@ -266,10 +267,17 @@ static bool get_disposition_value(const char *headers, size_t headers_len,
 static esp_err_t ensure_dir(const char *path)
 {
     struct stat st = {0};
+    if (!example_storage_supports_directories()) {
+        return ESP_OK;
+    }
     if (stat(path, &st) == 0) {
         return S_ISDIR(st.st_mode) ? ESP_OK : ESP_FAIL;
     }
     if (mkdir(path, 0775) == 0 || errno == EEXIST) {
+        return ESP_OK;
+    }
+    if (errno == ENOTSUP || errno == EOPNOTSUPP) {
+        ESP_LOGW(TAG, "mkdir %s not supported, use flat storage path", path);
         return ESP_OK;
     }
     ESP_LOGW(TAG, "mkdir %s failed, continue with base path", path);
@@ -406,7 +414,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
                 return NetworkOtaUpload_SendErrorAndFinish(req, "upload_busy", "upload_busy", ESP_ERR_TIMEOUT);
             }
             return send_json_response(req,
-                                      "{\"result\":\"failure\",\"message\":\"upload_busy\",\"error\":\"upload_busy\"}");
+                                      "{\"result\":1,\"message\":\"upload_busy\",\"error\":\"upload_busy\"}");
         }
         upload_mutex_locked = true;
         ESP_LOGI(TAG, "receive_data_redirect_handler: upload slot acquired uri=%s",
@@ -497,7 +505,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
             resp_ret = process_multipart_upload_request(req, body, remaining, content_type);
             if (resp_ret == ESP_OK) {
                 resp_ret = send_json_response(req,
-                                              "{\"result\":\"success\",\"message\":\"upload_success\",\"stage\":\"dataUP\"}");
+                                              "{\"result\":0,\"message\":\"upload_success\",\"stage\":\"dataUP\"}");
             } else {
                 httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save failed");
             }

@@ -359,10 +359,10 @@ static esp_err_t send_wifi_work_time_result(httpd_req_t *req, bool ok, const cha
 {
     char json[176];
     if (ok) {
-        snprintf(json, sizeof(json), "{\"func\":\"set_wifi_work_time_result\",\"result\":\"success\"}");
+        snprintf(json, sizeof(json), "{\"func\":\"set_wifi_work_time_result\",\"result\":0}");
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"set_wifi_work_time_result\",\"result\":\"failure\",\"message\":\"%s\"}",
+                 "{\"func\":\"set_wifi_work_time_result\",\"result\":1,\"message\":\"%s\"}",
                  message != NULL ? message : "set wifi work time failed");
     }
 

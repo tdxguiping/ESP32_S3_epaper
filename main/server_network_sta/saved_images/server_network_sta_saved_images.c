@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 
 #include "esp_log.h"
+#include "file_serving_example_common.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_saved";
@@ -44,12 +45,24 @@ static bool saved_image_name_is_safe(const char *name)
     return true;
 }
 
+static const char *saved_image_entry_name(const char *entry_name)
+{
+    const char *prefix = "jpg_img/";
+    if (entry_name == NULL) {
+        return NULL;
+    }
+    if (example_storage_supports_directories()) {
+        return entry_name;
+    }
+    return strncmp(entry_name, prefix, strlen(prefix)) == 0 ? entry_name + strlen(prefix) : NULL;
+}
+
 static esp_err_t send_saved_images_error(httpd_req_t *req)
 {
     ESP_LOGW(TAG, "get_saved_images failed");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req,
-                              "{\"func\":\"get_saved_images_result\",\"result\":\"failure\",\"message\":\"read saved images failed\"}");
+                              "{\"func\":\"get_saved_images_result\",\"result\":1,\"message\":\"read saved images failed\"}");
 }
 
 static esp_err_t send_saved_images_empty(httpd_req_t *req)
@@ -57,7 +70,7 @@ static esp_err_t send_saved_images_empty(httpd_req_t *req)
     ESP_LOGI(TAG, "get_saved_images empty result");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req,
-                              "{\"func\":\"get_saved_images_result\",\"result\":\"success\",\"images\":[]}");
+                              "{\"func\":\"get_saved_images_result\",\"result\":0,\"images\":[]}");
 }
 
 esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
@@ -72,20 +85,21 @@ esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
 
     char jpg_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
     snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", base_path);
+    const char *scan_dir = example_storage_supports_directories() ? jpg_dir : base_path;
 
     struct stat st = {0};
-    if (stat(base_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+    if (example_storage_supports_directories() && (stat(base_path, &st) != 0 || !S_ISDIR(st.st_mode))) {
         ESP_LOGE(TAG, "get_saved_images base path missing: %s", base_path);
         return send_saved_images_error(req);
     }
-    if (stat(jpg_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+    if (example_storage_supports_directories() && (stat(jpg_dir, &st) != 0 || !S_ISDIR(st.st_mode))) {
         ESP_LOGI(TAG, "get_saved_images jpg dir missing, return empty: %s", jpg_dir);
         return send_saved_images_empty(req);
     }
 
-    DIR *dir = opendir(jpg_dir);
+    DIR *dir = opendir(scan_dir);
     if (dir == NULL) {
-        ESP_LOGE(TAG, "get_saved_images opendir failed: %s", jpg_dir);
+        ESP_LOGE(TAG, "get_saved_images opendir failed: %s", scan_dir);
         return send_saved_images_error(req);
     }
 
@@ -99,7 +113,7 @@ esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
     size_t used = 0;
     int count = 0;
     int written = snprintf(json, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX,
-                           "{\"func\":\"get_saved_images_result\",\"result\":\"success\",\"images\":[");
+                           "{\"func\":\"get_saved_images_result\",\"result\":0,\"images\":[");
     if (written < 0 || (size_t)written >= SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX) {
         free(json);
         closedir(dir);
@@ -109,7 +123,7 @@ esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
 
     struct dirent *entry = NULL;
     while ((entry = readdir(dir)) != NULL) {
-        const char *name = entry->d_name;
+        const char *name = saved_image_entry_name(entry->d_name);
         if (name == NULL || !has_jpg_extension(name) || !saved_image_name_is_safe(name)) {
             continue;
         }

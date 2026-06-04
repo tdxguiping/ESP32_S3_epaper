@@ -38,7 +38,7 @@ typedef enum {
 #define GPIO_HIGH	1
 
 #define EPD_800_480 1 // 3色
-#define EPD_1024_600 2  // 6色
+#define EPD_1024_600 2  // 6色    307200 bytes
 #define EPD_1600_1200_79 3  // 6色  960000 bytes
 #define EPD_1600_1200_133 4 // 6色    960000 bytes
 
@@ -47,20 +47,18 @@ typedef enum {
 
 // tag_tdx_a   need
 #ifndef EPD_type_
-#define EPD_type_   EPD_1600_1200_133
+#define EPD_type_   EPD_1600_1200_79
 #endif
+
 
 // Keep the old display driver's board switch overridable from tdx_cfg.h.
-#ifndef Hardware_Version_
-#define Hardware_Version_ 1
-#endif
+#define Hardware_Version_  1
 
+
+#define EPD_CS_PIN_2    46
 
 #define EPD_DC_PIN      8
 #define EPD_CS_PIN      9
-#define EPD_CS_PIN_2    46
-#define EPD_SCK_PIN     10
-#define EPD_MOSI_PIN    11
 #define EPD_RST_PIN     12
 #define EPD_BUSY_PIN    13
 
@@ -69,6 +67,12 @@ typedef enum {
 #define EPD2_CS_PIN      14
 #define EPD2_RST_PIN     47
 #define EPD2_BUSY_PIN    48
+
+
+#define EPD_SCK_PIN     10
+#define EPD_MOSI_PIN    11
+
+
 
 
 #define R00_PSR         0x00

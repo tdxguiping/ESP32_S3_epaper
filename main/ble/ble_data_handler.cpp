@@ -92,11 +92,11 @@ static void send_simple_result_with_sender(void (*send_json)(const char *),
     char json[192];
 
     if (message == NULL || message[0] == '\0') {
-        snprintf(json, sizeof(json), "{\"func\":\"%s\",\"result\":\"%s\"}",
-                 func, result == 0 ? "success" : "failure");
+        snprintf(json, sizeof(json), "{\"func\":\"%s\",\"result\":%d}",
+                 func, result == 0 ? 0 : 1);
     } else {
-        snprintf(json, sizeof(json), "{\"func\":\"%s\",\"result\":\"%s\",\"message\":\"%s\"}",
-                 func, result == 0 ? "success" : "failure", message);
+        snprintf(json, sizeof(json), "{\"func\":\"%s\",\"result\":%d,\"message\":\"%s\"}",
+                 func, result == 0 ? 0 : 1, message);
     }
     send_json(json);
 }
@@ -119,7 +119,7 @@ void send_base_info_to_mobile(void)
             working_time = 0;
             snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip.ip));
             snprintf(json_str, sizeof(json_str),
-                     "{\"result\":\"success\",\"message\":\"wifi info\",\"stage\":\"%s\","
+                     "{\"result\":0,\"message\":\"wifi info\",\"stage\":\"%s\","
                      "\"project\":\"%s\","
                      "\"version\":\"%s\","
                      "\"date\":\"%s\","
@@ -344,7 +344,7 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
             std::string wifi_password = out->key;
             // 3. 鎶婄粨鏋勪綋鐨勫€煎杩?JSON            
             snprintf(reply_json, sizeof(reply_json),
-                     "{\"result\":\"success\",\"message\":\"Find wifi\",\"stage\":\"%s\"}",
+                     "{\"result\":0,\"message\":\"Find wifi\",\"stage\":\"%s\"}",
                      wifi_cfg.ssid);
 
              WiFi_config_net =true;
@@ -416,7 +416,7 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
     {
         char reply_json[160];
         snprintf(reply_json, sizeof(reply_json),
-                    "{\"result\":\"failure\",\"message\":\"wakeup No-WiFi\",\"stage\":\"error\"}");
+                    "{\"result\":1,\"message\":\"wakeup No-WiFi\",\"stage\":\"error\"}");
 
             #if(USER_BLE_ENABLE == 1)
              SendData_indicate((uint8_t *)reply_json, strlen(reply_json));
@@ -481,7 +481,7 @@ int parse_wifi_work_time_json(const char *json_str, wifi_work_time_json_t *out)
     cJSON_Delete(root);
 
     snprintf(reply_json, sizeof(reply_json),
-             "{\"result\":\"success\",\"message\":\"wifi-work-time\",\"stage\":\"%d\"}",
+             "{\"result\":0,\"message\":\"wifi-work-time\",\"stage\":\"%d\"}",
              out->time);
     
 

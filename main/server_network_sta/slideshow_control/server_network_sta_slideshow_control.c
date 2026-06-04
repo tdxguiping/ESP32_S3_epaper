@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 
 #include "esp_log.h"
+#include "file_serving_example_common.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
 
@@ -153,10 +154,10 @@ static esp_err_t send_set_slideshow_result(httpd_req_t *req, bool ok, const char
 {
     char json[160];
     if (ok) {
-        snprintf(json, sizeof(json), "{\"func\":\"set_slideshow_result\",\"result\":\"success\"}");
+        snprintf(json, sizeof(json), "{\"func\":\"set_slideshow_result\",\"result\":0}");
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"set_slideshow_result\",\"result\":\"failure\",\"message\":\"%s\"}",
+                 "{\"func\":\"set_slideshow_result\",\"result\":1,\"message\":\"%s\"}",
                  message != NULL ? message : "set slideshow failed");
     }
 
@@ -214,6 +215,10 @@ static esp_err_t ensure_paths(const char *base_path, char *bin_dir, size_t bin_d
     snprintf(bin_dir, bin_dir_size, "%s/bin_img", base_path);
     snprintf(control_path, control_path_size, "%s/%s", bin_dir, TDX_SLIDESHOW_CONTROL_FILE);
     snprintf(config_path, config_path_size, "%s/%s", bin_dir, TDX_SLIDESHOW_CONFIG_FILE);
+
+    if (!example_storage_supports_directories()) {
+        return ESP_OK;
+    }
 
     if (stat(bin_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
         ESP_LOGE(TAG, "set_slideshow bin dir missing: %s", bin_dir);

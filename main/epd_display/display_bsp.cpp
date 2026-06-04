@@ -39,6 +39,10 @@ void ePaperPort::Set_EPD_which_one(uint8_t which_one)
     {
         EPD_which_one_ = 1;
     }
+    if (EPD_which_one_ == 2) {
+        ESP_LOGI(TAG, "EPD2 pins cs=%d rst=%d dc=%d busy=%d",
+                 EPD2_CS_PIN, EPD2_RST_PIN, EPD2_DC_PIN, EPD2_BUSY_PIN);
+    }
 }
 
 
@@ -267,6 +271,9 @@ void ePaperPort::EPD_Reset(void) {
     vTaskDelay(pdMS_TO_TICKS(20)); //100
     Set_ResetIOLevel(1);
     vTaskDelay(pdMS_TO_TICKS(20));  //100      
+    ESP_LOGI(TAG, "EPD reset done target=%u busy=%u",
+             (unsigned int)EPD_which_one_,
+             (unsigned int)Get_BusyIOLevel());
 }
 
 void ePaperPort::EPD_LoopBusy(void) {
@@ -289,16 +296,17 @@ void ePaperPort::EPD_LoopBusy(void) {
 }
 
 void ePaperPort::EPD_Check_Busy(void) { // If BUSYN=0 then waiting
-    int32_t i = 0;
+    int16_t i;
+
     int64_t start_us = esp_timer_get_time();
     int start_level = Get_BusyIOLevel();
     LOG_Purple("e-p@ %s>%d", __func__, __LINE__);
     ESP_LOGI(TAG, "EPD_Check_Busy start level=%d", start_level);
+    i=0;
     while (1) {
         int level = Get_BusyIOLevel();
         if (level) {
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
-            LOG_WARN("read busy ok");
             ESP_LOGI(TAG, "EPD_Check_Busy ok level=%d loops=%ld elapsed_ms=%d",
                      level, (long)i, elapsed_ms);
 
@@ -308,13 +316,13 @@ void ePaperPort::EPD_Check_Busy(void) { // If BUSYN=0 then waiting
             }
             return;
         }
-        vTaskDelay(pdMS_TO_TICKS(60)); // 50x20 = 1000ms    
-        printf(".");
+        vTaskDelay(pdMS_TO_TICKS(1000)); // 1000ms    
         i++;
-        if (i > (30*20)) {
+        printf("Check Busy=%d\r\n",i);
+
+        if (i > (30*1)) {
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
-            LOG_ERROR("read busy error %s %d %s", __func__, __LINE__, __FILE__);
-            ESP_LOGE(TAG, "EPD_Check_Busy timeout level=%d loops=%ld elapsed_ms=%d",
+            ESP_LOGE(TAG, "error EPD_Check_Busy timeout  level=%d loops=%ld elapsed_ms=%d",
                      Get_BusyIOLevel(), (long)i, elapsed_ms);
             if(Display_had_flag == 0xA3)
             {
@@ -778,7 +786,8 @@ void ePaperPort::EPD_sleep(void) {
 #elif (EPD_type_  ==  EPD_1024_600 )
 
 #elif (EPD_type_  ==  EPD_1360_480_1085 )
-
+    EPD_WriteCMD(0x07);		// Deep_sleep
+    EPD_WriteDATA(0xa5);   	
 #elif (EPD_type_  ==  EPD_800_480_4s_75 )
 
 	EPD_SendCommand(0x04);   //Power on
@@ -960,11 +969,8 @@ void ePaperPort::Epaper_Initial() {
 }
 
 void ePaperPort::Epaper_Update() {   
-//  EPD_WriteCMD(0x04);
-//    EPD_Check_Busy();  //while(1);
-//	
-//  EPD_WriteCMD(0xA2);	//********************
-//EPD_WriteDATA(0x00);	
+
+    LOG_Purple("EPD_1360_480_1085 %s>%d",__func__,__LINE__);
 
   EPD_WriteCMD(0x12);
   EPD_WriteDATA(0x00);
@@ -979,6 +985,7 @@ void ePaperPort::Epaper_Update() {
 //	
     EPD_WriteCMD(0x07);		// Deep_sleep
     EPD_WriteDATA(0xa5);   	
+    isEPDInit = false;
 }
 
 void ePaperPort::Epaper_Update_and_Deepsleep() {   
@@ -997,11 +1004,14 @@ void ePaperPort::Epaper_Update_and_Deepsleep() {
 	EPD_WriteCMD(0x07); //Power off
 	EPD_WriteDATA(0xA5);
     delay_ms(200); 
+    isEPDInit = false;
 } 
 
 
 void ePaperPort::Epaper_Init() {   
   
+LOG_Purple("EPD_1360_480_1085  %s>%d",__func__,__LINE__);    
+
   EPD_WriteCMD(0x4D);		
   EPD_WriteDATA(0x78);
 
@@ -1150,8 +1160,6 @@ void ePaperPort::Epaper_Init() {
 	
   EPD_WriteCMD(0x04);
     EPD_Check_Busy();  //while(1);
-
-
 }
 
 
@@ -1182,6 +1190,9 @@ void ePaperPort::EPD_Init() {
 #elif (EPD_type_ == EPD_1600_1200_79) ||  (EPD_type_ == EPD_1600_1200_133)
     // LOG_Purple("1600x1200 %s>%d",__func__,__LINE__);
     NT61522_Init();
+#elif (EPD_type_  ==  EPD_1360_480_1085 )
+     LOG_Purple(" 1360x480 10.8 %s>%d",__func__,__LINE__);
+     Epaper_Init();
 #else
 
     LOG_Purple("800x480 %s>%d",__func__,__LINE__);
@@ -1299,6 +1310,8 @@ void ePaperPort::EPD_Display() {
     uint32_t i = 0;
     uint8_t j = 0;
     spi_transaction_t t;
+
+    ESP_LOGI(TAG, "EPD_1360_480_1085");
 
     EPD_WriteCMD(0xA2);	//********************
     EPD_WriteDATA(0x01);		
@@ -2494,6 +2507,8 @@ void ePaperPort::NT61522_Display_net(const uint8_t *imageData, size_t imageSize)
     uint32_t i = 0;
     uint8_t j = 0;
     spi_transaction_t t;
+
+    LOG_Purple("EPD_1360_480_1085 %s>%d",__func__,__LINE__);
 
     EPD_WriteCMD(0xA2);	//********************
     EPD_WriteDATA(0x01);		

@@ -229,6 +229,7 @@ void app_main(void)
     /* English: Initialize the migrated EPD driver at startup before network cast/upload can request display. */
     /* 中文：启动时初始化移植过来的 EPD 驱动，保证网络 cast/upload 请求显示前屏幕已经就绪。 */
     ESP_ERROR_CHECK(ServerNetworkStaEpdDisplay_Init());
+    
 
     /* Initialize file storage */
     const char* base_path = "/data";
@@ -252,4 +253,13 @@ void app_main(void)
     }
     UserLedStatus_Set(USER_LED_STATE_SERVER_READY);
     ESP_LOGI(TAG, "Server Version=2.2.3");
+
+    // test_epd_display_EPD_1600_1200_79();
+    // test_epd_display_EPD_EPD_1024_600();
 }
+// LOG_ERROR("%d %s %s",__LINE__,__func__,__FILE__);
+// LOG_WARN("%s>%d",__func__,__LINE__);
+// LOG_INFO("%s>%d",__func__,__LINE__);
+// LOG_Purple("%s>%d",__func__,__LINE__);
+// LOG_Blue("%s>%d",__func__,__LINE__);
+// LOG_Cyan("%s>%d",__func__,__LINE__);

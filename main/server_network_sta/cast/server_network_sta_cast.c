@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "esp_spiffs.h"
+#include "file_serving_example_common.h"
 #include "epd_display_app.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
@@ -240,10 +241,10 @@ static esp_err_t send_cast_result(httpd_req_t *req, bool ok, const char *message
 {
     char json[160];
     if (ok) {
-        snprintf(json, sizeof(json), "{\"func\":\"cast_result\",\"result\":\"success\"}");
+        snprintf(json, sizeof(json), "{\"func\":\"cast_result\",\"result\":0}");
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"cast_result\",\"result\":\"failure\",\"message\":\"%s\",\"error\":\"%s\"}",
+                 "{\"func\":\"cast_result\",\"result\":1,\"message\":\"%s\",\"error\":\"%s\"}",
                  message != NULL ? message : "cast failed",
                  error != NULL ? error : "");
     }
@@ -266,7 +267,7 @@ static esp_err_t send_cast_received_chunk(httpd_req_t *req, const cast_meta_t *m
     char json[192];
     snprintf(json,
              sizeof(json),
-             "{\"func\":\"cast_received\",\"result\":\"success\",\"fileName\":\"%s\"}\n",
+             "{\"func\":\"cast_received\",\"result\":0,\"fileName\":\"%s\"}\n",
              meta != NULL ? meta->file_name : "");
     return send_cast_chunk(req, json);
 }
@@ -276,11 +277,11 @@ static esp_err_t send_cast_final_chunk(httpd_req_t *req, bool ok, const char *me
     char json[224];
     if (ok) {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"cast_result\",\"result\":\"success\",\"message\":\"saved\"}\n");
+                 "{\"func\":\"cast_result\",\"result\":0,\"message\":\"saved\"}\n");
     } else {
         snprintf(json,
                  sizeof(json),
-                 "{\"func\":\"cast_result\",\"result\":\"failure\",\"message\":\"%s\",\"error\":\"%s\"}\n",
+                 "{\"func\":\"cast_result\",\"result\":1,\"message\":\"%s\",\"error\":\"%s\"}\n",
                  message != NULL ? message : "cast failed",
                  error != NULL ? error : "");
     }
@@ -293,6 +294,9 @@ static esp_err_t ensure_dir(const char *path)
 
     if (path == NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (!example_storage_supports_directories()) {
+        return ESP_OK;
     }
 
     if (stat(path, &st) == 0) {
@@ -338,28 +342,14 @@ static esp_err_t check_cast_save_space(const char *base_path, size_t bin_len, si
         return ESP_ERR_INVALID_ARG;
     }
 
-#ifdef CONFIG_EXAMPLE_MOUNT_SD_CARD
-    uint64_t total_bytes = 0;
     uint64_t free_bytes64 = 0;
-    esp_err_t info_ret = esp_vfs_fat_info(base_path, &total_bytes, &free_bytes64);
+    esp_err_t info_ret = example_storage_get_free_bytes(base_path, &free_bytes64);
     if (info_ret != ESP_OK) {
-        ESP_LOGW(TAG, "cast fatfs info failed base=%s ret=%s, continue without space check",
+        ESP_LOGW(TAG, "cast storage info failed base=%s ret=%s, continue without space check",
                  base_path, esp_err_to_name(info_ret));
         return ESP_OK;
     }
     size_t free_bytes = (size_t)free_bytes64;
-#else
-    size_t total = 0;
-    size_t used = 0;
-    esp_err_t info_ret = esp_spiffs_info(NULL, &total, &used);
-    if (info_ret != ESP_OK || total < used) {
-        ESP_LOGW(TAG, "cast spiffs info failed base=%s ret=%s total=%u used=%u, continue without space check",
-                 base_path, esp_err_to_name(info_ret), (unsigned int)total, (unsigned int)used);
-        return ESP_OK;
-    }
-
-    size_t free_bytes = total - used;
-#endif
     size_t required_bytes = bin_len + image_len + SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES;
 
     if (free_bytes < required_bytes) {

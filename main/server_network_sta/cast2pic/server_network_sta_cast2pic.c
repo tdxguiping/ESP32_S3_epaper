@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "esp_spiffs.h"
+#include "file_serving_example_common.h"
 #include "epd_display_app.h"
 #include "tdx_cfg.h"
 
@@ -175,7 +176,7 @@ static esp_err_t send_cast2pic_result(httpd_req_t *req, const char *result)
     if (result == NULL || strcmp(result, "ok") == 0) {
         snprintf(json, sizeof(json), "{\"func\":\"cast2pic_result\",\"result\":0}");
     } else {
-        snprintf(json, sizeof(json), "{\"func\":\"cast2pic_result\",\"result\":\"%s\"}", result);
+        snprintf(json, sizeof(json), "{\"func\":\"cast2pic_result\",\"result\":1,\"message\":\"%s\"}", result);
     }
 
     httpd_resp_set_type(req, "application/json");
@@ -193,8 +194,11 @@ static size_t screen_required_images(const char *screen)
     return 1;
 }
 
-static uint8_t screen_to_number(const char *screen)
+static uint8_t screen_to_epd_number(const char *screen)
 {
+    if (strcmp(screen, "a") == 0) {
+        return 1;
+    }
     if (strcmp(screen, "b") == 0) {
         return 2;
     }
@@ -212,6 +216,9 @@ static esp_err_t ensure_dir(const char *path)
 
     if (path == NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (!example_storage_supports_directories()) {
+        return ESP_OK;
     }
 
     if (stat(path, &st) == 0) {
@@ -279,28 +286,17 @@ static esp_err_t save_one_cast2pic_file(const char *dir_path, const char *file_n
 
 static esp_err_t check_save_space(const char *base_path, size_t required_len)
 {
-#ifdef CONFIG_EXAMPLE_MOUNT_SD_CARD
-    uint64_t total_bytes = 0;
     uint64_t free_bytes = 0;
     if (base_path == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    esp_err_t info_ret = esp_vfs_fat_info(base_path, &total_bytes, &free_bytes);
+    esp_err_t info_ret = example_storage_get_free_bytes(base_path, &free_bytes);
     if (info_ret != ESP_OK) {
-        ESP_LOGW(TAG, "cast2pic fatfs info failed base=%s ret=%s, continue without space check",
+        ESP_LOGW(TAG, "cast2pic storage info failed base=%s ret=%s, continue without space check",
                  base_path, esp_err_to_name(info_ret));
         return ESP_OK;
     }
     return free_bytes >= (required_len + SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES) ? ESP_OK : ESP_ERR_NO_MEM;
-#else
-    size_t total = 0;
-    size_t used = 0;
-    esp_err_t info_ret = esp_spiffs_info(NULL, &total, &used);
-    if (info_ret != ESP_OK || total < used) {
-        return ESP_OK;
-    }
-    return (total - used) >= (required_len + SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES) ? ESP_OK : ESP_ERR_NO_MEM;
-#endif
 }
 
 static esp_err_t save_cast2pic_files(const char *base_path,
@@ -328,7 +324,7 @@ static esp_err_t save_cast2pic_files(const char *base_path,
     }
 
     for (size_t i = 0; i < meta->image_count; i++) {
-        uint8_t screen_number = screen_to_number(meta->screen);
+        uint8_t screen_number = screen_to_epd_number(meta->screen);
         const char *save_name = image_to_save_name(screen_number);
 
         if (save_one_cast2pic_file(bin_dir, save_name, ".bin",
@@ -342,6 +338,29 @@ static esp_err_t save_cast2pic_files(const char *base_path,
                                    meta->images[i].image_part.len) != ESP_OK) {
             *error_out = "write_image_failed";
             return ESP_FAIL;
+        }
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t queue_cast2pic_display(const cast2pic_meta_t *meta)
+{
+    uint8_t screen_number = screen_to_epd_number(meta->screen);
+
+    for (size_t i = 0; i < screen_required_images(meta->screen); i++) {
+        ESP_LOGI(TAG, "cast2pic display screen=%s epd=%u len=%u",
+                 meta->screen,
+                 (unsigned int)screen_number,
+                 (unsigned int)meta->images[i].bin_part.len);
+        esp_err_t display_ret = ServerNetworkStaEpdDisplay_QueueToScreen(
+            (const uint8_t *)meta->images[i].bin_part.data,
+            meta->images[i].bin_part.len,
+            screen_number);
+        if (display_ret != ESP_OK) {
+            ESP_LOGE(TAG, "cast2pic display failed screen=%s ret=%s",
+                     meta->screen, esp_err_to_name(display_ret));
+            return display_ret;
         }
     }
 
@@ -531,21 +550,19 @@ esp_err_t ServerNetworkStaCast2Pic_Process(httpd_req_t *req,
         return send_cast2pic_result(req, validate_error);
     }
 
-    const char *save_error = NULL;
-    if (save_cast2pic_files(base_path, &meta, &save_error) != ESP_OK) {
-        return send_cast2pic_result(req, save_error != NULL ? save_error : "write_bin_failed");
+    if (meta.show) {
+        esp_err_t display_ret = queue_cast2pic_display(&meta);
+        if (display_ret != ESP_OK) {
+            return send_cast2pic_result(req, "display_request_failed");
+        }
     }
 
-    if (meta.show) {
-        for (size_t i = 0; i < screen_required_images(meta.screen); i++) {
-            uint8_t screen_number = screen_to_number(meta.screen);
-            esp_err_t display_ret = ServerNetworkStaEpdDisplay_QueueToScreen(
-                (const uint8_t *)meta.images[i].bin_part.data,
-                meta.images[i].bin_part.len,
-                screen_number);
-            if (display_ret != ESP_OK) {
-                return send_cast2pic_result(req, "display_request_failed");
-            }
+    if (meta.save) {
+        const char *save_error = NULL;
+        if (save_cast2pic_files(base_path, &meta, &save_error) != ESP_OK) {
+            ESP_LOGW(TAG, "cast2pic save failed after display error=%s",
+                     save_error != NULL ? save_error : "write_bin_failed");
+            return send_cast2pic_result(req, save_error != NULL ? save_error : "write_bin_failed");
         }
     }
 

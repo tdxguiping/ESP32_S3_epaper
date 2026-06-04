@@ -11,6 +11,7 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "file_serving_example_common.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_snap";
@@ -53,6 +54,18 @@ static bool file_name_is_safe(const char *name)
         return false;
     }
     return true;
+}
+
+static const char *snapshot_image_entry_name(const char *entry_name)
+{
+    const char *prefix = "jpg_img/";
+    if (entry_name == NULL) {
+        return NULL;
+    }
+    if (example_storage_supports_directories()) {
+        return entry_name;
+    }
+    return strncmp(entry_name, prefix, strlen(prefix)) == 0 ? entry_name + strlen(prefix) : NULL;
 }
 
 static const char *find_json_key(const char *body, const char *key)
@@ -292,8 +305,9 @@ static esp_err_t append_images_json(char *json, size_t json_size, size_t *used, 
 {
     char jpg_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
     snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", base_path);
+    const char *scan_dir = example_storage_supports_directories() ? jpg_dir : base_path;
 
-    DIR *dir = opendir(jpg_dir);
+    DIR *dir = opendir(scan_dir);
     if (dir == NULL) {
         return append_text(json, json_size, used, "\"images\":[]");
     }
@@ -303,7 +317,7 @@ static esp_err_t append_images_json(char *json, size_t json_size, size_t *used, 
     int count = 0;
     struct dirent *entry = NULL;
     while ((entry = readdir(dir)) != NULL) {
-        const char *name = entry->d_name;
+        const char *name = snapshot_image_entry_name(entry->d_name);
         if (name == NULL || !has_jpg_extension(name) || !file_name_is_safe(name)) {
             continue;
         }
@@ -381,7 +395,7 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
     char *json = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
     if (json == NULL) {
         httpd_resp_set_type(req, "application/json");
-        return httpd_resp_sendstr(req, "{\"func\":\"get_snapshot_result\",\"result\":\"failure\"}");
+        return httpd_resp_sendstr(req, "{\"func\":\"get_snapshot_result\",\"result\":1}");
     }
 
     snapshot_slideshow_t slideshow;
@@ -389,7 +403,7 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
 
     size_t used = 0;
     esp_err_t ret = append_text(json, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX, &used,
-                                "{\"func\":\"get_snapshot_result\",\"result\":\"success\",");
+                                "{\"func\":\"get_snapshot_result\",\"result\":0,");
     if (ret == ESP_OK) {
         ret = append_images_json(json, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX, &used, base_path);
     }
@@ -400,7 +414,7 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
     if (ret != ESP_OK) {
         free(json);
         httpd_resp_set_type(req, "application/json");
-        return httpd_resp_sendstr(req, "{\"func\":\"get_snapshot_result\",\"result\":\"failure\"}");
+        return httpd_resp_sendstr(req, "{\"func\":\"get_snapshot_result\",\"result\":1}");
     }
 
     ESP_LOGI(TAG, "get_snapshot images/slideshow response len=%u sw=%d files=%u",

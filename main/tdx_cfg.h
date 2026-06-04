@@ -181,9 +181,6 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 // Keep EPD display enable here so network cast/upload can be tested without editing receive code.
 #define USER_EPD_ENABLE 1
 
-// Keep the copied display driver's board switch here. 2 configures both EPD1 and EPD2 GPIO paths.
-#define Hardware_Version_ 2
-
 // Keep EPD panel geometry here because the copied display driver and network bin size must match.
 #define USER_EPD_WIDTH 1600
 #define USER_EPD_HEIGHT 1200
@@ -202,7 +199,7 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 #define USER_EPD_SPI_HOST SPI3_HOST
 
 // Keep EPD task settings here so display latency and stack pressure can be tuned in one place.
-#define USER_EPD_DISPLAY_QUEUE_LENGTH 1
+#define USER_EPD_DISPLAY_QUEUE_LENGTH 2
 #define USER_EPD_DISPLAY_TASK_STACK_SIZE (8 * 1024)
 #define USER_EPD_DISPLAY_TASK_PRIORITY 5
 

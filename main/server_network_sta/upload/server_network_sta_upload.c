@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "esp_spiffs.h"
+#include "file_serving_example_common.h"
 #include "epd_display_app.h"
 #include "tdx_cfg.h"
 
@@ -259,9 +260,9 @@ static esp_err_t send_upload_result(httpd_req_t *req, bool ok, const char *messa
     }
 
     int json_len = snprintf(json, sizeof(json),
-                            "{\"func\":\"upload_result\",\"result\":\"%s\",\"message\":\"%s\",\"fileName\":\"%s\","
+                            "{\"func\":\"upload_result\",\"result\":%d,\"message\":\"%s\",\"fileName\":\"%s\","
                             "\"bin_file\":\"%s\",\"image_file\":\"%s\",\"save\":%s,\"show\":%s,\"error\":\"%s\"}",
-                            ok ? "success" : "failure",
+                            ok ? 0 : 1,
                             message_text,
                             file_name,
                             bin_file,
@@ -273,7 +274,7 @@ static esp_err_t send_upload_result(httpd_req_t *req, bool ok, const char *messa
         ESP_LOGE(TAG, "upload response json too long file=%s", file_name);
         httpd_resp_set_type(req, "application/json");
         return httpd_resp_sendstr(req,
-                                  "{\"func\":\"upload_result\",\"result\":\"failure\",\"message\":\"upload response too long\",\"error\":\"response_too_long\"}");
+                                  "{\"func\":\"upload_result\",\"result\":1,\"message\":\"upload response too long\",\"error\":\"response_too_long\"}");
     }
     ESP_LOGI(TAG, "upload response: %s", json);
     httpd_resp_set_type(req, "application/json");
@@ -285,6 +286,9 @@ static esp_err_t ensure_dir(const char *path)
     struct stat st = {0};
     if (path == NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (!example_storage_supports_directories()) {
+        return ESP_OK;
     }
 
     if (stat(path, &st) == 0) {
@@ -356,28 +360,14 @@ static esp_err_t check_upload_save_space(const char *base_path, size_t bin_len, 
         return ESP_ERR_INVALID_ARG;
     }
 
-#ifdef CONFIG_EXAMPLE_MOUNT_SD_CARD
-    uint64_t total_bytes = 0;
     uint64_t free_bytes64 = 0;
-    esp_err_t info_ret = esp_vfs_fat_info(base_path, &total_bytes, &free_bytes64);
+    esp_err_t info_ret = example_storage_get_free_bytes(base_path, &free_bytes64);
     if (info_ret != ESP_OK) {
-        ESP_LOGW(TAG, "upload fatfs info failed base=%s ret=%s, continue without space check",
+        ESP_LOGW(TAG, "upload storage info failed base=%s ret=%s, continue without space check",
                  base_path, esp_err_to_name(info_ret));
         return ESP_OK;
     }
     size_t free_bytes = (size_t)free_bytes64;
-#else
-    size_t total = 0;
-    size_t used = 0;
-    esp_err_t info_ret = esp_spiffs_info(NULL, &total, &used);
-    if (info_ret != ESP_OK || total < used) {
-        ESP_LOGW(TAG, "upload spiffs info failed base=%s ret=%s total=%u used=%u, continue without space check",
-                 base_path, esp_err_to_name(info_ret), (unsigned int)total, (unsigned int)used);
-        return ESP_OK;
-    }
-
-    size_t free_bytes = total - used;
-#endif
     size_t required_bytes = bin_len + image_len + SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES;
 
     if (free_bytes < required_bytes) {
