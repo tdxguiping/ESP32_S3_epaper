@@ -103,18 +103,13 @@ static void log_request_headers(httpd_req_t *req)
 {
     char content_type[SERVER_NETWORK_STA_HTTP_HEADER_VALUE_MAX] = {0};
     char content_length[32] = {0};
-    char connection[32] = {0};
-    char host[64] = {0};
 
     get_request_header_value(req, "Content-Type", content_type, sizeof(content_type));
     get_request_header_value(req, "Content-Length", content_length, sizeof(content_length));
-    get_request_header_value(req, "Connection", connection, sizeof(connection));
-    get_request_header_value(req, "Host", host, sizeof(host));
 
-    ESP_LOGI(TAG, "headers Content-Type=%s", content_type[0] ? content_type : "<none>");
-    ESP_LOGI(TAG, "headers Content-Length=%s", content_length[0] ? content_length : "<none>");
-    ESP_LOGI(TAG, "headers Connection=%s", connection[0] ? connection : "<none>");
-    ESP_LOGI(TAG, "headers Host=%s", host[0] ? host : "<none>");
+    ESP_LOGI(TAG, "dataUP header len=%s type=%s",
+             content_length[0] ? content_length : "<none>",
+             content_type[0] ? content_type : "<none>");
 }
 
 static bool read_request_body_to_buffer(httpd_req_t *req, char *body, size_t body_size, size_t body_len)
@@ -134,7 +129,6 @@ static bool read_request_body_to_buffer(httpd_req_t *req, char *body, size_t bod
         received_total += received;
     }
     body[body_len] = '\0';
-    ESP_LOGI(TAG, "recv done len=%u", (unsigned int)body_len);
     return true;
 }
 
@@ -449,10 +443,6 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
 
     bool is_multipart = (strstr(content_type, "multipart/form-data") != NULL);
     bool is_small_json = (!is_multipart && remaining <= SERVER_NETWORK_STA_SMALL_JSON_BODY_MAX);
-    bool log_heap_request = is_network_ota || is_multipart;
-    if (!is_network_ota && is_multipart) {
-        log_heap_watermark("dataUP_enter");
-    }
     if (is_multipart) {
         UserLedStatus_Set(USER_LED_STATE_TRANSFER);
     }
@@ -465,13 +455,13 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         httpd_resp_send_500(req);
         return ESP_ERR_NO_MEM;
     }
-    if (log_heap_request) {
+    if (is_network_ota) {
         log_heap_watermark("body_alloc");
     }
 
     if (!read_request_body_to_buffer(req, body, remaining + 1, remaining)) {
         heap_caps_free(body);
-        if (log_heap_request) {
+        if (is_network_ota) {
             log_heap_watermark("body_free");
         }
         if (upload_mutex_locked) {
@@ -490,8 +480,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
                  uri != NULL ? uri : "<null>", (unsigned int)remaining);
         resp_ret = process_small_json_request(req, body, remaining);
     } else if (is_multipart) {
-        ESP_LOGI(TAG, "receive_data_redirect_handler: dispatch multipart uri=%s len=%u",
-                 uri != NULL ? uri : "<null>", (unsigned int)remaining);
+        ESP_LOGI(TAG, "dataUP multipart body=%u", (unsigned int)remaining);
         resp_ret = ServerNetworkStaCast2Pic_Process(req, body, remaining, content_type, s_base_path);
         if (resp_ret == ESP_ERR_NOT_SUPPORTED) {
             resp_ret = ServerNetworkStaCast_Process(req, body, remaining, content_type, s_base_path);
@@ -517,7 +506,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
     }
 
     heap_caps_free(body);
-    if (log_heap_request) {
+    if (is_network_ota) {
         log_heap_watermark("body_free");
     }
 

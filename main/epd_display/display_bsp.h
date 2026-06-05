@@ -8,6 +8,7 @@
 #include <freertos/task.h>
 #include <esp_rom_sys.h>
 #include "tdx_cfg.h"
+#include "epd_type.h"
 
 #define  NT61522_BUFFER_SIZE 300 //256
 
@@ -37,22 +38,8 @@ typedef enum {
 #define GPIO_LOW	0
 #define GPIO_HIGH	1
 
-#define EPD_800_480 1 // 3色
-#define EPD_1024_600 2  // 6色    307200 bytes
-#define EPD_1600_1200_79 3  // 6色  960000 bytes
-#define EPD_1600_1200_133 4 // 6色    960000 bytes
-
-#define EPD_1360_480_1085 5 // 4 色  10.85   40800 bytes
-#define EPD_800_480_4s_75  6 // 4 色  7.5  96000 bytes
-
-// tag_tdx_a   need
-#ifndef EPD_type_
-#define EPD_type_   EPD_1600_1200_79
-#endif
-
-
 // Keep the old display driver's board switch overridable from tdx_cfg.h.
-#define Hardware_Version_  1
+#define Hardware_Version_  2
 
 
 #define EPD_CS_PIN_2    46
@@ -175,6 +162,15 @@ typedef enum {
 
 
 class ePaperPort {
+    friend void EpdType_DispatchSleep(ePaperPort &epd);
+    friend void EpdType_DispatchInit(ePaperPort &epd);
+    friend void EpdType_DispatchDisplay(ePaperPort &epd);
+    friend void EpdType_DispatchNT61522Init(ePaperPort &epd);
+    friend void EpdType_DispatchNT61522Display(ePaperPort &epd);
+    friend void EpdType_DispatchNT61522InitDisplay(ePaperPort &epd);
+    friend void EpdType_DispatchNT61522DisplayNet(ePaperPort &epd, const uint8_t *image_data, size_t image_size);
+    friend void EpdType1360480_1085_3Color_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
+
     spi_device_handle_t spi = nullptr;
     spi_host_device_t    spi_host_ = SPI3_HOST;
     uint32_t             i2c_data_pdMS_TICKS = 0;
@@ -197,6 +193,9 @@ class ePaperPort {
     uint8_t              Rotation = 0;
     uint8_t              mirrx = 0;
     uint8_t              mirry = 0;
+    uint8_t              epd_type_ = 0;
+    uint32_t             image_countger_ = 0;
+    uint8_t              u8flag_ = 0;
 
     void    Set_ResetIOLevel(uint8_t level);
     void    Set_CSIOLevel(uint8_t level);
@@ -220,6 +219,51 @@ class ePaperPort {
     void    EPD_Rotate90CCW_Fast(const uint8_t* src, uint8_t* dst, int width, int height);
     void    EPD_Rotate90CW_Fast(const uint8_t* src, uint8_t* dst, int width, int height);
     void    EPD_PixelRotate();
+
+    void EpdType800480_Sleep();
+    void EpdType800480_Init();
+    void EpdType800480_Display();
+    void EpdType800480_NT61522_Display();
+    void EpdType800480_NT61522_InitDisplay();
+    void EpdType800480_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
+
+    void EpdType1024600_Sleep();
+    void EpdType1024600_Init();
+    void EpdType1024600_Display();
+    void EpdType1024600_NT61522_Display();
+    void EpdType1024600_NT61522_InitDisplay();
+    void EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
+
+    void EpdType16001200_79_Sleep();
+    void EpdType16001200_79_Init();
+    void EpdType16001200_79_Display();
+    void EpdType16001200_79_NT61522_Init();
+    void EpdType16001200_79_NT61522_Display();
+    void EpdType16001200_79_NT61522_InitDisplay();
+    void EpdType16001200_79_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
+
+    void EpdType16001200_133_Sleep();
+    void EpdType16001200_133_Init();
+    void EpdType16001200_133_Display();
+    void EpdType16001200_133_NT61522_Init();
+    void EpdType16001200_133_NT61522_Display();
+    void EpdType16001200_133_NT61522_InitDisplay();
+    void EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
+
+    void EpdType1360480_1085_Sleep();
+    void EpdType1360480_1085_Init();
+    void EpdType1360480_1085_Display();
+    void EpdType1360480_1085_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
+
+    void EpdType1360480_1085_3Color_Sleep();
+    void EpdType1360480_1085_3Color_Init();
+    void EpdType1360480_1085_3Color_Display();
+    void EpdType1360480_1085_3Color_DisplayNet(const uint8_t *imageData, size_t imageSize);
+
+    void EpdType800480_4S_75_Sleep();
+    void EpdType800480_4S_75_Init();
+    void EpdType800480_4S_75_Display();
+    void EpdType800480_4S_75_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
 
     void delay_us(uint16_t us);
     void delay_ms(uint16_t ms);
@@ -321,88 +365,13 @@ class ePaperPort {
     void Epaper_Update_and_Deepsleep();    
     void Epaper_Update();
     void Epaper_Init();
+    void EpdType1360480_1085_Update();
+    void EpdType1360480_1085_3Color_UpdateAndSleep();
+    void Set_EPD_type(uint8_t type);
     void Set_EPD_which_one(uint8_t which_one);
 };
 
 void SetGlobalEPaperInstance(ePaperPort *instance);
 ePaperPort *GetGlobalEPaperInstance();
-
-
-const unsigned char PSR_V[2] = {
-	0xDF, 0x69
-};
-const unsigned char PWR_V[6] = {
-	0x0F, 0x00, 0x28, 0x2C, 0x28, 0x38
-};
-const unsigned char POF_V[1] = {
-	0x00
-};
-const unsigned char DRF_V[1] = {
-	0x01
-};
-const unsigned char CDI_V[1] = {
-	0x37
-};
-
-const unsigned char TRES_V[4] = {
-	0x04, 0xB0, 0x03, 0x20
-};
-const unsigned char AMV_V[2] = {
-	0x01, 0x00
-};
-
-//调用当前温度
-const unsigned char CCSET_V_CUR[1] = {
-	0x01
-};
-//锁定温度
-const unsigned char CCSET_V_LOCK[1] = {
-	0x03
-};
-
-const unsigned char PWS_V[1] = {
-	0x22
-};
-
-const unsigned char DCDC_V[3] = {
-	0x44, 0x54 ,0x00
-};
-
-const unsigned char BTST_P_V[2] = {
-	0xE0, 0x20
-};
-const unsigned char BTST_N_V[2] = {
-	0xE0, 0x20
-};
-const unsigned char Sleep_V[1] = {
-	0xa5
-};
-
-
-
-#define PSR             0x00
-#define PWR             0x01
-#define POF             0x02
-#define POFS            0x03
-#define PON             0x04
-#define BTST_N          0x05
-#define BTST_P          0x06
-#define DTM             0x10
-#define DRF             0x12
-#define PLL             0x30
-#define TSC             0x40
-#define CDI             0x50
-#define TCON            0x60
-#define TRES            0x61
-#define PTLW            0x83
-#define AN_TM           0x74
-#define AGID            0x86
-#define CMDA4           0xA4
-#define DCDC            0xA5
-#define BUCK_BOOST_VDDN 0xB0
-#define TFT_VCOM_POWER  0xB1
-#define EN_BUF          0xB6
-#define BOOST_VDDP_EN   0xB7
-#define CCSET           0xE0
-#define PWS             0xE3
-#define CMD66           0xF0
+extern bool isEPDInit;
+extern unsigned char Temptr[2];

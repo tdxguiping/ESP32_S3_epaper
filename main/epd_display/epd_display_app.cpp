@@ -4,12 +4,15 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "led_status.h"
 #include "tdx_cfg.h"
+#include "epd_type.h"
+#include "epd_test_1360_480_1085_3color_const.h"
 
 static const char *TAG = "epd_display";
 
@@ -24,17 +27,6 @@ EventGroupHandle_t sleep_group = NULL;
 
 static QueueHandle_t s_epd_display_queue = NULL;
 static TaskHandle_t s_epd_display_task = NULL;
-
-static void log_heap_watermark(const char *point)
-{
-    ESP_LOGI(TAG,
-             "heap %s free=%u min=%u psram=%u internal=%u",
-             point,
-             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-             (unsigned int)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
-             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-}
 
 ePaperPort ePaperDisplay(USER_EPD_MOSI_PIN,
                          USER_EPD_SCK_PIN,
@@ -86,8 +78,6 @@ static esp_err_t copy_display_buffer(epd_display_job_t *job, const uint8_t *disp
     memcpy(copy, display_buf, display_size);
     job->data = copy;
     job->size = display_size;
-    ESP_LOGI(TAG, "display buffer copied ptr=%p size=%u", copy, (unsigned int)display_size);
-    log_heap_watermark("display_queue");
     return ESP_OK;
 }
 
@@ -101,64 +91,42 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
             continue;
         }
 
-        ESP_LOGI(TAG, "EPD display task start ptr=%p size=%u", job.data, (unsigned int)job.size);
-        log_heap_watermark("epd_start");
+        int64_t display_start_us = esp_timer_get_time();
+        const epd_type_config_t *config = EpdType_GetCurrentConfig();
+        if (config != NULL) {
+            ESP_LOGI(TAG,
+                     "EPD start target=%u type=%u name=%s resolution=%ux%u input=%u expected=%u",
+                     (unsigned int)job.epd_which_one,
+                     (unsigned int)config->type,
+                     config->name,
+                     (unsigned int)config->width,
+                     (unsigned int)config->height,
+                     (unsigned int)job.size,
+                     (unsigned int)config->display_size);
+        } else {
+            ESP_LOGE(TAG, "EPD start invalid type=%u input=%u",
+                     (unsigned int)EPD_type,
+                     (unsigned int)job.size);
+        }
         UserLedStatus_Set(USER_LED_STATE_EPD_REFRESH);
         if (job.data == NULL || job.size == 0) {
             ESP_LOGW(TAG, "EPD display task skip empty job");
             UserLedStatus_Set(USER_LED_STATE_OPERATION_FAIL);
         } else {
             ePaperDisplay.Set_EPD_which_one(job.epd_which_one);
-            ESP_LOGI(TAG, "EPD target=%u", (unsigned int)job.epd_which_one);
-
-
-        #if(EPD_type_ ==  EPD_800_480)                    
-            ePaperDisplay.EPD_Init();
-            ePaperDisplay.NT61522_Init_display();
-            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
-            ePaperDisplay.Epaper_Update();	
-
-        #elif(EPD_type_ ==  EPD_1024_600)                    
-            ePaperDisplay.EPD_Init();
-            ePaperDisplay.NT61522_Init_display();
-            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
-            ePaperDisplay.NT61522_Display();
-
-        #elif(EPD_type_ ==  EPD_1600_1200_79)
-            ePaperDisplay.EPD_Init();
-            ePaperDisplay.NT61522_Init_display();
-            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
-            ePaperDisplay.NT61522_Display();
-
-        #elif(EPD_type_ ==  EPD_1600_1200_133)
-            ePaperDisplay.EPD_Init();
-            ePaperDisplay.NT61522_Init_display();
-            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
-            ePaperDisplay.NT61522_Display();
-
-        #elif(EPD_type_ ==  EPD_1360_480_1085)                    
-            ePaperDisplay.EPD_Init();
-            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
-            ePaperDisplay.Epaper_Update();	
-
-        #elif(EPD_type_ ==  EPD_800_480_4s_75)                    
-            ePaperDisplay.EPD_Init();
-            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
-            ePaperDisplay.Epaper_Update_and_Deepsleep();		
-        #else
-            ePaperDisplay.EPD_Init();
-            ePaperDisplay.NT61522_Init_display();
-            ePaperDisplay.NT61522_Display_net((const uint8_t *)job.data, job.size);
-            ePaperDisplay.NT61522_Display();
-        #endif
+            EpdType_DisplayCurrent(ePaperDisplay, (const uint8_t *)job.data, job.size);
 
 
             UserLedStatus_Set(USER_LED_STATE_SUCCESS);
         }
 
-        ESP_LOGI(TAG, "EPD display task done ptr=%p size=%u", job.data, (unsigned int)job.size);
+        ESP_LOGI(TAG, "EPD done target=%u type=%u name=%s size=%u total_ms=%lld",
+                 (unsigned int)job.epd_which_one,
+                 (unsigned int)EPD_type,
+                 config != NULL ? config->name : "INVALID",
+                 (unsigned int)job.size,
+                 (long long)((esp_timer_get_time() - display_start_us) / 1000));
         release_epd_job(&job);
-        log_heap_watermark("epd_end");
     }
 }
 
@@ -180,8 +148,6 @@ esp_err_t ServerNetworkStaEpdDisplay_Init(void)
             return ESP_ERR_NO_MEM;
         }
     }
-
-    ESP_LOGI(TAG, "EPD startup init skip, init on first display");
 
     if (s_epd_display_task == NULL) {
         BaseType_t task_ret = xTaskCreate(ServerNetworkStaEpdDisplay_Task,
@@ -224,7 +190,9 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, s
         return ESP_ERR_TIMEOUT;
     }
 
-    ESP_LOGI(TAG, "display job queued ptr=%p size=%u", job.data, (unsigned int)job.size);
+    ESP_LOGI(TAG, "EPD queued target=%u size=%u",
+             (unsigned int)job.epd_which_one,
+             (unsigned int)job.size);
     return ESP_OK;
 #else
     (void)display_buf;
@@ -241,85 +209,188 @@ esp_err_t ServerNetworkStaEpdDisplay_Queue(const uint8_t *display_buf, size_t di
 
 
 // at file  epd_display_app.cpp 
-// 写一个测试函数 （只用于临时测试），并在 main.c 中调用
-// void test_epd_display_EPD_1600_1200_79(void)
+// 鍐欎竴涓祴璇曞嚱鏁?锛堝彧鐢ㄤ簬涓存椂娴嬭瘯锛夛紝骞跺湪 main.c 涓皟鐢?// void test_epd_display_EPD_1600_1200_79(void)
 
-// 函数 test_epd_display_EPD_1600_1200_79 
-// 功能如下
+// 鍑芥暟 test_epd_display_EPD_1600_1200_79 
+// 鍔熻兘濡備笅
 
-// 1， 临时申请一个        960000 bytes 的变量
-//     这个变量的前 10%，全部写成 0x00
-//     接下去的10%，全部写成 0x02
-//     接下去的10%，全部写成 0x03
-//     接下去的10%，全部写成 0x04
-//     接下去的10%，全部写成 0x05
-//     接下去的10%，全部写成 0x06
-//     余下的，全部写成 0x05
+// 1锛?涓存椂鐢宠涓€涓?       960000 bytes 鐨勫彉閲?//     杩欎釜鍙橀噺鐨勫墠 10%锛屽叏閮ㄥ啓鎴?0x00
+//     鎺ヤ笅鍘荤殑10%锛屽叏閮ㄥ啓鎴?0x02
+//     鎺ヤ笅鍘荤殑10%锛屽叏閮ㄥ啓鎴?0x03
+//     鎺ヤ笅鍘荤殑10%锛屽叏閮ㄥ啓鎴?0x04
+//     鎺ヤ笅鍘荤殑10%锛屽叏閮ㄥ啓鎴?0x05
+//     鎺ヤ笅鍘荤殑10%锛屽叏閮ㄥ啓鎴?0x06
+//     浣欎笅鐨勶紝鍏ㄩ儴鍐欐垚 0x05
     
-//    发信息给 函数 ServerNetworkStaEpdDisplay_Task 
-//    将刚刚 申请的 变量
-//    传给这个函数
+//    鍙戜俊鎭粰 鍑芥暟 ServerNetworkStaEpdDisplay_Task 
+//    灏嗗垰鍒?鐢宠鐨?鍙橀噺
+//    浼犵粰杩欎釜鍑芥暟
 
    
-//    在函数 ServerNetworkStaEpdDisplay_Task 中
-//    调用 EPD 显示
+//    鍦ㄥ嚱鏁?ServerNetworkStaEpdDisplay_Task 涓?//    璋冪敤 EPD 鏄剧ず
+
+static void log_epd_test_config(uint8_t requested_type)
+{
+    const epd_type_config_t *requested = EpdType_GetConfig(requested_type);
+    const epd_type_config_t *active = EpdType_GetCurrentConfig();
+
+    ESP_LOGI(TAG,
+             "EPD test requested=%s(%u) resolution=%ux%u expected=%u active=%s(%u)",
+             requested != NULL ? requested->name : "INVALID",
+             (unsigned int)requested_type,
+             requested != NULL ? (unsigned int)requested->width : 0U,
+             requested != NULL ? (unsigned int)requested->height : 0U,
+             requested != NULL ? (unsigned int)requested->display_size : 0U,
+             active != NULL ? active->name : "INVALID",
+             (unsigned int)EPD_type);
+
+    if (requested_type != EPD_type) {
+        ESP_LOGW(TAG, "EPD test type mismatch requested=%u active=%u",
+                 (unsigned int)requested_type,
+                 (unsigned int)EPD_type);
+    }
+}
+
+static void test_epd_display_type(uint8_t requested_type)
+{
+    static const uint8_t color_6_block_values[] = {
+        0x00, 0x01, 0x02, 0x03, 0x05, 0x06, 0x02, 0x03, 0x05, 0x06
+    };
+    static const uint8_t color_3_block_values[] = {
+        0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff
+    };
+    static const uint8_t color_4_block_values[] = {
+        0x00, 0xFF, 0x55, 0xAA, 0x00, 0xFF, 0x55, 0xAA, 0x00, 0xFF
+    };
+    static const size_t block_count = sizeof(color_6_block_values);
+    const uint8_t *block_values = color_6_block_values;
+    const epd_type_config_t *config = EpdType_GetConfig(requested_type);
+
+    switch (requested_type) {
+    case EPD_TYPE_800_480:
+    case EPD_TYPE_1360_480_1085_3COLOR:
+        block_values = color_3_block_values;
+        break;
+    case EPD_TYPE_1360_480_1085:
+    case EPD_TYPE_800_480_4S_75:
+        block_values = color_4_block_values;
+        break;
+    default:
+        break;
+    }
+
+    log_epd_test_config(requested_type);
+    if (config == NULL || config->display_size == 0) {
+        ESP_LOGE(TAG, "EPD test invalid requested type=%u", (unsigned int)requested_type);
+        return;
+    }
+
+    const size_t test_size = config->display_size;
+    const size_t block_size = test_size / block_count;
+    uint8_t *test_buf = (uint8_t *)heap_caps_malloc(test_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (test_buf == NULL) {
+        ESP_LOGE(TAG, "EPD test alloc failed name=%s size=%u",
+                 config->name, (unsigned int)test_size);
+        return;
+    }
+
+    for (size_t i = 0; i < block_count; ++i) {
+        memset(test_buf + (i * block_size), block_values[i], block_size);
+    }
+    memset(test_buf + (block_count * block_size),
+           block_values[block_count - 1],
+           test_size - (block_count * block_size));
+
+    epd_display_job_t job = {};
+    job.data = test_buf;
+    job.size = test_size;
+    job.epd_which_one = 1;
+
+    if (s_epd_display_queue == NULL ||
+        xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+        ESP_LOGE(TAG, "EPD test queue failed name=%s size=%u",
+                 config->name, (unsigned int)test_size);
+        release_epd_job(&job);
+        return;
+    }
+
+    ESP_LOGI(TAG, "EPD test queued name=%s type=%u size=%u",
+             config->name,
+             (unsigned int)requested_type,
+             (unsigned int)test_size);
+}
 
 void test_epd_display_EPD_1600_1200_79(void)
 {
-    static const size_t test_size = 960000;
-    static const size_t block_size = test_size / 10;
-    static const uint8_t block_values[] = {0x00, 0x02, 0x03, 0x04, 0x05, 0x06, 0x03, 0x04, 0x05, 0x06};
-
-    uint8_t *test_buf = (uint8_t *)heap_caps_malloc(test_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (test_buf == NULL) {
-        ESP_LOGE(TAG, "EPD test alloc failed size=%u", (unsigned int)test_size);
-        return;
-    }
-
-    LOG_Purple("%s>%d",__func__,__LINE__);
-
-    for (size_t i = 0; i < sizeof(block_values); ++i) {
-        memset(test_buf + (i * block_size), block_values[i], block_size);
-    }
-    // memset(test_buf + (sizeof(block_values) * block_size),
-    //        0x05,
-    //        test_size - (sizeof(block_values) * block_size));
-
-    epd_display_job_t job = {};
-    job.data = test_buf;
-    job.size = test_size;
-    job.epd_which_one = 1;
-
-    if (s_epd_display_queue == NULL ||
-        xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
-        ESP_LOGE(TAG, "EPD 1600x1200 test queue failed");
-        release_epd_job(&job);
-        return;
-    }
-
-    ESP_LOGI(TAG, "EPD 1600x1200 test queued size=%u", (unsigned int)test_size);
+    test_epd_display_type(EPD_TYPE_1600_1200_79);
 }
+
+
+void test_epd_display_EPD_1600_1200_133(void)
+{
+    test_epd_display_type(EPD_TYPE_1600_1200_133);
+}
+
+
 
 void test_epd_display_EPD_EPD_1024_600(void)
 {
-    static const size_t test_size = 307200;
-    static const size_t block_size = test_size / 10;
-    static const uint8_t block_values[] = {0x00, 0x02, 0x03, 0x04, 0x05, 0x06};
+    test_epd_display_type(EPD_TYPE_1024_600);
+}
 
-    uint8_t *test_buf = (uint8_t *)heap_caps_malloc(test_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (test_buf == NULL) {
-        ESP_LOGE(TAG, "EPD 1024x600 test alloc failed size=%u", (unsigned int)test_size);
+void test_epd_display_EPD_800_480(void)
+{
+    test_epd_display_type(EPD_TYPE_800_480);
+}
+
+void test_epd_display_EPD_1360_480_1085(void)
+{
+    test_epd_display_type(EPD_TYPE_1360_480_1085);
+}
+
+void test_epd_display_EPD_1360_480_1085_3COLOR_horizontal(void)
+{
+    const epd_type_config_t *config = EpdType_GetConfig(EPD_TYPE_1360_480_1085_3COLOR);
+    static const uint8_t black_plane_by_color[] = {
+        0x00, 0xff, 0xff
+    };
+    static const uint8_t red_plane_by_color[] = {
+        0x00, 0xff, 0x00
+    };
+
+    log_epd_test_config(EPD_TYPE_1360_480_1085_3COLOR);
+    if (config == NULL || config->display_size == 0) {
+        ESP_LOGE(TAG, "EPD test invalid requested type=%u", (unsigned int)EPD_TYPE_1360_480_1085_3COLOR);
+        return;
+    }
+    if (config->display_size != (4U * 40800U)) {
+        ESP_LOGE(TAG, "EPD test 3color size invalid input=%u expected=%u",
+                 (unsigned int)config->display_size,
+                 (unsigned int)(4U * 40800U));
         return;
     }
 
-    LOG_Purple("%s>%d", __func__, __LINE__);
-
-    for (size_t i = 0; i < sizeof(block_values); ++i) {
-        memset(test_buf + (i * block_size), block_values[i], block_size);
+    const size_t test_size = config->display_size;
+    const size_t plane_size = test_size / 2U;
+    const size_t block_size = plane_size / 10U;
+    uint8_t *test_buf = (uint8_t *)heap_caps_malloc(test_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (test_buf == NULL) {
+        ESP_LOGE(TAG, "EPD test alloc failed name=%s size=%u",
+                 config->name, (unsigned int)test_size);
+        return;
     }
-    memset(test_buf + (sizeof(block_values) * block_size),
-           0x05,
-           test_size - (sizeof(block_values) * block_size));
+
+    // Fill both EPD planes by the same 10 percent color bands used by the vendor Display_All mapping.
+    // 中文：按原厂 Display_All 的颜色映射，以相同的 10% 色块同时填充黑白平面和红色平面。
+    for (size_t offset = 0; offset < plane_size; offset += block_size) {
+        size_t copy_len = block_size;
+        if (copy_len > plane_size - offset) {
+            copy_len = plane_size - offset;
+        }
+        size_t color_index = (offset / block_size) % 3U;
+        memset(test_buf + offset, black_plane_by_color[color_index], copy_len);
+        memset(test_buf + plane_size + offset, red_plane_by_color[color_index], copy_len);
+    }
 
     epd_display_job_t job = {};
     job.data = test_buf;
@@ -328,10 +399,245 @@ void test_epd_display_EPD_EPD_1024_600(void)
 
     if (s_epd_display_queue == NULL ||
         xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
-        ESP_LOGE(TAG, "EPD 1024x600 test queue failed");
+        ESP_LOGE(TAG, "EPD test queue failed name=%s size=%u",
+                 config->name, (unsigned int)test_size);
         release_epd_job(&job);
         return;
     }
 
-    ESP_LOGI(TAG, "EPD 1024x600 test queued size=%u", (unsigned int)test_size);
+    ESP_LOGI(TAG, "EPD test queued name=%s type=%u size=%u",
+             config->name,
+             (unsigned int)EPD_TYPE_1360_480_1085_3COLOR,
+             (unsigned int)test_size);
+}
+
+void test_epd_display_EPD_1360_480_1085_3COLOR_vertical(void)
+{
+    const epd_type_config_t *config = EpdType_GetConfig(EPD_TYPE_1360_480_1085_3COLOR);
+    static const uint8_t black_plane_by_color[] = {
+        0x00, 0xff, 0xff
+    };
+    static const uint8_t red_plane_by_color[] = {
+        0x00, 0xff, 0x00
+    };
+
+    log_epd_test_config(EPD_TYPE_1360_480_1085_3COLOR);
+    if (config == NULL || config->display_size == 0) {
+        ESP_LOGE(TAG, "EPD vertical test invalid requested type=%u", (unsigned int)EPD_TYPE_1360_480_1085_3COLOR);
+        return;
+    }
+    if (config->display_size != (4U * 40800U)) {
+        ESP_LOGE(TAG, "EPD vertical test 3color size invalid input=%u expected=%u",
+                 (unsigned int)config->display_size,
+                 (unsigned int)(4U * 40800U));
+        return;
+    }
+
+    const size_t test_size = config->display_size;
+    const size_t plane_size = test_size / 2U;
+    const size_t source_bytes = 85U * 2U;
+    const size_t gate_bits = 480U;
+    const size_t block_gate_bits = gate_bits / 10U;
+    uint8_t *test_buf = (uint8_t *)heap_caps_malloc(test_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (test_buf == NULL) {
+        ESP_LOGE(TAG, "EPD vertical test alloc failed name=%s size=%u",
+                 config->name, (unsigned int)test_size);
+        return;
+    }
+
+    // Fill gate-position bands inside each source byte stream to rotate the test bands from the horizontal pattern.
+    // 中文：按每个 source 字节流内部的 Gate 位置切换颜色，用于把 horizontal 测试图案转成另一方向。
+    for (size_t source = 0; source < source_bytes; ++source) {
+        size_t source_offset = source * gate_bits;
+        for (size_t row = 0; row < gate_bits; ++row) {
+            size_t color_index = (row / block_gate_bits) % 3U;
+            size_t offset = source_offset + row;
+            test_buf[offset] = black_plane_by_color[color_index];
+            test_buf[plane_size + offset] = red_plane_by_color[color_index];
+        }
+    }
+
+    epd_display_job_t job = {};
+    job.data = test_buf;
+    job.size = test_size;
+    job.epd_which_one = 1;
+
+    if (s_epd_display_queue == NULL ||
+        xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+        ESP_LOGE(TAG, "EPD vertical test queue failed name=%s size=%u",
+                 config->name, (unsigned int)test_size);
+        release_epd_job(&job);
+        return;
+    }
+
+    ESP_LOGI(TAG, "EPD vertical test queued name=%s type=%u size=%u",
+             config->name,
+             (unsigned int)EPD_TYPE_1360_480_1085_3COLOR,
+             (unsigned int)test_size);
+}
+
+void test_epd_display_EPD_1360_480_1085_3COLOR_const(void)
+{
+    const epd_type_config_t *config = EpdType_GetConfig(EPD_TYPE_1360_480_1085_3COLOR);
+    const size_t plane_size = g_epd_test_1360_480_1085_3color_plane_size;
+    const size_t test_size = g_epd_test_1360_480_1085_3color_image_size;
+
+    log_epd_test_config(EPD_TYPE_1360_480_1085_3COLOR);
+    if (config == NULL || config->display_size == 0) {
+        ESP_LOGE(TAG, "EPD const test invalid requested type=%u", (unsigned int)EPD_TYPE_1360_480_1085_3COLOR);
+        return;
+    }
+    if (config->display_size != test_size) {
+        ESP_LOGE(TAG, "EPD const test size invalid input=%u expected=%u",
+                 (unsigned int)config->display_size,
+                 (unsigned int)test_size);
+        return;
+    }
+    if (g_epd_test_1360_480_1085_3color_display_b_size == 0 ||
+        g_epd_test_1360_480_1085_3color_display_r_size == 0 ||
+        test_size != (plane_size * 2U)) {
+        ESP_LOGE(TAG, "EPD const data invalid b=%u r=%u plane=%u image=%u",
+                 (unsigned int)g_epd_test_1360_480_1085_3color_display_b_size,
+                 (unsigned int)g_epd_test_1360_480_1085_3color_display_r_size,
+                 (unsigned int)plane_size,
+                 (unsigned int)test_size);
+        return;
+    }
+
+    uint8_t *test_buf = (uint8_t *)heap_caps_malloc(test_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (test_buf == NULL) {
+        ESP_LOGE(TAG, "EPD const test alloc failed name=%s size=%u",
+                 config->name, (unsigned int)test_size);
+        return;
+    }
+
+    const size_t half_size = plane_size / 2U;
+
+    // English: Build B_L + R_L + B_R + R_R, repeating source constants when the data is short.
+    // 中文：生成 B_L + R_L + B_R + R_R，常数数据不足时循环重复填满。
+    for (size_t i = 0; i < half_size; ++i) {
+        test_buf[i] = g_epd_test_1360_480_1085_3color_display_b[i % g_epd_test_1360_480_1085_3color_display_b_size];
+        test_buf[half_size + i] = g_epd_test_1360_480_1085_3color_display_r[i % g_epd_test_1360_480_1085_3color_display_r_size];
+        test_buf[(half_size * 2U) + i] =
+            g_epd_test_1360_480_1085_3color_display_b[(half_size + i) % g_epd_test_1360_480_1085_3color_display_b_size];
+        test_buf[(half_size * 3U) + i] =
+            g_epd_test_1360_480_1085_3color_display_r[(half_size + i) % g_epd_test_1360_480_1085_3color_display_r_size];
+    }
+
+    epd_display_job_t job = {};
+    job.data = test_buf;
+    job.size = test_size;
+    job.epd_which_one = 1;
+
+    if (s_epd_display_queue == NULL ||
+        xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+        ESP_LOGE(TAG, "EPD const test queue failed name=%s size=%u",
+                 config->name, (unsigned int)test_size);
+        release_epd_job(&job);
+        return;
+    }
+
+    ESP_LOGI(TAG, "EPD const test queued name=%s type=%u size=%u plane=%u",
+             config->name,
+             (unsigned int)EPD_TYPE_1360_480_1085_3COLOR,
+             (unsigned int)test_size,
+             (unsigned int)plane_size);
+}
+
+void test_epd_display_EPD_800_480_4S_75(void)
+{
+#if (Hardware_Version_ == 2)
+    if (EPD_type == EPD_TYPE_800_480_4S_75) {
+        const epd_type_config_t *config = EpdType_GetConfig(EPD_TYPE_800_480_4S_75);
+        static const uint8_t epd1_block_values[] = {
+            0x00, 0xFF, 0x55, 0xAA, 0x00, 0xFF, 0x55, 0xAA, 0x00, 0xFF
+        };
+        static const uint8_t epd2_block_values[] = {
+            0xFF, 0x00, 0xAA, 0x55, 0xFF, 0x00, 0xAA, 0x55, 0xFF, 0x00
+        };
+        static const size_t block_count = sizeof(epd1_block_values);
+
+        log_epd_test_config(EPD_TYPE_800_480_4S_75);
+        if (config == NULL || config->display_size == 0) {
+            ESP_LOGE(TAG, "EPD 4S dual test invalid type=%u", (unsigned int)EPD_TYPE_800_480_4S_75);
+            return;
+        }
+
+        for (uint8_t target = 1; target <= 2; ++target) {
+            const uint8_t *block_values = (target == 1) ? epd1_block_values : epd2_block_values;
+            const size_t test_size = config->display_size;
+            const size_t block_size = test_size / block_count;
+            uint8_t *test_buf = (uint8_t *)heap_caps_malloc(test_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (test_buf == NULL) {
+                ESP_LOGE(TAG, "EPD 4S dual test alloc failed target=%u size=%u",
+                         (unsigned int)target, (unsigned int)test_size);
+                return;
+            }
+
+            // Use separate buffers for EPD1 and EPD2 because each queued display job owns its buffer.
+            // 中文：为 EPD1 和 EPD2 分别申请缓冲，因为每个入队显示任务都会独立释放自己的缓冲。
+            for (size_t i = 0; i < block_count; ++i) {
+                memset(test_buf + (i * block_size), block_values[i], block_size);
+            }
+            memset(test_buf + (block_count * block_size),
+                   block_values[block_count - 1],
+                   test_size - (block_count * block_size));
+
+            epd_display_job_t job = {};
+            job.data = test_buf;
+            job.size = test_size;
+            job.epd_which_one = target;
+
+            if (s_epd_display_queue == NULL ||
+                xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+                ESP_LOGE(TAG, "EPD 4S dual test queue failed target=%u size=%u",
+                         (unsigned int)target, (unsigned int)test_size);
+                release_epd_job(&job);
+                return;
+            }
+
+            ESP_LOGI(TAG, "EPD 4S dual test queued target=%u size=%u",
+                     (unsigned int)target, (unsigned int)test_size);
+        }
+        return;
+    }
+#endif
+
+    test_epd_display_type(EPD_TYPE_800_480_4S_75);
+}
+
+
+void test_epd_display(void)
+{
+    switch (EPD_type) {
+    case EPD_TYPE_800_480:
+        test_epd_display_EPD_800_480();
+        break;
+    case EPD_TYPE_1024_600:
+         test_epd_display_EPD_EPD_1024_600();
+        break;
+
+    case EPD_TYPE_1600_1200_79:
+        test_epd_display_EPD_1600_1200_79();
+        break;
+
+    case EPD_TYPE_1600_1200_133:
+        test_epd_display_EPD_1600_1200_133();
+        break;
+
+    case EPD_TYPE_1360_480_1085:
+        test_epd_display_EPD_1360_480_1085();
+        break;
+    case EPD_TYPE_800_480_4S_75:
+        test_epd_display_EPD_800_480_4S_75();
+        break;
+    case EPD_TYPE_1360_480_1085_3COLOR:
+        // test_epd_display_EPD_1360_480_1085_3COLOR_horizontal();
+        // test_epd_display_EPD_1360_480_1085_3COLOR_vertical();
+        test_epd_display_EPD_1360_480_1085_3COLOR_const();
+        break;
+    default:
+        ESP_LOGE(TAG, "display rejected invalid EPD type=%u", (unsigned int)EPD_type);
+        break;
+    }
 }

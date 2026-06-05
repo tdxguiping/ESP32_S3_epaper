@@ -132,10 +132,26 @@ static wifi_credential_t server_network_sta_read_saved_wifi(void)
 static const char *wifi_disconnect_reason_name(int reason)
 {
     switch (reason) {
+    case 1:
+        return "UNSPECIFIED";
     case 2:
         return "AUTH_EXPIRE";
+    case 4:
+        return "INACTIVITY";
+    case 8:
+        return "ASSOC_LEAVE";
+    case 14:
+        return "MIC_FAILURE";
     case 15:
         return "4WAY_HANDSHAKE_TIMEOUT";
+    case 16:
+        return "GROUP_KEY_TIMEOUT";
+    case 17:
+        return "IE_DIFFERS";
+    case 39:
+        return "TIMEOUT";
+    case 200:
+        return "BEACON_TIMEOUT";
     case 201:
         return "NO_AP_FOUND";
     case 202:
@@ -144,21 +160,57 @@ static const char *wifi_disconnect_reason_name(int reason)
         return "ASSOC_FAIL";
     case 204:
         return "HANDSHAKE_TIMEOUT";
+    case 205:
+        return "CONNECTION_FAIL";
+    case 210:
+        return "SECURITY_MISMATCH";
     default:
         return "UNKNOWN";
     }
 }
 
+static const char *wifi_disconnect_reason_hint(int reason)
+{
+    switch (reason) {
+    case 15:
+    case 202:
+    case 204:
+        return "password/security/rssi";
+    case 201:
+        return "ssid/channel/rssi";
+    case 203:
+    case 205:
+        return "router/compat/rssi";
+    case 200:
+        return "weak-signal/router";
+    case 210:
+        return "authmode";
+    default:
+        return "check-router-log";
+    }
+}
 static void server_network_sta_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     (void)arg;
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+#if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
+        ESP_LOGI(TAG, "WiFi start connect");
+#endif
         esp_err_t ret = esp_wifi_connect();
         if (ret != ESP_OK && ret != ESP_ERR_WIFI_CONN) {
             ESP_LOGE(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(ret));
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t *)event_data;
+#if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
+        if (event != NULL) {
+            ESP_LOGI(TAG, "WiFi connected ch=%u auth=%d bssid=%02x:%02x:%02x:%02x:%02x:%02x",
+                     event->channel, event->authmode,
+                     event->bssid[0], event->bssid[1], event->bssid[2],
+                     event->bssid[3], event->bssid[4], event->bssid[5]);
+        }
+#endif
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "WiFi IP=" IPSTR, IP2STR(&event->ip_info.ip));
@@ -167,8 +219,9 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
         wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
         int reason = event ? event->reason : -1;
         if (reason != 8) {
-            ESP_LOGW(TAG, "WiFi disconnected reason=%d(%s)",
-                     reason, wifi_disconnect_reason_name(reason));
+            ESP_LOGW(TAG, "WiFi disconnected reason=%d(%s) rssi=%d hint=%s",
+                     reason, wifi_disconnect_reason_name(reason),
+                     event ? event->rssi : 0, wifi_disconnect_reason_hint(reason));
         }
         xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_FAIL_BIT);
     }
@@ -227,6 +280,12 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
     wifi_config_t wifi_config = {0};
     strlcpy((char *)wifi_config.sta.ssid, credential.ssid, sizeof(wifi_config.sta.ssid));
     strlcpy((char *)wifi_config.sta.password, credential.password, sizeof(wifi_config.sta.password));
+#if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
+    ESP_LOGI(TAG, "WiFi config ssid_len=%u pass_len=%u timeout_ms=%u",
+             (unsigned int)strlen(credential.ssid),
+             (unsigned int)strlen(credential.password),
+             (unsigned int)SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS);
+#endif
 
     // Force STA mode here so the migrated branch does not accidentally enter AP, PPP, OTA, or other network modes.
     // 在这里强制使�?STA 模式，避免移植分支误�?AP、PPP、OTA 或其它网络模式�?    (void)esp_wifi_disconnect();

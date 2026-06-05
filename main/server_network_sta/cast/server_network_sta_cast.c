@@ -9,7 +9,6 @@
 #include <sys/stat.h>
 #include <sys/unistd.h>
 
-#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "esp_spiffs.h"
@@ -19,17 +18,6 @@
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_cast";
-
-static void log_heap_watermark(const char *point)
-{
-    ESP_LOGI(TAG,
-             "heap %s free=%u min=%u psram=%u internal=%u",
-             point,
-             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-             (unsigned int)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
-             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-}
 
 typedef struct {
     bool present;
@@ -80,7 +68,6 @@ static bool extract_boundary(const char *content_type, char *boundary, size_t bo
         len++;
     }
     boundary[len] = '\0';
-    ESP_LOGI(TAG, "cast boundary parsed len=%u value=%s", (unsigned int)len, boundary);
     return len > 0;
 }
 
@@ -189,6 +176,11 @@ static void copy_part_text(const multipart_part_t *part, char *out, size_t out_s
     out[copy_len] = '\0';
 }
 
+static size_t part_text_len(const multipart_part_t *part)
+{
+    return (part != NULL && part->present) ? part->len : 0;
+}
+
 static bool parse_size_field(const multipart_part_t *part, size_t *out)
 {
     char text[24];
@@ -258,7 +250,6 @@ static esp_err_t send_cast_chunk(httpd_req_t *req, const char *json)
     if (req == NULL || json == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    ESP_LOGI(TAG, "cast chunk: %s", json);
     return httpd_resp_send_chunk(req, json, strlen(json));
 }
 
@@ -564,7 +555,7 @@ static esp_err_t stop_slideshow_for_cast(const char *base_path)
     if (ret == ESP_OK) {
         ServerNetworkStaSlideshow_Stop();
     }
-    ESP_LOGI(TAG, "cast stop slideshow ret=%s path=%s", esp_err_to_name(ret), control_path);
+    ESP_LOGI(TAG, "cast stop slideshow ret=%s", esp_err_to_name(ret));
     return ret;
 }
 
@@ -641,6 +632,18 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
         return send_cast_result(req, false, "cast failed", "save_required_for_last_cast");
     }
 
+    size_t json_size = part_text_len(&func_part) + part_text_len(&file_name_part) +
+                       part_text_len(&bin_size_part) + part_text_len(&image_size_part) +
+                       part_text_len(&save_part) + part_text_len(&show_part);
+    ESP_LOGI(TAG, "cast size body=%u bin=%u jpg=%u json=%u show=%d save=%d file=%s",
+             (unsigned int)body_len,
+             (unsigned int)bin_part.len,
+             (unsigned int)image_part.len,
+             (unsigned int)json_size,
+             meta.show ? 1 : 0,
+             meta.save ? 1 : 0,
+             meta.file_name);
+
     httpd_resp_set_type(req, "application/x-ndjson");
     esp_err_t resp_ret = send_cast_received_chunk(req, &meta);
     if (resp_ret != ESP_OK) {
@@ -683,8 +686,6 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
         httpd_resp_send_chunk(req, NULL, 0);
         return ESP_OK;
     }
-    log_heap_watermark("save_done");
-
     if (meta.show && !slideshow_stopped) {
         if (stop_slideshow_for_cast(base_path) != ESP_OK) {
             ESP_LOGW(TAG, "cast stop slideshow after save failed");

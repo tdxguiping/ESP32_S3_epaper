@@ -10,6 +10,11 @@
 #include "driver/spi_master.h"
 #include "driver/uart.h"
 
+// Keep STA connection debug logs here so WiFi failure checks can be enabled without changing STA logic.
+// 将 STA 连接调试日志开关放在这里，便于不修改 STA 逻辑就排查 WiFi 失败原因。
+#define SERVER_NETWORK_STA_DEBUG_LOG_ENABLE 1
+
+
 // Keep old reset markers here so startup display policy can be changed without touching main.c.
 #define ESP_RST_low_power_No_Disp 0xFE
 #define ESP_RST_need_Disp_EPD 0xFD
@@ -63,6 +68,7 @@
 
 // Keep the STA connection timeout configurable from one header for board bring-up tuning.
 #define SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS 20000
+
 
 // Keep the migrated /dataUP upload body limit here so browser upload behavior can be tuned in one place.
 #define SERVER_NETWORK_STA_DATAUP_MAX_BODY_SIZE (2 * 1024 * 1024)

@@ -241,7 +241,6 @@ void app_main(void)
         ESP_LOGE(TAG, "Storage mount failed ret=%s, continue without startup slideshow",
                  esp_err_to_name(storage_ret));
     }
-
     // Force the old read_value=0x02 path here: Server Network STA only, then start the HTTP file server.
     // 中文：在这里固定旧工程 read_value=0x02 路径：只进入 Server Network STA，然后启动 HTTP 文件服务器。
     uint8_t network_ret = User_Network_mode_app_init(base_path);
@@ -249,13 +248,14 @@ void app_main(void)
     if (network_ret != SERVER_NETWORK_STA_OK) {
         UserLedStatus_Set(USER_LED_STATE_WIFI_FAIL);
         ESP_LOGE(TAG, "Server Network STA failed, file server not started");
-        return;
+        //return;
     }
-    UserLedStatus_Set(USER_LED_STATE_SERVER_READY);
+    else    {
+        UserLedStatus_Set(USER_LED_STATE_SERVER_READY);
+    }
+    
     ESP_LOGI(TAG, "Server Version=2.2.3");
-
-    // test_epd_display_EPD_1600_1200_79();
-    // test_epd_display_EPD_EPD_1024_600();
+    test_epd_display();
 }
 // LOG_ERROR("%d %s %s",__LINE__,__func__,__FILE__);
 // LOG_WARN("%s>%d",__func__,__LINE__);
