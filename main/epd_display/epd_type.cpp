@@ -12,7 +12,7 @@
 
 static const char *TAG = "epd_type";
 
-uint8_t EPD_type = EPD_TYPE_1360_480_1085_3COLOR;
+uint8_t EPD_type = EPD_TYPE_800_480_4S_75;
 
 static const epd_type_config_t s_epd_types[] = {
     {EPD_TYPE_800_480, 800, 480, 192000, "EPD_800_480"},//  3 色 
@@ -23,6 +23,22 @@ static const epd_type_config_t s_epd_types[] = {
     {EPD_TYPE_800_480_4S_75, 800, 480, 96000, "EPD_800_480_4S_75"},//  4 色 
     {EPD_TYPE_1360_480_1085_3COLOR, 1360, 480, 163200, "EPD_1360_480_1085_3COLOR"},
 };
+
+static uint8_t EpdType_GetHardwareVersion(uint8_t type)
+{
+    return (type == EPD_TYPE_800_480_4S_75) ? 2U : 1U;
+}
+
+static void EpdType_UpdateHardwareVersion(uint8_t type)
+{
+    uint8_t next_version = EpdType_GetHardwareVersion(type);
+    if (Hardware_Version_ != next_version) {
+        Hardware_Version_ = next_version;
+        ESP_LOGI(TAG, "EPD hardware version=%u type=%u",
+                 (unsigned int)Hardware_Version_,
+                 (unsigned int)type);
+    }
+}
 
 const epd_type_config_t *EpdType_GetConfig(uint8_t type)
 {
@@ -47,6 +63,7 @@ void EpdType_Set(uint8_t type)
         return;
     }
     EPD_type = type;
+    EpdType_UpdateHardwareVersion(type);
     ESP_LOGI(TAG, "EPD type=%u name=%s size=%u",
              (unsigned int)config->type,
              config->name,
@@ -55,6 +72,7 @@ void EpdType_Set(uint8_t type)
 
 void EpdType_DisplayCurrent(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)
 {
+    EpdType_UpdateHardwareVersion(EPD_type);
     epd.Set_EPD_type(EPD_type);
 
     switch (EPD_type) {

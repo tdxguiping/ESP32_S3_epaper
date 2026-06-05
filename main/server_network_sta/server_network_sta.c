@@ -32,6 +32,9 @@ static bool s_mdns_service_started;
 static bool s_file_server_started;
 static esp_event_handler_instance_t s_wifi_event_instance;
 static esp_event_handler_instance_t s_ip_event_instance;
+static int s_auth_expire_retry_num;
+
+#define SERVER_NETWORK_STA_AUTH_EXPIRE_MAX_RETRY 5
 
 static void parse_zero_terminated_blob(const uint8_t *blob_data, size_t blob_len, char *out, size_t out_size)
 {
@@ -214,6 +217,7 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "WiFi IP=" IPSTR, IP2STR(&event->ip_info.ip));
+        s_auth_expire_retry_num = 0;
         xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_CONNECTED_BIT);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
@@ -222,6 +226,17 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
             ESP_LOGW(TAG, "WiFi disconnected reason=%d(%s) rssi=%d hint=%s",
                      reason, wifi_disconnect_reason_name(reason),
                      event ? event->rssi : 0, wifi_disconnect_reason_hint(reason));
+        }
+        if (reason == WIFI_REASON_AUTH_EXPIRE &&
+            s_auth_expire_retry_num < SERVER_NETWORK_STA_AUTH_EXPIRE_MAX_RETRY) {
+            s_auth_expire_retry_num++;
+            ESP_LOGW(TAG, "WiFi auth expired, retry %d/%d",
+                     s_auth_expire_retry_num, SERVER_NETWORK_STA_AUTH_EXPIRE_MAX_RETRY);
+            esp_err_t ret = esp_wifi_connect();
+            if (ret == ESP_OK || ret == ESP_ERR_WIFI_CONN) {
+                return;
+            }
+            ESP_LOGE(TAG, "esp_wifi_connect retry failed: %s", esp_err_to_name(ret));
         }
         xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_FAIL_BIT);
     }
@@ -297,6 +312,7 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    s_auth_expire_retry_num = 0;
     xEventGroupClearBits(s_sta_event_group, SERVER_NETWORK_STA_CONNECTED_BIT | SERVER_NETWORK_STA_FAIL_BIT);
 
     ret = esp_wifi_start();

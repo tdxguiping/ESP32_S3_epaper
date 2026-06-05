@@ -301,23 +301,42 @@ static void test_epd_display_type(uint8_t requested_type)
            block_values[block_count - 1],
            test_size - (block_count * block_size));
 
-    epd_display_job_t job = {};
-    job.data = test_buf;
-    job.size = test_size;
-    job.epd_which_one = 1;
+    uint8_t target_count = (requested_type == EPD_TYPE_800_480_4S_75) ? 2U : 1U;
+    for (uint8_t target = 1; target <= target_count; ++target) {
+        uint8_t *target_buf = test_buf;
+        if (target > 1U) {
+            target_buf = (uint8_t *)heap_caps_malloc(test_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (target_buf == NULL) {
+                ESP_LOGE(TAG, "EPD test alloc failed target=%u name=%s size=%u",
+                         (unsigned int)target,
+                         config->name,
+                         (unsigned int)test_size);
+                return;
+            }
+            memcpy(target_buf, test_buf, test_size);
+        }
 
-    if (s_epd_display_queue == NULL ||
-        xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
-        ESP_LOGE(TAG, "EPD test queue failed name=%s size=%u",
-                 config->name, (unsigned int)test_size);
-        release_epd_job(&job);
-        return;
+        epd_display_job_t job = {};
+        job.data = target_buf;
+        job.size = test_size;
+        job.epd_which_one = target;
+
+        if (s_epd_display_queue == NULL ||
+            xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+            ESP_LOGE(TAG, "EPD test queue failed target=%u name=%s size=%u",
+                     (unsigned int)target,
+                     config->name,
+                     (unsigned int)test_size);
+            release_epd_job(&job);
+            return;
+        }
+
+        ESP_LOGI(TAG, "EPD test queued target=%u name=%s type=%u size=%u",
+                 (unsigned int)target,
+                 config->name,
+                 (unsigned int)requested_type,
+                 (unsigned int)test_size);
     }
-
-    ESP_LOGI(TAG, "EPD test queued name=%s type=%u size=%u",
-             config->name,
-             (unsigned int)requested_type,
-             (unsigned int)test_size);
 }
 
 void test_epd_display_EPD_1600_1200_79(void)
@@ -544,69 +563,6 @@ void test_epd_display_EPD_1360_480_1085_3COLOR_const(void)
              (unsigned int)plane_size);
 }
 
-void test_epd_display_EPD_800_480_4S_75(void)
-{
-#if (Hardware_Version_ == 2)
-    if (EPD_type == EPD_TYPE_800_480_4S_75) {
-        const epd_type_config_t *config = EpdType_GetConfig(EPD_TYPE_800_480_4S_75);
-        static const uint8_t epd1_block_values[] = {
-            0x00, 0xFF, 0x55, 0xAA, 0x00, 0xFF, 0x55, 0xAA, 0x00, 0xFF
-        };
-        static const uint8_t epd2_block_values[] = {
-            0xFF, 0x00, 0xAA, 0x55, 0xFF, 0x00, 0xAA, 0x55, 0xFF, 0x00
-        };
-        static const size_t block_count = sizeof(epd1_block_values);
-
-        log_epd_test_config(EPD_TYPE_800_480_4S_75);
-        if (config == NULL || config->display_size == 0) {
-            ESP_LOGE(TAG, "EPD 4S dual test invalid type=%u", (unsigned int)EPD_TYPE_800_480_4S_75);
-            return;
-        }
-
-        for (uint8_t target = 1; target <= 2; ++target) {
-            const uint8_t *block_values = (target == 1) ? epd1_block_values : epd2_block_values;
-            const size_t test_size = config->display_size;
-            const size_t block_size = test_size / block_count;
-            uint8_t *test_buf = (uint8_t *)heap_caps_malloc(test_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (test_buf == NULL) {
-                ESP_LOGE(TAG, "EPD 4S dual test alloc failed target=%u size=%u",
-                         (unsigned int)target, (unsigned int)test_size);
-                return;
-            }
-
-            // Use separate buffers for EPD1 and EPD2 because each queued display job owns its buffer.
-            // 中文：为 EPD1 和 EPD2 分别申请缓冲，因为每个入队显示任务都会独立释放自己的缓冲。
-            for (size_t i = 0; i < block_count; ++i) {
-                memset(test_buf + (i * block_size), block_values[i], block_size);
-            }
-            memset(test_buf + (block_count * block_size),
-                   block_values[block_count - 1],
-                   test_size - (block_count * block_size));
-
-            epd_display_job_t job = {};
-            job.data = test_buf;
-            job.size = test_size;
-            job.epd_which_one = target;
-
-            if (s_epd_display_queue == NULL ||
-                xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
-                ESP_LOGE(TAG, "EPD 4S dual test queue failed target=%u size=%u",
-                         (unsigned int)target, (unsigned int)test_size);
-                release_epd_job(&job);
-                return;
-            }
-
-            ESP_LOGI(TAG, "EPD 4S dual test queued target=%u size=%u",
-                     (unsigned int)target, (unsigned int)test_size);
-        }
-        return;
-    }
-#endif
-
-    test_epd_display_type(EPD_TYPE_800_480_4S_75);
-}
-
-
 void test_epd_display(void)
 {
     switch (EPD_type) {
@@ -629,7 +585,7 @@ void test_epd_display(void)
         test_epd_display_EPD_1360_480_1085();
         break;
     case EPD_TYPE_800_480_4S_75:
-        test_epd_display_EPD_800_480_4S_75();
+        test_epd_display_type(EPD_TYPE_800_480_4S_75);
         break;
     case EPD_TYPE_1360_480_1085_3COLOR:
         // test_epd_display_EPD_1360_480_1085_3COLOR_horizontal();

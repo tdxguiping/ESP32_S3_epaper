@@ -23,7 +23,6 @@ void test_epd_display_EPD_1360_480_1085(void);
 void test_epd_display_EPD_1360_480_1085_3COLOR_horizontal(void);
 void test_epd_display_EPD_1360_480_1085_3COLOR_vertical(void);
 void test_epd_display_EPD_1360_480_1085_3COLOR_const(void);
-void test_epd_display_EPD_800_480_4S_75(void);
 void test_epd_display(void);
 
 #ifdef __cplusplus

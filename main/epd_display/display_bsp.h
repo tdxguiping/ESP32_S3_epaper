@@ -38,8 +38,8 @@ typedef enum {
 #define GPIO_LOW	0
 #define GPIO_HIGH	1
 
-// Keep the old display driver's board switch overridable from tdx_cfg.h.
-#define Hardware_Version_  2
+extern uint8_t Hardware_Version_;
+extern uint8_t EPD_which_one_;
 
 
 #define EPD_CS_PIN_2    46

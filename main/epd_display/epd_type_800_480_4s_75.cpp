@@ -2,6 +2,10 @@
 #include "display_bsp.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+namespace {
+constexpr size_t kEpd4sYieldInterval = 512U;
+}
+
 void EpdType800480_4S_75_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)
 {
     static const size_t expected_image_size = 800U * 480U / 4U;
@@ -44,41 +48,23 @@ void ePaperPort::EpdType800480_4S_75_Init()
 
 void ePaperPort::EpdType800480_4S_75_Display()
 {
-    uint32_t i = 0;
-    uint8_t j = 0;
-    spi_transaction_t t;
-
     EPD_WriteCMD(0x10);
-    for (i = 0; i < (uint32_t)DisplayLen; i += 256) { // ALLSCREEN_BYTES =  DisplayLen
-        if (j == 0) {
-            EPD_Select_Master();  
-            memset(&t, 0, sizeof(t));
-            t.length    = 8 * 256;
-            t.tx_buffer = DispBuffer + i;
-            spi_device_polling_transmit(spi, &t); //Transmit!
-            j = 1;
-        } else {
-            EPD_Select_Slave();
-            memset(&t, 0, sizeof(t));
-            t.length    = 8 * 256;
-            t.tx_buffer = DispBuffer + i;
-            spi_device_polling_transmit(spi, &t); //Transmit!
-            j = 0;
+    for (uint32_t i = 0; i < (uint32_t)DisplayLen; ++i) {
+        EPD_WriteDATA(DispBuffer[i]);
+        if ((i + 1U) % kEpd4sYieldInterval == 0U) {
+            // English: Yield during long SPI writes so the idle task can feed the watchdog.
+            // 中文：长时间 SPI 写入期间主动让出 CPU，避免 idle 任务无法喂 watchdog。
+            vTaskDelay(1);
         }
     }
+    ESP_LOGI(TAG, "EPD 800x480 4color data loaded target=%u size=%u",
+             (unsigned int)EPD_which_one_,
+             (unsigned int)DisplayLen);
     Epaper_Update_and_Deepsleep();		
-
-    // for(i=0;i<ALLSCREEN_BYTES*2;i++)
-    // {	
-    //     EPD_WriteDATA(*DispBuffer++);
-    // }       
 }
 
 void ePaperPort::EpdType800480_4S_75_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize)
 {
-    size_t i = 0;
-    uint8_t j = 0;
-    spi_transaction_t t;
     static const size_t expected_image_size = 800U * 480U / 4U;
 
     if (imageData == nullptr || imageSize != expected_image_size) {
@@ -89,27 +75,17 @@ void ePaperPort::EpdType800480_4S_75_NT61522_DisplayNet(const uint8_t *imageData
     }
 
     EPD_WriteCMD(0x10);
-    for (i = 0; i < imageSize; i += 256) { // ALLSCREEN_BYTES =  DisplayLen
-        size_t chunk = imageSize - i;
-        if (chunk > 256U) {
-            chunk = 256U;
-        }
-        if (j == 0) {
-            EPD_Select_Master();  
-            memset(&t, 0, sizeof(t));
-            t.length    = 8 * chunk;
-            t.tx_buffer = imageData + i;
-            spi_device_polling_transmit(spi, &t); //Transmit!
-            j = 1;
-        } else {
-            EPD_Select_Slave();
-            memset(&t, 0, sizeof(t));
-            t.length    = 8 * chunk;
-            t.tx_buffer = imageData + i;
-            spi_device_polling_transmit(spi, &t); //Transmit!
-            j = 0;
+    for (size_t i = 0; i < imageSize; ++i) {
+        EPD_WriteDATA(imageData[i]);
+        if ((i + 1U) % kEpd4sYieldInterval == 0U) {
+            // English: Yield during long SPI writes so the idle task can feed the watchdog.
+            // 中文：长时间 SPI 写入期间主动让出 CPU，避免 idle 任务无法喂 watchdog。
+            vTaskDelay(1);
         }
     }
+    ESP_LOGI(TAG, "EPD 800x480 4color data loaded target=%u size=%u",
+             (unsigned int)EPD_which_one_,
+             (unsigned int)imageSize);
 }
 
 void ePaperPort::Epaper_Initial() {   

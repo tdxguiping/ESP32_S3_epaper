@@ -14,6 +14,7 @@
 
 
 uint8_t  EPD_which_one_=1;    // if 1 EPD1 , if 2 EPD2
+uint8_t  Hardware_Version_ = 1;
 
 //extern uint8_t  WHT20_Temp;
 extern uint16_t sleep_time; 
@@ -124,41 +125,42 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
     ret = spi_bus_add_device(spi_host_, &devcfg, &spi);
     ESP_ERROR_CHECK(ret);
 
-    #if(Hardware_Version_  == 1)
+    Hardware_Version_ = (EPD_type == EPD_TYPE_800_480_4S_75) ? 2U : 1U;
     gpio_config_t gpio_conf = {};
-    gpio_conf.intr_type = GPIO_INTR_DISABLE;
-    gpio_conf.mode = GPIO_MODE_OUTPUT;
-    gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_);
-    gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
+    if (Hardware_Version_ == 2) {
+        gpio_conf.intr_type = GPIO_INTR_DISABLE;
+        gpio_conf.mode = GPIO_MODE_OUTPUT;
+        gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_) | (0x1ULL << EPD2_DC_PIN) | (0x1ULL << EPD2_CS_PIN) | (0x1ULL << EPD2_RST_PIN);
+        gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+        ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
 
-    gpio_conf.intr_type = GPIO_INTR_DISABLE;
-    gpio_conf.mode = GPIO_MODE_INPUT;
-    gpio_conf.pin_bit_mask = (0x1ULL << busy_);
-    gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
-    #else
-    gpio_config_t gpio_conf = {};
-    gpio_conf.intr_type = GPIO_INTR_DISABLE;
-    gpio_conf.mode = GPIO_MODE_OUTPUT;
-    gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_) | (0x1ULL << EPD2_DC_PIN) | (0x1ULL << EPD2_CS_PIN) | (0x1ULL << EPD2_RST_PIN);
-    gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
+        gpio_conf.intr_type = GPIO_INTR_DISABLE;
+        gpio_conf.mode = GPIO_MODE_INPUT;
+        gpio_conf.pin_bit_mask = (0x1ULL << busy_) | (0x1ULL << EPD2_BUSY_PIN);
+        gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+        ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
 
-    gpio_conf.intr_type = GPIO_INTR_DISABLE;
-    gpio_conf.mode = GPIO_MODE_INPUT;
-    gpio_conf.pin_bit_mask = (0x1ULL << busy_)|(0x1ULL << EPD2_BUSY_PIN);
-    gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
-    #endif
+        gpio_set_level((gpio_num_t)EPD2_RST_PIN, 1);
+        gpio_set_level((gpio_num_t)EPD2_DC_PIN, 0);
+        gpio_set_level((gpio_num_t)EPD2_CS_PIN, 1);
+    } else {
+        gpio_conf.intr_type = GPIO_INTR_DISABLE;
+        gpio_conf.mode = GPIO_MODE_OUTPUT;
+        gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_);
+        gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+        ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
 
-    gpio_set_level((gpio_num_t)EPD2_RST_PIN, 1);
-    gpio_set_level((gpio_num_t)EPD2_DC_PIN, 0);
-    gpio_set_level((gpio_num_t)EPD2_CS_PIN, 1);
+        gpio_conf.intr_type = GPIO_INTR_DISABLE;
+        gpio_conf.mode = GPIO_MODE_INPUT;
+        gpio_conf.pin_bit_mask = (0x1ULL << busy_);
+        gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+        ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
+    }
+    ESP_LOGI(TAG, "EPD hardware version=%u", (unsigned int)Hardware_Version_);
     
     EPD_interface_init();
     Set_ResetIOLevel(1);
