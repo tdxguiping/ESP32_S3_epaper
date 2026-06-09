@@ -36,6 +36,12 @@ bool UsbConsoleCommon_MultipartPart(const char *body,
                                     const char *boundary,
                                     const char *name,
                                     usb_console_multipart_part_t *part);
+bool UsbConsoleCommon_MultipartParts(const char *body,
+                                     size_t body_len,
+                                     const char *boundary,
+                                     const char *const *names,
+                                     usb_console_multipart_part_t *parts,
+                                     size_t part_count);
 void UsbConsoleCommon_CopyPartText(const usb_console_multipart_part_t *part, char *out, size_t out_size);
 bool UsbConsoleCommon_ParsePartSize(const usb_console_multipart_part_t *part, size_t *out);
 bool UsbConsoleCommon_ParsePartBool(const usb_console_multipart_part_t *part, bool default_value);

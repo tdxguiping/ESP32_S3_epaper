@@ -12,16 +12,16 @@
 
 static const char *TAG = "epd_type";
 
-uint8_t EPD_type = EPD_TYPE_1360_480_1085_3COLOR;
+uint8_t EPD_type = EPD_TYPE_1600_1200_133; // 默认使用 1600x1200 133ms 的屏幕
 
 static const epd_type_config_t s_epd_types[] = {
-    {EPD_TYPE_800_480, 800, 480, 192000, "EPD_800_480"},//  3 色 
-    {EPD_TYPE_1024_600, 1024, 600, 307200, "EPD_1024_600"}, //  6 色    307200 bytes
-    {EPD_TYPE_1600_1200_79, 1600, 1200, 960000, "EPD_1600_1200_79"}, //  6 色    
-    {EPD_TYPE_1600_1200_133, 1600, 1200, 960000, "EPD_1600_1200_133"},//  6 色 
-    {EPD_TYPE_1360_480_1085, 1360, 480, 81600, "EPD_1360_480_1085"},//  4 色
-    {EPD_TYPE_800_480_4S_75, 800, 480, 96000, "EPD_800_480_4S_75"},//  4 色 
-    {EPD_TYPE_1360_480_1085_3COLOR, 1360, 480, 163200, "EPD_1360_480_1085_3COLOR"},
+    {EPD_TYPE_800_480, 800, 480, 192000, "EPD_800_480", BWR_3_Color},//  3 色
+    {EPD_TYPE_1024_600, 1024, 600, 307200, "EPD_1024_600", BWYRBG_6_Color}, //  6 色    307200 bytes
+    {EPD_TYPE_1600_1200_79, 1600, 1200, 960000, "EPD_1600_1200_79", BWYRBG_6_Color}, //  6 色
+    {EPD_TYPE_1600_1200_133, 1600, 1200, 960000, "EPD_1600_1200_133", BWYRBG_6_Color},//  6 色
+    {EPD_TYPE_1360_480_1085, 1360, 480, 81600, "EPD_1360_480_1085", BWRY_4_Color},//  4 色
+    {EPD_TYPE_800_480_4S_75, 800, 480, 96000, "EPD_800_480_4S_75", BWRY_4_Color},//  4 色 兴泰<使用6色芯片>
+    {EPD_TYPE_1360_480_1085_3COLOR, 1360, 480, 163200, "EPD_1360_480_1085_3COLOR", BWR_3_Color},//  3 色
 };
 
 static uint8_t EpdType_GetHardwareVersion(uint8_t type)

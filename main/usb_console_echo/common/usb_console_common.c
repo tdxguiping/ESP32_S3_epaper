@@ -11,6 +11,7 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "epd_display_app.h"
 #include "file_serving_example_common.h"
 #include "server_network_sta_slideshow.h"
@@ -18,16 +19,31 @@
 
 static const char *TAG = "usb_console_common";
 
+static uint32_t elapsed_ms_since(int64_t start_us)
+{
+    return (uint32_t)((esp_timer_get_time() - start_us) / 1000);
+}
+
 static const char *find_bytes(const char *haystack, size_t haystack_len, const char *needle, size_t needle_len)
 {
+    const char *cursor;
+    const char *end;
+
     if (haystack == NULL || needle == NULL || needle_len == 0 || haystack_len < needle_len) {
         return NULL;
     }
+    cursor = haystack;
+    end = haystack + haystack_len - needle_len + 1;
 
-    for (size_t i = 0; i <= haystack_len - needle_len; i++) {
-        if (memcmp(haystack + i, needle, needle_len) == 0) {
-            return haystack + i;
+    while (cursor < end) {
+        cursor = (const char *)memchr(cursor, needle[0], (size_t)(end - cursor));
+        if (cursor == NULL) {
+            return NULL;
         }
+        if (memcmp(cursor, needle, needle_len) == 0) {
+            return cursor;
+        }
+        cursor++;
     }
     return NULL;
 }
@@ -446,6 +462,79 @@ bool UsbConsoleCommon_MultipartPart(const char *body,
     return false;
 }
 
+bool UsbConsoleCommon_MultipartParts(const char *body,
+                                     size_t body_len,
+                                     const char *boundary,
+                                     const char *const *names,
+                                     usb_console_multipart_part_t *parts,
+                                     size_t part_count)
+{
+    char marker[SERVER_NETWORK_STA_OTA_BOUNDARY_MAX + 4];
+    int marker_len;
+    const char *cursor;
+    const char *end;
+    size_t found = 0;
+
+    if (body == NULL || boundary == NULL || names == NULL || parts == NULL || part_count == 0) {
+        return false;
+    }
+    marker_len = snprintf(marker, sizeof(marker), "--%s", boundary);
+    if (marker_len <= 0 || marker_len >= (int)sizeof(marker)) {
+        return false;
+    }
+    cursor = body;
+    end = body + body_len;
+    for (size_t i = 0; i < part_count; i++) {
+        memset(&parts[i], 0, sizeof(parts[i]));
+    }
+
+    while (cursor < end && found < part_count) {
+        const char *boundary_pos = find_bytes(cursor, end - cursor, marker, (size_t)marker_len);
+        if (boundary_pos == NULL) {
+            break;
+        }
+        const char *part_start = boundary_pos + marker_len;
+        if (part_start + 2 <= end && part_start[0] == '-' && part_start[1] == '-') {
+            break;
+        }
+        if (part_start + 2 <= end && part_start[0] == '\r' && part_start[1] == '\n') {
+            part_start += 2;
+        }
+        const char *headers_end = find_bytes(part_start, end - part_start, "\r\n\r\n", 4);
+        if (headers_end == NULL) {
+            break;
+        }
+
+        char part_name[SERVER_NETWORK_STA_DATAUP_FIELD_NAME_MAX] = {0};
+        size_t headers_len = (size_t)(headers_end - part_start);
+        const char *resume = headers_end + 4;
+        if (get_disposition_value(part_start, headers_len, "name", part_name, sizeof(part_name))) {
+            for (size_t i = 0; i < part_count; i++) {
+                if (!parts[i].present && names[i] != NULL && strcmp(part_name, names[i]) == 0) {
+                    const char *data_start = headers_end + 4;
+                    const char *next_boundary = find_bytes(data_start, end - data_start, marker, (size_t)marker_len);
+                    if (next_boundary == NULL) {
+                        return found > 0;
+                    }
+                    const char *data_end = next_boundary;
+                    if (data_end >= data_start + 2 && data_end[-2] == '\r' && data_end[-1] == '\n') {
+                        data_end -= 2;
+                    }
+                    parts[i].present = true;
+                    parts[i].data = data_start;
+                    parts[i].len = (size_t)(data_end - data_start);
+                    (void)get_disposition_value(part_start, headers_len, "filename", parts[i].filename, sizeof(parts[i].filename));
+                    found++;
+                    resume = next_boundary;
+                    break;
+                }
+            }
+        }
+        cursor = resume;
+    }
+    return found > 0;
+}
+
 void UsbConsoleCommon_CopyPartText(const usb_console_multipart_part_t *part, char *out, size_t out_size)
 {
     if (out == NULL || out_size == 0) {
@@ -500,6 +589,7 @@ esp_err_t UsbConsoleCommon_SavePartFile(const char *dir,
                                         const char *ext,
                                         const usb_console_multipart_part_t *part)
 {
+    int64_t start_us = esp_timer_get_time();
     char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX + 24];
     char tmp_path[sizeof(path) + 4];
     if (dir == NULL || !UsbConsoleCommon_FileNameIsSafe(file_name) || ext == NULL || part == NULL || !part->present) {
@@ -512,8 +602,18 @@ esp_err_t UsbConsoleCommon_SavePartFile(const char *dir,
     if (fp == NULL) {
         return ESP_FAIL;
     }
+    void *io_buf = NULL;
+#if USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE > 0
+    // Use an explicit stdio buffer so SD/FATFS writes can batch internal file operations.
+    // 使用显式 stdio 缓冲，让 SD/FATFS 写入尽量合并内部文件操作。
+    io_buf = malloc(USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
+    if (io_buf != NULL) {
+        (void)setvbuf(fp, io_buf, _IOFBF, USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
+    }
+#endif
     size_t written = fwrite(part->data, 1, part->len, fp);
     fclose(fp);
+    free(io_buf);
     if (written != part->len) {
         unlink(tmp_path);
         return ESP_FAIL;
@@ -523,11 +623,16 @@ esp_err_t UsbConsoleCommon_SavePartFile(const char *dir,
         unlink(tmp_path);
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "save file path=%s size=%u elapsed_ms=%lu",
+             path,
+             (unsigned int)part->len,
+             (unsigned long)elapsed_ms_since(start_us));
     return ESP_OK;
 }
 
 esp_err_t UsbConsoleCommon_RecordLastCast(const char *file_name)
 {
+    int64_t start_us = esp_timer_get_time();
     char record_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
     char json[256];
     if (!UsbConsoleCommon_FileNameIsSafe(file_name)) {
@@ -543,6 +648,9 @@ esp_err_t UsbConsoleCommon_RecordLastCast(const char *file_name)
     }
     size_t written = fwrite(json, 1, (size_t)len, fp);
     fclose(fp);
+    ESP_LOGI(TAG, "record last cast file=%s elapsed_ms=%lu",
+             file_name,
+             (unsigned long)elapsed_ms_since(start_us));
     return written == (size_t)len ? ESP_OK : ESP_FAIL;
 }
 
@@ -561,15 +669,29 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
     bool show = false;
     char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
     char jpg_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
-    usb_console_multipart_part_t func_part = {0};
-    usb_console_multipart_part_t file_name_part = {0};
-    usb_console_multipart_part_t screen_part = {0};
-    usb_console_multipart_part_t bin_size_part = {0};
-    usb_console_multipart_part_t image_size_part = {0};
-    usb_console_multipart_part_t save_part = {0};
-    usb_console_multipart_part_t show_part = {0};
-    usb_console_multipart_part_t bin_part = {0};
-    usb_console_multipart_part_t image_part = {0};
+    const char *part_names[] = {
+        "func",
+        "fileName",
+        "screen",
+        "bin_size",
+        "image_size",
+        "save",
+        "show",
+        "bin",
+        "image",
+    };
+    usb_console_multipart_part_t parts[sizeof(part_names) / sizeof(part_names[0])] = {0};
+    usb_console_multipart_part_t *func_part = &parts[0];
+    usb_console_multipart_part_t *file_name_part = &parts[1];
+    usb_console_multipart_part_t *screen_part = &parts[2];
+    usb_console_multipart_part_t *bin_size_part = &parts[3];
+    usb_console_multipart_part_t *image_size_part = &parts[4];
+    usb_console_multipart_part_t *save_part = &parts[5];
+    usb_console_multipart_part_t *show_part = &parts[6];
+    usb_console_multipart_part_t *bin_part = &parts[7];
+    usb_console_multipart_part_t *image_part = &parts[8];
+    int64_t total_start_us = esp_timer_get_time();
+    int64_t stage_start_us = total_start_us;
 
     if (request == NULL || response == NULL || expected_func == NULL || result_func == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -579,38 +701,39 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
                                          "{\"func\":\"%s\",\"result\":1,\"message\":\"missing boundary\"}",
                                          result_func);
     }
-    if (!UsbConsoleCommon_MultipartPart(request->body, request->body_len, boundary, "func", &func_part)) {
+    if (!UsbConsoleCommon_MultipartParts(request->body,
+                                         request->body_len,
+                                         boundary,
+                                         part_names,
+                                         parts,
+                                         sizeof(parts) / sizeof(parts[0])) ||
+        !func_part->present) {
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",
                                          "{\"func\":\"%s\",\"result\":1,\"message\":\"missing func\"}",
                                          result_func);
     }
-    UsbConsoleCommon_CopyPartText(&func_part, func, sizeof(func));
+    UsbConsoleCommon_CopyPartText(func_part, func, sizeof(func));
     if (strcmp(func, expected_func) != 0) {
         return ESP_ERR_NOT_SUPPORTED;
     }
+    ESP_LOGI(TAG, "%s parse parts elapsed_ms=%lu",
+             expected_func,
+             (unsigned long)elapsed_ms_since(stage_start_us));
 
-    (void)UsbConsoleCommon_MultipartPart(request->body, request->body_len, boundary, "fileName", &file_name_part);
-    (void)UsbConsoleCommon_MultipartPart(request->body, request->body_len, boundary, "screen", &screen_part);
-    (void)UsbConsoleCommon_MultipartPart(request->body, request->body_len, boundary, "bin_size", &bin_size_part);
-    (void)UsbConsoleCommon_MultipartPart(request->body, request->body_len, boundary, "image_size", &image_size_part);
-    (void)UsbConsoleCommon_MultipartPart(request->body, request->body_len, boundary, "save", &save_part);
-    (void)UsbConsoleCommon_MultipartPart(request->body, request->body_len, boundary, "show", &show_part);
-    (void)UsbConsoleCommon_MultipartPart(request->body, request->body_len, boundary, "bin", &bin_part);
-    (void)UsbConsoleCommon_MultipartPart(request->body, request->body_len, boundary, "image", &image_part);
-
-    UsbConsoleCommon_CopyPartText(&file_name_part, file_name, sizeof(file_name));
-    UsbConsoleCommon_CopyPartText(&screen_part, screen, sizeof(screen));
+    stage_start_us = esp_timer_get_time();
+    UsbConsoleCommon_CopyPartText(file_name_part, file_name, sizeof(file_name));
+    UsbConsoleCommon_CopyPartText(screen_part, screen, sizeof(screen));
     if (strcmp(expected_func, "cast2pic") == 0) {
         snprintf(file_name, sizeof(file_name), "%s", strcmp(screen, "b") == 0 ? "screen_b" : "screen_a");
     }
-    save = UsbConsoleCommon_ParsePartBool(&save_part, true);
-    show = UsbConsoleCommon_ParsePartBool(&show_part, strcmp(expected_func, "upload") == 0 ? false : true);
+    save = UsbConsoleCommon_ParsePartBool(save_part, true);
+    show = UsbConsoleCommon_ParsePartBool(show_part, strcmp(expected_func, "upload") == 0 ? false : true);
 
     if (!UsbConsoleCommon_FileNameIsSafe(file_name) ||
-        !UsbConsoleCommon_ParsePartSize(&bin_size_part, &bin_size) ||
-        !UsbConsoleCommon_ParsePartSize(&image_size_part, &image_size) ||
-        !bin_part.present || !image_part.present ||
-        bin_part.len != bin_size || image_part.len != image_size) {
+        !UsbConsoleCommon_ParsePartSize(bin_size_part, &bin_size) ||
+        !UsbConsoleCommon_ParsePartSize(image_size_part, &image_size) ||
+        !bin_part->present || !image_part->present ||
+        bin_part->len != bin_size || image_part->len != image_size) {
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",
                                          "{\"func\":\"%s\",\"result\":1,\"message\":\"invalid upload\"}",
                                          result_func);
@@ -621,45 +744,94 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
              save ? 1 : 0,
              show ? 1 : 0,
              (unsigned int)request->body_len,
-             (unsigned int)bin_part.len,
+             (unsigned int)bin_part->len,
              (unsigned int)bin_size,
-             (unsigned int)image_part.len,
+             (unsigned int)image_part->len,
              (unsigned int)image_size);
     if (strcmp(expected_func, "cast") == 0 && !save) {
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",
                                          "{\"func\":\"%s\",\"result\":1,\"message\":\"cast failed\",\"error\":\"save_required_for_last_cast\"}",
                                          result_func);
     }
+    ESP_LOGI(TAG, "%s validate elapsed_ms=%lu total_ms=%lu",
+             expected_func,
+             (unsigned long)elapsed_ms_since(stage_start_us),
+             (unsigned long)elapsed_ms_since(total_start_us));
+
+    if (save) {
+        snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", USB_CONSOLE_BASE_PATH);
+        snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", USB_CONSOLE_BASE_PATH);
+        stage_start_us = esp_timer_get_time();
+        esp_err_t save_bin_ret = UsbConsoleCommon_SavePartFile(bin_dir, file_name, ".bin", bin_part);
+        ESP_LOGI(TAG, "%s save bin ret=%s elapsed_ms=%lu total_ms=%lu",
+                 expected_func,
+                 esp_err_to_name(save_bin_ret),
+                 (unsigned long)elapsed_ms_since(stage_start_us),
+                 (unsigned long)elapsed_ms_since(total_start_us));
+        if (save_bin_ret != ESP_OK) {
+            return UsbConsoleCommon_SetJsonf(response, 200, "OK",
+                                             "{\"func\":\"%s\",\"result\":1,\"message\":\"%s failed\",\"error\":\"save_bin_failed\"}",
+                                             result_func,
+                                             expected_func);
+        }
+        stage_start_us = esp_timer_get_time();
+        esp_err_t save_image_ret = UsbConsoleCommon_SavePartFile(jpg_dir, file_name, ".jpg", image_part);
+        ESP_LOGI(TAG, "%s save image ret=%s elapsed_ms=%lu total_ms=%lu",
+                 expected_func,
+                 esp_err_to_name(save_image_ret),
+                 (unsigned long)elapsed_ms_since(stage_start_us),
+                 (unsigned long)elapsed_ms_since(total_start_us));
+        if (save_image_ret != ESP_OK) {
+            return UsbConsoleCommon_SetJsonf(response, 200, "OK",
+                                             "{\"func\":\"%s\",\"result\":1,\"message\":\"%s failed\",\"error\":\"save_image_failed\"}",
+                                             result_func,
+                                             expected_func);
+        }
+        if (strcmp(expected_func, "cast") == 0) {
+            stage_start_us = esp_timer_get_time();
+            esp_err_t record_ret = UsbConsoleCommon_RecordLastCast(file_name);
+            ESP_LOGI(TAG, "%s record last ret=%s elapsed_ms=%lu total_ms=%lu",
+                     expected_func,
+                     esp_err_to_name(record_ret),
+                     (unsigned long)elapsed_ms_since(stage_start_us),
+                     (unsigned long)elapsed_ms_since(total_start_us));
+            if (record_ret != ESP_OK) {
+                return UsbConsoleCommon_SetJsonf(response, 200, "OK",
+                                                 "{\"func\":\"%s\",\"result\":1,\"message\":\"%s failed\",\"error\":\"last_cast_failed\"}",
+                                                 result_func,
+                                                 expected_func);
+            }
+        }
+    }
 
     if (show) {
+        stage_start_us = esp_timer_get_time();
         esp_err_t display_ret = ESP_OK;
         if (strcmp(expected_func, "cast2pic") == 0) {
             uint8_t screen_number = (strcmp(screen, "b") == 0) ? 2 : 1;
-            display_ret = ServerNetworkStaEpdDisplay_QueueToScreen((const uint8_t *)bin_part.data, bin_part.len, screen_number);
+            display_ret = ServerNetworkStaEpdDisplay_QueueToScreen((const uint8_t *)bin_part->data, bin_part->len, screen_number);
         } else {
-            display_ret = ServerNetworkStaEpdDisplay_Queue((const uint8_t *)bin_part.data, bin_part.len);
+            display_ret = ServerNetworkStaEpdDisplay_Queue((const uint8_t *)bin_part->data, bin_part->len);
         }
-        ESP_LOGI(TAG, "%s display queue ret=%s", expected_func, esp_err_to_name(display_ret));
+        ESP_LOGI(TAG, "%s display queue ret=%s elapsed_ms=%lu total_ms=%lu",
+                 expected_func,
+                 esp_err_to_name(display_ret),
+                 (unsigned long)elapsed_ms_since(stage_start_us),
+                 (unsigned long)elapsed_ms_since(total_start_us));
+        if (display_ret != ESP_OK) {
+            return UsbConsoleCommon_SetJsonf(response, 200, "OK",
+                                             "{\"func\":\"%s\",\"result\":1,\"message\":\"%s failed\",\"error\":\"display_queue_failed\"}",
+                                             result_func,
+                                             expected_func);
+        }
         if (strcmp(expected_func, "cast") == 0) {
             ServerNetworkStaSlideshow_Stop();
         }
     }
 
-    if (save) {
-        snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", USB_CONSOLE_BASE_PATH);
-        snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", USB_CONSOLE_BASE_PATH);
-        esp_err_t save_bin_ret = UsbConsoleCommon_SavePartFile(bin_dir, file_name, ".bin", &bin_part);
-        ESP_LOGI(TAG, "%s save bin ret=%s", expected_func, esp_err_to_name(save_bin_ret));
-        ESP_RETURN_ON_ERROR(save_bin_ret, TAG, "save bin failed");
-        esp_err_t save_image_ret = UsbConsoleCommon_SavePartFile(jpg_dir, file_name, ".jpg", &image_part);
-        ESP_LOGI(TAG, "%s save image ret=%s", expected_func, esp_err_to_name(save_image_ret));
-        ESP_RETURN_ON_ERROR(save_image_ret, TAG, "save image failed");
-        if (strcmp(expected_func, "cast") == 0) {
-            esp_err_t record_ret = UsbConsoleCommon_RecordLastCast(file_name);
-            ESP_LOGI(TAG, "%s record last ret=%s", expected_func, esp_err_to_name(record_ret));
-        }
-    }
-
+    ESP_LOGI(TAG, "%s result ready total_ms=%lu",
+             expected_func,
+             (unsigned long)elapsed_ms_since(total_start_us));
     return UsbConsoleCommon_SetJsonf(response,
                                      200,
                                      "OK",

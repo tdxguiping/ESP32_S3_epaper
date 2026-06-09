@@ -10,6 +10,7 @@
 #include "usb_console_cast.h"
 #include "usb_console_cast2pic.h"
 #include "usb_console_delete.h"
+#include "usb_console_epd_type.h"
 #include "usb_console_net_data.h"
 #include "usb_console_ping.h"
 #include "usb_console_saved_images.h"
@@ -52,6 +53,9 @@ esp_err_t UsbConsoleRouter_Handle(const usb_console_http_request_t *request)
         ret = UsbConsolePing_Handle(request, response);
     } else if (path_is(request->path, "/wifi")) {
         ret = UsbConsoleWifi_Handle(request, response);
+    } else if (path_is(request->path, "/epd_type")) {
+        response->status = 0;
+        ret = UsbConsoleEpdType_SendCurrent();
     } else if (path_is(request->path, "/dataUP") || path_is(request->path, "/net_data")) {
         ret = UsbConsoleNetData_Handle(request, response);
     } else if (path_is(request->path, "/cast")) {

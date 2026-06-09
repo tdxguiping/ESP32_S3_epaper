@@ -7,9 +7,11 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "tdx_cfg.h"
+#include "usb_console_epd_type.h"
 #include "usb_console_http_text.h"
 #include "usb_console_router.h"
 #include "usb_console_transport.h"
@@ -17,6 +19,11 @@
 
 static const char *TAG = "usb_console_echo";
 static TaskHandle_t s_usb_console_echo_task;
+
+static uint32_t elapsed_ms_since(int64_t start_us)
+{
+    return (uint32_t)((esp_timer_get_time() - start_us) / 1000);
+}
 
 static esp_err_t send_simple_json(int status, const char *reason, const char *json)
 {
@@ -135,6 +142,8 @@ static void UsbConsoleEcho_Task(void *arg)
     size_t request_capacity = USB_CONSOLE_HTTP_HEADER_MAX;
     size_t request_used = 0;
     TickType_t request_start_tick = 0;
+    int64_t request_start_us = 0;
+    size_t next_progress_bytes = USB_CONSOLE_RX_PROGRESS_STEP_BYTES;
 
     request_buffer = (char *)malloc(request_capacity);
     if (request_buffer == NULL) {
@@ -153,14 +162,20 @@ static void UsbConsoleEcho_Task(void *arg)
 
     UsbConsoleTransport_FlushRx();
     ESP_LOGI(TAG, "USB console HTTP text entry ready");
+    (void)UsbConsoleEpdType_SendCurrent();
 
     while (1) {
+        TickType_t read_timeout_ticks = request_used > 0 ?
+                                        pdMS_TO_TICKS(USB_CONSOLE_READ_ACTIVE_TIMEOUT_MS) :
+                                        pdMS_TO_TICKS(USB_CONSOLE_READ_IDLE_TIMEOUT_MS);
         int len = UsbConsoleTransport_Read(rx,
                                            sizeof(rx),
-                                           pdMS_TO_TICKS(USB_CONSOLE_READ_TIMEOUT_MS));
+                                           read_timeout_ticks);
         if (len > 0) {
             if (request_used == 0) {
                 request_start_tick = xTaskGetTickCount();
+                request_start_us = esp_timer_get_time();
+                next_progress_bytes = USB_CONSOLE_RX_PROGRESS_STEP_BYTES;
             }
 
             if (!grow_request_buffer(&request_buffer, &request_capacity, request_used + (size_t)len + 1)) {
@@ -178,6 +193,16 @@ static void UsbConsoleEcho_Task(void *arg)
             request_buffer[request_used] = '\0';
             request_start_tick = xTaskGetTickCount();
             keep_only_possible_http_prefix(request_buffer, &request_used);
+            while (USB_CONSOLE_RX_PROGRESS_STEP_BYTES > 0 && request_used >= next_progress_bytes) {
+                uint32_t elapsed_ms = elapsed_ms_since(request_start_us);
+                uint32_t rate_kb = elapsed_ms > 0 ? (uint32_t)((request_used * 1000U) / elapsed_ms / 1024U) : 0;
+                ESP_LOGI(TAG,
+                         "USB receive progress buffered=%u elapsed_ms=%lu rate=%luKB/s",
+                         (unsigned int)request_used,
+                         (unsigned long)elapsed_ms,
+                         (unsigned long)rate_kb);
+                next_progress_bytes += USB_CONSOLE_RX_PROGRESS_STEP_BYTES;
+            }
 #if USB_CONSOLE_VERBOSE_LOG_ENABLE
             ESP_LOGD(TAG, "USB received bytes=%d buffered=%u",
                      len, (unsigned int)request_used);
@@ -215,6 +240,16 @@ static void UsbConsoleEcho_Task(void *arg)
                 break;
             }
 
+            uint32_t receive_elapsed_ms = elapsed_ms_since(request_start_us);
+            uint32_t receive_rate_kb = receive_elapsed_ms > 0 ? (uint32_t)((request_len * 1000U) / receive_elapsed_ms / 1024U) : 0;
+            ESP_LOGI(TAG,
+                     "USB request complete method=%s path=%s bytes=%u elapsed_ms=%lu rate=%luKB/s",
+                     request.method,
+                     request.path,
+                     (unsigned int)request_len,
+                     (unsigned long)receive_elapsed_ms,
+                     (unsigned long)receive_rate_kb);
+
             ret = UsbConsoleRouter_Handle(&request);
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "USB route response failed ret=%s", esp_err_to_name(ret));
@@ -224,6 +259,8 @@ static void UsbConsoleEcho_Task(void *arg)
             if (request_used > 0) {
                 request_buffer[request_used] = '\0';
                 request_start_tick = xTaskGetTickCount();
+                request_start_us = esp_timer_get_time();
+                next_progress_bytes = USB_CONSOLE_RX_PROGRESS_STEP_BYTES;
 #if USB_CONSOLE_VERBOSE_LOG_ENABLE
                 ESP_LOGD(TAG, "USB keep pipelined bytes=%u", (unsigned int)request_used);
 #endif

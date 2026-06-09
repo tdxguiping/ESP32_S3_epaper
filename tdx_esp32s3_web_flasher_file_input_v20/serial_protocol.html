@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TDX USB 串口 HTTP-like 相框协议 v20</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="css/serial_protocol.css" />
 </head>
 <body>
@@ -14,6 +15,16 @@
         <p>新页面只使用 USB Serial/JTAG 串口收发数据。原网络 HTTP 协议被改成“串口承载 HTTP 文本”：请求头仍是 HTTP-like 文本，body 可为 JSON、multipart 或二进制，设备端必须按 Content-Length 接收完整请求。</p>
       </div>
       <div class="badge">USB Serial HTTP-like</div>
+    </section>
+
+    <section class="card epdInfoCard">
+      <div class="epdInfoHeader">
+        <h2>EPD_type</h2>
+        <span id="epdTypeState" class="epdStateBadge">等待设备上报</span>
+      </div>
+      <div id="epdTypeSummary" class="epdTypeSummary">当前 EPD 信息：未收到。</div>
+      <div id="epdColorSwatches" class="epdColorSwatches"></div>
+      <div id="epdTypeDetails" class="epdTypeDetails"></div>
     </section>
 
     <section class="card warning">
@@ -47,16 +58,16 @@
           <select id="flowControl"><option value="none" selected>none</option><option value="hardware">hardware</option></select>
         </label>
         <label>Buffer size
-          <input id="bufferSize" type="number" min="1" max="16777216" value="255">
+          <input id="bufferSize" type="number" min="1" max="16777216" value="65536">
         </label>
         <label>串口打开超时 ms
           <input id="serialOpenTimeoutMs" type="number" min="1000" max="30000" value="8000">
         </label>
         <label>每块写入超时 ms
-          <input id="writeChunkTimeoutMs" type="number" min="500" max="30000" value="5000">
+          <input id="writeChunkTimeoutMs" type="number" min="500" max="30000" value="15000">
         </label>
         <label>写入块大小 bytes
-          <input id="writeChunkSize" type="number" min="256" max="65536" value="4096">
+          <input id="writeChunkSize" type="number" min="256" max="65536" value="16384">
         </label>
         <label>块间延时 ms
           <input id="writeChunkDelayMs" type="number" min="0" max="1000" value="0">
@@ -87,6 +98,7 @@
         <button id="disconnectButton" disabled>断开</button>
         <button id="clearRxButton">清空接收窗口</button>
         <a class="buttonLink" href="V2_相框传图协议.html" target="_blank" rel="noopener">打开原网络协议说明</a>
+        <button id="copyRxButton">拷贝内容</button>
       </div>
       <pre id="rxOutput"></pre>
     </section>
@@ -144,11 +156,11 @@ Content-Length: 0
       </div>
     </section>
 
-    <section class="card">
+    <section class="card fileTestCard">
       <h2>直接文件发送：application/octet-stream</h2>
-      <p class="hint">用于直接测试设备端 HTTP-like parser 的 Content-Length 大文件接收。文件内容通过串口按原始二进制发送，不做 Base64。</p>
-      <div class="formGrid">
-        <label>请求路径
+      <p class="hint">用于通过 USB 串口直接保存一个原始文件。设备端按 <code>Content-Length</code> 接收完整 body，并保存到请求路径里的 <code>path</code>。</p>
+      <div class="directUploadGrid">
+        <label class="wideField">保存路径
           <input id="directFilePath" type="text" value="/upload?path=/data/test.bin">
         </label>
         <label>Content-Type
@@ -157,12 +169,10 @@ Content-Length: 0
         <label>X-USB-Function
           <input id="directFileFunc" type="text" value="upload_raw">
         </label>
-      </div>
-      <div class="formGrid">
-        <label>选择要发送的文件
+        <label class="wideField">选择文件
           <input id="directFileInput" type="file">
         </label>
-        <button id="sendDirectFileButton" disabled>发送直接文件</button>
+        <button id="sendDirectFileButton" disabled>发送并保存文件</button>
       </div>
     </section>
 
@@ -182,7 +192,7 @@ Content-Length: 0
         <label class="checkbox"><input id="singleShow" type="checkbox" checked> show</label>
       </div>
       <div class="formGrid">
-        <label>bin 文件<input id="singleBin" type="file" accept=".bin,application/octet-stream"></label>
+        <label>bin 文件<input id="singleBin" type="file" accept=".bin,application/octet-stream"><span id="singleBinMatch" class="fileMatchStatus">未选择</span></label>
         <label>image 缩略图<input id="singleImage" type="file" accept="image/*,.jpg,.jpeg,.png"></label>
         <button id="sendSingleMultipartButton" disabled>发送 HTTP-like multipart</button>
       </div>
@@ -199,13 +209,13 @@ Content-Length: 0
         <div class="subCard">
           <h3>第 1 张</h3>
           <label>fileName<input id="pic1Name" type="text" value="26422"></label>
-          <label>bin<input id="pic1Bin" type="file" accept=".bin,application/octet-stream"></label>
+          <label>bin<input id="pic1Bin" type="file" accept=".bin,application/octet-stream"><span id="pic1BinMatch" class="fileMatchStatus">未选择</span></label>
           <label>image<input id="pic1Image" type="file" accept="image/*,.jpg,.jpeg,.png"></label>
         </div>
         <div class="subCard">
           <h3>第 2 张</h3>
           <label>fileName<input id="pic2Name" type="text" value="26423"></label>
-          <label>bin<input id="pic2Bin" type="file" accept=".bin,application/octet-stream"></label>
+          <label>bin<input id="pic2Bin" type="file" accept=".bin,application/octet-stream"><span id="pic2BinMatch" class="fileMatchStatus">未选择</span></label>
           <label>image<input id="pic2Image" type="file" accept="image/*,.jpg,.jpeg,.png"></label>
         </div>
       </div>

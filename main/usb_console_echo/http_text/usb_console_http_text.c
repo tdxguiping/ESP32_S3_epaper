@@ -1,5 +1,6 @@
 #include "usb_console_http_text.h"
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,16 +39,48 @@ static bool header_name_equals(const char *line, const char *name)
     return strncasecmp(line, name, name_len) == 0 && line[name_len] == ':';
 }
 
-static size_t parse_content_length(const char *headers)
+static esp_err_t parse_content_length(const char *headers, size_t *out_len, bool *out_present)
 {
     const char *line = headers;
+
+    if (headers == NULL || out_len == NULL || out_present == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *out_len = 0;
+    *out_present = false;
 
     while (line != NULL && *line != '\0') {
         const char *next = strstr(line, "\n");
         if (header_name_equals(line, "Content-Length")) {
             const char *value = strchr(line, ':');
             if (value != NULL) {
-                return (size_t)strtoul(value + 1, NULL, 10);
+                char *end_ptr = NULL;
+                const char *line_end = next != NULL ? next : line + strlen(line);
+
+                value++;
+                while (value < line_end && (*value == ' ' || *value == '\t')) {
+                    value++;
+                }
+                if (value >= line_end || *value < '0' || *value > '9') {
+                    return ESP_ERR_INVALID_ARG;
+                }
+
+                errno = 0;
+                unsigned long parsed = strtoul(value, &end_ptr, 10);
+                if (errno != 0 || end_ptr == value) {
+                    return ESP_ERR_INVALID_ARG;
+                }
+                while (end_ptr < line_end && (*end_ptr == ' ' || *end_ptr == '\t' || *end_ptr == '\r')) {
+                    end_ptr++;
+                }
+                if (end_ptr != line_end) {
+                    return ESP_ERR_INVALID_ARG;
+                }
+
+                *out_len = (size_t)parsed;
+                *out_present = true;
+                return ESP_OK;
             }
         }
         if (next == NULL) {
@@ -56,7 +89,14 @@ static size_t parse_content_length(const char *headers)
         line = next + 1;
     }
 
-    return 0;
+    return ESP_OK;
+}
+
+static bool method_requires_content_length(const char *method)
+{
+    return strcasecmp(method, "POST") == 0 ||
+           strcasecmp(method, "PUT") == 0 ||
+           strcasecmp(method, "PATCH") == 0;
 }
 
 static void parse_header_string(const char *headers, const char *name, char *out, size_t out_size)
@@ -109,6 +149,7 @@ esp_err_t UsbConsoleHttp_TryParseRequest(char *data,
     char *method_end = NULL;
     char *path_end = NULL;
     size_t content_length = 0;
+    bool content_length_present = false;
 
     if (data == NULL || request == NULL || request_len == NULL || need_more == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -156,9 +197,19 @@ esp_err_t UsbConsoleHttp_TryParseRequest(char *data,
 
     char saved_after_header = data[header_len];
     data[header_len] = '\0';
-    content_length = parse_content_length(data);
+    esp_err_t length_ret = parse_content_length(data, &content_length, &content_length_present);
     parse_header_string(data, "Content-Type", request->content_type, sizeof(request->content_type));
     data[header_len] = saved_after_header;
+    if (length_ret != ESP_OK) {
+        ESP_LOGW(TAG, "USB request invalid Content-Length");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (method_requires_content_length(request->method) && !content_length_present) {
+        ESP_LOGW(TAG, "USB request missing Content-Length method=%s path=%s",
+                 request->method,
+                 request->path);
+        return ESP_ERR_INVALID_ARG;
+    }
     if (content_length > USB_CONSOLE_HTTP_BODY_MAX) {
         ESP_LOGW(TAG, "USB request body too large len=%u max=%u",
                  (unsigned int)content_length,

@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TDX ESP32-S3 Web Flasher v20</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
@@ -11,7 +12,7 @@
     <section class="card hero">
       <div>
         <h1>TDX ESP32-S3 Web Flasher v20</h1>
-        <p>固定 4 个烧写地址，文件名可变。支持自动加载上一级目录固件、烧写后自动打开串口控制台、Reset Device、串口意外断开自动重连；后台检测 USB JTAG/serial debug unit 并自动打开控制台。</p>
+        <p>固定 4 个烧写地址，文件名可变。支持自动加载上一级目录固件、Reset Device、手动打开串口控制台；主页面启动后不会自动连接串口。</p>
       </div>
       <div class="badge">ESP32-S3 / Web Serial</div>
     </section>
@@ -116,13 +117,13 @@
       <label class="checkbox"><input type="checkbox" id="strictS3" checked> 只允许 ESP32-S3。</label>
       <div class="buttonRow">
         <button id="checkFilesButton">检查固件文件</button>
-        <button id="connectButton" onclick="connectDeviceFromUserClick()">连接设备</button>
+        <button id="connectButton" type="button" onclick="connectDeviceFromUserClick()">连接设备</button>
         <button id="flashButton" disabled>开始烧写</button>
         <button id="eraseButton" disabled>仅擦除整片 Flash</button>
         <button id="resetButton" disabled>Reset Device</button>
         <button id="disconnectButton" disabled>断开</button>
       </div>
-      <p class="hint">烧写完成后会执行 hard_reset，并自动尝试打开串口控制台接收日志。</p>
+      <p class="hint">烧写完成后会执行 hard_reset；如需查看日志，请手动打开串口控制台。</p>
     </section>
 
     <section class="card settingsCard">
@@ -203,7 +204,7 @@
           </select>
         </label>
       </div>
-      <label class="checkbox"><input type="checkbox" id="autoReconnect" checked> 串口中途断开时自动重连。</label>
+      <label class="checkbox"><input type="checkbox" id="autoReconnect"> 串口中途断开时自动重连。</label>
       <label class="checkbox"><input type="checkbox" id="appendCRLF" checked> 控制台发送时追加 CRLF。</label>
       <div id="reconnectStatus" class="statusLine">自动重连状态：空闲</div>
       <div class="buttonRow">
@@ -218,11 +219,11 @@
 
     <section class="card consoleCard">
       <h2>串口控制台</h2>
-      <p>用于查看设备运行日志。烧写完成后会自动打开；也可以手动打开。打开控制台会关闭烧写连接，避免同一个串口被同时占用。</p>
-      <p class="hint">后台会检测浏览器已授权过的 <code>USB JTAG/serial debug unit</code> / Espressif USB 串口；如果当前未连接，会自动打开串口控制台并显示接收数据。</p>
-      <div id="autoConsoleDetectStatus" class="statusLine">后台串口检测：等待启动</div>
+      <p>用于查看设备运行日志。主页面不会自动打开串口控制台；需要时请手动打开。打开控制台会关闭烧写连接，避免同一个串口被同时占用。</p>
+      <p class="hint">主页面不会自动连接串口；需要时请手动点击“连接设备”打开串口控制台。</p>
+      <div id="autoConsoleDetectStatus" class="statusLine">后台串口检测：已关闭，需手动点击连接设备</div>
       <div class="buttonRow consoleDeviceRow">
-        <button id="consoleConnectButton" onclick="connectDeviceFromUserClick()">连接设备</button>
+        <button id="consoleConnectButton" type="button" onclick="openConsoleFromUserClick()">连接设备</button>
         <button id="consoleResetButton" disabled>Reset Device</button>
         <button id="consoleDisconnectButton" disabled>断开</button>
       </div>
@@ -251,6 +252,28 @@
     </div>
   </div>
 
-  <script src="js/app.js"></script>
+  <script>
+    window.TDX_USB_PORT_FILTERS = [
+      { usbVendorId: 0x10c4, usbProductId: 0xea60 },
+      { usbVendorId: 0x0403, usbProductId: 0x6010 },
+      { usbVendorId: 0x303a, usbProductId: 0x1001 },
+      { usbVendorId: 0x303a, usbProductId: 0x1002 },
+      { usbVendorId: 0x303a, usbProductId: 0x0002 },
+      { usbVendorId: 0x303a, usbProductId: 0x0009 },
+      { usbVendorId: 0x1a86, usbProductId: 0x55d4 },
+      { usbVendorId: 0x1a86, usbProductId: 0x7523 },
+      { usbVendorId: 0x0403, usbProductId: 0x6001 },
+    ];
+    window.connectDeviceFromUserClick = async function connectDeviceFromUserClickFallback() {
+      if (!navigator.serial) {
+        alert("当前浏览器不支持 Web Serial，请使用 Chrome / Edge，并通过 http://localhost 打开页面。");
+        return;
+      }
+      window.__tdxFallbackSelectedPort = await navigator.serial.requestPort({ filters: window.TDX_USB_PORT_FILTERS });
+      alert("串口已选择。主控制脚本仍在加载或没有接管连接流程，请刷新页面后重试。");
+    };
+    window.openConsoleFromUserClick = window.connectDeviceFromUserClick;
+  </script>
+  <script src="js/app.js?v=20260609_manual_connect"></script>
 </body>
 </html>

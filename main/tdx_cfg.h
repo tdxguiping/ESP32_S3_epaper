@@ -92,7 +92,7 @@
 // Keep USB console HTTP-text limits here so the serial entry can be tuned without touching feature modules.
 // 将 USB 串口 HTTP 文本限制放在这里，方便以后不改功能模块就调整串口入口。
 #define USB_CONSOLE_ENABLE 1
-#define USB_CONSOLE_RX_BUF_SIZE 1024
+#define USB_CONSOLE_RX_BUF_SIZE 4096
 #define USB_CONSOLE_TX_BUF_SIZE 1024
 #define USB_CONSOLE_HTTP_HEADER_MAX 2048
 #define USB_CONSOLE_HTTP_PATH_MAX 128
@@ -106,14 +106,25 @@
 #define USB_CONSOLE_WORKER_QUEUE_LENGTH 4
 #define USB_CONSOLE_WORKER_TASK_STACK_SIZE (8 * 1024)
 #define USB_CONSOLE_WORKER_TASK_PRIORITY 4
-#define USB_CONSOLE_READ_TIMEOUT_MS 20
+// Use a longer idle USB read wait so the console task does not wake CPU too often without traffic.
+// USB 空闲时使用较长读等待，避免没有数据时频繁唤醒 CPU。
+#define USB_CONSOLE_READ_IDLE_TIMEOUT_MS 200
+// Use a short active USB read wait once a request starts so large multipart bodies are received quickly.
+// 一旦请求开始接收就使用较短读等待，让大 multipart 数据尽快收完。
+#define USB_CONSOLE_READ_ACTIVE_TIMEOUT_MS 1
 #define USB_CONSOLE_WRITE_TIMEOUT_MS 100
 #define USB_CONSOLE_REQUEST_TIMEOUT_MS 30000
 #define USB_CONSOLE_START_DELAY_MS 3000
 #define USB_CONSOLE_FEATURE_PENDING_STATUS 501
 #define USB_CONSOLE_VERBOSE_LOG_ENABLE 0
 #define USB_CONSOLE_FRAME_HEAD "@#$\r\n"
-#define USB_CONSOLE_FRAME_TAIL "\r\n%^&"
+#define USB_CONSOLE_FRAME_TAIL "\r\n%^&\r\n"
+// Log USB receive progress every fixed byte step so serial upload bottlenecks can be located.
+// 按固定字节步进打印 USB 接收进度，便于定位串口上传瓶颈。
+#define USB_CONSOLE_RX_PROGRESS_STEP_BYTES (20 * 1024)
+// Keep file save stdio buffering configurable without touching USB feature code.
+// 将文件保存 stdio 缓冲大小集中配置，便于以后优化 SD/FATFS 写入。
+#define USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE (64 * 1024)
 
 // Keep OTA upload limits here so the partition size and HTTP body policy can be checked together.
 #define SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE (6 * 1024 * 1024)

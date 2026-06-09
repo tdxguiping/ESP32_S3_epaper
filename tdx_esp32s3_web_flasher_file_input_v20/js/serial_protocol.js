@@ -52,9 +52,46 @@ const RX_FLUSH_INTERVAL_MS = 80;
 const RX_FLOOD_WINDOW_MS = 2000;
 const RX_FLOOD_MAX_BYTES = 1024 * 1024;
 let rxPendingText = "";
+let rxCopyText = "";
 let rxFlushTimer = null;
 let rxFloodWindowStart = Date.now();
 let rxFloodBytes = 0;
+// Keep serial upload defaults fast enough for large multipart image transfers.
+// 保持串口上传默认参数适合大 multipart 图片传输。
+const SERIAL_DEFAULT_BUFFER_SIZE = 65536;
+const SERIAL_DEFAULT_WRITE_CHUNK_SIZE = 16384;
+const SERIAL_DEFAULT_WRITE_CHUNK_TIMEOUT_MS = 15000;
+const EPD_TYPE_TABLE = [
+  { type: 1, width: 800, height: 480, display_size: 192000, name: "EPD_800_480", color_type: 3, color_name: "BWR_3_Color", color_count: 3, colors: "3 色" },
+  { type: 2, width: 1024, height: 600, display_size: 307200, name: "EPD_1024_600", color_type: 6, color_name: "BWYRBG_6_Color", color_count: 6, colors: "6 色" },
+  { type: 3, width: 1600, height: 1200, display_size: 960000, name: "EPD_1600_1200_79", color_type: 6, color_name: "BWYRBG_6_Color", color_count: 6, colors: "6 色" },
+  { type: 4, width: 1600, height: 1200, display_size: 960000, name: "EPD_1600_1200_133", color_type: 6, color_name: "BWYRBG_6_Color", color_count: 6, colors: "6 色" },
+  { type: 5, width: 1360, height: 480, display_size: 81600, name: "EPD_1360_480_1085", color_type: 4, color_name: "BWRY_4_Color", color_count: 4, colors: "4 色" },
+  { type: 6, width: 800, height: 480, display_size: 96000, name: "EPD_800_480_4S_75", color_type: 4, color_name: "BWRY_4_Color", color_count: 4, colors: "4 色" },
+  { type: 7, width: 1360, height: 480, display_size: 163200, name: "EPD_1360_480_1085_3COLOR", color_type: 3, color_name: "BWR_3_Color", color_count: 3, colors: "3 色" },
+];
+const EPD_COLOR_TABLE = {
+  BWR_3_Color: [
+    { label: "Black", css: "#111827" },
+    { label: "White", css: "#ffffff" },
+    { label: "Red", css: "#dc2626" },
+  ],
+  BWRY_4_Color: [
+    { label: "Black", css: "#111827" },
+    { label: "White", css: "#ffffff" },
+    { label: "Red", css: "#dc2626" },
+    { label: "Yellow", css: "#facc15" },
+  ],
+  BWYRBG_6_Color: [
+    { label: "Black", css: "#111827" },
+    { label: "White", css: "#ffffff" },
+    { label: "Red", css: "#dc2626" },
+    { label: "Yellow", css: "#facc15" },
+    { label: "Blue", css: "#2563eb" },
+    { label: "Green", css: "#16a34a" },
+  ],
+};
+let currentEpdType = null;
 
 const els = {
   baudrate: $("baudrate"), dataBits: $("dataBits"), stopBits: $("stopBits"), parity: $("parity"), flowControl: $("flowControl"), bufferSize: $("bufferSize"),
@@ -62,6 +99,7 @@ const els = {
   writeChunkSize: $("writeChunkSize"), writeChunkDelayMs: $("writeChunkDelayMs"), writeChunkTimeoutMs: $("writeChunkTimeoutMs"),
   jsonRouteMode: $("jsonRouteMode"), fileRouteMode: $("fileRouteMode"), autoConnect: $("autoConnect"), prettyRxJson: $("prettyRxJson"),
   connectButton: $("connectButton"), resetButton: $("resetButton"), disconnectButton: $("disconnectButton"), clearRxButton: $("clearRxButton"),
+  copyRxButton: $("copyRxButton"),
   rawText: $("rawText"), sendRawButton: $("sendRawButton"), sendRawJsonButton: $("sendRawJsonButton"),
   wifiSsid: $("wifiSsid"), wifiPassword: $("wifiPassword"), sendWifiButton: $("sendWifiButton"),
   wifiRequestPreview: $("wifiRequestPreview"), copyWifiRawButton: $("copyWifiRawButton"),
@@ -71,6 +109,8 @@ const els = {
   directFilePath: $("directFilePath"), directFileContentType: $("directFileContentType"), directFileFunc: $("directFileFunc"), directFileInput: $("directFileInput"), sendDirectFileButton: $("sendDirectFileButton"),
   singleFunc: $("singleFunc"), singleFileName: $("singleFileName"), singleOldFileName: $("singleOldFileName"), singleSave: $("singleSave"), singleShow: $("singleShow"), singleBin: $("singleBin"), singleImage: $("singleImage"), sendSingleMultipartButton: $("sendSingleMultipartButton"),
   cast2picScreen: $("cast2picScreen"), cast2picSave: $("cast2picSave"), cast2picShow: $("cast2picShow"), pic1Name: $("pic1Name"), pic1Bin: $("pic1Bin"), pic1Image: $("pic1Image"), pic2Name: $("pic2Name"), pic2Bin: $("pic2Bin"), pic2Image: $("pic2Image"), sendCast2picButton: $("sendCast2picButton"),
+  epdTypeState: $("epdTypeState"), epdTypeSummary: $("epdTypeSummary"), epdTypeDetails: $("epdTypeDetails"), epdColorSwatches: $("epdColorSwatches"),
+  singleBinMatch: $("singleBinMatch"), pic1BinMatch: $("pic1BinMatch"), pic2BinMatch: $("pic2BinMatch"),
   fileInfoOutput: $("fileInfoOutput"),
 };
 
@@ -110,8 +150,123 @@ function settleWithin(promise, ms, label) {
   });
 }
 function setStatus(text) { statusEl.textContent = `状态：${text}`; }
-function appendRx(text) { rxOutput.textContent += String(text); rxOutput.scrollTop = rxOutput.scrollHeight; }
+function flushRxOutput() {
+  if (!rxPendingText) return;
+  const nextText = `${rxOutput.textContent}${rxPendingText}`;
+  rxOutput.textContent = nextText.length > RX_DISPLAY_MAX_CHARS ? nextText.slice(-RX_DISPLAY_MAX_CHARS) : nextText;
+  rxPendingText = "";
+  rxOutput.scrollTop = rxOutput.scrollHeight;
+  if (rxFlushTimer) {
+    clearTimeout(rxFlushTimer);
+    rxFlushTimer = null;
+  }
+}
+
+function scheduleRxFlush() {
+  if (rxFlushTimer) return;
+  rxFlushTimer = setTimeout(flushRxOutput, RX_FLUSH_INTERVAL_MS);
+}
+
+function appendRx(text) {
+  const chunk = String(text);
+  rxCopyText += chunk;
+  rxPendingText += chunk;
+  if (rxPendingText.length > RX_DISPLAY_MAX_CHARS) {
+    rxPendingText = rxPendingText.slice(-RX_DISPLAY_MAX_CHARS);
+  }
+  scheduleRxFlush();
+}
 function rxLine(text) { appendRx(`${text}\n`); }
+
+function epdTypeById(type) {
+  return EPD_TYPE_TABLE.find((item) => item.type === Number(type)) || null;
+}
+
+function mergeEpdConfig(obj) {
+  const tableConfig = epdTypeById(obj?.type);
+  const colorCount = Number(obj?.color_count ?? obj?.color_type ?? tableConfig?.color_count ?? tableConfig?.color_type ?? 0);
+  return {
+    ...(tableConfig || {}),
+    ...obj,
+    display_size: Number(obj?.display_size ?? obj?.displaySize ?? tableConfig?.display_size ?? 0),
+    width: Number(obj?.width ?? tableConfig?.width ?? 0),
+    height: Number(obj?.height ?? tableConfig?.height ?? 0),
+    type: Number(obj?.type ?? tableConfig?.type ?? 0),
+    name: obj?.name || tableConfig?.name || "unknown",
+    color_type: Number(obj?.color_type ?? tableConfig?.color_type ?? colorCount),
+    color_name: obj?.color_name || tableConfig?.color_name || "",
+    color_count: colorCount,
+    colors: obj?.colors || (colorCount > 0 ? `${colorCount} 色` : tableConfig?.colors || ""),
+  };
+}
+
+function epdColorSwatches(config) {
+  const colors = EPD_COLOR_TABLE[config?.color_name] || [];
+  return colors.map((item) => (
+    `<span class="epdColorSwatch"><span class="epdColorBox" style="background:${item.css}"></span><span>${item.label}</span></span>`
+  )).join(" ");
+}
+
+function renderEpdTypeInfo(config, failed = false) {
+  if (!els.epdTypeState || !els.epdTypeSummary || !els.epdTypeDetails) return;
+  if (!config) {
+    els.epdTypeState.textContent = "等待设备上报";
+    els.epdTypeState.className = "epdStateBadge";
+    els.epdTypeSummary.textContent = "当前 EPD 信息：未收到。";
+    if (els.epdColorSwatches) els.epdColorSwatches.innerHTML = "";
+    els.epdTypeDetails.innerHTML = "";
+    return;
+  }
+
+  els.epdTypeState.textContent = failed ? "EPD 类型异常" : "EPD 类型已收到";
+  els.epdTypeState.className = `epdStateBadge ${failed ? "bad" : "ok"}`;
+  els.epdTypeSummary.textContent = `${config.name} / type=${config.type} / ${config.width}x${config.height} / ${config.colors || "颜色未知"} / bin=${config.display_size} bytes`;
+  if (els.epdColorSwatches) {
+    els.epdColorSwatches.innerHTML = epdColorSwatches(config) || `<span class="epdColorSwatch">颜色类型未知</span>`;
+  }
+  els.epdTypeDetails.innerHTML = [
+    `<span><b>type</b><em>${config.type}</em></span>`,
+    `<span><b>name</b><em>${config.name}</em></span>`,
+    `<span><b>resolution</b><em>${config.width} x ${config.height}</em></span>`,
+    `<span><b>display_size</b><em>${config.display_size} bytes</em></span>`,
+    `<span><b>color_type</b><em>${config.color_type || "unknown"}</em></span>`,
+    `<span><b>color_name</b><em>${config.color_name || "unknown"}</em></span>`,
+    `<span><b>color_count</b><em>${config.color_count || "unknown"}</em></span>`,
+  ].join("");
+}
+
+function handleProtocolObject(obj) {
+  if (!obj || typeof obj !== "object") return;
+  if (obj.func === "epd_type") {
+    currentEpdType = mergeEpdConfig(obj);
+    renderEpdTypeInfo(currentEpdType, obj.result !== 0);
+    updateFileInfo();
+  }
+}
+
+async function copyRxOutputToClipboard() {
+  flushRxOutput();
+  const text = rxCopyText || "";
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      throw new Error("clipboard api unavailable");
+    }
+  } catch (_) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "0";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    document.execCommand("copy");
+    document.body.removeChild(textarea);
+  }
+  rxLine(`[复制] 串口接收窗口内容已复制，chars=${text.length}`);
+}
 
 function nowTimeText() {
   return new Date().toLocaleTimeString();
@@ -186,7 +341,7 @@ function getSerialOptions() {
   const baudRate = parseInt(els.baudrate.value || "921600", 10);
   const dataBits = parseInt(els.dataBits.value || "8", 10);
   const stopBits = parseInt(els.stopBits.value || "1", 10);
-  const bufferSize = Math.max(1, Math.min(16777216, parseInt(els.bufferSize.value || "255", 10) || 255));
+  const bufferSize = Math.max(1, Math.min(16777216, parseInt(els.bufferSize.value || String(SERIAL_DEFAULT_BUFFER_SIZE), 10) || SERIAL_DEFAULT_BUFFER_SIZE));
   return {
     baudRate: Number.isFinite(baudRate) ? baudRate : 921600,
     dataBits: dataBits === 7 ? 7 : 8,
@@ -280,6 +435,13 @@ async function openSerialPort(port, auto) {
   setUiConnected(true);
   setStatus(`已连接 ${describePort(port)}，baudrate=${els.baudrate.value}`);
   startReadLoop();
+  setTimeout(async () => {
+    try {
+      await sendGetRequest("/epd_type");
+    } catch (err) {
+      rxLine(`[EPD_type] 查询失败：${errorToText(err)}`);
+    }
+  }, 150);
 }
 
 
@@ -357,7 +519,9 @@ function tryFormatJsonText(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed) return text;
   try {
-    return JSON.stringify(JSON.parse(trimmed), null, 2);
+    const obj = JSON.parse(trimmed);
+    handleProtocolObject(obj);
+    return JSON.stringify(obj, null, 2);
   } catch (_) {
     return text;
   }
@@ -368,6 +532,9 @@ function formatHttpLikeMessage(raw) {
   if (headerEnd < 0) return tryFormatJsonText(raw);
   const headers = raw.slice(0, headerEnd);
   const body = raw.slice(headerEnd + 4);
+  try {
+    handleProtocolObject(JSON.parse(String(body || "").trim()));
+  } catch (_) {}
   const bodyOut = tryFormatJsonText(body);
   return `${headers}\r\n\r\n${bodyOut}`;
 }
@@ -547,8 +714,8 @@ function buildHttpLikeRequestBytes({ method, path, headers = {}, bodyBytes = new
 }
 
 function getWriteChunkSize() {
-  const n = parseInt(els.writeChunkSize?.value || "4096", 10);
-  return Number.isFinite(n) ? Math.max(256, Math.min(65536, n)) : 4096;
+  const n = parseInt(els.writeChunkSize?.value || String(SERIAL_DEFAULT_WRITE_CHUNK_SIZE), 10);
+  return Number.isFinite(n) ? Math.max(256, Math.min(65536, n)) : SERIAL_DEFAULT_WRITE_CHUNK_SIZE;
 }
 
 function getWriteChunkDelayMs() {
@@ -561,16 +728,19 @@ async function writeBytesToSerial(bytes) {
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const chunkSize = getWriteChunkSize();
   const chunkDelayMs = getWriteChunkDelayMs();
-  const writeTimeoutMs = getMsSetting("writeChunkTimeoutMs", 5000, 500, 30000);
+  const writeTimeoutMs = getMsSetting("writeChunkTimeoutMs", SERIAL_DEFAULT_WRITE_CHUNK_TIMEOUT_MS, 500, 30000);
   const writer = serialPort.writable.getWriter();
   let lastPercent = -1;
+  const startMs = performance.now();
   try {
     for (let offset = 0; offset < data.byteLength; offset += chunkSize) {
       const end = Math.min(offset + chunkSize, data.byteLength);
       await withTimeout(writer.write(data.subarray(offset, end)), writeTimeoutMs, `串口写入超时 offset=${offset} end=${end}`);
       const percent = data.byteLength ? Math.floor((end * 100) / data.byteLength) : 100;
       if (percent === 100 || percent >= lastPercent + 10) {
-        appendRx(`[TX progress] ${end}/${data.byteLength} bytes ${percent}%\n`);
+        const elapsedMs = Math.max(1, Math.round(performance.now() - startMs));
+        const rateKb = Math.round((end * 1000) / elapsedMs / 1024);
+        appendRx(`[TX progress] ${end}/${data.byteLength} bytes ${percent}% elapsed_ms=${elapsedMs} rate=${rateKb}KB/s\n`);
         lastPercent = percent;
       }
       if (chunkDelayMs > 0 && end < data.byteLength) await delay(chunkDelayMs);
@@ -639,13 +809,16 @@ function previewHttpLikeBytes(bytes, maxText = 8192) {
 }
 
 async function sendHttpLikeRequest(opts) {
+  const startMs = performance.now();
   const bytes = buildHttpLikeRequestBytes(opts);
   const label = opts.label || `${opts.method} ${opts.path}`;
   appendRx(`\n[TX HTTP-like] ${label}, ${bytes.byteLength} bytes\n`);
   appendRx(previewHttpLikeBytes(bytes, opts.bodyBytes?.byteLength > 8192 ? 2048 : 8192) + "\n");
   try {
     await writeBytesToSerial(bytes);
-    appendRx(`[TX complete] ${bytes.byteLength}/${bytes.byteLength} bytes\n`);
+    const elapsedMs = Math.max(1, Math.round(performance.now() - startMs));
+    const rateKb = Math.round((bytes.byteLength * 1000) / elapsedMs / 1024);
+    appendRx(`[TX complete] ${bytes.byteLength}/${bytes.byteLength} bytes elapsed_ms=${elapsedMs} rate=${rateKb}KB/s\n`);
   } catch (err) {
     await disconnectOnSerialFault("串口发送 HTTP-like 请求失败", err);
     throw err;
@@ -891,29 +1064,31 @@ async function sendSingleMultipart() {
 }
 
 async function sendCast2pic() {
+  const screen = els.cast2picScreen.value;
   const pics = [
-    { index: 0, fileName: els.pic1Name.value.trim(), bin: els.pic1Bin.files?.[0], image: els.pic1Image.files?.[0] },
-    { index: 1, fileName: els.pic2Name.value.trim(), bin: els.pic2Bin.files?.[0], image: els.pic2Image.files?.[0] },
+    { index: 0, suffix: "A", fileName: els.pic1Name.value.trim(), bin: els.pic1Bin.files?.[0], image: els.pic1Image.files?.[0] },
+    { index: 1, suffix: "B", fileName: els.pic2Name.value.trim(), bin: els.pic2Bin.files?.[0], image: els.pic2Image.files?.[0] },
   ];
-  for (const pic of pics) {
+  const selectedPics = screen === "a" ? [pics[0]] : screen === "b" ? [pics[1]] : pics;
+  for (const pic of selectedPics) {
     if (!pic.fileName) throw new Error(`第 ${pic.index + 1} 张缺少 fileName`);
     if (!pic.bin || !pic.image) throw new Error(`第 ${pic.index + 1} 张缺少 bin 或 image`);
   }
   const fields = [
     ["func", "cast2pic"],
-    ["screen", els.cast2picScreen.value],
+    ["screen", screen],
     ["save", String(!!els.cast2picSave.checked)],
     ["show", String(!!els.cast2picShow.checked)],
   ];
-  for (const pic of pics) {
-    fields.push(["fileName", pic.fileName]);
-    fields.push(["bin_size", String(pic.bin.size)]);
-    fields.push(["image_size", String(pic.image.size)]);
+  for (const pic of selectedPics) {
+    fields.push([`fileName${pic.suffix}`, pic.fileName]);
+    fields.push([`bin_size${pic.suffix}`, String(pic.bin.size)]);
+    fields.push([`image_size${pic.suffix}`, String(pic.image.size)]);
   }
   const files = [];
-  for (const pic of pics) {
-    files.push({ field: "bin", file: pic.bin });
-    files.push({ field: "image", file: pic.image });
+  for (const pic of selectedPics) {
+    files.push({ field: `bin${pic.suffix}`, file: pic.bin });
+    files.push({ field: `image${pic.suffix}`, file: pic.image });
   }
   await sendMultipartHttpLike({ targetFunc: "cast2pic", fields, files });
 }
@@ -922,15 +1097,45 @@ function formatFile(file) {
   return file ? `${file.name}  ${file.size} bytes` : "未选择";
 }
 
+function binMatchText(file) {
+  if (!file) return { text: "未选择", ok: null };
+  if (!currentEpdType?.display_size) {
+    return { text: `等待 EPD_type，上报后校验；当前文件 ${file.size} bytes`, ok: null };
+  }
+  if (file.size === currentEpdType.display_size) {
+    return { text: `符合 ${currentEpdType.name}: ${file.size}/${currentEpdType.display_size} bytes`, ok: true };
+  }
+  return { text: `不符合 ${currentEpdType.name}: ${file.size}/${currentEpdType.display_size} bytes`, ok: false };
+}
+
+function setBinMatchStatus(el, file) {
+  if (!el) return;
+  const result = binMatchText(file);
+  el.textContent = result.text;
+  el.className = `fileMatchStatus ${result.ok === true ? "ok" : result.ok === false ? "bad" : ""}`;
+}
+
 function updateFileInfo() {
   if (!els.fileInfoOutput) return;
+  setBinMatchStatus(els.singleBinMatch, els.singleBin?.files?.[0]);
+  setBinMatchStatus(els.pic1BinMatch, els.pic1Bin?.files?.[0]);
+  setBinMatchStatus(els.pic2BinMatch, els.pic2Bin?.files?.[0]);
+  const directMatch = binMatchText(els.directFileInput?.files?.[0]);
+  const singleMatch = binMatchText(els.singleBin?.files?.[0]);
+  const pic1Match = binMatchText(els.pic1Bin?.files?.[0]);
+  const pic2Match = binMatchText(els.pic2Bin?.files?.[0]);
   const lines = [
+    `当前 EPD: ${currentEpdType ? `${currentEpdType.name} type=${currentEpdType.type} ${currentEpdType.width}x${currentEpdType.height} expected=${currentEpdType.display_size} bytes` : "未收到"}`,
     `直接文件: ${formatFile(els.directFileInput?.files?.[0])}`,
+    `直接文件校验: ${directMatch.text}`,
     `单图 bin: ${formatFile(els.singleBin?.files?.[0])}`,
+    `单图 bin 校验: ${singleMatch.text}`,
     `单图 image: ${formatFile(els.singleImage?.files?.[0])}`,
     `cast2pic 第1张 bin: ${formatFile(els.pic1Bin?.files?.[0])}`,
+    `cast2pic 第1张 bin 校验: ${pic1Match.text}`,
     `cast2pic 第1张 image: ${formatFile(els.pic1Image?.files?.[0])}`,
     `cast2pic 第2张 bin: ${formatFile(els.pic2Bin?.files?.[0])}`,
+    `cast2pic 第2张 bin 校验: ${pic2Match.text}`,
     `cast2pic 第2张 image: ${formatFile(els.pic2Image?.files?.[0])}`,
   ];
   els.fileInfoOutput.textContent = lines.join("\n");
@@ -958,7 +1163,18 @@ function bindEvents() {
     catch (err) { showFaultPopup("断开串口失败", "执行断开时出现异常。", err); }
   });
   els.resetButton.addEventListener("click", () => runAction(resetDevice, els.resetButton));
-  els.clearRxButton.addEventListener("click", () => { rxPendingText = ""; rxTextBuffer = ""; rxOutput.textContent = ""; rxLine("串口接收窗口已清空。"); });
+  els.clearRxButton.addEventListener("click", () => {
+    if (rxFlushTimer) {
+      clearTimeout(rxFlushTimer);
+      rxFlushTimer = null;
+    }
+    rxPendingText = "";
+    rxCopyText = "";
+    rxTextBuffer = "";
+    rxOutput.textContent = "";
+    rxLine("串口接收窗口已清空。");
+  });
+  els.copyRxButton?.addEventListener("click", () => runAction(copyRxOutputToClipboard, els.copyRxButton));
   els.sendRawButton.addEventListener("click", () => runAction(sendRawText, els.sendRawButton));
   els.sendRawJsonButton.addEventListener("click", () => runAction(sendRawJsonAsDataUp, els.sendRawJsonButton));
 
@@ -988,16 +1204,27 @@ function bindEvents() {
   [els.directFileInput, els.singleBin, els.singleImage, els.pic1Bin, els.pic1Image, els.pic2Bin, els.pic2Image].forEach((input) => {
     input?.addEventListener("change", updateFileInfo);
   });
+  renderEpdTypeInfo(null);
   updateFileInfo();
 }
 
 function bindSettingsStorage() {
   const ids = ["baudrate","dataBits","stopBits","parity","flowControl","bufferSize","serialOpenTimeoutMs","serialResetTimeoutMs","writeChunkSize","writeChunkDelayMs","writeChunkTimeoutMs","jsonRouteMode","fileRouteMode","autoConnect","prettyRxJson","directFilePath","directFileContentType","directFileFunc"];
+  const defaultUpgrades = {
+    bufferSize: { oldValue: "255", newValue: String(SERIAL_DEFAULT_BUFFER_SIZE) },
+    writeChunkSize: { oldValue: "4096", newValue: String(SERIAL_DEFAULT_WRITE_CHUNK_SIZE) },
+    writeChunkTimeoutMs: { oldValue: "5000", newValue: String(SERIAL_DEFAULT_WRITE_CHUNK_TIMEOUT_MS) },
+  };
   for (const id of ids) {
     const el = $(id);
     if (!el) continue;
     const key = `tdx_serial_protocol_${id}`;
-    const saved = localStorage.getItem(key);
+    let saved = localStorage.getItem(key);
+    const upgrade = defaultUpgrades[id];
+    if (upgrade && saved === upgrade.oldValue) {
+      saved = upgrade.newValue;
+      localStorage.setItem(key, saved);
+    }
     if (saved !== null) {
       if (el.type === "checkbox") el.checked = saved === "true";
       else el.value = saved;

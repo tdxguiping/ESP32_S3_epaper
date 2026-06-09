@@ -32,6 +32,7 @@ const SERIAL_PROTOCOL_CHANNEL_NAME = "tdx_esp32s3_serial_protocol_channel";
 const SERIAL_PROTOCOL_ACTIVE_KEY = "tdx_serial_protocol_page_active";
 const SERIAL_PROTOCOL_HEARTBEAT_KEY = "tdx_serial_protocol_page_heartbeat";
 const SERIAL_PROTOCOL_HEARTBEAT_MAX_AGE_MS = 6000;
+const INDEX_AUTO_CONSOLE_DETECT_ENABLE = false;
 
 
 const FIRMWARE_FILES = [
@@ -254,7 +255,7 @@ function resumeMainPageSerialAfterProtocol(reason = "serial_protocol_inactive") 
   if (isSerialProtocolPageFresh()) return;
   setSerialProtocolPageActive(false, reason);
   autoConsoleScanPausedUntil = 0;
-  if (!autoConsoleDetectTimer) startAutoConsoleDetector();
+  if (INDEX_AUTO_CONSOLE_DETECT_ENABLE && !autoConsoleDetectTimer) startAutoConsoleDetector();
 }
 
 function broadcastSerialProtocolState(active) {
@@ -496,6 +497,10 @@ async function tryAutoOpenDetectedConsole(reason = "periodic-scan") {
 }
 
 function startAutoConsoleDetector() {
+  if (!INDEX_AUTO_CONSOLE_DETECT_ENABLE) {
+    setAutoConsoleDetectStatus("已关闭，需手动点击连接设备");
+    return;
+  }
   if (serialProtocolPageActive || isSerialProtocolPageFresh()) {
     setAutoConsoleDetectStatus("串口协议页面已打开，主页面不启动后台自动连接");
     return;
@@ -662,9 +667,13 @@ async function loadEsptoolJs() {
 
 async function finishConnectAfterPortSelected(selectedDevice, options = {}) {
   await cleanupAllSerialConnections();
-  await loadEsptoolJs();
+  await settleWithin(loadEsptoolJs(), 10000, "load esptool-js").then((result) => {
+    if (!result.ok) {
+      throw result.err || new Error(result.timeout ? "加载 esptool-js 超时" : "加载 esptool-js 失败");
+    }
+  });
   rememberPort(selectedDevice);
-  transport = new Transport(device);
+  transport = new Transport(selectedDevice);
 
   const loaderOptions = {
     transport,
@@ -699,12 +708,11 @@ window.connectDeviceFromUserClick = async function connectDeviceFromUserClick() 
     if (!window.isSecureContext) {
       throw new Error("当前页面不是 secure context。请用 http://localhost:8000 或 HTTPS 打开，不要用普通 file:// 或局域网 http://IP。");
     }
-    stopAutoReconnect();
 
     // This must be called immediately inside the user click event.
     // 必须在用户点击事件里立即调用，否则 Chrome/Edge 不会弹出串口选择窗口。
-    logLine("准备弹出浏览器串口选择窗口...");
     const selectedDevice = await navigator.serial.requestPort({ filters: USB_PORT_FILTERS });
+    stopAutoReconnect();
     logLine("已选择串口，开始加载 esptool-js...");
 
     connectButton.disabled = true;
@@ -718,6 +726,8 @@ window.connectDeviceFromUserClick = async function connectDeviceFromUserClick() 
   }
 };
 
+window.openConsoleFromUserClick = openConsoleFromUserClick;
+
 async function openConsoleFromUserClick() {
   try {
     if (!("serial" in navigator)) {
@@ -726,13 +736,12 @@ async function openConsoleFromUserClick() {
     if (!window.isSecureContext) {
       throw new Error("当前页面不是 secure context。请用 http://localhost:8000 或 HTTPS 打开。");
     }
-    stopAutoReconnect();
 
     let selectedDevice = device;
     if (!selectedDevice) {
-      logLine("准备弹出浏览器串口选择窗口，用于打开串口控制台...");
       selectedDevice = await navigator.serial.requestPort({ filters: USB_PORT_FILTERS });
     }
+    stopAutoReconnect();
     await openConsoleOnPort(selectedDevice, { auto: false });
   } catch (err) {
     console.error(err);
@@ -892,18 +901,8 @@ async function flashDevice() {
   await esploader.after("hard_reset");
   await cleanupLoaderConnection();
   setCurrentMode("none");
-  setReconnectStatus("烧写完成，设备已运行应用，准备打开串口控制台");
+  setReconnectStatus("烧写完成，设备已运行应用，请手动打开串口控制台");
   logLine("Flash Done ⚡️");
-  const consoleOpened = await openConsoleAfterFlashWithRetry();
-  if (consoleOpened) {
-    try {
-      await resetDeviceFromOpenConsoleAfterFlash();
-    } catch (resetErr) {
-      const msg = resetErr?.message || String(resetErr);
-      logLine(`烧写后自动 Reset Device 失败：${msg}`);
-      logLine("请手动点击 Reset Device。 ");
-    }
-  }
   autoConsoleScanPausedUntil = Date.now() + 3000;
 }
 
@@ -1025,6 +1024,7 @@ async function runAction(action, button) {
 }
 
 loadSavedSettings();
+if (autoReconnectEl) autoReconnectEl.checked = false;
 bindSettingsPersistence();
 
 FIRMWARE_FILES.forEach((fileDef) => {
@@ -1094,7 +1094,9 @@ if (navigator.serial?.addEventListener) {
       consoleLine(`
 [Auto detect] 浏览器检测到 ${describeSerialPort(port)} 插入。
 `);
-      setTimeout(() => tryAutoOpenDetectedConsole("serial-connect-event"), 500);
+      if (INDEX_AUTO_CONSOLE_DETECT_ENABLE) {
+        setTimeout(() => tryAutoOpenDetectedConsole("serial-connect-event"), 500);
+      }
     }
   });
 }
@@ -1109,7 +1111,10 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 setupSerialProtocolPageGuard();
-if (!isSerialProtocolPageFresh()) startAutoConsoleDetector();
+stopAutoConsoleDetector();
+setAutoConsoleDetectStatus("已关闭，需手动点击连接设备");
+if (connectButton) connectButton.disabled = false;
+if (consoleConnectButton) consoleConnectButton.disabled = false;
 
 logLine("页面 JS 已加载。点击“连接设备”后应立即弹出浏览器串口选择窗口。 ");
 logLine("v20 新增：失败信息会在右下角小窗口显示，方便看到串口异常原因。 ");

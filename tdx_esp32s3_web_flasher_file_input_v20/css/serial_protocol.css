@@ -8,6 +8,20 @@ h1 { margin:0 0 8px; font-size:26px; } h2 { margin:0 0 14px; font-size:20px; } h
 p { margin:8px 0; color:var(--muted); }
 .badge { padding:10px 14px; border-radius:99px; color:#fff; background:var(--primary); font-weight:700; white-space:nowrap; }
 .warning { background:var(--warn); }
+.epdInfoCard { border-color:#9cc7ff; background:#f8fbff; }
+.epdInfoHeader { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+.epdInfoHeader h2 { margin:0; }
+.epdStateBadge { display:inline-flex; align-items:center; min-height:30px; padding:6px 10px; border-radius:8px; background:#e5e7eb; color:#374151; font-weight:800; }
+.epdStateBadge.ok { background:#dcfce7; color:#166534; }
+.epdStateBadge.bad { background:#fee2e2; color:#991b1b; }
+.epdTypeSummary { font-weight:800; color:#172033; margin:8px 0; }
+.epdColorSwatches { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 12px; }
+.epdColorSwatch { display:inline-flex; align-items:center; gap:8px; min-height:32px; padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; color:#334155; font-size:13px; font-weight:800; }
+.epdColorBox { width:18px; height:18px; border:1px solid #475569; border-radius:4px; box-shadow:inset 0 0 0 1px rgba(255,255,255,.35); }
+.epdTypeDetails { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; color:#334155; font-size:14px; }
+.epdTypeDetails span { display:flex; flex-direction:column; gap:4px; border:1px solid var(--line); border-radius:8px; padding:8px; background:#fff; }
+.epdTypeDetails b { color:#64748b; font-size:12px; }
+.epdTypeDetails em { color:#172033; font-style:normal; font-weight:800; overflow-wrap:anywhere; }
 button, .buttonLink { border:0; background:var(--primary); color:#fff; border-radius:10px; padding:11px 16px; cursor:pointer; font-weight:700; text-decoration:none; display:inline-flex; align-items:center; }
 button:disabled { background:#a9b2c3; cursor:not-allowed; }
 .buttonLink { background:var(--link); }
@@ -19,6 +33,9 @@ label { display:flex; flex-direction:column; gap:6px; font-weight:600; color:#29
 input, select, textarea { padding:9px; border:1px solid var(--line); border-radius:8px; background:#fff; font:inherit; }
 textarea { width:100%; font-family:Consolas,Monaco,"Courier New",monospace; }
 .checkbox { flex-direction:row !important; align-items:center; gap:8px !important; font-weight:500 !important; }
+.fileMatchStatus { min-height:22px; font-size:13px; font-weight:800; color:#64748b; }
+.fileMatchStatus.ok { color:#15803d; }
+.fileMatchStatus.bad { color:#b91c1c; }
 .statusLine { border:1px solid var(--line); border-radius:10px; background:#f8fafc; padding:10px 12px; color:#2e3a4f; }
 #rxOutput { overflow:auto; white-space:pre-wrap; background:var(--console); color:#d7ffda; border-radius:12px; padding:16px; font:13px/1.45 Consolas,Monaco,"Courier New",monospace; min-height:520px; height:58vh; max-height:82vh; }
 pre { overflow:auto; white-space:pre-wrap; background:#0b1220; color:#d6e1ff; border-radius:12px; padding:16px; font:13px/1.45 Consolas,Monaco,"Courier New",monospace; }
@@ -26,9 +43,17 @@ code { background:#eef2f7; padding:2px 5px; border-radius:5px; } pre code { back
 .hint { font-size:14px; }
 .ok { color:var(--ok); font-weight:700; } .bad { color:var(--bad); font-weight:700; }
 @media (max-width:900px){ .settingsGrid,.formGrid,.twoCols{grid-template-columns:1fr;} .hero{flex-direction:column; align-items:flex-start;} #rxOutput{height:55vh;} }
+@media (max-width:900px){ .epdTypeDetails{grid-template-columns:1fr;} .epdInfoHeader{align-items:flex-start; flex-direction:column;} }
 
 .fileTestCard { border-color:#b9d7ff; background:#f7fbff; }
+.directUploadGrid { display:grid; grid-template-columns:minmax(320px,2fr) minmax(220px,1fr) minmax(220px,1fr); gap:16px 22px; margin:12px 0; align-items:end; }
+.wideField { grid-column:span 2; }
+.directUploadGrid button { min-height:42px; justify-content:center; }
 #fileInfoOutput { min-height:120px; background:#111827; color:#e5e7eb; }
+@media (max-width: 900px) {
+  .directUploadGrid { grid-template-columns:1fr; }
+  .wideField { grid-column:auto; }
+}
 
 
 .faultPopup {

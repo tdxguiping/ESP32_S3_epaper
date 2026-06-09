@@ -32,17 +32,29 @@ esp_err_t UsbConsoleTransport_Init(void)
 
 int UsbConsoleTransport_Read(uint8_t *data, size_t data_size, TickType_t ticks_to_wait)
 {
+    size_t total_read = 0;
+
     if (data == NULL || data_size == 0) {
         return 0;
     }
 
-    size_t read_size = data_size > 64 ? 64 : data_size;
+    while (total_read < data_size) {
+        size_t read_size = data_size - total_read;
+        if (read_size > 64) {
+            read_size = 64;
+        }
 
-    // Read the hardware FIFO directly so USB RX does not take the VFS recursive lock.
-    // Chinese note: USB RX reads the hardware FIFO directly and avoids the VFS read lock.
-    int read_len = (int)usb_serial_jtag_ll_read_rxfifo(data, read_size);
-    if (read_len > 0) {
-        return read_len;
+        // Drain the hardware FIFO directly so one task loop can collect more than one USB packet.
+        // 直接排空硬件 FIFO，让一次任务循环可以收集多个 USB 包。
+        int read_len = (int)usb_serial_jtag_ll_read_rxfifo(data + total_read, read_size);
+        if (read_len <= 0) {
+            break;
+        }
+        total_read += (size_t)read_len;
+    }
+
+    if (total_read > 0) {
+        return (int)total_read;
     }
 
     if (ticks_to_wait > 0) {

@@ -13,12 +13,19 @@ typedef enum {
     EPD_TYPE_1360_480_1085_3COLOR = 7,
 } epd_type_id_t;
 
+typedef enum {
+    BWR_3_Color = 3,
+    BWRY_4_Color = 4,
+    BWYRBG_6_Color = 6,
+} epd_color_type_t;
+
 typedef struct {
     uint8_t type;
     uint16_t width;
     uint16_t height;
     size_t display_size;
     const char *name;
+    uint8_t color_type;
 } epd_type_config_t;
 
 #ifdef __cplusplus
