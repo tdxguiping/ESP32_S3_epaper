@@ -208,26 +208,7 @@ esp_err_t ServerNetworkStaEpdDisplay_Queue(const uint8_t *display_buf, size_t di
 }
 
 
-// at file  epd_display_app.cpp 
-// 鍐欎竴涓祴璇曞嚱鏁?锛堝彧鐢ㄤ簬涓存椂娴嬭瘯锛夛紝骞跺湪 main.c 涓皟鐢?// void test_epd_display_EPD_1600_1200_79(void)
 
-// 鍑芥暟 test_epd_display_EPD_1600_1200_79 
-// 鍔熻兘濡備笅
-
-// 1锛?涓存椂鐢宠涓€涓?       960000 bytes 鐨勫彉閲?//     杩欎釜鍙橀噺鐨勫墠 10%锛屽叏閮ㄥ啓鎴?0x00
-//     鎺ヤ笅鍘荤殑10%锛屽叏閮ㄥ啓鎴?0x02
-//     鎺ヤ笅鍘荤殑10%锛屽叏閮ㄥ啓鎴?0x03
-//     鎺ヤ笅鍘荤殑10%锛屽叏閮ㄥ啓鎴?0x04
-//     鎺ヤ笅鍘荤殑10%锛屽叏閮ㄥ啓鎴?0x05
-//     鎺ヤ笅鍘荤殑10%锛屽叏閮ㄥ啓鎴?0x06
-//     浣欎笅鐨勶紝鍏ㄩ儴鍐欐垚 0x05
-    
-//    鍙戜俊鎭粰 鍑芥暟 ServerNetworkStaEpdDisplay_Task 
-//    灏嗗垰鍒?鐢宠鐨?鍙橀噺
-//    浼犵粰杩欎釜鍑芥暟
-
-   
-//    鍦ㄥ嚱鏁?ServerNetworkStaEpdDisplay_Task 涓?//    璋冪敤 EPD 鏄剧ず
 
 static void log_epd_test_config(uint8_t requested_type)
 {

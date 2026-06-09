@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TDX ESP32-S3 Web Flasher v20</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <main class="page">
+    <section class="card hero">
+      <div>
+        <h1>TDX ESP32-S3 Web Flasher v20</h1>
+        <p>固定 4 个烧写地址，文件名可变。支持自动加载上一级目录固件、烧写后自动打开串口控制台、Reset Device、串口意外断开自动重连；后台检测 USB JTAG/serial debug unit 并自动打开控制台。</p>
+      </div>
+      <div class="badge">ESP32-S3 / Web Serial</div>
+    </section>
+
+    <section class="card warning">
+      <strong>打开方式</strong>
+      <p>推荐把 4 个 bin 放在本网页目录的上一级目录，然后从上一级目录启动 HTTP 服务。</p>
+      <pre><code>parent_dir/
+├── bootloader.bin
+├── partition-table.bin
+├── ota_data_initial.bin
+├── file_server.bin
+└── tdx_esp32s3_web_flasher_file_input_v20/
+    └── index.html</code></pre>
+      <p>然后运行 <code>python -m http.server 8000</code>，用 Chrome / Edge 打开 <code>http://localhost:8000/tdx_esp32s3_web_flasher_file_input_v20/index.html</code>。</p>
+      <p>如果直接在网页目录里启动服务，浏览器无法访问真实的上一级目录；此时请手动选择 4 个文件。</p>
+    </section>
+
+
+
+    <section class="card protocolCard">
+      <h2>串口协议测试页面</h2>
+      <p>点击下面按钮会新开 <code>serial_protocol.html</code>，用于通过 USB Serial/JTAG 发送 HTTP-like 串口协议，并包含文件输入窗口，可测试 <code>/upload</code>、<code>/cast</code>、<code>/cast2pic</code> 等发文件功能。</p>
+      <p class="hint">打开串口协议页面前，主页面会自动停止后台串口检测并断开当前串口，避免两个页面抢同一个 COM 口。</p>
+      <div class="buttonRow">
+        <button id="openSerialProtocolButton" type="button">打开串口协议测试页面</button>
+        <a id="openSerialProtocolLink" class="buttonLink" href="serial_protocol.html" target="_blank" rel="noopener noreferrer">备用直接打开 serial_protocol.html</a>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>选择烧写文件</h2>
+      <p class="hint">第一次打开页面时，会尝试从 <code>index.html</code> 所在目录的上一级目录自动读取：<code>bootloader.bin</code>、<code>partition-table.bin</code>、<code>ota_data_initial.bin</code>、<code>file_server.bin</code>。手动选择文件后，手动文件优先。</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Flash 地址</th>
+            <th>文件用途</th>
+            <th>手动选择文件</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>0x0000</code></td>
+            <td><strong>Bootloader</strong><br><small>自动文件：<code>../bootloader.bin</code></small></td>
+            <td><input id="file_bootloader" type="file" accept=".bin,application/octet-stream"></td>
+            <td id="status_bootloader" class="wait">未选择</td>
+          </tr>
+          <tr>
+            <td><code>0x8000</code></td>
+            <td><strong>Partition Table</strong><br><small>自动文件：<code>../partition-table.bin</code></small></td>
+            <td><input id="file_partitionTable" type="file" accept=".bin,application/octet-stream"></td>
+            <td id="status_partitionTable" class="wait">未选择</td>
+          </tr>
+          <tr>
+            <td><code>0xD000</code></td>
+            <td><strong>OTA Data Initial</strong><br><small>自动文件：<code>../ota_data_initial.bin</code></small></td>
+            <td><input id="file_otaData" type="file" accept=".bin,application/octet-stream"></td>
+            <td id="status_otaData" class="wait">未选择</td>
+          </tr>
+          <tr>
+            <td><code>0x20000</code></td>
+            <td><strong>Application</strong><br><small>自动文件：<code>../file_server.bin</code>，也可手动改成其他 App bin</small></td>
+            <td><input id="file_app" type="file" accept=".bin,application/octet-stream"></td>
+            <td id="status_app" class="wait">未选择</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card controls">
+      <h2>烧写操作</h2>
+      <label>Flash Mode
+        <select id="flashMode">
+          <option value="dio" selected>dio</option>
+          <option value="qio">qio</option>
+          <option value="dout">dout</option>
+          <option value="qout">qout</option>
+          <option value="keep">keep</option>
+        </select>
+      </label>
+      <label>Flash Frequency
+        <select id="flashFreq">
+          <option value="80m" selected>80m</option>
+          <option value="40m">40m</option>
+          <option value="26m">26m</option>
+          <option value="20m">20m</option>
+          <option value="keep">keep</option>
+        </select>
+      </label>
+      <label>Flash Size
+        <select id="flashSize">
+          <option value="16MB" selected>16MB</option>
+          <option value="8MB">8MB</option>
+          <option value="4MB">4MB</option>
+          <option value="detect">detect</option>
+          <option value="keep">keep</option>
+        </select>
+      </label>
+      <label class="checkbox"><input type="checkbox" id="eraseAll"> 烧写前整片擦除 Flash。默认不擦，保留 NVS / WiFi / 用户数据。</label>
+      <label class="checkbox"><input type="checkbox" id="strictS3" checked> 只允许 ESP32-S3。</label>
+      <div class="buttonRow">
+        <button id="checkFilesButton">检查固件文件</button>
+        <button id="connectButton" onclick="connectDeviceFromUserClick()">连接设备</button>
+        <button id="flashButton" disabled>开始烧写</button>
+        <button id="eraseButton" disabled>仅擦除整片 Flash</button>
+        <button id="resetButton" disabled>Reset Device</button>
+        <button id="disconnectButton" disabled>断开</button>
+      </div>
+      <p class="hint">烧写完成后会执行 hard_reset，并自动尝试打开串口控制台接收日志。</p>
+    </section>
+
+    <section class="card settingsCard">
+      <h2>Settings</h2>
+      <h3>Serial connection configurations:</h3>
+      <details class="moreInfo">
+        <summary>more information</summary>
+        <p>这些设置参考 ESP Launchpad 的 Settings 页面。烧写波特率用于进入 bootloader 和写 Flash；Console baudrate 用于应用启动后的串口日志。</p>
+      </details>
+      <div class="settingsGrid">
+        <label>Flashing baud rate
+          <select id="baudrate">
+            <option value="921600" selected>921600</option>
+            <option value="460800">460800</option>
+            <option value="230400">230400</option>
+            <option value="115200">115200</option>
+          </select>
+        </label>
+        <label>Console baud rate
+          <select id="consoleBaudrate">
+            <option value="921600" selected>921600</option>
+            <option value="691200">691200</option>
+            <option value="460800">460800</option>
+            <option value="230400">230400</option>
+            <option value="115200">115200</option>
+          </select>
+        </label>
+        <label>Data bits
+          <select id="serialDataBits">
+            <option value="8" selected>8</option>
+            <option value="7">7</option>
+          </select>
+        </label>
+        <label>Stop bits
+          <select id="serialStopBits">
+            <option value="1" selected>1</option>
+            <option value="2">2</option>
+          </select>
+        </label>
+        <label>Parity
+          <select id="serialParity">
+            <option value="none" selected>none</option>
+            <option value="even">even</option>
+            <option value="odd">odd</option>
+          </select>
+        </label>
+        <label>Flow control
+          <select id="serialFlowControl">
+            <option value="none" selected>none</option>
+            <option value="hardware">hardware</option>
+          </select>
+        </label>
+        <label>Buffer size（bytes）
+          <input id="serialBufferSize" type="number" min="1" max="16777216" value="255">
+        </label>
+        <label>自动重连间隔
+          <select id="reconnectIntervalMs">
+            <option value="1000">1 秒</option>
+            <option value="2000" selected>2 秒</option>
+            <option value="3000">3 秒</option>
+            <option value="5000">5 秒</option>
+          </select>
+        </label>
+        <label>烧写后打开控制台重试次数
+          <select id="autoConsoleAttempts">
+            <option value="3">3 次</option>
+            <option value="5">5 次</option>
+            <option value="8" selected>8 次</option>
+            <option value="12">12 次</option>
+          </select>
+        </label>
+        <label>烧写后打开控制台重试间隔
+          <select id="autoConsoleDelayMs">
+            <option value="500">0.5 秒</option>
+            <option value="1000" selected>1 秒</option>
+            <option value="2000">2 秒</option>
+            <option value="3000">3 秒</option>
+          </select>
+        </label>
+      </div>
+      <label class="checkbox"><input type="checkbox" id="autoReconnect" checked> 串口中途断开时自动重连。</label>
+      <label class="checkbox"><input type="checkbox" id="appendCRLF" checked> 控制台发送时追加 CRLF。</label>
+      <div id="reconnectStatus" class="statusLine">自动重连状态：空闲</div>
+      <div class="buttonRow">
+        <button id="resetSettingsButton" type="button">恢复默认 Settings</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>操作日志</h2>
+      <pre id="log"></pre>
+    </section>
+
+    <section class="card consoleCard">
+      <h2>串口控制台</h2>
+      <p>用于查看设备运行日志。烧写完成后会自动打开；也可以手动打开。打开控制台会关闭烧写连接，避免同一个串口被同时占用。</p>
+      <p class="hint">后台会检测浏览器已授权过的 <code>USB JTAG/serial debug unit</code> / Espressif USB 串口；如果当前未连接，会自动打开串口控制台并显示接收数据。</p>
+      <div id="autoConsoleDetectStatus" class="statusLine">后台串口检测：等待启动</div>
+      <div class="buttonRow consoleDeviceRow">
+        <button id="consoleConnectButton" onclick="connectDeviceFromUserClick()">连接设备</button>
+        <button id="consoleResetButton" disabled>Reset Device</button>
+        <button id="consoleDisconnectButton" disabled>断开</button>
+      </div>
+      <div class="buttonRow">
+        <button id="openConsoleButton">打开串口控制台</button>
+        <button id="closeConsoleButton" disabled>关闭串口控制台</button>
+        <button id="clearConsoleButton">清空控制台</button>
+      </div>
+      <pre id="consoleOutput"></pre>
+      <div class="consoleSendRow">
+        <input id="consoleInput" type="text" placeholder="输入串口命令，例如 help" disabled>
+        <button id="sendConsoleButton" disabled>发送</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Classic script, not type="module". This keeps the connect click path simple. -->
+  <div id="faultPopup" class="faultPopup faultPopupHidden" role="alert" aria-live="assertive">
+    <div class="faultPopupTitle">
+      <span id="faultPopupTitleText">失败信息</span>
+      <button id="faultPopupCloseButton" type="button" class="faultPopupClose">×</button>
+    </div>
+    <pre id="faultPopupText"></pre>
+    <div class="faultPopupActions">
+      <button id="faultPopupClearButton" type="button">清空</button>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

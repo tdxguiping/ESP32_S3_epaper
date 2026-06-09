@@ -30,6 +30,7 @@
 #include "server_network_sta_slideshow.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
+#include "usb_console_echo.h"
 #include "user_app.h"
 
 #include <string.h>
@@ -174,20 +175,20 @@ void app_main(void)
 {
     /* Hide ESP-IDF WiFi internal INFO logs, keep warnings and errors. */
     /* 关闭 ESP-IDF WiFi 内部 INFO 日志，只保留警告和错误。 */
-    esp_log_level_set("wifi_init", ESP_LOG_WARN);
+    // esp_log_level_set("wifi_init", ESP_LOG_WARN);
 
-    /* Hide net80211 ROM/version INFO logs. */
-    /* 关闭 net80211 ROM 版本等 INFO 日志。 */
-    esp_log_level_set("net80211", ESP_LOG_WARN);
+    // /* Hide net80211 ROM/version INFO logs. */
+    // /* 关闭 net80211 ROM 版本等 INFO 日志。 */
+    // esp_log_level_set("net80211", ESP_LOG_WARN);
 
-    /* Hide most WiFi driver INFO logs. */
-    /* 关闭大部分 WiFi 驱动 INFO 日志。 */
-    esp_log_level_set("wifi", ESP_LOG_ERROR);
-    esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
-    esp_log_level_set("pp", ESP_LOG_WARN);
-    esp_log_level_set("phy_init", ESP_LOG_WARN);
-    esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
-    esp_log_level_set("mdns_mem", ESP_LOG_WARN);
+    // /* Hide most WiFi driver INFO logs. */
+    // /* 关闭大部分 WiFi 驱动 INFO 日志。 */
+    // esp_log_level_set("wifi", ESP_LOG_ERROR);
+    // esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
+    // esp_log_level_set("pp", ESP_LOG_WARN);
+    // esp_log_level_set("phy_init", ESP_LOG_WARN);
+    // esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
+    // esp_log_level_set("mdns_mem", ESP_LOG_WARN);
 
 
 
@@ -195,6 +196,7 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ESP_ERROR_CHECK(UsbConsoleEcho_Init());
     ESP_ERROR_CHECK(ServerNetworkStaWifiWorkTime_Init());
     char random_value[8] = {0};
     app_nvs_read_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
@@ -208,14 +210,14 @@ void app_main(void)
              random_value, (unsigned int)g_slideshow_random_enable);
 
 
-    esp_log_level_set("wifi_init", ESP_LOG_WARN);
-    esp_log_level_set("net80211", ESP_LOG_WARN);
-    esp_log_level_set("wifi", ESP_LOG_ERROR);
-    esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
-    esp_log_level_set("pp", ESP_LOG_WARN);
-    esp_log_level_set("phy_init", ESP_LOG_WARN);
-    esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
-    esp_log_level_set("mdns_mem", ESP_LOG_WARN);
+    // esp_log_level_set("wifi_init", ESP_LOG_WARN);
+    // esp_log_level_set("net80211", ESP_LOG_WARN);
+    // esp_log_level_set("wifi", ESP_LOG_ERROR);
+    // esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
+    // esp_log_level_set("pp", ESP_LOG_WARN);
+    // esp_log_level_set("phy_init", ESP_LOG_WARN);
+    // esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
+    // esp_log_level_set("mdns_mem", ESP_LOG_WARN);
 
 
     print_base_info();
@@ -254,8 +256,8 @@ void app_main(void)
         UserLedStatus_Set(USER_LED_STATE_SERVER_READY);
     }
     
-    ESP_LOGI(TAG, "Server Version=2.2.3");
-    test_epd_display();
+    ESP_LOGI(TAG, "Server Version=2.2.4");
+    // test_epd_display();
 }
 // LOG_ERROR("%d %s %s",__LINE__,__func__,__FILE__);
 // LOG_WARN("%s>%d",__func__,__LINE__);

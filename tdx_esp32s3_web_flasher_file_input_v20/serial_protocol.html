@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TDX USB 串口 HTTP-like 相框协议 v20</title>
+  <link rel="stylesheet" href="css/serial_protocol.css" />
+</head>
+<body>
+  <main class="page">
+    <section class="card hero">
+      <div>
+        <h1>TDX USB 串口 HTTP-like 相框协议 v20</h1>
+        <p>新页面只使用 USB Serial/JTAG 串口收发数据。原网络 HTTP 协议被改成“串口承载 HTTP 文本”：请求头仍是 HTTP-like 文本，body 可为 JSON、multipart 或二进制，设备端必须按 Content-Length 接收完整请求。</p>
+      </div>
+      <div class="badge">USB Serial HTTP-like</div>
+    </section>
+
+    <section class="card warning">
+      <strong>串口协议边界</strong>
+      <p>不改现有 WiFi HTTP server。浏览器这个页面通过串口发送 <code>GET /ping HTTP/1.1</code>、<code>POST /delete HTTP/1.1</code>、<code>POST /cast HTTP/1.1</code> 等 HTTP-like 文本。设备端建议新增独立目录 <code>main/usb_console_echo/</code> 做 transport、http_text、router 和各 feature module。</p>
+      <p>接收规则：先找 <code>\r\n\r\n</code>，解析 header，按 <code>Content-Length</code> 继续读取 body。不要用“超时即结束”判断请求结束。设备响应统一包在 <code>@#$</code> 和 <code>%^&</code> 之间，便于 PC 端从调试日志中识别协议响应。</p>
+    </section>
+
+    <section class="card">
+      <h2>串口连接</h2>
+      <div class="settingsGrid">
+        <label>Console baud rate
+          <select id="baudrate">
+            <option value="921600" selected>921600</option>
+            <option value="691200">691200</option>
+            <option value="460800">460800</option>
+            <option value="230400">230400</option>
+            <option value="115200">115200</option>
+          </select>
+        </label>
+        <label>Data bits
+          <select id="dataBits"><option value="8" selected>8</option><option value="7">7</option></select>
+        </label>
+        <label>Stop bits
+          <select id="stopBits"><option value="1" selected>1</option><option value="2">2</option></select>
+        </label>
+        <label>Parity
+          <select id="parity"><option value="none" selected>none</option><option value="even">even</option><option value="odd">odd</option></select>
+        </label>
+        <label>Flow control
+          <select id="flowControl"><option value="none" selected>none</option><option value="hardware">hardware</option></select>
+        </label>
+        <label>Buffer size
+          <input id="bufferSize" type="number" min="1" max="16777216" value="255">
+        </label>
+        <label>串口打开超时 ms
+          <input id="serialOpenTimeoutMs" type="number" min="1000" max="30000" value="8000">
+        </label>
+        <label>每块写入超时 ms
+          <input id="writeChunkTimeoutMs" type="number" min="500" max="30000" value="5000">
+        </label>
+        <label>写入块大小 bytes
+          <input id="writeChunkSize" type="number" min="256" max="65536" value="4096">
+        </label>
+        <label>块间延时 ms
+          <input id="writeChunkDelayMs" type="number" min="0" max="1000" value="0">
+        </label>
+        <label>Reset 超时 ms
+          <input id="serialResetTimeoutMs" type="number" min="500" max="10000" value="3000">
+        </label>
+        <label>默认 JSON 路由模式
+          <select id="jsonRouteMode">
+            <option value="feature" selected>独立功能路径：/delete /snapshot /slideshow...</option>
+            <option value="dataup">兼容原网络入口：POST /dataUP + JSON</option>
+          </select>
+        </label>
+        <label>文件上传路径模式
+          <select id="fileRouteMode">
+            <option value="feature" selected>独立功能路径：/cast /upload /update /cast2pic</option>
+            <option value="dataup">兼容原网络入口：POST /dataUP + multipart</option>
+          </select>
+        </label>
+      </div>
+      <label class="checkbox"><input id="autoConnect" type="checkbox" checked> 后台检测已授权的 USB JTAG/serial debug unit，未连接时自动连接。</label>
+      <label class="checkbox"><input id="prettyRxJson" type="checkbox" checked> 接收窗口尝试格式化 HTTP-like 响应中的 JSON body。</label>
+      <p class="hint">故障保护：串口打开、写入、Reset 或接收过程中如果发生错误/超时，会立即释放 reader/writer、关闭串口、停止本次自动重连，避免页面卡住无响应。</p>
+      <div id="status" class="statusLine">状态：未连接</div>
+      <div class="buttonRow">
+        <button id="connectButton">连接串口</button>
+        <button id="resetButton" disabled>Reset Device</button>
+        <button id="disconnectButton" disabled>断开</button>
+        <button id="clearRxButton">清空接收窗口</button>
+        <a class="buttonLink" href="V2_相框传图协议.html" target="_blank" rel="noopener">打开原网络协议说明</a>
+      </div>
+      <pre id="rxOutput"></pre>
+    </section>
+
+    <section class="card">
+      <h2>原始 HTTP-like 串口发送</h2>
+      <p class="hint">这里直接发送文本。设备端仍需按 HTTP-like header 与 Content-Length 解析。</p>
+      <textarea id="rawText" rows="8">GET /ping HTTP/1.1
+Host: usb
+Content-Length: 0
+
+</textarea>
+      <div class="buttonRow">
+        <button id="sendRawButton" disabled>按原始 HTTP-like 文本发送</button>
+        <button id="sendRawJsonButton" disabled>把下方 JSON body 作为 POST /dataUP 发送</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>JSON 控制命令</h2>
+      <p class="hint">按钮会生成 HTTP-like 请求。独立功能路径模式下，例如 delete 会发送 <code>POST /delete HTTP/1.1</code>；兼容模式下统一发送 <code>POST /dataUP HTTP/1.1</code>。</p>
+      <div class="buttonRow">
+        <button data-get-path="/ping" disabled class="httpGetCmd">ping</button>
+        <button data-get-path="/saved_images" data-json='{"func":"get_saved_images"}' disabled class="httpJsonCmd">get_saved_images</button>
+        <button data-get-path="/snapshot" data-json='{"func":"get_snapshot"}' disabled class="httpJsonCmd">get_snapshot</button>
+        <button data-json='{"func":"wifi_wakeup"}' data-path="/wifi_wakeup" disabled class="httpJsonCmd">wifi_wakeup</button>
+      </div>
+      <div class="formGrid">
+        <label>Wi-Fi SSID<input id="wifiSsid" type="text" value="MERCURY_A662" placeholder="MERCURY_A662"></label>
+        <label>Wi-Fi Password<input id="wifiPassword" type="text" value="mnbv0123" placeholder="password"></label>
+        <button id="sendWifiButton" disabled>发送 POST /wifi</button>
+        <button id="copyWifiRawButton">复制 WiFi 请求到原始发送区</button>
+      </div>
+      <p class="hint">WiFi 配网请求预览：Content-Length 会按 UTF-8 字节数自动计算。设备端要按 <code>Content-Length</code> 读取 body。</p>
+      <textarea id="wifiRequestPreview" rows="7" readonly></textarea>
+      <div class="formGrid">
+        <label>轮播文件名，逗号/空格/换行分隔<input id="slideshowFiles" type="text" value="26422,26423"></label>
+        <label>interval 秒<input id="slideshowInterval" type="number" min="1" value="60"></label>
+        <label class="checkbox"><input id="slideshowRandom" type="checkbox"> random</label>
+        <button id="sendStartSlideshowButton" disabled>POST /slideshow</button>
+      </div>
+      <div class="formGrid">
+        <label>sw<select id="slideshowSw"><option value="1" selected>1 开启</option><option value="0">0 关闭</option></select></label>
+        <label>interval 秒<input id="setSlideshowInterval" type="number" min="1" value="60"></label>
+        <label class="checkbox"><input id="setSlideshowRandom" type="checkbox"> random</label>
+        <button id="sendSetSlideshowButton" disabled>POST /slideshow_control</button>
+      </div>
+      <div class="formGrid">
+        <label>删除文件名，逗号/空格/换行分隔<input id="deleteFiles" type="text" value="26422,26423"></label>
+        <button id="sendDeleteButton" disabled>POST /delete</button>
+      </div>
+      <div class="formGrid">
+        <label>Wi-Fi 工作时长 seconds<input id="wifiWorkSeconds" type="number" min="1" value="300"></label>
+        <button id="sendWifiWorkTimeButton" disabled>POST /wifi_work_time</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>直接文件发送：application/octet-stream</h2>
+      <p class="hint">用于直接测试设备端 HTTP-like parser 的 Content-Length 大文件接收。文件内容通过串口按原始二进制发送，不做 Base64。</p>
+      <div class="formGrid">
+        <label>请求路径
+          <input id="directFilePath" type="text" value="/upload?path=/data/test.bin">
+        </label>
+        <label>Content-Type
+          <input id="directFileContentType" type="text" value="application/octet-stream">
+        </label>
+        <label>X-USB-Function
+          <input id="directFileFunc" type="text" value="upload_raw">
+        </label>
+      </div>
+      <div class="formGrid">
+        <label>选择要发送的文件
+          <input id="directFileInput" type="file">
+        </label>
+        <button id="sendDirectFileButton" disabled>发送直接文件</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>当前选择的文件</h2>
+      <pre id="fileInfoOutput">未选择文件。</pre>
+    </section>
+
+    <section class="card">
+      <h2>单图传输：cast / upload / update</h2>
+      <p class="hint">原网络 multipart 改成串口 HTTP-like multipart。文件内容按原始二进制进入 body，不再使用 Base64 分片。</p>
+      <div class="formGrid">
+        <label>func<select id="singleFunc"><option value="cast" selected>cast</option><option value="upload">upload</option><option value="update">update</option></select></label>
+        <label>fileName / newfileNames<input id="singleFileName" type="text" value="26422"></label>
+        <label>oldfileNames，仅 update 使用<input id="singleOldFileName" type="text" placeholder="12345"></label>
+        <label class="checkbox"><input id="singleSave" type="checkbox" checked> save</label>
+        <label class="checkbox"><input id="singleShow" type="checkbox" checked> show</label>
+      </div>
+      <div class="formGrid">
+        <label>bin 文件<input id="singleBin" type="file" accept=".bin,application/octet-stream"></label>
+        <label>image 缩略图<input id="singleImage" type="file" accept="image/*,.jpg,.jpeg,.png"></label>
+        <button id="sendSingleMultipartButton" disabled>发送 HTTP-like multipart</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>双图传输：cast2pic</h2>
+      <div class="formGrid">
+        <label>screen<select id="cast2picScreen"><option value="ab" selected>ab</option><option value="a">a</option><option value="b">b</option></select></label>
+        <label class="checkbox"><input id="cast2picSave" type="checkbox" checked> save</label>
+        <label class="checkbox"><input id="cast2picShow" type="checkbox" checked> show</label>
+      </div>
+      <div class="twoCols">
+        <div class="subCard">
+          <h3>第 1 张</h3>
+          <label>fileName<input id="pic1Name" type="text" value="26422"></label>
+          <label>bin<input id="pic1Bin" type="file" accept=".bin,application/octet-stream"></label>
+          <label>image<input id="pic1Image" type="file" accept="image/*,.jpg,.jpeg,.png"></label>
+        </div>
+        <div class="subCard">
+          <h3>第 2 张</h3>
+          <label>fileName<input id="pic2Name" type="text" value="26423"></label>
+          <label>bin<input id="pic2Bin" type="file" accept=".bin,application/octet-stream"></label>
+          <label>image<input id="pic2Image" type="file" accept="image/*,.jpg,.jpeg,.png"></label>
+        </div>
+      </div>
+      <div class="buttonRow"><button id="sendCast2picButton" disabled>发送 cast2pic HTTP-like multipart</button></div>
+    </section>
+
+    <section class="card">
+      <h2>设备端建议目录与模块</h2>
+      <pre><code>main/usb_console_echo/
+  transport/usb_console_transport.c       // USB Serial/JTAG 字节收发
+  http_text/usb_console_http_text.c       // HTTP-like 解析/拼 response
+  worker/usb_console_worker.c             // USB 后台任务队列
+  common/usb_console_common.c             // 通用 JSON/multipart/SD 工具
+  common/usb_console_common_async.c       // 通用请求深拷贝和 worker 投递
+  router/usb_console_router.c             // method/path 分发
+  ping/usb_console_ping.c
+  net_data/usb_console_net_data.c
+  saved_images/usb_console_saved_images.c
+  snapshot/usb_console_snapshot.c
+  delete/usb_console_delete.c
+  slideshow/usb_console_slideshow.c
+  slideshow_control/usb_console_slideshow_control.c
+  wifi_work_time/usb_console_wifi_work_time.c
+  upload/usb_console_upload.c
+  cast/usb_console_cast.c
+  cast2pic/usb_console_cast2pic.c</code></pre>
+    </section>
+
+    <section class="card">
+      <h2>HTTP-like 请求示例</h2>
+      <pre><code>GET /ping HTTP/1.1
+Host: usb
+Content-Length: 0
+
+</code></pre>
+      <pre><code>POST /delete HTTP/1.1
+Host: usb
+Content-Type: application/json
+Content-Length: 32
+
+{"func":"delete","fileNames":["26422"]}</code></pre>
+      <pre><code>POST /cast HTTP/1.1
+Host: usb
+Content-Type: multipart/form-data; boundary=----TDXUSB...
+Content-Length: 123456
+
+&lt;multipart body, bin/image 保持原始二进制&gt;</code></pre>
+      <pre><code>@#$
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 35
+
+{"func":"cast_result","result":0}
+%^&</code></pre>
+    </section>
+  </main>
+  <div id="faultPopup" class="faultPopup faultPopupHidden" role="alert" aria-live="assertive">
+    <div class="faultPopupTitle">
+      <span id="faultPopupTitleText">失败信息</span>
+      <button id="faultPopupCloseButton" type="button" class="faultPopupClose">×</button>
+    </div>
+    <pre id="faultPopupText"></pre>
+    <div class="faultPopupActions">
+      <button id="faultPopupClearButton" type="button">清空</button>
+    </div>
+  </div>
+
+  <script src="js/serial_protocol.js"></script>
+</body>
+</html>

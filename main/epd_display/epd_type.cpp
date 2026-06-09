@@ -12,7 +12,7 @@
 
 static const char *TAG = "epd_type";
 
-uint8_t EPD_type = EPD_TYPE_800_480_4S_75;
+uint8_t EPD_type = EPD_TYPE_1360_480_1085_3COLOR;
 
 static const epd_type_config_t s_epd_types[] = {
     {EPD_TYPE_800_480, 800, 480, 192000, "EPD_800_480"},//  3 色 

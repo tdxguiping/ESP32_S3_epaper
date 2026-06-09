@@ -146,7 +146,7 @@ static int ch583_wifi_write_frame_text(const char *frame_text, size_t frame_len)
         return -1;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(CH583_WIFI_UART_TX_SILENCE_MS));
+    // vTaskDelay(pdMS_TO_TICKS(CH583_WIFI_UART_TX_SILENCE_MS));
 
     // Write one complete protocol frame through the UART driver so console logs are less likely to split it.
     ret = uart_write_bytes(CH583_WIFI_UART_PORT, frame_text, frame_len);

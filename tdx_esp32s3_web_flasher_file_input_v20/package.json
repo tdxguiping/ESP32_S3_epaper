@@ -1,0 +1,8 @@
+{
+  "name": "tdx-esp32s3-web-flasher-file-input-v20",
+  "version": "11.0.0",
+  "private": true,
+  "dependencies": {
+    "esptool-js": "^0.5.4"
+  }
+}
