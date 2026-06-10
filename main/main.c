@@ -257,7 +257,7 @@ void app_main(void)
     }
     
     ESP_LOGI(TAG, "Server Version=2.2.4");
-    // test_epd_display();
+    test_epd_display();
 }
 // LOG_ERROR("%d %s %s",__LINE__,__func__,__FILE__);
 // LOG_WARN("%s>%d",__func__,__LINE__);

@@ -8,11 +8,12 @@
 #include "epd_type_1600_1200_79.h"
 #include "epd_type_800_480.h"
 #include "epd_type_800_480_4s_75.h"
+#include "epd_type_800_480_4s_75_DKE.h"
 #include "esp_log.h"
 
 static const char *TAG = "epd_type";
 
-uint8_t EPD_type = EPD_TYPE_1600_1200_133; // 默认使用 1600x1200 133ms 的屏幕
+uint8_t EPD_type = EPD_TYPE_1360_480_1085_3COLOR; // 默认使用 1600x1200 133ms 的屏幕
 
 static const epd_type_config_t s_epd_types[] = {
     {EPD_TYPE_800_480, 800, 480, 192000, "EPD_800_480", BWR_3_Color},//  3 色
@@ -22,11 +23,12 @@ static const epd_type_config_t s_epd_types[] = {
     {EPD_TYPE_1360_480_1085, 1360, 480, 81600, "EPD_1360_480_1085", BWRY_4_Color},//  4 色
     {EPD_TYPE_800_480_4S_75, 800, 480, 96000, "EPD_800_480_4S_75", BWRY_4_Color},//  4 色 兴泰<使用6色芯片>
     {EPD_TYPE_1360_480_1085_3COLOR, 1360, 480, 163200, "EPD_1360_480_1085_3COLOR", BWR_3_Color},//  3 色
+    {EPD_TYPE_800_480_4S_75_2, 800, 480, 96000, "EPD_800_480_4S_75_DKE", BWRY_4_Color},//  4 色 DKE
 };
 
 static uint8_t EpdType_GetHardwareVersion(uint8_t type)
 {
-    return (type == EPD_TYPE_800_480_4S_75) ? 2U : 1U;
+    return (type == EPD_TYPE_800_480_4S_75 || type == EPD_TYPE_800_480_4S_75_2) ? 2U : 1U;
 }
 
 static void EpdType_UpdateHardwareVersion(uint8_t type)
@@ -97,6 +99,9 @@ void EpdType_DisplayCurrent(ePaperPort &epd, const uint8_t *display_buf, size_t 
     case EPD_TYPE_1360_480_1085_3COLOR:
         EpdType1360480_1085_3Color_Display(epd, display_buf, display_size);
         break;
+    case EPD_TYPE_800_480_4S_75_2:
+        EpdType800480_4S_75_DKE_Display(epd, display_buf, display_size);
+        break;
     default:
         ESP_LOGE(TAG, "display rejected invalid EPD type=%u", (unsigned int)EPD_type);
         break;
@@ -113,6 +118,7 @@ void EpdType_DispatchSleep(ePaperPort &epd)
     case EPD_TYPE_1360_480_1085: epd.EpdType1360480_1085_Sleep(); break;
     case EPD_TYPE_800_480_4S_75: epd.EpdType800480_4S_75_Sleep(); break;
     case EPD_TYPE_1360_480_1085_3COLOR: epd.EpdType1360480_1085_3Color_Sleep(); break;
+    case EPD_TYPE_800_480_4S_75_2: epd.EpdType800480_4S_75_DKE_Sleep(); break;
     default: ESP_LOGE(TAG, "unsupported EPD type=%u in sleep", (unsigned int)EPD_type); break;
     }
 }
@@ -127,6 +133,7 @@ void EpdType_DispatchInit(ePaperPort &epd)
     case EPD_TYPE_1360_480_1085: epd.EpdType1360480_1085_Init(); break;
     case EPD_TYPE_800_480_4S_75: epd.EpdType800480_4S_75_Init(); break;
     case EPD_TYPE_1360_480_1085_3COLOR: epd.EpdType1360480_1085_3Color_Init(); break;
+    case EPD_TYPE_800_480_4S_75_2: epd.EpdType800480_4S_75_DKE_Init(); break;
     default: ESP_LOGE(TAG, "unsupported EPD type=%u in init", (unsigned int)EPD_type); break;
     }
 }
@@ -141,6 +148,7 @@ void EpdType_DispatchDisplay(ePaperPort &epd)
     case EPD_TYPE_1360_480_1085: epd.EpdType1360480_1085_Display(); break;
     case EPD_TYPE_800_480_4S_75: epd.EpdType800480_4S_75_Display(); break;
     case EPD_TYPE_1360_480_1085_3COLOR: epd.EpdType1360480_1085_3Color_Display(); break;
+    case EPD_TYPE_800_480_4S_75_2: epd.EpdType800480_4S_75_DKE_Display(); break;
     default: ESP_LOGE(TAG, "unsupported EPD type=%u in display", (unsigned int)EPD_type); break;
     }
 }
@@ -186,6 +194,7 @@ void EpdType_DispatchNT61522DisplayNet(ePaperPort &epd, const uint8_t *image_dat
     case EPD_TYPE_1360_480_1085: epd.EpdType1360480_1085_NT61522_DisplayNet(image_data, image_size); break;
     case EPD_TYPE_800_480_4S_75: epd.EpdType800480_4S_75_NT61522_DisplayNet(image_data, image_size); break;
     case EPD_TYPE_1360_480_1085_3COLOR: epd.EpdType1360480_1085_3Color_DisplayNet(image_data, image_size); break;
+    case EPD_TYPE_800_480_4S_75_2: epd.EpdType800480_4S_75_DKE_NT61522_DisplayNet(image_data, image_size); break;
     default: ESP_LOGE(TAG, "unsupported EPD type=%u in NT61522 display net", (unsigned int)EPD_type); break;
     }
 }

@@ -170,6 +170,7 @@ class ePaperPort {
     friend void EpdType_DispatchNT61522InitDisplay(ePaperPort &epd);
     friend void EpdType_DispatchNT61522DisplayNet(ePaperPort &epd, const uint8_t *image_data, size_t image_size);
     friend void EpdType1360480_1085_3Color_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
+    friend void EpdType800480_4S_75_DKE_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
 
     spi_device_handle_t spi = nullptr;
     spi_host_device_t    spi_host_ = SPI3_HOST;
@@ -264,6 +265,11 @@ class ePaperPort {
     void EpdType800480_4S_75_Init();
     void EpdType800480_4S_75_Display();
     void EpdType800480_4S_75_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
+    void EpdType800480_4S_75_DKE_Sleep();
+    void EpdType800480_4S_75_DKE_Init();
+    void EpdType800480_4S_75_DKE_Display();
+    void EpdType800480_4S_75_DKE_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
+    void EpdType800480_4S_75_DKE_UpdateAndSleep();
 
     void delay_us(uint16_t us);
     void delay_ms(uint16_t ms);
