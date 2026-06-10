@@ -13,7 +13,7 @@
 #include "display_bsp.h"
 
 
-uint8_t  EPD_which_one_=2;    // if 1 EPD1 , if 2 EPD2  ,EPD1=Screen-B,EPD2=Screen-A    
+uint8_t  EPD_which_one_=1;    // if 1 EPD1 , if 2 EPD2 
 uint8_t  Hardware_Version_ = 1;
 
 //extern uint8_t  WHT20_Temp;
@@ -64,7 +64,7 @@ void ePaperPort::Set_EPD_which_one(uint8_t which_one)
     EPD_which_one_ = which_one;
     if((EPD_which_one_ !=1) &&  (EPD_which_one_ !=2))
     {
-        EPD_which_one_ = 2;
+        EPD_which_one_ = 1;
     }
 }
 
@@ -125,7 +125,9 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
     ret = spi_bus_add_device(spi_host_, &devcfg, &spi);
     ESP_ERROR_CHECK(ret);
 
-    Hardware_Version_ = (EPD_type == EPD_TYPE_800_480_4S_75 || EPD_type == EPD_TYPE_800_480_4S_75_2) ? 2U : 1U;
+    Hardware_Version_ = (EPD_type == EPD_TYPE_800_480_4S_75 ||
+                         EPD_type == EPD_TYPE_800_480_4S_75_2 ||
+                         EPD_type == EPD_TYPE_800_480_4S_75_3) ? 2U : 1U;
     gpio_config_t gpio_conf = {};
     if (Hardware_Version_ == 2) {
         gpio_conf.intr_type = GPIO_INTR_DISABLE;
@@ -226,18 +228,16 @@ ePaperPort::~ePaperPort() {
 }
 
 void ePaperPort::Set_ResetIOLevel(uint8_t level) {
-    if(EPD_which_one_ == 2){
+    if(EPD_which_one_ == 1){
     gpio_set_level((gpio_num_t)rst_, level ? 1 : 0);
     }
     else {
     gpio_set_level((gpio_num_t)EPD2_RST_PIN, level ? 1 : 0);
-    }
-
-    
+    }    
 }
 
 void ePaperPort::Set_CSIOLevel(uint8_t level) {
-    if(EPD_which_one_ == 2)
+    if(EPD_which_one_ == 1)
     {
         gpio_set_level((gpio_num_t)cs_, level ? 1 : 0);
         gpio_set_level((gpio_num_t)EPD2_CS_PIN,1); //  确保另一个屏幕不被选中
@@ -250,7 +250,7 @@ void ePaperPort::Set_CSIOLevel(uint8_t level) {
 }
 
 void ePaperPort::Set_CS2IOLevel(uint8_t level) {
-    if(EPD_which_one_ == 2)
+    if(EPD_which_one_ == 1)
     {
         gpio_set_level((gpio_num_t)cs_2_, level ? 1 : 0);
     }   
@@ -261,14 +261,14 @@ void ePaperPort::Set_CS2IOLevel(uint8_t level) {
 }
 
 void ePaperPort::Set_DCIOLevel(uint8_t level) {
-    if(EPD_which_one_ == 2)
+    if(EPD_which_one_ == 1)
         {gpio_set_level((gpio_num_t)dc_, level ? 1 : 0);}
     else
         {gpio_set_level((gpio_num_t)EPD2_DC_PIN, level ? 1 : 0);}    
 }
 
 uint8_t ePaperPort::Get_BusyIOLevel() {
-    if(EPD_which_one_ == 2)
+    if(EPD_which_one_ == 1)
       {return gpio_get_level((gpio_num_t)busy_);}
     else 
       {return gpio_get_level((gpio_num_t)EPD2_BUSY_PIN);}        
@@ -288,7 +288,7 @@ void ePaperPort::EPD_Reset(void) {
 
     gpio_set_level((gpio_num_t)cs_,1);
     gpio_set_level((gpio_num_t)cs_2_,1);
-    if (EPD_which_one_ == 1) {
+    if (EPD_which_one_ == 2) {
         gpio_set_level((gpio_num_t)EPD2_CS_PIN,1);
     }   
 
@@ -304,12 +304,13 @@ void ePaperPort::EPD_LoopBusy(void) {
     count=0;
     while (1) {
         if (Get_BusyIOLevel()) {
+            printf("Check Busy over\r\n");
             return;
         }
         vTaskDelay(pdMS_TO_TICKS(1000)); // 50x20 = 1000ms
         count++;
-        printf(".check busy=%d\n\r",count);
-        if (count > (65*1))
+        printf(".%d.",count);
+        if (count > (45*1))
         {
             ESP_LOGE(TAG, "EPD busy timeout");
             return;
@@ -329,13 +330,14 @@ void ePaperPort::EPD_Check_Busy(void) { // If BUSYN=0 then waiting
             {
                 Display_had_flag = 0xAA;  
             }
+            printf("Check Busy over\r\n");
             return;
         }
         vTaskDelay(pdMS_TO_TICKS(1000)); // 1000ms    
         i++;
-        printf("check busy=%d\n\r",i);
+        printf(".%d.",i);
 
-        if (i > (65*1)) {
+        if (i > (45*1)) {
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
             ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
                      Get_BusyIOLevel(), (long)i, elapsed_ms);
@@ -385,7 +387,7 @@ void ePaperPort::EPD_Select_None(void) {
 
      gpio_set_level((gpio_num_t)cs_,1);
      gpio_set_level((gpio_num_t)cs_,1);
-     if (EPD_which_one_ == 1) {
+     if (EPD_which_one_ == 2) {
      gpio_set_level((gpio_num_t)EPD2_CS_PIN,1);
      }    
 }
@@ -420,10 +422,9 @@ void ePaperPort::EPD_interface_init(void) {
     //Set_CS2IOLevel(1);
     gpio_set_level((gpio_num_t)cs_,1);  // for master
     gpio_set_level((gpio_num_t)cs_2_,1);  // for salve    
-    if (EPD_which_one_ == 1) {
+    if (EPD_which_one_ == 2) {
         gpio_set_level((gpio_num_t)EPD2_CS_PIN,1);
     }
-
     EPD_Select_None();
 }
 

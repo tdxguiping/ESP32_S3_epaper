@@ -76,9 +76,7 @@ static void UserLedStatus_Task(void *arg)
             blink_green(pdMS_TO_TICKS(USER_LED_MID_BLINK_MS));
             break;
         case USER_LED_STATE_SERVER_READY:
-            set_red(false);
-            set_green(true);
-            vTaskDelay(pdMS_TO_TICKS(500));
+            blink_green(pdMS_TO_TICKS(USER_LED_READY_BLINK_MS));
             break;
             case USER_LED_STATE_TRANSFER:
                 /* Blink red while receiving upload data. */

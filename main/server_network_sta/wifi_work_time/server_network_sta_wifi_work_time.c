@@ -273,7 +273,7 @@ static void work_state_task(void *arg)
             s_wifi_work_start_tick = xTaskGetTickCount() - pdMS_TO_TICKS(working_time * 1000U);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
     }
 }
 

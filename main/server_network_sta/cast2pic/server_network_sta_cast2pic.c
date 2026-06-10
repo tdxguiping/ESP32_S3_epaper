@@ -197,12 +197,12 @@ static size_t screen_required_images(const char *screen)
 static uint8_t screen_to_epd_number(const char *screen)
 {
     if (strcmp(screen, "a") == 0) {
-        return 1;
+        return 2; // for hardware compatibility, screen A is EPD2, screen B is EPD1, 
     }
     if (strcmp(screen, "b") == 0) {
-        return 2;
+        return 1;// for hardware compatibility, screen A is EPD2, screen B is EPD1, 
     }
-    return 1;
+    return 1;// for hardware compatibility, screen A is EPD2, screen B is EPD1, 
 }
 
 static const char *image_to_save_name(uint8_t screen_number)

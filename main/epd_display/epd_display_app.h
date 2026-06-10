@@ -21,6 +21,7 @@ void test_epd_display_EPD_EPD_1024_600(void);
 void test_epd_display_EPD_800_480(void);
 void test_epd_display_EPD_1360_480_1085(void);
 void test_epd_display_EPD_800_480_4S_75_2(void);
+void test_epd_display_EPD_800_480_4S_75_3(void);
 void test_epd_display_EPD_1360_480_1085_3COLOR_horizontal(void);
 void test_epd_display_EPD_1360_480_1085_3COLOR_vertical(void);
 void test_epd_display_EPD_1360_480_1085_3COLOR_const(void);

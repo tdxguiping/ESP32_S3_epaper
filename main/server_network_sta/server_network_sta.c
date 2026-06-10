@@ -278,6 +278,8 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
         return 0;
     }
 
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MIN_MODEM));
+
     if (!s_wifi_handlers_registered) {
         ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
                                                             ESP_EVENT_ANY_ID,

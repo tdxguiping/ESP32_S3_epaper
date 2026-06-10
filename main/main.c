@@ -19,6 +19,7 @@
 #include "esp_netif.h"
 #include "esp_err.h"
 #include "esp_partition.h"
+#include "esp_pm.h"
 #include "esp_system.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -42,6 +43,24 @@
 
 static const char *TAG = "example";
 int g_app_reset_reason = ESP_RST_low_power_No_Disp;
+
+static void app_auto_light_sleep_init(void)
+{
+#if CONFIG_PM_ENABLE
+    esp_pm_config_t pm_config = {
+        .max_freq_mhz = 160,
+        .min_freq_mhz = 40,
+        .light_sleep_enable = true,
+    };
+
+    ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
+    ESP_LOGI(TAG, "Auto Light-sleep enabled max=%uMHz min=%uMHz",
+             (unsigned int)pm_config.max_freq_mhz,
+             (unsigned int)pm_config.min_freq_mhz);
+#else
+    ESP_LOGW(TAG, "Auto Light-sleep not enabled because CONFIG_PM_ENABLE is off");
+#endif
+}
 
 static const char *reset_reason_to_str(esp_reset_reason_t reason)
 {
@@ -196,6 +215,7 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    app_auto_light_sleep_init();
     ESP_ERROR_CHECK(UsbConsoleEcho_Init());
     ESP_ERROR_CHECK(ServerNetworkStaWifiWorkTime_Init());
     char random_value[8] = {0};
@@ -257,7 +277,7 @@ void app_main(void)
     }
     
     ESP_LOGI(TAG, "Server Version=2.2.4");
-    test_epd_display();
+    // test_epd_display();
 }
 // LOG_ERROR("%d %s %s",__LINE__,__func__,__FILE__);
 // LOG_WARN("%s>%d",__func__,__LINE__);

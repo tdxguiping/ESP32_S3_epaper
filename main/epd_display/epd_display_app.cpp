@@ -408,6 +408,66 @@ void test_epd_display_EPD_800_480_4S_75_2(void)
     }
 }
 
+void test_epd_display_EPD_800_480_4S_75_3(void)
+{
+    static const uint8_t color_4_block_values[] = {
+        0x00, 0xFF, 0x55, 0xAA, 0x00, 0xFF, 0x55, 0xAA, 0x00, 0xFF
+    };
+    static const size_t block_count = sizeof(color_4_block_values);
+    const epd_type_config_t *config = EpdType_GetConfig(EPD_TYPE_800_480_4S_75_3);
+
+    log_epd_test_config(EPD_TYPE_800_480_4S_75_3);
+    if (config == NULL || config->display_size == 0) {
+        ESP_LOGE(TAG, "EPD mofang 4S test invalid requested type=%u", (unsigned int)EPD_TYPE_800_480_4S_75_3);
+        return;
+    }
+    if (config->display_size != 96000U) {
+        ESP_LOGE(TAG, "EPD mofang 4S test size invalid input=%u expected=%u",
+                 (unsigned int)config->display_size,
+                 (unsigned int)96000U);
+        return;
+    }
+
+    const size_t test_size = config->display_size;
+    const size_t block_size = test_size / block_count;
+    for (uint8_t target = 1U; target <= 2U; ++target) {
+        uint8_t *test_buf = (uint8_t *)heap_caps_malloc(test_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (test_buf == NULL) {
+            ESP_LOGE(TAG, "EPD mofang 4S test alloc failed target=%u size=%u",
+                     (unsigned int)target,
+                     (unsigned int)test_size);
+            return;
+        }
+
+        // English: Fill one independent test buffer for each mofang screen target.
+        // Chinese: Create one independent test image buffer for each mofang screen target.
+        for (size_t i = 0; i < block_count; ++i) {
+            memset(test_buf + (i * block_size), color_4_block_values[i], block_size);
+        }
+        memset(test_buf + (block_count * block_size),
+               color_4_block_values[block_count - 1],
+               test_size - (block_count * block_size));
+
+        epd_display_job_t job = {};
+        job.data = test_buf;
+        job.size = test_size;
+        job.epd_which_one = target;
+
+        if (s_epd_display_queue == NULL ||
+            xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+            ESP_LOGE(TAG, "EPD mofang 4S test queue failed target=%u size=%u",
+                     (unsigned int)target,
+                     (unsigned int)test_size);
+            release_epd_job(&job);
+            return;
+        }
+
+        ESP_LOGI(TAG, "EPD mofang 4S test queued target=%u size=%u",
+                 (unsigned int)target,
+                 (unsigned int)test_size);
+    }
+}
+
 void test_epd_display_EPD_1360_480_1085_3COLOR_horizontal(void)
 {
     const epd_type_config_t *config = EpdType_GetConfig(EPD_TYPE_1360_480_1085_3COLOR);
@@ -630,6 +690,9 @@ void test_epd_display(void)
         break;
     case EPD_TYPE_800_480_4S_75_2:
         test_epd_display_EPD_800_480_4S_75_2();
+        break;
+    case EPD_TYPE_800_480_4S_75_3:
+        test_epd_display_EPD_800_480_4S_75_3();
         break;
     case EPD_TYPE_1360_480_1085_3COLOR:
         // test_epd_display_EPD_1360_480_1085_3COLOR_horizontal();

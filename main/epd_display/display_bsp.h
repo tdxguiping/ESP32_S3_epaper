@@ -171,6 +171,7 @@ class ePaperPort {
     friend void EpdType_DispatchNT61522DisplayNet(ePaperPort &epd, const uint8_t *image_data, size_t image_size);
     friend void EpdType1360480_1085_3Color_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
     friend void EpdType800480_4S_75_DKE_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
+    friend void EpdType800480_4S_75_Mofang_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
 
     spi_device_handle_t spi = nullptr;
     spi_host_device_t    spi_host_ = SPI3_HOST;
@@ -270,6 +271,19 @@ class ePaperPort {
     void EpdType800480_4S_75_DKE_Display();
     void EpdType800480_4S_75_DKE_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
     void EpdType800480_4S_75_DKE_UpdateAndSleep();
+    void EpdType800480_4S_75_DKE_Reset();
+    void EpdType800480_4S_75_DKE_WriteCommand(uint8_t command);
+    void EpdType800480_4S_75_DKE_WriteData(uint8_t data);
+    void EpdType800480_4S_75_DKE_WaitBusy(const char *step);
+    void EpdType800480_4S_75_Mofang_Sleep();
+    void EpdType800480_4S_75_Mofang_Init();
+    void EpdType800480_4S_75_Mofang_Display();
+    void EpdType800480_4S_75_Mofang_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
+    void EpdType800480_4S_75_Mofang_UpdateAndSleep();
+    void EpdType800480_4S_75_Mofang_Reset();
+    void EpdType800480_4S_75_Mofang_WriteCommand(uint8_t command);
+    void EpdType800480_4S_75_Mofang_WriteData(uint8_t data);
+    void EpdType800480_4S_75_Mofang_WaitBusy(const char *step);
 
     void delay_us(uint16_t us);
     void delay_ms(uint16_t ms);

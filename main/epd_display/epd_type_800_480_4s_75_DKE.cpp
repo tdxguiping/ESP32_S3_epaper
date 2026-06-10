@@ -27,58 +27,58 @@ void EpdType800480_4S_75_DKE_Display(ePaperPort &epd,
 
 void ePaperPort::EpdType800480_4S_75_DKE_Sleep()
 {
-    EPD_WriteCMD(0x04);
-    EPD_Check_Busy();
+    EpdType800480_4S_75_DKE_WriteCommand(0x04);
+    EpdType800480_4S_75_DKE_WaitBusy("sleep_power_on");
 
-    EPD_WriteCMD(0x12);
-    EPD_WriteDATA(0x00);
-    EPD_Check_Busy();
+    EpdType800480_4S_75_DKE_WriteCommand(0x12);
+    EpdType800480_4S_75_DKE_WriteData(0x00);
+    EpdType800480_4S_75_DKE_WaitBusy("sleep_refresh");
 
-    EPD_WriteCMD(0x02);
-    EPD_WriteDATA(0x00);
-    EPD_Check_Busy();
+    EpdType800480_4S_75_DKE_WriteCommand(0x02);
+    EpdType800480_4S_75_DKE_WriteData(0x00);
+    EpdType800480_4S_75_DKE_WaitBusy("sleep_power_off");
 
-    EPD_WriteCMD(0x07);
-    EPD_WriteDATA(0xA5);
+    EpdType800480_4S_75_DKE_WriteCommand(0x07);
+    EpdType800480_4S_75_DKE_WriteData(0xA5);
 }
 
 void ePaperPort::EpdType800480_4S_75_DKE_Init()
 {
-    EPD_Reset();
+    EpdType800480_4S_75_DKE_Reset();
 
-    EPD_WriteCMD(0x4D);
-    EPD_WriteDATA(0x78);
+    EpdType800480_4S_75_DKE_WriteCommand(0x4D);
+    EpdType800480_4S_75_DKE_WriteData(0x78);
 
-    EPD_WriteCMD(0x00);
-    EPD_WriteDATA(0x2F);
-    EPD_WriteDATA(0x29);
+    EpdType800480_4S_75_DKE_WriteCommand(0x00);
+    EpdType800480_4S_75_DKE_WriteData(0x2F);
+    EpdType800480_4S_75_DKE_WriteData(0x29);
 
-    EPD_WriteCMD(0xE3);
-    EPD_WriteDATA(0x88);
+    EpdType800480_4S_75_DKE_WriteCommand(0xE3);
+    EpdType800480_4S_75_DKE_WriteData(0x88);
 
-    EPD_WriteCMD(0x50);
-    EPD_WriteDATA(0x37);
+    EpdType800480_4S_75_DKE_WriteCommand(0x50);
+    EpdType800480_4S_75_DKE_WriteData(0x37);
 
-    EPD_WriteCMD(0x61);
-    EPD_WriteDATA(X_Addr_Start_H);
-    EPD_WriteDATA(X_Addr_Start_L);
-    EPD_WriteDATA(Y_Addr_Start_H);
-    EPD_WriteDATA(Y_Addr_Start_L);
+    EpdType800480_4S_75_DKE_WriteCommand(0x61);
+    EpdType800480_4S_75_DKE_WriteData(X_Addr_Start_H);
+    EpdType800480_4S_75_DKE_WriteData(X_Addr_Start_L);
+    EpdType800480_4S_75_DKE_WriteData(Y_Addr_Start_H);
+    EpdType800480_4S_75_DKE_WriteData(Y_Addr_Start_L);
 
-    EPD_WriteCMD(0x65);
-    EPD_WriteDATA(0x00);
-    EPD_WriteDATA(0x00);
-    EPD_WriteDATA(0x00);
-    EPD_WriteDATA(0x00);
+    EpdType800480_4S_75_DKE_WriteCommand(0x65);
+    EpdType800480_4S_75_DKE_WriteData(0x00);
+    EpdType800480_4S_75_DKE_WriteData(0x00);
+    EpdType800480_4S_75_DKE_WriteData(0x00);
+    EpdType800480_4S_75_DKE_WriteData(0x00);
 
-    EPD_WriteCMD(0xF0);
-    EPD_WriteDATA(0x5F);
+    EpdType800480_4S_75_DKE_WriteCommand(0xF0);
+    EpdType800480_4S_75_DKE_WriteData(0x5F);
 
-    EPD_WriteCMD(0xE9);
-    EPD_WriteDATA(0x01);
+    EpdType800480_4S_75_DKE_WriteCommand(0xE9);
+    EpdType800480_4S_75_DKE_WriteData(0x01);
 
-    EPD_WriteCMD(0x30);
-    EPD_WriteDATA(0x08);
+    EpdType800480_4S_75_DKE_WriteCommand(0x30);
+    EpdType800480_4S_75_DKE_WriteData(0x08);
 
     ESP_LOGI(TAG, "EPD 800x480 4color DKE init target=%u", (unsigned int)EPD_which_one_);
 }
@@ -90,9 +90,9 @@ void ePaperPort::EpdType800480_4S_75_DKE_Display()
         return;
     }
 
-    EPD_WriteCMD(0x10);
+    EpdType800480_4S_75_DKE_WriteCommand(0x10);
     for (uint32_t i = 0; i < (uint32_t)DisplayLen; ++i) {
-        EPD_WriteDATA(DispBuffer[i]);
+        EpdType800480_4S_75_DKE_WriteData(DispBuffer[i]);
         if ((i + 1U) % kDkeYieldInterval == 0U) {
             // English: Yield during long SPI writes so the idle task can feed the watchdog.
             // Chinese: Long SPI writes yield CPU to avoid blocking the idle watchdog.
@@ -116,9 +116,9 @@ void ePaperPort::EpdType800480_4S_75_DKE_NT61522_DisplayNet(const uint8_t *image
         return;
     }
 
-    EPD_WriteCMD(0x10);
+    EpdType800480_4S_75_DKE_WriteCommand(0x10);
     for (size_t i = 0; i < imageSize; ++i) {
-        EPD_WriteDATA(imageData[i]);
+        EpdType800480_4S_75_DKE_WriteData(imageData[i]);
         if ((i + 1U) % kDkeYieldInterval == 0U) {
             // English: Yield during long SPI writes so the idle task can feed the watchdog.
             // Chinese: Long SPI writes yield CPU to avoid blocking the idle watchdog.
@@ -131,24 +131,81 @@ void ePaperPort::EpdType800480_4S_75_DKE_NT61522_DisplayNet(const uint8_t *image
              (unsigned int)imageSize);
 }
 
+void ePaperPort::EpdType800480_4S_75_DKE_Reset()
+{
+    Set_CSIOLevel(1);
+    delay_ms(100);
+    Set_ResetIOLevel(0);
+    delay_ms(50);
+    Set_ResetIOLevel(1);
+    delay_ms(50);
+}
+
+void ePaperPort::EpdType800480_4S_75_DKE_WriteCommand(uint8_t command)
+{
+    Set_CSIOLevel(1);
+    Set_CSIOLevel(0);
+    Set_DCIOLevel(0);
+    delay_us(5);
+    SPI_Write(command);
+    delay_us(5);
+    Set_CSIOLevel(1);
+}
+
+void ePaperPort::EpdType800480_4S_75_DKE_WriteData(uint8_t data)
+{
+    Set_CSIOLevel(1);
+    Set_CSIOLevel(0);
+    Set_DCIOLevel(1);
+    delay_us(5);
+    SPI_Write(data);
+    delay_us(5);
+    Set_CSIOLevel(1);
+}
+
+void ePaperPort::EpdType800480_4S_75_DKE_WaitBusy(const char *step)
+{
+    int64_t start_us = esp_timer_get_time();
+    uint32_t loops = 0;
+
+    while (Get_BusyIOLevel() != 1U) {
+        delay_us(5);
+        ++loops;
+        if ((loops % 10000U) == 0U) {
+            vTaskDelay(1);
+        }
+        if (((esp_timer_get_time() - start_us) / 1000) > 45000) {
+            ESP_LOGE("epd_display", "EPD DKE busy timeout step=%s level=%u",
+                     step != nullptr ? step : "unknown",
+                     (unsigned int)Get_BusyIOLevel());
+            return;
+        }
+    }
+
+    delay_us(100);
+}
+
 void ePaperPort::EpdType800480_4S_75_DKE_UpdateAndSleep()
 {
     int64_t start_us = esp_timer_get_time();
     ESP_LOGI("epd_display", "EPD 800x480 4color DKE update start");
 
-    EPD_WriteCMD(0x04);
-    EPD_Check_Busy();
+    ESP_LOGI("epd_display", "EPD DKE power on busy=%u", (unsigned int)Get_BusyIOLevel());
+    EpdType800480_4S_75_DKE_WriteCommand(0x04);
+    EpdType800480_4S_75_DKE_WaitBusy("power_on");
 
-    EPD_WriteCMD(0x12);
-    EPD_WriteDATA(0x00);
-    EPD_Check_Busy();
+    ESP_LOGI("epd_display", "EPD DKE refresh busy=%u", (unsigned int)Get_BusyIOLevel());
+    EpdType800480_4S_75_DKE_WriteCommand(0x12);
+    EpdType800480_4S_75_DKE_WriteData(0x00);
+    EpdType800480_4S_75_DKE_WaitBusy("refresh");
 
-    EPD_WriteCMD(0x02);
-    EPD_WriteDATA(0x00);
-    EPD_Check_Busy();
+    ESP_LOGI("epd_display", "EPD DKE power off busy=%u", (unsigned int)Get_BusyIOLevel());
+    EpdType800480_4S_75_DKE_WriteCommand(0x02);
+    EpdType800480_4S_75_DKE_WriteData(0x00);
+    EpdType800480_4S_75_DKE_WaitBusy("power_off");
 
-    EPD_WriteCMD(0x07);
-    EPD_WriteDATA(0xA5);
+    EpdType800480_4S_75_DKE_WriteCommand(0x07);
+    EpdType800480_4S_75_DKE_WriteData(0xA5);
     delay_ms(200);
     isEPDInit = false;
 

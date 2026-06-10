@@ -108,7 +108,7 @@
 #define USB_CONSOLE_WORKER_TASK_PRIORITY 4
 // Use a longer idle USB read wait so the console task does not wake CPU too often without traffic.
 // USB 空闲时使用较长读等待，避免没有数据时频繁唤醒 CPU。
-#define USB_CONSOLE_READ_IDLE_TIMEOUT_MS 200
+#define USB_CONSOLE_READ_IDLE_TIMEOUT_MS 1000
 // Use a short active USB read wait once a request starts so large multipart bodies are received quickly.
 // 一旦请求开始接收就使用较短读等待，让大 multipart 数据尽快收完。
 #define USB_CONSOLE_READ_ACTIVE_TIMEOUT_MS 1
@@ -179,6 +179,7 @@
 #define USER_WORK_STATE_MAX_CONTINUE_SECONDS (60 * 60)
 #define USER_WORK_STATE_TASK_STACK_SIZE (3 * 1024)
 #define USER_WORK_STATE_TASK_PRIORITY 3
+#define USER_WORK_STATE_TASK_INTERVAL_MS 3000
 
 extern uint16_t sleep_time;
 extern uint32_t working_time;
@@ -280,6 +281,7 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 #define USER_LED_FAST_BLINK_MS 100
 #define USER_LED_MID_BLINK_MS 500
 #define USER_LED_SLOW_BLINK_MS 1000
+#define USER_LED_READY_BLINK_MS 1000
 #define USER_LED_SUCCESS_HOLD_MS 1000
 #define USER_LED_STATUS_TASK_STACK_SIZE (4 * 1024)
 #define USER_LED_STATUS_TASK_PRIORITY 3

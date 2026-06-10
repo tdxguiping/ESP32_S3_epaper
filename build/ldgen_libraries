@@ -38,6 +38,7 @@ H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_app_format/libesp_app_format.a
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_bootloader_format/libesp_bootloader_format.a
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_mm/libesp_mm.a
+H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_pm/libesp_pm.a
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_gdbstub/libesp_gdbstub.a
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_http_server/libesp_http_server.a
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/http_parser/libhttp_parser.a
@@ -53,7 +54,6 @@ H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/pthread/libpthread.a
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_driver_gpio/libesp_driver_gpio.a
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_timer/libesp_timer.a
-H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_pm/libesp_pm.a
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_app_format/libesp_app_format.a
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/esp_bootloader_format/libesp_bootloader_format.a
 H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/app_update/libapp_update.a
