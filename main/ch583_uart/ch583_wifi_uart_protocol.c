@@ -183,7 +183,7 @@ static int ch583_wifi_retry_last_frame(void)
     return ch583_wifi_write_frame_text(s_last_tx_frame, s_last_tx_frame_len);
 }
 
-static int ch583_wifi_send_frame(const char *cmd, const char *arg)
+static int ch583_wifi_send_frame(const char *cmd, const char *arg,uint8_t need_printf)
 {
     char body[CH583_WIFI_MAX_FRAME_BODY_LEN + 1];
     char frame_text[CH583_WIFI_MAX_FRAME_BODY_LEN + 24];
@@ -226,7 +226,14 @@ static int ch583_wifi_send_frame(const char *cmd, const char *arg)
     s_last_tx_bad_crc_retry_count = 0;
     s_last_tx_retry_valid = true;
 
-    CH583_WIFI_DIRECTION_PRINTF("WiFi -> CH583: seq=%u cmd=%s arg=%s\r\n", (unsigned int)current_seq, cmd, arg ? arg : "");
+    
+    // WiFi -> CH583: seq=9 cmd=PONG arg=24  //  除了心跳， 其他都打印
+    if(need_printf == 1)
+    {
+        CH583_WIFI_DIRECTION_PRINTF("WiFi -> CH583: seq=%u cmd=%s arg=%s\r\n", (unsigned int)current_seq, cmd, arg ? arg : "");
+    }    
+    
+
     ret = ch583_wifi_write_frame_text(frame_text, (size_t)frame_len);
     s_tx_seq++;
     return ret;
@@ -237,7 +244,7 @@ static int ch583_wifi_send_ack(uint16_t received_seq)
     char arg[8];
 
     snprintf(arg, sizeof(arg), "%u", (unsigned int)received_seq);
-    return ch583_wifi_send_frame("ACK", arg);
+    return ch583_wifi_send_frame("ACK", arg,1);
 }
 
 static int ch583_wifi_send_err(uint16_t received_seq, const char *reason)
@@ -245,7 +252,7 @@ static int ch583_wifi_send_err(uint16_t received_seq, const char *reason)
     char arg[32];
 
     snprintf(arg, sizeof(arg), "%u,%s", (unsigned int)received_seq, reason ? reason : "BAD_FORMAT");
-    return ch583_wifi_send_frame("ERR", arg);
+    return ch583_wifi_send_frame("ERR", arg,1);
 }
 
 static uint16_t ch583_wifi_find_seq_for_error(const char *body)
@@ -617,11 +624,8 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
            (unsigned int)frame.total,
            crc_received,
            frame.arg);
-    CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
-           (unsigned int)frame.seq,
-           frame.cmd,
-           frame.arg);
 
+    // WiFi -> CH583: seq=9 cmd=PING arg=24  //  除了心跳， 其他都打印
     if (!ch583_wifi_validate_len_and_part(&frame)) {
         return;
     }
@@ -629,19 +633,34 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
     if (strcmp(frame.cmd, "PING") == 0) {
         char arg[8];
         snprintf(arg, sizeof(arg), "%u", (unsigned int)frame.seq);
-        ch583_wifi_send_frame("PONG", arg);
+        ch583_wifi_send_frame("PONG", arg,0);
+
+      //CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
+      //     (unsigned int)frame.seq,frame.cmd,frame.arg);
+
+
     } else if (strcmp(frame.cmd, "BLE_MAC") == 0) {
+      CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
+           (unsigned int)frame.seq,frame.cmd,frame.arg);
+
         ch583_wifi_handle_ble_mac(&frame);
-    } else if (strcmp(frame.cmd, "BLE_DATA") == 0) {
+    } else if (strcmp(frame.cmd, "BLE_DATA") == 0) {       
+      CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
+           (unsigned int)frame.seq,frame.cmd,frame.arg);
+
         ch583_wifi_handle_ble_data(&frame, ble_data_callback);
     } else if (strcmp(frame.cmd, "ACK") == 0 ||
                strcmp(frame.cmd, "ERR") == 0 ||
                strcmp(frame.cmd, "PONG") == 0 ||
                strcmp(frame.cmd, "GPIO_VALUE") == 0) {
+
+      CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
+           (unsigned int)frame.seq,frame.cmd,frame.arg);
+
         ch583_wifi_handle_reply_status(&frame);
         CH583_WIFI_DEBUG_PRINTF("CH583_PROTO status cmd=%s arg=%s\r\n", frame.cmd, frame.arg);
     } else {
-        CH583_WIFI_DEBUG_PRINTF("CH583_PROTO unsupported cmd=%s seq=%u\r\n", frame.cmd, (unsigned int)frame.seq);
+        printf("CH583_PROTO unsupported cmd=%s seq=%u\r\n", frame.cmd, (unsigned int)frame.seq);
         ch583_wifi_send_err(frame.seq, "BAD_CMD");
     }
 }
@@ -708,7 +727,7 @@ int ch583_wifi_uart_send_wifi_data(const char *message)
         return -1;
     }
     // Send WiFi-to-frontend data as one WIFI_DATA frame.
-    return ch583_wifi_send_frame("WIFI_DATA", message);
+    return ch583_wifi_send_frame("WIFI_DATA", message,1);
 }
 
 const char *ch583_wifi_uart_get_ble_mac(void)
@@ -719,7 +738,7 @@ const char *ch583_wifi_uart_get_ble_mac(void)
 
 int ch583_wifi_uart_send_power_off(void)
 {    
-    return ch583_wifi_send_frame("POWER_OFF", "");
+    return ch583_wifi_send_frame("POWER_OFF", "",1);
 }
 
 int ch583_wifi_uart_send_gpio(const char *port, int pin, const char *mode, const char *level)
@@ -731,7 +750,7 @@ int ch583_wifi_uart_send_gpio(const char *port, int pin, const char *mode, const
     }
 
     snprintf(arg, sizeof(arg), "%s,%d,%s,%s", port, pin, mode, level);
-    return ch583_wifi_send_frame("GPIO", arg);
+    return ch583_wifi_send_frame("GPIO", arg,1);
 }
 
 int ch583_wifi_uart_send_gpio_read(const char *port, int pin)
@@ -743,7 +762,7 @@ int ch583_wifi_uart_send_gpio_read(const char *port, int pin)
     }
 
     snprintf(arg, sizeof(arg), "%s,%d", port, pin);
-    return ch583_wifi_send_frame("GPIO_READ", arg);
+    return ch583_wifi_send_frame("GPIO_READ", arg,1);
 }
 
 int ch583_wifi_uart_test_gpio_pa1_high(void)

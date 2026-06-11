@@ -10,6 +10,10 @@
 #include "driver/spi_master.h"
 #include "driver/uart.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Keep STA connection debug logs here so WiFi failure checks can be enabled without changing STA logic.
 // 将 STA 连接调试日志开关放在这里，便于不修改 STA 逻辑就排查 WiFi 失败原因。
 #define SERVER_NETWORK_STA_DEBUG_LOG_ENABLE 1
@@ -218,7 +222,7 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 
 // Keep CH583 protocol debug flags here so frame parsing logs can be enabled without editing the copied protocol file.
 #define CH583_WIFI_UART_DEBUG_PRINT_ENABLE 0
-#define CH583_WIFI_UART_DIRECTION_PRINT_ENABLE 0
+#define CH583_WIFI_UART_DIRECTION_PRINT_ENABLE  1
 #define CH583_WIFI_UART_TX_SILENCE_MS 10
 #define CH583_WIFI_UART_BAD_CRC_RETRY_MAX 5
 
@@ -246,6 +250,12 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 #define USER_EPD_DISPLAY_QUEUE_LENGTH 2
 #define USER_EPD_DISPLAY_TASK_STACK_SIZE (8 * 1024)
 #define USER_EPD_DISPLAY_TASK_PRIORITY 5
+#define USER_EPD_TYPE_NVS_KEY "epd_type"
+#define USER_EPD_TYPE_DEFAULT 4
+#define USB_CONSOLE_EPD_TYPE_DEBUG_LOG_ENABLE 1
+#define USB_CONSOLE_EPD_TYPE_LIST_URI "/epd_type_list"
+#define USB_CONSOLE_EPD_TYPE_URI "/epd_type"
+#define USB_CONSOLE_EPD_TEST_URI "/epd_test"
 
 // Map the copied display driver's colored logs to ESP-IDF logs for this project.
 #ifndef LOG_Blue
@@ -285,3 +295,7 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 #define USER_LED_SUCCESS_HOLD_MS 1000
 #define USER_LED_STATUS_TASK_STACK_SIZE (4 * 1024)
 #define USER_LED_STATUS_TASK_PRIORITY 3
+
+#ifdef __cplusplus
+}
+#endif

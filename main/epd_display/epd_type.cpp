@@ -11,10 +11,12 @@
 #include "epd_type_800_480_4s_75_DKE.h"
 #include "epd_type_800_480_4s_75_mofang.h"
 #include "esp_log.h"
+#include "tdx_cfg.h"
 
 static const char *TAG = "epd_type";
 
-uint8_t EPD_type = EPD_TYPE_1360_480_1085_3COLOR; // 默认使用 1600x1200 133ms 的屏幕
+uint8_t EPD_type = EPD_TYPE_800_480_4S_75_3; // 默认使用 1600x1200 133ms 的屏幕
+static bool s_epd_type_loaded = false;
 
 static const epd_type_config_t s_epd_types[] = {
     {EPD_TYPE_800_480, 800, 480, 192000, "EPD_800_480_XingTai", BWR_3_Color},//  3 色
@@ -61,6 +63,19 @@ const epd_type_config_t *EpdType_GetCurrentConfig(void)
     return EpdType_GetConfig(EPD_type);
 }
 
+size_t EpdType_GetCount(void)
+{
+    return sizeof(s_epd_types) / sizeof(s_epd_types[0]);
+}
+
+const epd_type_config_t *EpdType_GetConfigByIndex(size_t index)
+{
+    if (index >= EpdType_GetCount()) {
+        return nullptr;
+    }
+    return &s_epd_types[index];
+}
+
 void EpdType_Set(uint8_t type)
 {
     const epd_type_config_t *config = EpdType_GetConfig(type);
@@ -74,6 +89,63 @@ void EpdType_Set(uint8_t type)
              (unsigned int)config->type,
              config->name,
              (unsigned int)config->display_size);
+}
+
+esp_err_t EpdType_LoadSavedOrDefault(void)
+{
+    if (s_epd_type_loaded) {
+        return ESP_OK;
+    }
+
+    uint8_t saved_type = USER_EPD_TYPE_DEFAULT;
+    esp_err_t ret = app_nvs_read_u8(USER_EPD_TYPE_NVS_KEY, &saved_type, USER_EPD_TYPE_DEFAULT);
+    const epd_type_config_t *config = EpdType_GetConfig(saved_type);
+
+    if (config == nullptr) {
+        ESP_LOGW(TAG, "saved EPD type invalid value=%u, fallback=%u",
+                 (unsigned int)saved_type,
+                 (unsigned int)USER_EPD_TYPE_DEFAULT);
+        saved_type = USER_EPD_TYPE_DEFAULT;
+        config = EpdType_GetConfig(saved_type);
+        if (config == nullptr) {
+            ESP_LOGE(TAG, "default EPD type invalid value=%u", (unsigned int)saved_type);
+            return ESP_ERR_INVALID_STATE;
+        }
+        ret = app_nvs_write_u8(USER_EPD_TYPE_NVS_KEY, saved_type);
+    }
+
+    EpdType_Set(saved_type);
+    s_epd_type_loaded = true;
+    ESP_LOGI(TAG, "EPD type loaded value=%u name=%s ret=%s",
+             (unsigned int)saved_type,
+             config->name,
+             esp_err_to_name(ret));
+    return ret;
+}
+
+esp_err_t EpdType_SetAndSave(uint8_t type, bool *changed)
+{
+    const epd_type_config_t *config = EpdType_GetConfig(type);
+    if (changed != nullptr) {
+        *changed = false;
+    }
+    if (config == nullptr) {
+        ESP_LOGW(TAG, "set/save rejected invalid EPD type=%u", (unsigned int)type);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (EPD_type == type) {
+        ESP_LOGI(TAG, "set/save skipped unchanged EPD type=%u name=%s",
+                 (unsigned int)type,
+                 config->name);
+        return ESP_OK;
+    }
+
+    EpdType_Set(type);
+    if (changed != nullptr) {
+        *changed = true;
+    }
+    return app_nvs_write_u8(USER_EPD_TYPE_NVS_KEY, type);
 }
 
 void EpdType_DisplayCurrent(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)

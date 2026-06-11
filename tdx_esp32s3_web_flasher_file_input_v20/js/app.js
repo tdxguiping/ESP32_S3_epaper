@@ -96,6 +96,8 @@ const serialBufferSizeEl = document.getElementById("serialBufferSize");
 const autoConsoleAttemptsEl = document.getElementById("autoConsoleAttempts");
 const autoConsoleDelayMsEl = document.getElementById("autoConsoleDelayMs");
 const resetSettingsButton = document.getElementById("resetSettingsButton");
+const operationToastEl = document.getElementById("operationToast");
+let operationToastTimer = null;
 
 const checkFilesButton = document.getElementById("checkFilesButton");
 const connectButton = document.getElementById("connectButton");
@@ -145,6 +147,15 @@ function appendConsole(message) { consoleOutputEl.textContent += String(message)
 function consoleLine(message) { appendConsole(`${message}\n`); }
 
 function nowTimeText() { return new Date().toLocaleTimeString(); }
+function showOperationToast(message, ok = true) {
+  if (!operationToastEl) return;
+  if (operationToastTimer) clearTimeout(operationToastTimer);
+  operationToastEl.textContent = `[${nowTimeText()}] ${message}`;
+  operationToastEl.className = `operationToast ${ok ? "" : "bad"}`;
+  operationToastTimer = setTimeout(() => {
+    operationToastEl.classList.add("operationToastHidden");
+  }, 4200);
+}
 function errorToText(err) {
   if (!err) return "unknown";
   if (err instanceof Error) return `${err.name || "Error"}: ${err.message || err}`;
@@ -354,14 +365,17 @@ function bindSettingsPersistence() {
     const el = document.getElementById(id);
     if (!el) continue;
     el.addEventListener("change", () => {
-      localStorage.setItem(`tdx_flasher_${id}`, el.type === "checkbox" ? String(el.checked) : el.value);
+      const value = el.type === "checkbox" ? String(el.checked) : el.value;
+      localStorage.setItem(`tdx_flasher_${id}`, value);
+      showOperationToast(`设置已保存：${id} = ${value}`);
     });
   }
 }
 
 function resetSavedSettings() {
   for (const id of SETTINGS_IDS) localStorage.removeItem(`tdx_flasher_${id}`);
-  location.reload();
+  showOperationToast("恢复默认 Settings 已执行");
+  setTimeout(() => location.reload(), 600);
 }
 
 function setCurrentMode(mode) {
@@ -717,10 +731,12 @@ window.connectDeviceFromUserClick = async function connectDeviceFromUserClick() 
 
     connectButton.disabled = true;
     await finishConnectAfterPortSelected(selectedDevice);
+    showOperationToast("连接设备已执行");
   } catch (err) {
     console.error(err);
     const msg = err?.message || String(err);
     logLine(`ERROR: ${msg}`);
+    showOperationToast(`连接设备失败：${msg}`, false);
     showFaultPopup("连接设备失败", "连接失败或未弹出串口选择窗口。", err);
     setCurrentMode("none");
   }
@@ -743,10 +759,12 @@ async function openConsoleFromUserClick() {
     }
     stopAutoReconnect();
     await openConsoleOnPort(selectedDevice, { auto: false });
+    showOperationToast("连接设备控制台已执行");
   } catch (err) {
     console.error(err);
     const msg = err?.message || String(err);
     logLine(`ERROR: ${msg}`);
+    showOperationToast(`连接设备控制台失败：${msg}`, false);
     showFaultPopup("打开串口控制台失败", "打开串口控制台失败。", err);
     if (isSerialDisconnectError(err)) handleSerialLost("打开串口控制台时串口断开", "console", err);
   }
@@ -1007,14 +1025,22 @@ async function startAutoReconnect(targetMode, reason) {
   setReconnectStatus("已停止");
 }
 
-async function runAction(action, button) {
+async function runAction(action, button, label, options = {}) {
   const oldDisabled = button.disabled;
   button.disabled = true;
-  try { await action(); }
+  try {
+    await action();
+    if (options.toast !== false) {
+      const actionLabel = label || button?.textContent?.trim() || "操作";
+      showOperationToast(`${actionLabel} 已执行`);
+    }
+  }
   catch (err) {
     console.error(err);
     const msg = err?.message || String(err);
     logLine(`ERROR: ${msg}`);
+    const actionLabel = label || button?.textContent?.trim() || "操作";
+    showOperationToast(`${actionLabel} 失败：${msg}`, false);
     showFaultPopup("操作失败", "当前操作失败。详细信息如下：", err);
     if (isSerialDisconnectError(err)) handleSerialLost(`操作过程中串口异常：${msg}`, currentMode || lastConnectedMode, err);
   } finally {
@@ -1052,7 +1078,10 @@ disconnectButton.addEventListener("click", () => {
   // Disconnect must not hang behind runAction.
   // “断开”不能被 runAction 的 await 卡住。
   disconnectButton.disabled = true;
-  disconnectDevice().catch((err) => {
+  disconnectDevice().then(() => {
+    showOperationToast("断开已执行");
+  }).catch((err) => {
+    showOperationToast(`断开失败：${err?.message || err}`, false);
     showFaultPopup("断开失败", "执行断开时出现异常。", err);
   }).finally(() => {
     disconnectButton.disabled = false;
@@ -1063,7 +1092,10 @@ consoleResetButton?.addEventListener("click", () => runAction(resetDevice, conso
 consoleDisconnectButton?.addEventListener("click", () => runAction(disconnectDevice, consoleDisconnectButton));
 openConsoleButton.addEventListener("click", () => runAction(openConsoleFromUserClick, openConsoleButton));
 closeConsoleButton.addEventListener("click", () => runAction(closeConsoleByUser, closeConsoleButton));
-clearConsoleButton.addEventListener("click", () => { consoleOutputEl.textContent = ""; });
+clearConsoleButton.addEventListener("click", () => {
+  consoleOutputEl.textContent = "";
+  showOperationToast("清空控制台已执行");
+});
 sendConsoleButton.addEventListener("click", () => runAction(sendConsoleText, sendConsoleButton));
 consoleInputEl.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -1128,6 +1160,7 @@ async function openSerialProtocolPageFromMain(event) {
   } catch (err) {
     logLine(`释放串口连接失败，仍继续打开串口协议页面：${err?.message || err}`);
   }
+  showOperationToast("打开串口协议测试页面已执行");
   window.open("serial_protocol.html", "_blank", "noopener,noreferrer");
 }
 

@@ -264,16 +264,6 @@ public:
 
 static void User_Network_mode_app_init(void)
 {
-    esp_err_t ret = esp_wifi_disconnect();
-    if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_INIT && ret != ESP_ERR_WIFI_NOT_STARTED) {
-        ESP_LOGW(TAG, "disconnect old WiFi before reconfig failed: %s", esp_err_to_name(ret));
-    }
-
-    ret = esp_wifi_stop();
-    if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_INIT && ret != ESP_ERR_WIFI_NOT_STARTED) {
-        ESP_LOGW(TAG, "stop old WiFi before reconfig failed: %s", esp_err_to_name(ret));
-    }
-
     (void)::User_Network_mode_app_init("/data");
 }
 

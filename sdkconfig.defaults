@@ -35,8 +35,9 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 # CONFIG_ESP_CONSOLE_NONE is not set
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 CONFIG_USJ_ENABLE_USB_SERIAL_JTAG=y
-# Keep USB console available without blocking automatic Light-sleep while a host is connected.
-# CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION is not set
+# Keep USB Serial/JTAG stable by blocking automatic Light-sleep while a host is connected.
+# 连接 PC 时阻止自动 Light-sleep，优先保证 USB console 和数据传输稳定。
+CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
 CONFIG_ESPTOOLPY_MONITOR_BAUD=921600
 # CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE is not set
 CONFIG_PM_ENABLE=y

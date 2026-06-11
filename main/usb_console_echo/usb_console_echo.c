@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "esp_check.h"
 #include "esp_log.h"
@@ -162,6 +163,9 @@ static void UsbConsoleEcho_Task(void *arg)
 
     UsbConsoleTransport_FlushRx();
     ESP_LOGI(TAG, "USB console HTTP text entry ready");
+    // Send the EPD type list first so the PC page can build selection controls.
+    // 先发送 EPD 类型列表，让 PC 页面可以构建选择控件。
+    (void)UsbConsoleEpdType_SendList();
     (void)UsbConsoleEpdType_SendCurrent();
 
     while (1) {
@@ -250,7 +254,24 @@ static void UsbConsoleEcho_Task(void *arg)
                      (unsigned long)receive_elapsed_ms,
                      (unsigned long)receive_rate_kb);
 
-            ret = UsbConsoleRouter_Handle(&request);
+            if (strcmp(request.path, USB_CONSOLE_EPD_TYPE_URI) == 0 &&
+                strcasecmp(request.method, "POST") == 0) {
+                usb_console_http_response_t *response = (usb_console_http_response_t *)calloc(1, sizeof(*response));
+                if (response != NULL) {
+                    ESP_LOGI(TAG, "direct EPD type set path=%s body_len=%u",
+                             request.path,
+                             (unsigned int)request.body_len);
+                    ret = UsbConsoleEpdType_HandleSet(&request, response);
+                    if (ret == ESP_OK && response->status != 0) {
+                        ret = UsbConsoleHttp_SendResponse(response);
+                    }
+                    free(response);
+                } else {
+                    ret = ESP_ERR_NO_MEM;
+                }
+            } else {
+                ret = UsbConsoleRouter_Handle(&request);
+            }
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "USB route response failed ret=%s", esp_err_to_name(ret));
             }

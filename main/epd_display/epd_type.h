@@ -1,7 +1,10 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
+
+#include "esp_err.h"
 
 typedef enum {
     EPD_TYPE_800_480 = 1,
@@ -39,6 +42,10 @@ extern uint8_t EPD_type;
 
 const epd_type_config_t *EpdType_GetConfig(uint8_t type);
 const epd_type_config_t *EpdType_GetCurrentConfig(void);
+size_t EpdType_GetCount(void);
+const epd_type_config_t *EpdType_GetConfigByIndex(size_t index);
+esp_err_t EpdType_LoadSavedOrDefault(void);
+esp_err_t EpdType_SetAndSave(uint8_t type, bool *changed);
 void EpdType_Set(uint8_t type);
 
 #ifdef __cplusplus

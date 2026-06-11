@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -30,6 +31,19 @@ static bool path_is(const char *path, const char *prefix)
            (path[prefix_len] == '\0' || path[prefix_len] == '?' || path[prefix_len] == '/');
 }
 
+static bool usb_request_is_set_epd_type(const usb_console_http_request_t *request)
+{
+    if (request == NULL) {
+        return false;
+    }
+    if (strcasecmp(request->method, "POST") == 0) {
+        return true;
+    }
+    return request->body != NULL &&
+           request->body_len > 0 &&
+           strstr(request->body, "\"set_epd_type\"") != NULL;
+}
+
 esp_err_t UsbConsoleRouter_Handle(const usb_console_http_request_t *request)
 {
     usb_console_http_response_t *response = NULL;
@@ -53,9 +67,23 @@ esp_err_t UsbConsoleRouter_Handle(const usb_console_http_request_t *request)
         ret = UsbConsolePing_Handle(request, response);
     } else if (path_is(request->path, "/wifi")) {
         ret = UsbConsoleWifi_Handle(request, response);
-    } else if (path_is(request->path, "/epd_type")) {
+    } else if (path_is(request->path, USB_CONSOLE_EPD_TYPE_LIST_URI)) {
         response->status = 0;
-        ret = UsbConsoleEpdType_SendCurrent();
+        ret = UsbConsoleEpdType_SendList();
+    } else if (path_is(request->path, USB_CONSOLE_EPD_TYPE_URI)) {
+        bool is_set_epd_type = usb_request_is_set_epd_type(request);
+        ESP_LOGI(TAG, "route epd_type method=%s body_len=%u is_set=%d",
+                 request->method,
+                 (unsigned int)request->body_len,
+                 is_set_epd_type ? 1 : 0);
+        if (is_set_epd_type) {
+            ret = UsbConsoleEpdType_HandleSet(request, response);
+        } else {
+            response->status = 0;
+            ret = UsbConsoleEpdType_SendCurrent();
+        }
+    } else if (path_is(request->path, USB_CONSOLE_EPD_TEST_URI)) {
+        ret = UsbConsoleEpdType_HandleTest(request, response);
     } else if (path_is(request->path, "/dataUP") || path_is(request->path, "/net_data")) {
         ret = UsbConsoleNetData_Handle(request, response);
     } else if (path_is(request->path, "/cast")) {

@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "file_server",
-    "project_version":    "3c484ce-dirty",
+    "project_version":    "1f9a527-dirty",
     "project_path":       "H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving",
     "idf_path":           "C:/esp/v5.5.3/esp-idf",
     "build_dir":          "H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build",

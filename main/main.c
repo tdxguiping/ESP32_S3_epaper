@@ -36,24 +36,66 @@
 
 #include <string.h>
 
+#include <stdio.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+
+static const char *TAG = "example";
+int g_app_reset_reason = ESP_RST_low_power_No_Disp;
+
+
+
+#define PM_DIAG_PERIOD_MS      10000
+#define PM_DIAG_MAX_DUMPS      10
+
+static void pm_diag_dump_once(const char *reason)
+{
+#if CONFIG_PM_ENABLE && CONFIG_PM_PROFILING
+    ESP_LOGW(TAG, "PMDBG dump begin: %s", reason);
+    esp_pm_dump_locks(stdout);
+    fflush(stdout);
+    ESP_LOGW(TAG, "PMDBG dump end: %s", reason);
+#else
+    ESP_LOGW(TAG, "PMDBG disabled: CONFIG_PM_ENABLE=%d CONFIG_PM_PROFILING=%d",
+             CONFIG_PM_ENABLE, CONFIG_PM_PROFILING);
+#endif
+}
+
+static void pm_diag_task(void *arg)
+{
+    (void)arg;
+
+#if CONFIG_PM_ENABLE && CONFIG_PM_PROFILING
+    for (int i = 0; i < PM_DIAG_MAX_DUMPS; i++) {
+        vTaskDelay(pdMS_TO_TICKS(PM_DIAG_PERIOD_MS));
+        pm_diag_dump_once("periodic");
+    }
+#endif
+
+    vTaskDelete(NULL);
+}
+
 /* This example demonstrates how to create file server
  * using esp_http_server. This file has only startup code.
  * Look in file_server.c for the implementation.
  */
 
-static const char *TAG = "example";
-int g_app_reset_reason = ESP_RST_low_power_No_Disp;
-
 static void app_auto_light_sleep_init(void)
 {
 #if CONFIG_PM_ENABLE
     esp_pm_config_t pm_config = {
-        .max_freq_mhz = 160,
+        .max_freq_mhz = 80, // 160
         .min_freq_mhz = 40,
         .light_sleep_enable = true,
     };
 
     ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
+
+    //  test power only
+    //pm_diag_dump_once("after_pm_config");
+    //  test power only over
+
     ESP_LOGI(TAG, "Auto Light-sleep enabled max=%uMHz min=%uMHz",
              (unsigned int)pm_config.max_freq_mhz,
              (unsigned int)pm_config.min_freq_mhz);
@@ -275,8 +317,15 @@ void app_main(void)
     else    {
         UserLedStatus_Set(USER_LED_STATE_SERVER_READY);
     }
+
+    //  test power only
+    // pm_diag_dump_once("after_network_init");
+    // #if CONFIG_PM_ENABLE && CONFIG_PM_PROFILING
+    // xTaskCreate(pm_diag_task, "pm_diag", 4096, NULL, 1, NULL);
+    // #endif
+    //  test power only over
     
-    ESP_LOGI(TAG, "Server Version=2.2.4");
+    ESP_LOGI(TAG, "Server Version=2.2.5");
     // test_epd_display();
 }
 // LOG_ERROR("%d %s %s",__LINE__,__func__,__FILE__);

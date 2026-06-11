@@ -136,6 +136,9 @@
       <div class="settingsGrid">
         <label>Flashing baud rate
           <select id="baudrate">
+            <option value="2000000">2000000</option>
+            <option value="1500000">1500000</option>
+            <option value="1000000">1000000</option>
             <option value="921600" selected>921600</option>
             <option value="460800">460800</option>
             <option value="230400">230400</option>
@@ -144,6 +147,9 @@
         </label>
         <label>Console baud rate
           <select id="consoleBaudrate">
+            <option value="2000000">2000000</option>
+            <option value="1500000">1500000</option>
+            <option value="1000000">1000000</option>
             <option value="921600" selected>921600</option>
             <option value="691200">691200</option>
             <option value="460800">460800</option>
@@ -204,6 +210,7 @@
           </select>
         </label>
       </div>
+      <p class="hint">USB Serial/JTAG 下 baud 是 PC line coding 参数，不等于 USB 物理吞吐；长期稳定建议 921600 或 1000000，2000000 仅建议压测。</p>
       <label class="checkbox"><input type="checkbox" id="autoReconnect"> 串口中途断开时自动重连。</label>
       <label class="checkbox"><input type="checkbox" id="appendCRLF" checked> 控制台发送时追加 CRLF。</label>
       <div id="reconnectStatus" class="statusLine">自动重连状态：空闲</div>
@@ -241,6 +248,7 @@
   </main>
 
   <!-- Classic script, not type="module". This keeps the connect click path simple. -->
+  <div id="operationToast" class="operationToast operationToastHidden" role="status" aria-live="polite"></div>
   <div id="faultPopup" class="faultPopup faultPopupHidden" role="alert" aria-live="assertive">
     <div class="faultPopupTitle">
       <span id="faultPopupTitleText">失败信息</span>

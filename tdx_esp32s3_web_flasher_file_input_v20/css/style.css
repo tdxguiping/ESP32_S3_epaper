@@ -108,7 +108,28 @@ small { color:#5a6577; }
 .faultPopupActions button {
   background: #4b5563;
 }
+.operationToast {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  width: min(460px, calc(100vw - 36px));
+  z-index: 9998;
+  border: 1px solid #86efac;
+  border-radius: 8px;
+  background: #f0fdf4;
+  color: #14532d;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, .18);
+  padding: 10px 12px;
+  font-weight: 800;
+}
+.operationToast.bad {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+}
+.operationToastHidden { display: none; }
 @media (max-width: 640px) {
   .faultPopup { left: 12px; right: 12px; bottom: 12px; width: auto; max-height: 58vh; }
   #faultPopupText { max-height: 40vh; }
+  .operationToast { left: 12px; right: 12px; bottom: 12px; width: auto; }
 }

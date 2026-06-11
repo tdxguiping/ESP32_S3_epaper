@@ -133,6 +133,10 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
 esp_err_t ServerNetworkStaEpdDisplay_Init(void)
 {
 #if USER_EPD_ENABLE
+    // Load the saved EPD type before USB or network code reports the current display profile.
+    // 在 USB 或网络代码上报当前屏幕配置前读取保存的 EPD 类型。
+    ESP_ERROR_CHECK(EpdType_LoadSavedOrDefault());
+
     if (sleep_group == NULL) {
         sleep_group = xEventGroupCreate();
         if (sleep_group == NULL) {
@@ -515,7 +519,7 @@ void test_epd_display_EPD_1360_480_1085_3COLOR_horizontal(void)
     epd_display_job_t job = {};
     job.data = test_buf;
     job.size = test_size;
-    job.epd_which_one = 2;
+    job.epd_which_one = 1;
 
     if (s_epd_display_queue == NULL ||
         xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
@@ -580,7 +584,7 @@ void test_epd_display_EPD_1360_480_1085_3COLOR_vertical(void)
     epd_display_job_t job = {};
     job.data = test_buf;
     job.size = test_size;
-    job.epd_which_one = 2;
+    job.epd_which_one = 1;
 
     if (s_epd_display_queue == NULL ||
         xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
@@ -647,7 +651,7 @@ void test_epd_display_EPD_1360_480_1085_3COLOR_const(void)
     epd_display_job_t job = {};
     job.data = test_buf;
     job.size = test_size;
-    job.epd_which_one = 2;
+    job.epd_which_one = 1;
 
     if (s_epd_display_queue == NULL ||
         xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {

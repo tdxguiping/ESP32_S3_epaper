@@ -69,6 +69,8 @@ const EPD_TYPE_TABLE = [
   { type: 5, width: 1360, height: 480, display_size: 81600, name: "EPD_1360_480_1085", color_type: 4, color_name: "BWRY_4_Color", color_count: 4, colors: "4 色" },
   { type: 6, width: 800, height: 480, display_size: 96000, name: "EPD_800_480_4S_75", color_type: 4, color_name: "BWRY_4_Color", color_count: 4, colors: "4 色" },
   { type: 7, width: 1360, height: 480, display_size: 163200, name: "EPD_1360_480_1085_3COLOR", color_type: 3, color_name: "BWR_3_Color", color_count: 3, colors: "3 色" },
+  { type: 8, width: 800, height: 480, display_size: 96000, name: "EPD_800_480_4S_75_DKE", color_type: 4, color_name: "BWRY_4_Color", color_count: 4, colors: "4 色" },
+  { type: 9, width: 800, height: 480, display_size: 96000, name: "EPD_800_480_4S_75_mofang", color_type: 4, color_name: "BWRY_4_Color", color_count: 4, colors: "4 色" },
 ];
 const EPD_COLOR_TABLE = {
   BWR_3_Color: [
@@ -92,6 +94,11 @@ const EPD_COLOR_TABLE = {
   ],
 };
 let currentEpdType = null;
+let epdTypeList = [];
+let operationToastTimer = null;
+let pendingEpdListRefresh = false;
+let pendingEpdSetType = null;
+let pendingEpdTest = false;
 
 const els = {
   baudrate: $("baudrate"), dataBits: $("dataBits"), stopBits: $("stopBits"), parity: $("parity"), flowControl: $("flowControl"), bufferSize: $("bufferSize"),
@@ -110,6 +117,8 @@ const els = {
   singleFunc: $("singleFunc"), singleFileName: $("singleFileName"), singleOldFileName: $("singleOldFileName"), singleSave: $("singleSave"), singleShow: $("singleShow"), singleBin: $("singleBin"), singleImage: $("singleImage"), sendSingleMultipartButton: $("sendSingleMultipartButton"),
   cast2picScreen: $("cast2picScreen"), cast2picSave: $("cast2picSave"), cast2picShow: $("cast2picShow"), pic1Name: $("pic1Name"), pic1Bin: $("pic1Bin"), pic1Image: $("pic1Image"), pic2Name: $("pic2Name"), pic2Bin: $("pic2Bin"), pic2Image: $("pic2Image"), sendCast2picButton: $("sendCast2picButton"),
   epdTypeState: $("epdTypeState"), epdTypeSummary: $("epdTypeSummary"), epdTypeDetails: $("epdTypeDetails"), epdColorSwatches: $("epdColorSwatches"),
+  refreshEpdTypesButton: $("refreshEpdTypesButton"), testEpdDisplayButton: $("testEpdDisplayButton"), epdTypeList: $("epdTypeList"),
+  operationToast: $("operationToast"),
   singleBinMatch: $("singleBinMatch"), pic1BinMatch: $("pic1BinMatch"), pic2BinMatch: $("pic2BinMatch"),
   fileInfoOutput: $("fileInfoOutput"),
 };
@@ -150,6 +159,15 @@ function settleWithin(promise, ms, label) {
   });
 }
 function setStatus(text) { statusEl.textContent = `状态：${text}`; }
+function showOperationToast(message, ok = true) {
+  if (!els.operationToast) return;
+  if (operationToastTimer) clearTimeout(operationToastTimer);
+  els.operationToast.textContent = `[${nowTimeText()}] ${message}`;
+  els.operationToast.className = `operationToast ${ok ? "" : "bad"}`;
+  operationToastTimer = setTimeout(() => {
+    els.operationToast.classList.add("operationToastHidden");
+  }, 4200);
+}
 function flushRxOutput() {
   if (!rxPendingText) return;
   const nextText = `${rxOutput.textContent}${rxPendingText}`;
@@ -207,6 +225,16 @@ function epdColorSwatches(config) {
   )).join(" ");
 }
 
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;",
+  }[ch]));
+}
+
 function renderEpdTypeInfo(config, failed = false) {
   if (!els.epdTypeState || !els.epdTypeSummary || !els.epdTypeDetails) return;
   if (!config) {
@@ -235,12 +263,69 @@ function renderEpdTypeInfo(config, failed = false) {
   ].join("");
 }
 
+function renderEpdTypeList(list = epdTypeList, currentType = currentEpdType?.type) {
+  if (!els.epdTypeList) return;
+  const configs = (Array.isArray(list) && list.length ? list : EPD_TYPE_TABLE).map(mergeEpdConfig);
+  if (!configs.length) {
+    els.epdTypeList.textContent = "未收到 EPD 列表。";
+    return;
+  }
+  els.epdTypeList.innerHTML = configs.map((config) => (
+    `<label class="epdTypeRow">` +
+    `<input type="radio" name="epdTypeSelect" value="${config.type}" ${Number(config.type) === Number(currentType) ? "checked" : ""}>` +
+    `<span><span class="epdTypeName">${escapeHtml(config.name)}</span>` +
+    `<span class="epdTypeMeta">type=${config.type} / ${config.width}x${config.height} / ${escapeHtml(config.color_name || config.colors || "unknown")} / bin=${config.display_size}</span></span>` +
+    `</label>`
+  )).join("");
+}
+
 function handleProtocolObject(obj) {
   if (!obj || typeof obj !== "object") return;
+  if (obj.func === "epd_type_list") {
+    epdTypeList = Array.isArray(obj.types) ? obj.types.map(mergeEpdConfig) : [];
+    renderEpdTypeList(epdTypeList, obj.current_type ?? currentEpdType?.type);
+    rxLine(`[EPD_type] list count=${epdTypeList.length} current=${obj.current_type ?? "unknown"}`);
+    if (pendingEpdListRefresh) {
+      showOperationToast(`EPD 列表刷新成功，count=${epdTypeList.length}`);
+      pendingEpdListRefresh = false;
+    }
+    return;
+  }
   if (obj.func === "epd_type") {
     currentEpdType = mergeEpdConfig(obj);
     renderEpdTypeInfo(currentEpdType, obj.result !== 0);
+    renderEpdTypeList(epdTypeList, currentEpdType.type);
     updateFileInfo();
+    return;
+  }
+  if (obj.func === "set_epd_type_result") {
+    if (obj.result === 0) {
+      currentEpdType = mergeEpdConfig(obj);
+      renderEpdTypeInfo(currentEpdType, false);
+      renderEpdTypeList(epdTypeList, currentEpdType.type);
+      updateFileInfo();
+      rxLine(`[EPD_type] set ok type=${currentEpdType.type} changed=${obj.changed ? 1 : 0}`);
+      if (pendingEpdSetType !== null) {
+        showOperationToast(`EPD_type 设置成功：type=${currentEpdType.type} ${currentEpdType.name}`);
+        pendingEpdSetType = null;
+      }
+    } else {
+      rxLine(`[EPD_type] set failed: ${obj.message || "unknown"}`);
+      renderEpdTypeList(epdTypeList, currentEpdType?.type);
+      if (pendingEpdSetType !== null) {
+        showOperationToast(`EPD_type 设置失败：type=${pendingEpdSetType}，${obj.message || "unknown"}`, false);
+        pendingEpdSetType = null;
+      }
+      showFaultPopup("EPD_type 设置失败", obj.message || "设备拒绝设置 EPD 类型");
+    }
+    return;
+  }
+  if (obj.func === "test_epd_display_result") {
+    rxLine(obj.result === 0 ? `[EPD_type] test requested type=${obj.type} name=${obj.name || ""}` : `[EPD_type] test failed: ${obj.message || "unknown"}`);
+    if (pendingEpdTest) {
+      showOperationToast(obj.result === 0 ? `EPD 测试已执行：type=${obj.type} ${obj.name || ""}` : `EPD 测试失败：${obj.message || "unknown"}`, obj.result === 0);
+      pendingEpdTest = false;
+    }
   }
 }
 
@@ -359,7 +444,7 @@ function setUiConnected(connected) {
   els.sendRawButton.disabled = !connected;
   els.sendRawJsonButton.disabled = !connected;
   document.querySelectorAll("button.httpGetCmd, button.httpJsonCmd").forEach((btn) => { btn.disabled = !connected; });
-  [els.sendWifiButton, els.sendStartSlideshowButton, els.sendSetSlideshowButton, els.sendDeleteButton, els.sendWifiWorkTimeButton, els.sendDirectFileButton, els.sendSingleMultipartButton, els.sendCast2picButton].forEach((btn) => { if (btn) btn.disabled = !connected; });
+  [els.sendWifiButton, els.sendStartSlideshowButton, els.sendSetSlideshowButton, els.sendDeleteButton, els.sendWifiWorkTimeButton, els.sendDirectFileButton, els.sendSingleMultipartButton, els.sendCast2picButton, els.refreshEpdTypesButton, els.testEpdDisplayButton].forEach((btn) => { if (btn) btn.disabled = !connected; });
 }
 
 function describePort(port) {
@@ -437,6 +522,8 @@ async function openSerialPort(port, auto) {
   startReadLoop();
   setTimeout(async () => {
     try {
+      await sendGetRequest("/epd_type_list");
+      await delay(50);
       await sendGetRequest("/epd_type");
     } catch (err) {
       rxLine(`[EPD_type] 查询失败：${errorToText(err)}`);
@@ -838,6 +925,8 @@ function routeForJson(func, fallbackPath) {
     set_slideshow: "/slideshow_control",
     delete: "/delete",
     set_wifi_work_time: "/wifi_work_time",
+    set_epd_type: "/epd_type",
+    test_epd_display: "/epd_test",
   };
   return fallbackPath || map[func] || `/${func || "dataUP"}`;
 }
@@ -858,6 +947,38 @@ async function sendJsonRequest(obj, fallbackPath) {
     },
     bodyBytes,
     label: `POST ${path} JSON func=${func}`,
+  });
+}
+
+async function sendSetEpdType(type) {
+  const epdType = Number(type);
+  if (!Number.isInteger(epdType) || epdType < 0 || epdType > 255) {
+    throw new Error(`invalid EPD type=${type}`);
+  }
+  const bodyBytes = jsonToBytes({ func: "set_epd_type", type: epdType });
+  await sendHttpLikeRequest({
+    method: "POST",
+    path: "/epd_type",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "X-USB-Function": "set_epd_type",
+    },
+    bodyBytes,
+    label: `POST /epd_type JSON type=${epdType}`,
+  });
+}
+
+async function sendTestEpdDisplay() {
+  const bodyBytes = jsonToBytes({ func: "test_epd_display" });
+  await sendHttpLikeRequest({
+    method: "POST",
+    path: "/epd_test",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "X-USB-Function": "test_epd_display",
+    },
+    bodyBytes,
+    label: "POST /epd_test JSON func=test_epd_display",
   });
 }
 
@@ -895,6 +1016,7 @@ function copyWifiRequestToRawArea() {
   updateWifiRequestPreview();
   if (els.rawText && els.wifiRequestPreview) {
     els.rawText.value = els.wifiRequestPreview.value;
+    showOperationToast("复制 WiFi 请求到原始发送区已执行");
     rxLine("已把 WiFi POST /wifi 示例复制到原始发送区，Content-Length 已按当前 SSID/password 自动计算。 ");
   }
 }
@@ -1141,10 +1263,18 @@ function updateFileInfo() {
   els.fileInfoOutput.textContent = lines.join("\n");
 }
 
-async function runAction(fn, button) {
+async function runAction(fn, button, label, options = {}) {
   if (button) button.disabled = true;
-  try { await fn(); }
+  try {
+    await fn();
+    if (options.toast !== false) {
+      const actionLabel = label || button?.textContent?.trim() || "操作";
+      showOperationToast(`${actionLabel} 已执行`);
+    }
+  }
   catch (err) {
+    const actionLabel = label || button?.textContent?.trim() || "操作";
+    showOperationToast(`${actionLabel} 失败：${err?.message || err}`, false);
     rxLine(`\n[错误] ${errorToText(err)}\n`);
     showFaultPopup("操作失败", "当前操作失败。详细信息如下：", err);
   }
@@ -1159,8 +1289,14 @@ function bindEvents() {
   els.disconnectButton.addEventListener("click", () => {
     // Disconnect must never be allowed to hang behind runAction.
     // “断开”不能被 runAction 的 await 卡住，必须立即返回。
-    try { disconnectSerial(); }
-    catch (err) { showFaultPopup("断开串口失败", "执行断开时出现异常。", err); }
+    try {
+      disconnectSerial();
+      showOperationToast("断开串口已执行");
+    }
+    catch (err) {
+      showOperationToast(`断开串口失败：${err?.message || err}`, false);
+      showFaultPopup("断开串口失败", "执行断开时出现异常。", err);
+    }
   });
   els.resetButton.addEventListener("click", () => runAction(resetDevice, els.resetButton));
   els.clearRxButton.addEventListener("click", () => {
@@ -1173,6 +1309,7 @@ function bindEvents() {
     rxTextBuffer = "";
     rxOutput.textContent = "";
     rxLine("串口接收窗口已清空。");
+    showOperationToast("清空接收窗口已执行");
   });
   els.copyRxButton?.addEventListener("click", () => runAction(copyRxOutputToClipboard, els.copyRxButton));
   els.sendRawButton.addEventListener("click", () => runAction(sendRawText, els.sendRawButton));
@@ -1187,6 +1324,41 @@ function bindEvents() {
       if (btn.dataset.getPath && els.jsonRouteMode.value !== "dataup") return sendGetRequest(btn.dataset.getPath);
       return sendJsonRequest(obj, btn.dataset.path);
     }, btn));
+  });
+
+  els.refreshEpdTypesButton?.addEventListener("click", () => runAction(async () => {
+    pendingEpdListRefresh = true;
+    try {
+      await sendGetRequest("/epd_type_list");
+      await delay(50);
+      await sendGetRequest("/epd_type");
+    } catch (err) {
+      pendingEpdListRefresh = false;
+      throw err;
+    }
+  }, els.refreshEpdTypesButton, "刷新 EPD 列表", { toast: false }));
+  els.testEpdDisplayButton?.addEventListener("click", () => runAction(async () => {
+    pendingEpdTest = true;
+    try {
+      await sendTestEpdDisplay();
+    } catch (err) {
+      pendingEpdTest = false;
+      throw err;
+    }
+  }, els.testEpdDisplayButton, "测试当前 EPD", { toast: false }));
+  els.epdTypeList?.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!target || target.name !== "epdTypeSelect") return;
+    pendingEpdSetType = target.value;
+    runAction(async () => {
+      try {
+        await sendSetEpdType(target.value);
+      } catch (err) {
+        pendingEpdSetType = null;
+        renderEpdTypeList(epdTypeList, currentEpdType?.type);
+        throw err;
+      }
+    }, els.refreshEpdTypesButton, `选择 EPD_type ${target.value}`, { toast: false });
   });
 
   els.sendWifiButton.addEventListener("click", () => runAction(sendWifiRequest, els.sendWifiButton));
@@ -1205,6 +1377,7 @@ function bindEvents() {
     input?.addEventListener("change", updateFileInfo);
   });
   renderEpdTypeInfo(null);
+  renderEpdTypeList();
   updateFileInfo();
 }
 
@@ -1230,7 +1403,9 @@ function bindSettingsStorage() {
       else el.value = saved;
     }
     el.addEventListener("change", () => {
-      localStorage.setItem(key, el.type === "checkbox" ? String(el.checked) : el.value);
+      const value = el.type === "checkbox" ? String(el.checked) : el.value;
+      localStorage.setItem(key, value);
+      showOperationToast(`设置已保存：${id} = ${value}`);
     });
   }
 }

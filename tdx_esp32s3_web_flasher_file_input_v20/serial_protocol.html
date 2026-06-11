@@ -25,6 +25,11 @@
       <div id="epdTypeSummary" class="epdTypeSummary">当前 EPD 信息：未收到。</div>
       <div id="epdColorSwatches" class="epdColorSwatches"></div>
       <div id="epdTypeDetails" class="epdTypeDetails"></div>
+      <div class="buttonRow">
+        <button id="refreshEpdTypesButton" disabled>刷新 EPD 列表</button>
+        <button id="testEpdDisplayButton" disabled>测试当前 EPD</button>
+      </div>
+      <div id="epdTypeList" class="epdTypeList">未收到 EPD 列表。</div>
     </section>
 
     <section class="card warning">
@@ -38,6 +43,9 @@
       <div class="settingsGrid">
         <label>Console baud rate
           <select id="baudrate">
+            <option value="2000000">2000000</option>
+            <option value="1500000">1500000</option>
+            <option value="1000000">1000000</option>
             <option value="921600" selected>921600</option>
             <option value="691200">691200</option>
             <option value="460800">460800</option>
@@ -88,6 +96,7 @@
           </select>
         </label>
       </div>
+      <p class="hint">USB Serial/JTAG 下 baud 是 PC line coding 参数，不等于 USB 物理吞吐；长期稳定建议 921600 或 1000000，2000000 仅建议压测。</p>
       <label class="checkbox"><input id="autoConnect" type="checkbox" checked> 后台检测已授权的 USB JTAG/serial debug unit，未连接时自动连接。</label>
       <label class="checkbox"><input id="prettyRxJson" type="checkbox" checked> 接收窗口尝试格式化 HTTP-like 响应中的 JSON body。</label>
       <p class="hint">故障保护：串口打开、写入、Reset 或接收过程中如果发生错误/超时，会立即释放 reader/writer、关闭串口、停止本次自动重连，避免页面卡住无响应。</p>
@@ -272,6 +281,7 @@ Content-Length: 35
 %^&</code></pre>
     </section>
   </main>
+  <div id="operationToast" class="operationToast operationToastHidden" role="status" aria-live="polite"></div>
   <div id="faultPopup" class="faultPopup faultPopupHidden" role="alert" aria-live="assertive">
     <div class="faultPopupTitle">
       <span id="faultPopupTitleText">失败信息</span>
