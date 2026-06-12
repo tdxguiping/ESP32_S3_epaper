@@ -34,7 +34,7 @@ typedef struct {
 
 typedef struct {
     char func[32];
-    int time;
+    int seconds;
 } wifi_work_time_json_t;
 
 static wifi_config_json_t wifi_cfg;
@@ -46,11 +46,6 @@ static uint8_t wifi_config_had_doing = 0;
 bool WiFi_config_net = false;
 bool WiFi_config_from_ch583 = false;
 bool WiFi_config_from_ble = false;
-
-#ifndef max_working_time
-#define max_working_time 60*60
-#define min_working_time 5*60
-#endif
 
 #if USER_BLE_ENABLE
 typedef struct {
@@ -423,8 +418,9 @@ int parse_wifi_work_time_json(const char *json_str, wifi_work_time_json_t *out)
 {
     cJSON *root = NULL;
     cJSON *item_func = NULL;
-    cJSON *item_time = NULL;
+    cJSON *item_seconds = NULL;
     char reply_json[160];
+    esp_err_t set_ret = ESP_OK;
 
     if (json_str == NULL || out == NULL) {
         LOG_ERROR("Invalid parameter");
@@ -440,41 +436,48 @@ int parse_wifi_work_time_json(const char *json_str, wifi_work_time_json_t *out)
     }
 
     item_func = cJSON_GetObjectItem(root, "func");
-    item_time = cJSON_GetObjectItem(root, "time");
+    item_seconds = cJSON_GetObjectItem(root, "seconds");
 
-    if (!cJSON_IsString(item_func) || item_func->valuestring == NULL || !cJSON_IsNumber(item_time)) {
+    if (!cJSON_IsString(item_func) || item_func->valuestring == NULL) {
         cJSON_Delete(root);
                 LOG_Purple("%s>%d  Invalid JSON",__func__,__LINE__);
         return -1;
     }
 
     snprintf(out->func, sizeof(out->func), "%s", item_func->valuestring);
-    out->time = item_time->valueint;
 
-    if (strcmp(out->func, "wifi_standby") != 0 || out->time <= 0) {
+    if (strcmp(out->func, "set_wifi_work_time") != 0) {
         cJSON_Delete(root);
-        LOG_ERROR("wifi_standby JSON invalid");
         return -1;
     }
 
-    server_required_continue_work_time = (uint32_t)out->time;
-    if(server_required_continue_work_time < min_working_time) {
-            LOG_Purple("%s>%d too small= %d<%d>",__func__,__LINE__,(uint16_t)server_required_continue_work_time,min_working_time);
-            server_required_continue_work_time = min_working_time;
-        }
-    else if(server_required_continue_work_time > max_working_time) {
-            LOG_Purple("%s>%d too big= %d<%d>",__func__,__LINE__,(uint16_t)server_required_continue_work_time,max_working_time);
-            server_required_continue_work_time = max_working_time;
-        }
+    if (!cJSON_IsNumber(item_seconds) ||
+        item_seconds->valueint < SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS ||
+        item_seconds->valueint > SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS) {
+        cJSON_Delete(root);
+        LOG_ERROR("set_wifi_work_time JSON invalid");
+        snprintf(reply_json, sizeof(reply_json),
+                 "{\"func\":\"set_wifi_work_time_result\",\"result\":1,\"message\":\"set wifi work time failed\"}");
+            #if(USER_BLE_ENABLE == 1)
+             SendData_indicate((uint8_t *)reply_json, strlen(reply_json));
+             printf("JSON:\n%s\n", reply_json);
+            #else
+             ch583_wifi_uart_send_wifi_data((const char *)reply_json);
+            #endif
+        return 0;
+    }
 
-
+    out->seconds = item_seconds->valueint;
+    set_ret = ServerNetworkStaWifiWorkTime_SetAndSave((uint32_t)out->seconds);
     cJSON_Delete(root);
 
-    snprintf(reply_json, sizeof(reply_json),
-             "{\"result\":0,\"message\":\"wifi-work-time\",\"stage\":\"%d\"}",
-             out->time);
-    
-
+    if (set_ret == ESP_OK) {
+        snprintf(reply_json, sizeof(reply_json),
+                 "{\"func\":\"set_wifi_work_time_result\",\"result\":0}");
+    } else {
+        snprintf(reply_json, sizeof(reply_json),
+                 "{\"func\":\"set_wifi_work_time_result\",\"result\":1,\"message\":\"set wifi work time failed\"}");
+    }
 
             #if(USER_BLE_ENABLE == 1)
              SendData_indicate((uint8_t *)reply_json, strlen(reply_json));
@@ -517,9 +520,8 @@ static void handle_wifi_json_text_with_sender(const char *json_text,
         return;
     }
     if (parse_wifi_work_time_json(json_text, &wifi_work_time_cfg) == 0) {
-        (void)ServerNetworkStaWifiWorkTime_SetAndSave(server_required_continue_work_time);
         printf("func=%s\n", wifi_work_time_cfg.func);
-        printf("time=%d\n", wifi_work_time_cfg.time);
+        printf("seconds=%d\n", wifi_work_time_cfg.seconds);
         return;
     }
 

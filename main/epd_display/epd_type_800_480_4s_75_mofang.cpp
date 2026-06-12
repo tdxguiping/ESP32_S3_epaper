@@ -152,14 +152,7 @@ void ePaperPort::EpdType800480_4S_75_Mofang_NT61522_DisplayNet(const uint8_t *im
     }
 
     EpdType800480_4S_75_Mofang_WriteCommand(0x10);
-    for (size_t i = 0; i < imageSize; ++i) {
-        EpdType800480_4S_75_Mofang_WriteData(imageData[i]);
-        if ((i + 1U) % kMofangYieldInterval == 0U) {
-            // English: Yield during long SPI writes so the idle task can feed the watchdog.
-            // Chinese: Long SPI writes yield CPU to avoid blocking the idle watchdog.
-            vTaskDelay(1);
-        }
-    }
+    EPD_WriteMultiData_Target(TARGET_MASTER, const_cast<uint8_t *>(imageData), (unsigned int)imageSize);
 
     ESP_LOGI(TAG, "EPD 800x480 4color mofang data loaded target=%u size=%u",
              (unsigned int)EPD_which_one_,
@@ -196,14 +189,11 @@ void ePaperPort::EpdType800480_4S_75_Mofang_WriteData(uint8_t data)
 void ePaperPort::EpdType800480_4S_75_Mofang_WaitBusy(const char *step)
 {
     int64_t start_us = esp_timer_get_time();
-    uint32_t loops = 0;
+    uint16_t loops = 0;
 
     while (Get_BusyIOLevel() != 1U) {
-        delay_us(5);
-        ++loops;
-        if ((loops % 10000U) == 0U) {
-            vTaskDelay(1);
-        }
+        vTaskDelay(pdMS_TO_TICKS(1000)); //  1000ms = 1s
+        printf(".%d",loops);
         if (((esp_timer_get_time() - start_us) / 1000) > 45000) {
             ESP_LOGE("epd_display", "EPD mofang busy timeout step=%s level=%u",
                      step != nullptr ? step : "unknown",
@@ -218,18 +208,15 @@ void ePaperPort::EpdType800480_4S_75_Mofang_UpdateAndSleep()
     int64_t start_us = esp_timer_get_time();
     ESP_LOGI("epd_display", "EPD 800x480 4color mofang update start");
 
-    ESP_LOGI("epd_display", "EPD mofang power on busy=%u", (unsigned int)Get_BusyIOLevel());
     EpdType800480_4S_75_Mofang_WriteCommand(0x04);
     delay_ms(100);
     EpdType800480_4S_75_Mofang_WaitBusy("power_on");
 
-    ESP_LOGI("epd_display", "EPD mofang refresh busy=%u", (unsigned int)Get_BusyIOLevel());
     EpdType800480_4S_75_Mofang_WriteCommand(0x12);
     EpdType800480_4S_75_Mofang_WriteData(0x00);
     delay_ms(100);
     EpdType800480_4S_75_Mofang_WaitBusy("refresh");
 
-    ESP_LOGI("epd_display", "EPD mofang power off busy=%u", (unsigned int)Get_BusyIOLevel());
     EpdType800480_4S_75_Mofang_WriteCommand(0x02);
     EpdType800480_4S_75_Mofang_WriteData(0x00);
     delay_ms(50);

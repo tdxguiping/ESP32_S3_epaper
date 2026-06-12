@@ -117,14 +117,15 @@ void ePaperPort::EpdType800480_4S_75_DKE_NT61522_DisplayNet(const uint8_t *image
     }
 
     EpdType800480_4S_75_DKE_WriteCommand(0x10);
-    for (size_t i = 0; i < imageSize; ++i) {
-        EpdType800480_4S_75_DKE_WriteData(imageData[i]);
-        if ((i + 1U) % kDkeYieldInterval == 0U) {
-            // English: Yield during long SPI writes so the idle task can feed the watchdog.
-            // Chinese: Long SPI writes yield CPU to avoid blocking the idle watchdog.
-            vTaskDelay(1);
-        }
-    }
+    EPD_WriteMultiData_Target(TARGET_MASTER, const_cast<uint8_t *>(imageData), (unsigned int)imageSize);
+    // for (size_t i = 0; i < imageSize; ++i) {
+    //     EpdType800480_4S_75_DKE_WriteData(imageData[i]);
+    //     // if ((i + 1U) % kDkeYieldInterval == 0U) {
+    //     //     // English: Yield during long SPI writes so the idle task can feed the watchdog.
+    //     //     // Chinese: Long SPI writes yield CPU to avoid blocking the idle watchdog.
+    //     //     vTaskDelay(1);
+    //     // }
+    // }
 
     ESP_LOGI(TAG, "EPD 800x480 4color DKE data loaded target=%u size=%u",
              (unsigned int)EPD_which_one_,
@@ -166,40 +167,32 @@ void ePaperPort::EpdType800480_4S_75_DKE_WriteData(uint8_t data)
 void ePaperPort::EpdType800480_4S_75_DKE_WaitBusy(const char *step)
 {
     int64_t start_us = esp_timer_get_time();
-    uint32_t loops = 0;
+    uint16_t loops = 0;
 
     while (Get_BusyIOLevel() != 1U) {
-        delay_us(5);
+        vTaskDelay(pdMS_TO_TICKS(1000)); //  1000ms = 1s
         ++loops;
-        if ((loops % 10000U) == 0U) {
-            vTaskDelay(1);
-        }
+        printf("%d.",loops);
         if (((esp_timer_get_time() - start_us) / 1000) > 45000) {
-            ESP_LOGE("epd_display", "EPD DKE busy timeout step=%s level=%u",
-                     step != nullptr ? step : "unknown",
-                     (unsigned int)Get_BusyIOLevel());
+            ESP_LOGE("epd_display", "EPD DKE busy timeout step=%s level=1",
+                     step != nullptr ? step : "unknown");
             return;
         }
     }
-
-    delay_us(100);
 }
 
 void ePaperPort::EpdType800480_4S_75_DKE_UpdateAndSleep()
 {
     int64_t start_us = esp_timer_get_time();
     ESP_LOGI("epd_display", "EPD 800x480 4color DKE update start");
-
-    ESP_LOGI("epd_display", "EPD DKE power on busy=%u", (unsigned int)Get_BusyIOLevel());
+    
     EpdType800480_4S_75_DKE_WriteCommand(0x04);
     EpdType800480_4S_75_DKE_WaitBusy("power_on");
-
-    ESP_LOGI("epd_display", "EPD DKE refresh busy=%u", (unsigned int)Get_BusyIOLevel());
+    
     EpdType800480_4S_75_DKE_WriteCommand(0x12);
     EpdType800480_4S_75_DKE_WriteData(0x00);
     EpdType800480_4S_75_DKE_WaitBusy("refresh");
-
-    ESP_LOGI("epd_display", "EPD DKE power off busy=%u", (unsigned int)Get_BusyIOLevel());
+    
     EpdType800480_4S_75_DKE_WriteCommand(0x02);
     EpdType800480_4S_75_DKE_WriteData(0x00);
     EpdType800480_4S_75_DKE_WaitBusy("power_off");

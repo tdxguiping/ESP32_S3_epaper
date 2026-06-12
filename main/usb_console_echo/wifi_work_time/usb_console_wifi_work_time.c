@@ -18,8 +18,7 @@ esp_err_t UsbConsoleWifiWorkTime_Process(const usb_console_http_request_t *reque
         !UsbConsoleCommon_JsonFuncEquals(request->body, "set_wifi_work_time")) {
         return ESP_ERR_NOT_SUPPORTED;
     }
-    if (!UsbConsoleCommon_JsonU32(request->body, "seconds", &seconds) &&
-        !UsbConsoleCommon_JsonU32(request->body, "time", &seconds)) {
+    if (!UsbConsoleCommon_JsonU32(request->body, "seconds", &seconds)) {
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",

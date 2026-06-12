@@ -9,17 +9,11 @@ constexpr size_t kGateBits = 480U;
 constexpr size_t kHalfScreenSize = kSourceBytes * kGateBits;
 constexpr size_t kPlaneSize = kHalfScreenSize * 2U;
 constexpr size_t kImageSize = kPlaneSize * 2U;
-constexpr size_t kYieldInterval = 512U;
 
 void write_half_plane_to_target(ePaperPort &epd, EP_Target_t target, uint8_t command, const uint8_t *data)
 {
     epd.EPD_WriteCMD_Target(target, command);
-    for (size_t i = 0; i < kHalfScreenSize; ++i) {
-        epd.EPD_WriteDATA_Target(target, data[i]);
-        if ((i + 1U) % kYieldInterval == 0U) {
-            vTaskDelay(1);
-        }
-    }
+    epd.EPD_WriteMultiData_Target(target, const_cast<uint8_t *>(data), (unsigned int)kHalfScreenSize);
 }
 }
 
@@ -94,8 +88,8 @@ void ePaperPort::EpdType1360480_1085_3Color_Display()
         ESP_LOGE(TAG, "EPD 1360x480 3color display buffer not ready");
         return;
     }
-    EpdType1360480_1085_3Color_DisplayNet(DispBuffer, (size_t)DisplayLen);
 }
+
 
 void ePaperPort::EpdType1360480_1085_3Color_DisplayNet(const uint8_t *image_data,
                                                         size_t image_size)

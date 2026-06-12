@@ -75,14 +75,19 @@ void ePaperPort::EpdType800480_4S_75_NT61522_DisplayNet(const uint8_t *imageData
     }
 
     EPD_WriteCMD(0x10);
-    for (size_t i = 0; i < imageSize; ++i) {
-        EPD_WriteDATA(imageData[i]);
-        if ((i + 1U) % kEpd4sYieldInterval == 0U) {
-            // English: Yield during long SPI writes so the idle task can feed the watchdog.
-            // 中文：长时间 SPI 写入期间主动让出 CPU，避免 idle 任务无法喂 watchdog。
-            vTaskDelay(1);
-        }
-    }
+
+    // Way -1 
+    EPD_WriteMultiData_Target(TARGET_MASTER, const_cast<uint8_t *>(imageData), (unsigned int)imageSize);
+
+    // Way -2
+    // for (size_t i = 0; i < imageSize; ++i) {
+    //     EPD_WriteDATA(imageData[i]);
+    //     if ((i + 1U) % kEpd4sYieldInterval == 0U) {
+    //         // English: Yield during long SPI writes so the idle task can feed the watchdog.
+    //         // 中文：长时间 SPI 写入期间主动让出 CPU，避免 idle 任务无法喂 watchdog。
+    //         vTaskDelay(1);
+    //     }
+    // }
     ESP_LOGI(TAG, "EPD 800x480 4color data loaded target=%u size=%u",
              (unsigned int)EPD_which_one_,
              (unsigned int)imageSize);

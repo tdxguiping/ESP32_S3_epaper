@@ -615,9 +615,9 @@ image=@67890.jpg</code></pre>
             <h3 id="func-set-wifi-work-time">2.11 set_wifi_work_time 设置 Wi-Fi 工作时长</h3>
             <pre><code>{
   "func": "set_wifi_work_time",
-  "seconds": 300
+  "seconds": 60
 }</code></pre>
-            <p><code>seconds</code> 前端会归一为大于等于 1 的整数。</p>
+            <p><code>seconds</code> 必须为 1 到 3600 的整数；未设置时设备默认 60 秒。</p>
 
             <h3 id="func-ping">2.12 ping 连通性检查</h3>
             <pre><code>GET /ping HTTP/1.1</code></pre>
@@ -693,6 +693,16 @@ image=@67890.jpg</code></pre>
               <li><code>stage</code> 中能提取 IPv4 地址时，配网最终成功。</li>
               <li>最终成功后缓存 <code>baseUrl=http://&lt;ip&gt;</code> 和 <code>commandUrl=http://&lt;ip&gt;/dataUP</code>。</li>
             </ul>
+            <p>BLE 设置 Wi-Fi 工作时长同 HTTP 协议一致，写入 payload：</p>
+            <pre><code>{
+  "func": "set_wifi_work_time",
+  "seconds": 60
+}</code></pre>
+            <p>成功响应：</p>
+            <pre><code>{
+  "func": "set_wifi_work_time_result",
+  "result": 0
+}</code></pre>
 
           </section>
 

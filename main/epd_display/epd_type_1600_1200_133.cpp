@@ -137,61 +137,26 @@ void ePaperPort::EpdType16001200_133_NT61522_Init()
 
 void ePaperPort::EpdType16001200_133_NT61522_Display()
 {
-    ESP_LOGI(TAG, "EPD 1600x1200 13.3 refresh start");
-    int64_t display_start_us = esp_timer_get_time();
-    int64_t stage_start_us = display_start_us;
-    auto wait_busy_assert = [this](const char *stage) -> bool {
-        int64_t start_us = esp_timer_get_time();
-        int start_level = Get_BusyIOLevel();
-        int loops = 0;
-        while (Get_BusyIOLevel() && loops < 100) {
-            delayms(10);
-            loops++;
-        }
-        int now_level = Get_BusyIOLevel();
-        int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
-        if (now_level == 0) {
-            return true;
-        }
-        ESP_LOGW(TAG,
-                 "NT61522 busy assert timeout stage=%s start=%d now=%d loops=%d elapsed_ms=%d",
-                 stage, start_level, now_level, loops, elapsed_ms);
-        return false;
-    };
 
     setPinCsAll(GPIO_LOW);
 	spiTransmitCommand(R04_PON);
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-	wait_busy_assert("PON");
 	EPD_Check_Busy();
-    ESP_LOGI(TAG, "NT61522_Display stage PON done elapsed_ms=%d busy=%d",
-             (int)((esp_timer_get_time() - stage_start_us) / 1000), Get_BusyIOLevel());
 	delayms(30);
 
     setPinCsAll(GPIO_LOW);
-    stage_start_us = esp_timer_get_time();
 	spiTransmit(R12_DRF,DRF_V,sizeof(DRF_V));
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-	wait_busy_assert("DRF");
 	EPD_Check_Busy();
-    ESP_LOGI(TAG, "NT61522_Display stage DRF done elapsed_ms=%d busy=%d",
-             (int)((esp_timer_get_time() - stage_start_us) / 1000), Get_BusyIOLevel());
 	delayms(30);
 	setPinCsAll(GPIO_LOW);
-    stage_start_us = esp_timer_get_time();
 	spiTransmit(R02_POF,POF_V,sizeof(POF_V));
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-	wait_busy_assert("POF");
 	EPD_Check_Busy();
-    ESP_LOGI(TAG, "EPD 1600x1200 13.3 refresh done pof_ms=%d total_ms=%d",
-             (int)((esp_timer_get_time() - stage_start_us) / 1000),
-             (int)((esp_timer_get_time() - display_start_us) / 1000));
 	delayms(30);
-
-
 }
 
 void ePaperPort::EpdType16001200_133_NT61522_InitDisplay()

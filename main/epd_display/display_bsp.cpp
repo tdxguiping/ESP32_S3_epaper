@@ -21,8 +21,6 @@ extern uint16_t sleep_time;
 extern EventGroupHandle_t sleep_group;
 bool isEPDInit = false;
 
-uint8_t  Display_had_flag = 0xAA;
-
 #define BLOCK_SIZE 256
 static ePaperPort *s_global_epaper_instance = nullptr;
 void SetGlobalEPaperInstance(ePaperPort *instance) {
@@ -307,7 +305,7 @@ void ePaperPort::EPD_LoopBusy(void) {
             printf("Check Busy over\r\n");
             return;
         }
-        vTaskDelay(pdMS_TO_TICKS(1000)); // 50x20 = 1000ms
+        vTaskDelay(pdMS_TO_TICKS(1000)); //  1000ms = 1s
         count++;
         printf(".%d.",count);
         if (count > (45*1))
@@ -326,10 +324,6 @@ void ePaperPort::EPD_Check_Busy(void) { // If BUSYN=0 then waiting
     while (1) {
         int level = Get_BusyIOLevel();
         if (level) {
-            if(Display_had_flag == 0xA3)
-            {
-                Display_had_flag = 0xAA;  
-            }
             printf("Check Busy over\r\n");
             return;
         }
@@ -341,10 +335,6 @@ void ePaperPort::EPD_Check_Busy(void) { // If BUSYN=0 then waiting
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
             ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
                      Get_BusyIOLevel(), (long)i, elapsed_ms);
-            if(Display_had_flag == 0xA3)
-            {
-                Display_had_flag = 0xAA;  
-            }
             return;
         }
     }
@@ -393,25 +383,25 @@ void ePaperPort::EPD_Select_None(void) {
 }
 
 void ePaperPort::EPD_Select_Master(void) {
-    // Set_CSIOLevel(0);
-    // Set_CS2IOLevel(1);
-    gpio_set_level((gpio_num_t)cs_,0);  // for master
-    gpio_set_level((gpio_num_t)cs_2_,1);  // for salve
+    Set_CSIOLevel(0);
+    Set_CS2IOLevel(1);
+
+    //gpio_set_level((gpio_num_t)cs_,0);  // for master
+    //gpio_set_level((gpio_num_t)cs_2_,1);  // for salve
 }
 
 void ePaperPort::EPD_Select_Slave(void) {
-    // Set_CSIOLevel(1);
-    // Set_CS2IOLevel(0);
-    gpio_set_level((gpio_num_t)cs_,1);  // for master
-    gpio_set_level((gpio_num_t)cs_2_,0);  // for salve    
+    Set_CSIOLevel(1);
+    Set_CS2IOLevel(0);
+    //gpio_set_level((gpio_num_t)cs_,1);  // for master
+    //gpio_set_level((gpio_num_t)cs_2_,0);  // for salve    
 }
 
 void ePaperPort::EPD_Select_Both(void) {
-    // Set_CSIOLevel(0);
-    // Set_CS2IOLevel(0);
-    gpio_set_level((gpio_num_t)cs_,0);  // for master
-    gpio_set_level((gpio_num_t)cs_2_,0);  // for salve    
-
+    Set_CSIOLevel(0);
+    Set_CS2IOLevel(0);
+    //gpio_set_level((gpio_num_t)cs_,0);  // for master
+    //gpio_set_level((gpio_num_t)cs_2_,0);  // for salve    
 }
 
 void ePaperPort::EPD_interface_init(void) {
@@ -768,7 +758,6 @@ void ePaperPort::Set_Mirror(uint8_t mirr_x, uint8_t mirr_y) {
 void ePaperPort::EPD_Init() {   
     int64_t start_us = esp_timer_get_time();
     ESP_LOGI(TAG, "EPD step EPD_Init start");
-    Display_had_flag = 0xAA;
     if (isEPDInit) {
         ESP_LOGI(TAG, "EPD step EPD_Init reused elapsed_ms=%lld",
                  (long long)((esp_timer_get_time() - start_us) / 1000));
@@ -1152,17 +1141,8 @@ EpdType_DispatchNT61522Init(*this);
 
 void ePaperPort::NT61522_Display() {
     int64_t start_us = esp_timer_get_time();
-    ESP_LOGI(TAG, "EPD step NT61522_Display start");
-    // if(Display_had_flag == 0xA2)
-    // {
-    //   Display_had_flag = 0xA3;  
-    // }
-    // if(Display_had_flag != 0xA3)
-    // {      
-    //   LOG_Purple("Display_had error A4 %s>%d",__func__,__LINE__);
-    //   return;
-    // }
-EpdType_DispatchNT61522Display(*this);
+    ESP_LOGI(TAG, "EPD step NT61522_Display start");    
+    EpdType_DispatchNT61522Display(*this);
 
 #if 0
     LOG_Purple("Sleep-1 %s>%d",__func__,__LINE__);
@@ -1181,16 +1161,6 @@ void ePaperPort::NT61522_Init_display()
 {
     int64_t start_us = esp_timer_get_time();
     ESP_LOGI(TAG, "EPD step NT61522_Init_display start");
-    // if(Display_had_flag == 0xAA)
-    // {
-    //   Display_had_flag = 0xA1;  
-    // }
-    // if(Display_had_flag != 0xA1)
-    // {      
-    //   LOG_Purple("Display_had error A1 %s>%d",__func__,__LINE__);
-    //   return;
-    // }
-
     sleep_time=0;// delay network sleep time
 
 EpdType_DispatchNT61522InitDisplay(*this);
@@ -1220,16 +1190,7 @@ void ePaperPort::NT61522_Display_net(const uint8_t *imageData, size_t imageSize)
 {   
     int64_t start_us = esp_timer_get_time();
     ESP_LOGI(TAG, "EPD step NT61522_Display_net start size=%u", (unsigned int)imageSize);
-    // if(Display_had_flag == 0xA1)
-    // {
-    //   Display_had_flag = 0xA2;  
-    // }
-    // if(Display_had_flag != 0xA2)
-    // {      
-    //   LOG_Purple("Display_had error A2 %s>%d",__func__,__LINE__);
-    //   return;
-    // }
-EpdType_DispatchNT61522DisplayNet(*this, imageData, imageSize);
+    EpdType_DispatchNT61522DisplayNet(*this, imageData, imageSize);
     ESP_LOGI(TAG, "EPD step NT61522_Display_net done size=%u elapsed_ms=%lld",
              (unsigned int)imageSize,
              (long long)((esp_timer_get_time() - start_us) / 1000));

@@ -10,6 +10,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "led_status.h"
+#include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "epd_type.h"
 #include "epd_test_1360_480_1085_3color_const.h"
@@ -91,6 +92,7 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
             continue;
         }
 
+        ServerNetworkStaWifiWorkTime_OnNetworkData();
         int64_t display_start_us = esp_timer_get_time();
         const epd_type_config_t *config = EpdType_GetCurrentConfig();
         if (config != NULL) {
@@ -265,6 +267,7 @@ static void test_epd_display_type(uint8_t requested_type)
     }
 
     log_epd_test_config(requested_type);
+    ServerNetworkStaWifiWorkTime_OnNetworkData();
     if (config == NULL || config->display_size == 0) {
         ESP_LOGE(TAG, "EPD test invalid requested type=%u", (unsigned int)requested_type);
         return;

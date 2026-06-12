@@ -30,6 +30,7 @@
 #include "server_network_sta_data.h"
 #include "server_network_sta_ping.h"
 #include "server_network_sta_saved_images.h"
+#include "server_network_sta_wifi_work_time.h"
 
 /* Max length a file path can have on storage */
 #define FILE_PATH_MAX (ESP_VFS_PATH_MAX + CONFIG_SPIFFS_OBJ_NAME_LEN)
@@ -56,6 +57,7 @@ static const char *TAG = "file_server";
 /* 用于返回移植过来的 PhotoPainter 首页，后续替换网页入口时只需要改这里。 */
 static esp_err_t index_html_get_handler(httpd_req_t *req)
 {
+    ServerNetworkStaWifiWorkTime_OnNetworkData();
     // Serve the old project's embedded index.html so Server Network STA opens the PhotoPainter web UI directly.
     // 返回旧项目内嵌的 index.html，让 Server Network STA 打开时直接进入 PhotoPainter 网页界面。
     httpd_resp_set_type(req, "text/html");
@@ -67,6 +69,7 @@ static esp_err_t index_html_get_handler(httpd_req_t *req)
  * This can be overridden by uploading file with same name */
 static esp_err_t favicon_get_handler(httpd_req_t *req)
 {
+    ServerNetworkStaWifiWorkTime_OnNetworkData();
     extern const unsigned char favicon_ico_start[] asm("_binary_favicon_ico_start");
     extern const unsigned char favicon_ico_end[]   asm("_binary_favicon_ico_end");
     const size_t favicon_ico_size = (favicon_ico_end - favicon_ico_start);
@@ -216,6 +219,7 @@ static const char* get_path_from_uri(char *dest, const char *base_path, const ch
 /* Handler to download a file kept on the server */
 static esp_err_t download_get_handler(httpd_req_t *req)
 {
+    ServerNetworkStaWifiWorkTime_OnNetworkData();
     char filepath[FILE_PATH_MAX];
     FILE *fd = NULL;
     struct stat file_stat;
@@ -311,6 +315,7 @@ static esp_err_t download_get_handler(httpd_req_t *req)
 /* Handler to upload a file onto the server */
 static esp_err_t upload_post_handler(httpd_req_t *req)
 {
+    ServerNetworkStaWifiWorkTime_OnNetworkData();
     char filepath[FILE_PATH_MAX];
     FILE *fd = NULL;
     struct stat file_stat;
@@ -425,6 +430,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
 /* Handler to delete a file from the server */
 static esp_err_t delete_post_handler(httpd_req_t *req)
 {
+    ServerNetworkStaWifiWorkTime_OnNetworkData();
     char filepath[FILE_PATH_MAX];
     struct stat file_stat;
 

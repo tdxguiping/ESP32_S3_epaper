@@ -11,6 +11,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "usb_console_epd_type.h"
 #include "usb_console_http_text.h"
@@ -253,6 +254,7 @@ static void UsbConsoleEcho_Task(void *arg)
                      (unsigned int)request_len,
                      (unsigned long)receive_elapsed_ms,
                      (unsigned long)receive_rate_kb);
+            ServerNetworkStaWifiWorkTime_OnNetworkData();
 
             if (strcmp(request.path, USB_CONSOLE_EPD_TYPE_URI) == 0 &&
                 strcasecmp(request.method, "POST") == 0) {

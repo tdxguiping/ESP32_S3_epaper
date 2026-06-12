@@ -326,6 +326,15 @@ void app_main(void)
     //  test power only over
     
     ESP_LOGI(TAG, "Server Version=2.2.5");
+    char ble_mac[13] = {0};
+    get_ble_mac_no_colon(ble_mac, sizeof(ble_mac));
+#if USER_BLE_ENABLE
+    ESP_LOGI(TAG, "BLE MAC source=ESP32 built-in BLE MAC value=%s",
+             ble_mac[0] != '\0' ? ble_mac : "<empty>");
+#else
+    ESP_LOGI(TAG, "BLE MAC source=CH583 reported BLE MAC value=%s",
+             ble_mac[0] != '\0' ? ble_mac : "<empty>");
+#endif
     // test_epd_display();
 }
 // LOG_ERROR("%d %s %s",__LINE__,__func__,__FILE__);

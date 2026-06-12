@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
+#include "ch583_wifi_uart_protocol.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_wifi_time";
@@ -243,6 +244,7 @@ static uint32_t update_working_time_seconds(void)
 
 static void work_state_task(void *arg)
 {
+    uint8_t counter = 0;
     (void)arg;
 
     while (true) {
@@ -254,23 +256,35 @@ static void work_state_task(void *arg)
             (void)save_work_time_vars_to_app_nvs();
         }
 
+        uint32_t remaining = server_required_continue_work_time > elapsed ?
+                             server_required_continue_work_time - elapsed :
+                             0;
+
+
+
+        counter++;
+        if(counter >10)
+        {
+         counter = 0;
+         ESP_LOGI(TAG, "work_state status elapsed=%lu target=%lu remaining=%lu standby=%lu",
+                 (unsigned long)elapsed,
+                 (unsigned long)server_required_continue_work_time,
+                 (unsigned long)remaining,
+                 (unsigned long)wifi_standby_time_s);
+        }
+
+
+
         if (elapsed > server_required_continue_work_time) {
-#if USER_BLE_ENABLE
-            // English: BLE-enabled builds stay awake here; add real deep sleep only after BLE reconnect policy is decided.
             ESP_LOGI(TAG,
-                     "working_time timeout but BLE build keeps WiFi active elapsed=%lu target=%lu standby=%lu",
+                     "working_time timeout, send CH583 power off elapsed=%lu target=%lu standby=%lu",
                      (unsigned long)elapsed,
                      (unsigned long)server_required_continue_work_time,
                      (unsigned long)wifi_standby_time_s);
-#else
-            ESP_LOGI(TAG,
-                     "working_time timeout, deep-sleep/power-off hook is not enabled elapsed=%lu target=%lu standby=%lu",
-                     (unsigned long)elapsed,
-                     (unsigned long)server_required_continue_work_time,
-                     (unsigned long)wifi_standby_time_s);
-#endif
-            working_time = server_required_continue_work_time > 20 ? server_required_continue_work_time - 20 : 0;
-            s_wifi_work_start_tick = xTaskGetTickCount() - pdMS_TO_TICKS(working_time * 1000U);
+            int power_off_ret = ch583_wifi_uart_send_power_off();
+            if (power_off_ret < 0) {
+                ESP_LOGW(TAG, "CH583 power off command failed ret=%d", power_off_ret);
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
@@ -377,7 +391,7 @@ void ServerNetworkStaWifiWorkTime_OnNetworkData(void)
     s_last_network_data_tick = xTaskGetTickCount();
     s_wifi_work_start_tick = s_last_network_data_tick;
     if (server_required_continue_work_time > 0) {
-        ESP_LOGI(TAG, "network activity reset working_time continue=%lu elapsed_ms=%u",
+        ESP_LOGI(TAG, "activity reset working_time continue=%lu elapsed_ms=%u",
                  (unsigned long)server_required_continue_work_time,
                  (unsigned int)((s_last_network_data_tick - s_wifi_work_start_tick) * portTICK_PERIOD_MS));
     }
@@ -450,6 +464,9 @@ esp_err_t ServerNetworkStaWifiWorkTime_SetAndSave(uint32_t seconds)
     if (ret == ESP_OK && app_nvs_ret != ESP_OK) {
         ret = app_nvs_ret;
     }
+    ESP_LOGI(TAG, "set work time save ret=%s app_nvs_ret=%s",
+             esp_err_to_name(ret),
+             esp_err_to_name(app_nvs_ret));
     return ret;
 }
 
@@ -480,6 +497,6 @@ esp_err_t ServerNetworkStaWifiWorkTime_ProcessJson(httpd_req_t *req,
              seconds,
              SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS,
              (unsigned long)update_working_time_seconds());
-    ESP_LOGI(TAG, "set_wifi_work_time saved, deep-sleep entry is not enabled in current project flow");
+    ESP_LOGI(TAG, "set_wifi_work_time saved, CH583 power-off timeout is enabled");
     return send_wifi_work_time_result(req, true, NULL);
 }
