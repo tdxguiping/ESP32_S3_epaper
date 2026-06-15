@@ -34,6 +34,7 @@
 #endif
 #include "sdmmc_cmd.h"
 #include "file_serving_example_common.h"
+#include "tdx_cfg.h"
 
 static const char *TAG = "example_mount";
 #define STORAGE_INFO_MAX_FILES 50
@@ -342,12 +343,16 @@ void example_print_storage_info(const char *base_path)
         }
     }
 
+#if USER_STORAGE_LIST_ON_STARTUP_ENABLE
     size_t file_count = 0;
     ESP_LOGI(TAG, "Storage list begin max_files=%d", STORAGE_INFO_MAX_FILES);
     list_storage_tree(base_path, 0, &file_count);
     ESP_LOGI(TAG, "Storage list end files=%u%s",
              (unsigned int)file_count,
              file_count >= STORAGE_INFO_MAX_FILES ? " limit_reached" : "");
+#else
+    ESP_LOGI(TAG, "Storage list skipped");
+#endif
 }
 
 #ifdef CONFIG_EXAMPLE_MOUNT_SD_CARD
@@ -374,6 +379,10 @@ static void storage_release_sdmmc_pins(void)
 
 esp_err_t example_mount_storage(const char* base_path)
 {
+#if !USER_STORAGE_SD_CARD_ENABLE
+    ESP_LOGI(TAG, "SD card disabled by config, mount SPIFFS");
+    return mount_spiffs_storage(base_path);
+#else
     ESP_LOGI(TAG, "Initializing SD card");
     ESP_LOGI(TAG, "SD mount config: format_if_mount_failed=false");
     ESP_LOGI(TAG, "SD wait power ready %d ms", STORAGE_MOUNT_POWER_READY_DELAY_MS);
@@ -500,6 +509,7 @@ esp_err_t example_mount_storage(const char* base_path)
     ensure_default_storage_dirs(base_path);
     example_print_storage_info(base_path);
     return ESP_OK;
+#endif
 }
 
 #else // CONFIG_EXAMPLE_MOUNT_SD_CARD

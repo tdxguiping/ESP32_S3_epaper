@@ -79,6 +79,54 @@ static void ch583_send_json(const char *json)
     ch583_wifi_uart_send_wifi_data(json);
 }
 
+static bool nvs_has_nonempty_str(const char *name_space, const char *key)
+{
+    nvs_handle_t handle = 0;
+    size_t len = 0;
+    bool has_value = false;
+
+    if (nvs_open(name_space, NVS_READONLY, &handle) != ESP_OK) {
+        return false;
+    }
+
+    if (nvs_get_str(handle, key, NULL, &len) == ESP_OK && len > 1) {
+        has_value = true;
+    }
+    nvs_close(handle);
+    return has_value;
+}
+
+static bool nvs_has_nonempty_blob_string(const char *name_space, const char *key)
+{
+    nvs_handle_t handle = 0;
+    size_t len = 0;
+    bool has_value = false;
+
+    if (nvs_open(name_space, NVS_READONLY, &handle) != ESP_OK) {
+        return false;
+    }
+
+    if (nvs_get_blob(handle, key, NULL, &len) == ESP_OK && len > 0) {
+        uint8_t *value = (uint8_t *)malloc(len);
+        if (value != NULL) {
+            if (nvs_get_blob(handle, key, value, &len) == ESP_OK && value[0] != '\0') {
+                has_value = true;
+            }
+            free(value);
+        }
+    }
+    nvs_close(handle);
+    return has_value;
+}
+
+static bool ble_has_saved_wifi_info(void)
+{
+    if (nvs_has_nonempty_str("wifi", "ssid")) {
+        return true;
+    }
+    return nvs_has_nonempty_blob_string("nvs.net80211", "sta.ssid");
+}
+
 static void send_simple_result_with_sender(void (*send_json)(const char *),
                                            const char *func,
                                            int result,
@@ -395,10 +443,10 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
     cJSON_Delete(root);
     if(check_net_state()==1)
     {
-       send_base_info_to_mobile();
+       send_base_info_to_mobile();      
     }
-   else
-    {
+    else if (!ble_has_saved_wifi_info()) {
+        ESP_LOGW(TAG, "No saved WiFi credential");
         char reply_json[160];
         snprintf(reply_json, sizeof(reply_json),
                     "{\"result\":1,\"message\":\"wakeup No-WiFi\",\"stage\":\"error\"}");
@@ -411,6 +459,7 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
              ch583_wifi_uart_send_wifi_data((const char *)reply_json);
             #endif
     }
+
     return 0;
 }
 

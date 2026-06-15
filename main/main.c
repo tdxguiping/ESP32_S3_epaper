@@ -257,7 +257,6 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    app_auto_light_sleep_init();
     ESP_ERROR_CHECK(UsbConsoleEcho_Init());
     ESP_ERROR_CHECK(ServerNetworkStaWifiWorkTime_Init());
     char random_value[8] = {0};
@@ -298,10 +297,7 @@ void app_main(void)
     /* Initialize file storage */
     const char* base_path = "/data";
     esp_err_t storage_ret = example_mount_storage(base_path);
-    if (storage_ret == ESP_OK) {
-        esp_err_t slideshow_ret = ServerNetworkStaSlideshow_StartSaved(base_path);
-        ESP_LOGI(TAG, "startup slideshow start ret=%s", esp_err_to_name(slideshow_ret));
-    } else {
+    if (storage_ret != ESP_OK) {
         ESP_LOGE(TAG, "Storage mount failed ret=%s, continue without startup slideshow",
                  esp_err_to_name(storage_ret));
     }
@@ -317,6 +313,13 @@ void app_main(void)
     else    {
         UserLedStatus_Set(USER_LED_STATE_SERVER_READY);
     }
+
+    if (storage_ret == ESP_OK) {
+        esp_err_t slideshow_ret = ServerNetworkStaSlideshow_StartSaved(base_path);
+        ESP_LOGI(TAG, "startup slideshow start ret=%s", esp_err_to_name(slideshow_ret));
+    }
+
+    app_auto_light_sleep_init();
 
     //  test power only
     // pm_diag_dump_once("after_network_init");
@@ -335,7 +338,7 @@ void app_main(void)
     ESP_LOGI(TAG, "BLE MAC source=CH583 reported BLE MAC value=%s",
              ble_mac[0] != '\0' ? ble_mac : "<empty>");
 #endif
-    // test_epd_display();
+  //  test_epd_display();
 }
 // LOG_ERROR("%d %s %s",__LINE__,__func__,__FILE__);
 // LOG_WARN("%s>%d",__func__,__LINE__);

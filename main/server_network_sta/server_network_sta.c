@@ -9,6 +9,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -17,6 +18,7 @@
 
 #include "file_serving_example_common.h"
 #include "ble_data_handler.h"
+#include "ch583_wifi_uart_protocol.h"
 #include "led_status.h"
 
 typedef struct {
@@ -32,10 +34,22 @@ static bool s_mdns_service_started;
 static bool s_file_server_started;
 static esp_event_handler_instance_t s_wifi_event_instance;
 static esp_event_handler_instance_t s_ip_event_instance;
-static int s_auth_expire_retry_num;
+static esp_timer_handle_t s_wifi_retry_timer;
+static int s_wifi_connect_retry_num;
+static TickType_t s_wifi_connect_start_tick;
+static bool s_wifi_connect_active;
+static bool s_wifi_scan_before_connect;
 
-#define SERVER_NETWORK_STA_AUTH_EXPIRE_MAX_RETRY 5
+#define SERVER_NETWORK_STA_CONNECT_RETRY_MAX 10
+#define SERVER_NETWORK_STA_CONNECT_RETRY_BASE_DELAY_MS 100  // 500
+#define SERVER_NETWORK_STA_CONNECT_RETRY_MAX_DELAY_MS 100  // 2000
+#define SERVER_NETWORK_STA_CONNECT_START_DELAY_MS 5   // 500
+#define SERVER_NETWORK_STA_SCAN_BEFORE_CONNECT 0
+#define SERVER_NETWORK_STA_INIT_RETRY_ROUNDS 3
+#define SERVER_NETWORK_STA_INIT_RETRY_DELAY_MS 100  // 2000
 #define SERVER_NETWORK_STA_CONNECTED_PS WIFI_PS_MAX_MODEM
+
+static const char *wifi_disconnect_reason_name(int reason);
 
 static void server_network_sta_set_ps(wifi_ps_type_t ps_type, const char *stage)
 {
@@ -46,6 +60,158 @@ static void server_network_sta_set_ps(wifi_ps_type_t ps_type, const char *stage)
         ESP_LOGW(TAG, "WiFi PS set failed stage=%s type=%d ret=%s",
                  stage != NULL ? stage : "<null>", (int)ps_type, esp_err_to_name(ret));
     }
+}
+
+static bool server_network_sta_connect_window_expired(void)
+{
+    if (s_wifi_connect_start_tick == 0) {
+        return false;
+    }
+
+    TickType_t elapsed = xTaskGetTickCount() - s_wifi_connect_start_tick;
+    return elapsed >= pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS);
+}
+
+static uint32_t server_network_sta_retry_delay_ms(void)
+{
+    uint32_t delay_ms = SERVER_NETWORK_STA_CONNECT_RETRY_BASE_DELAY_MS *
+                        (uint32_t)(s_wifi_connect_retry_num + 1);
+    if (delay_ms > SERVER_NETWORK_STA_CONNECT_RETRY_MAX_DELAY_MS) {
+        delay_ms = SERVER_NETWORK_STA_CONNECT_RETRY_MAX_DELAY_MS;
+    }
+    return delay_ms;
+}
+
+static void server_network_sta_retry_timer_cb(void *arg)
+{
+    (void)arg;
+
+    if (!s_wifi_connect_active) {
+        return;
+    }
+    if (server_network_sta_connect_window_expired()) {
+        ESP_LOGW(TAG, "WiFi retry window expired, set fail");
+        if (s_sta_event_group != NULL) {
+            xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_FAIL_BIT);
+        }
+        return;
+    }
+
+    server_network_sta_set_ps(WIFI_PS_NONE, "retry_connect");
+    esp_err_t ret = esp_wifi_connect();
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_CONN) {
+        ESP_LOGE(TAG, "esp_wifi_connect delayed retry failed: %s", esp_err_to_name(ret));
+        if (s_sta_event_group != NULL) {
+            xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_FAIL_BIT);
+        }
+    }
+}
+
+static void server_network_sta_stop_retry_timer(void)
+{
+    if (s_wifi_retry_timer != NULL) {
+        (void)esp_timer_stop(s_wifi_retry_timer);
+    }
+}
+
+static void server_network_sta_ensure_retry_timer(void)
+{
+    if (s_wifi_retry_timer != NULL) {
+        return;
+    }
+
+    const esp_timer_create_args_t timer_args = {
+        .callback = server_network_sta_retry_timer_cb,
+        .name = "sta_retry",
+    };
+    esp_err_t ret = esp_timer_create(&timer_args, &s_wifi_retry_timer);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "create WiFi retry timer failed: %s", esp_err_to_name(ret));
+    }
+}
+
+static void server_network_sta_schedule_retry(int reason)
+{
+    server_network_sta_ensure_retry_timer();
+    if (s_wifi_retry_timer == NULL || s_sta_event_group == NULL) {
+        if (s_sta_event_group != NULL) {
+            xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_FAIL_BIT);
+        }
+        return;
+    }
+
+    if (server_network_sta_connect_window_expired() ||
+        s_wifi_connect_retry_num >= SERVER_NETWORK_STA_CONNECT_RETRY_MAX) {
+        ESP_LOGW(TAG,
+                 "WiFi retry exhausted reason=%d(%s) retry=%d/%d",
+                 reason,
+                 wifi_disconnect_reason_name(reason),
+                 s_wifi_connect_retry_num,
+                 SERVER_NETWORK_STA_CONNECT_RETRY_MAX);
+        xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_FAIL_BIT);
+        return;
+    }
+
+    uint32_t delay_ms = server_network_sta_retry_delay_ms();
+    s_wifi_connect_retry_num++;
+    server_network_sta_stop_retry_timer();
+    esp_err_t ret = esp_timer_start_once(s_wifi_retry_timer, (uint64_t)delay_ms * 1000ULL);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "start WiFi retry timer failed: %s", esp_err_to_name(ret));
+        xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_FAIL_BIT);
+        return;
+    }
+
+    ESP_LOGW(TAG,
+             "WiFi retry scheduled reason=%d(%s) retry=%d/%d delay_ms=%lu",
+             reason,
+             wifi_disconnect_reason_name(reason),
+             s_wifi_connect_retry_num,
+             SERVER_NETWORK_STA_CONNECT_RETRY_MAX,
+             (unsigned long)delay_ms);
+}
+
+static void server_network_sta_scan_target_ssid(const char *ssid)
+{
+    if (ssid == NULL || ssid[0] == '\0') {
+        return;
+    }
+
+    wifi_scan_config_t scan_config = {
+        .ssid = (uint8_t *)ssid,
+        .show_hidden = true,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time.active.min = 100,
+        .scan_time.active.max = 300,
+    };
+
+    esp_err_t ret = esp_wifi_scan_start(&scan_config, true);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "WiFi scan skip ret=%s", esp_err_to_name(ret));
+        return;
+    }
+
+    uint16_t ap_count = 4;
+    wifi_ap_record_t ap_records[4] = {0};
+    ret = esp_wifi_scan_get_ap_records(&ap_count, ap_records);
+    if (ret != ESP_OK || ap_count == 0) {
+        ESP_LOGW(TAG, "WiFi scan no hit ret=%s count=%u",
+                 esp_err_to_name(ret), (unsigned int)ap_count);
+        return;
+    }
+
+    wifi_ap_record_t *best = &ap_records[0];
+    for (uint16_t i = 1; i < ap_count; i++) {
+        if (ap_records[i].rssi > best->rssi) {
+            best = &ap_records[i];
+        }
+    }
+
+    ESP_LOGI(TAG,
+             "WiFi scan hit bssid=%02x:%02x:%02x:%02x:%02x:%02x ch=%u rssi=%d auth=%d",
+             best->bssid[0], best->bssid[1], best->bssid[2],
+             best->bssid[3], best->bssid[4], best->bssid[5],
+             best->primary, best->rssi, best->authmode);
 }
 
 static void parse_zero_terminated_blob(const uint8_t *blob_data, size_t blob_len, char *out, size_t out_size)
@@ -209,6 +375,10 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
     (void)arg;
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        if (s_wifi_scan_before_connect) {
+            ESP_LOGI(TAG, "WiFi start wait scan");
+            return;
+        }
 #if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
         ESP_LOGI(TAG, "WiFi start connect");
 #endif
@@ -230,30 +400,33 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "WiFi IP=" IPSTR, IP2STR(&event->ip_info.ip));
+        wifi_ap_record_t ap_info = {0};
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            ESP_LOGI(TAG,
+                     "WiFi got_ip bssid=%02x:%02x:%02x:%02x:%02x:%02x ch=%u rssi=%d",
+                     ap_info.bssid[0], ap_info.bssid[1], ap_info.bssid[2],
+                     ap_info.bssid[3], ap_info.bssid[4], ap_info.bssid[5],
+                     ap_info.primary, ap_info.rssi);
+        }
+        s_wifi_connect_active = false;
+        server_network_sta_stop_retry_timer();
         server_network_sta_set_ps(SERVER_NETWORK_STA_CONNECTED_PS, "got_ip");
-        s_auth_expire_retry_num = 0;
+        s_wifi_connect_retry_num = 0;
         xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_CONNECTED_BIT);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
         int reason = event ? event->reason : -1;
+        if (!s_wifi_connect_active) {
+            ESP_LOGI(TAG, "ignore inactive WiFi disconnected reason=%d(%s)",
+                     reason, wifi_disconnect_reason_name(reason));
+            return;
+        }
         if (reason != 8) {
             ESP_LOGW(TAG, "WiFi disconnected reason=%d(%s) rssi=%d hint=%s",
                      reason, wifi_disconnect_reason_name(reason),
                      event ? event->rssi : 0, wifi_disconnect_reason_hint(reason));
         }
-        if (reason == WIFI_REASON_AUTH_EXPIRE &&
-            s_auth_expire_retry_num < SERVER_NETWORK_STA_AUTH_EXPIRE_MAX_RETRY) {
-            s_auth_expire_retry_num++;
-            ESP_LOGW(TAG, "WiFi auth expired, retry %d/%d",
-                     s_auth_expire_retry_num, SERVER_NETWORK_STA_AUTH_EXPIRE_MAX_RETRY);
-            server_network_sta_set_ps(WIFI_PS_NONE, "auth_retry");
-            esp_err_t ret = esp_wifi_connect();
-            if (ret == ESP_OK || ret == ESP_ERR_WIFI_CONN) {
-                return;
-            }
-            ESP_LOGE(TAG, "esp_wifi_connect retry failed: %s", esp_err_to_name(ret));
-        }
-        xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_FAIL_BIT);
+        server_network_sta_schedule_retry(reason);
     }
 }
 
@@ -325,15 +498,27 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
     wifi_config_t wifi_config = {0};
     strlcpy((char *)wifi_config.sta.ssid, credential.ssid, sizeof(wifi_config.sta.ssid));
     strlcpy((char *)wifi_config.sta.password, credential.password, sizeof(wifi_config.sta.password));
+    wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wifi_config.sta.failure_retry_cnt = 5;
+    wifi_config.sta.channel = SERVER_NETWORK_STA_WIFI_CHANNEL_HINT;
+    wifi_config.sta.pmf_cfg.capable = true;
+    wifi_config.sta.pmf_cfg.required = false;
 #if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
-    ESP_LOGI(TAG, "WiFi config ssid_len=%u pass_len=%u timeout_ms=%u",
+    ESP_LOGI(TAG, "WiFi config ssid_len=%u pass_len=%u timeout_ms=%u scan=%d ch=%u fail_retry=%u pmf_req=%d",
              (unsigned int)strlen(credential.ssid),
              (unsigned int)strlen(credential.password),
-             (unsigned int)SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS);
+             (unsigned int)SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS,
+             (int)wifi_config.sta.scan_method,
+             (unsigned int)wifi_config.sta.channel,
+             (unsigned int)wifi_config.sta.failure_retry_cnt,
+             wifi_config.sta.pmf_cfg.required ? 1 : 0);
 #endif
 
     // Force STA mode here so the migrated branch does not accidentally enter AP, PPP, OTA, or other network modes.
     // 在这里强制使�?STA 模式，避免移植分支误�?AP、PPP、OTA 或其它网络模式�?    (void)esp_wifi_disconnect();
+    s_wifi_connect_active = false;
+    s_wifi_scan_before_connect = false;
+    server_network_sta_stop_retry_timer();
     ret = esp_wifi_stop();
     if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_INIT && ret != ESP_ERR_WIFI_NOT_STARTED) {
         ESP_LOGE(TAG, "esp_wifi_stop failed: %s", esp_err_to_name(ret));
@@ -346,19 +531,40 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    s_auth_expire_retry_num = 0;
+    s_wifi_connect_retry_num = 0;
+    s_wifi_connect_start_tick = 0;
     xEventGroupClearBits(s_sta_event_group, SERVER_NETWORK_STA_CONNECTED_BIT | SERVER_NETWORK_STA_FAIL_BIT);
     server_network_sta_set_ps(WIFI_PS_NONE, "connecting");
+    if (SERVER_NETWORK_STA_CONNECT_START_DELAY_MS > 0) {
+        ESP_LOGI(TAG, "WiFi connect start delay_ms=%u", (unsigned int)SERVER_NETWORK_STA_CONNECT_START_DELAY_MS);
+        vTaskDelay(pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_START_DELAY_MS));
+    }
 
+    s_wifi_connect_active = true;
+    s_wifi_connect_start_tick = xTaskGetTickCount();
+    s_wifi_scan_before_connect = SERVER_NETWORK_STA_SCAN_BEFORE_CONNECT != 0;
     ret = esp_wifi_start();
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(ret));
+        s_wifi_connect_active = false;
+        s_wifi_scan_before_connect = false;
+        server_network_sta_stop_retry_timer();
         return 0;
     }
-    if (ret == ESP_ERR_INVALID_STATE) {
+
+    bool connect_manually = (ret == ESP_ERR_INVALID_STATE);
+#if SERVER_NETWORK_STA_SCAN_BEFORE_CONNECT
+    server_network_sta_scan_target_ssid(credential.ssid);
+    s_wifi_scan_before_connect = false;
+    connect_manually = true;
+#endif
+
+    if (connect_manually) {
         ret = esp_wifi_connect();
         if (ret != ESP_OK && ret != ESP_ERR_WIFI_CONN) {
-            ESP_LOGE(TAG, "esp_wifi_connect failed when already started: %s", esp_err_to_name(ret));
+            ESP_LOGE(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(ret));
+            s_wifi_connect_active = false;
+            server_network_sta_stop_retry_timer();
             return 0;
         }
     }
@@ -369,7 +575,10 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
                                            pdFALSE,
                                            pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS));
     if (bits & SERVER_NETWORK_STA_CONNECTED_BIT) {
-        if(WiFi_config_net == true && (WiFi_config_from_ch583 == true || WiFi_config_from_ble == true))
+        s_wifi_connect_active = false;
+        server_network_sta_stop_retry_timer();
+        //if(WiFi_config_net == true && (WiFi_config_from_ch583 == true || WiFi_config_from_ble == true))
+        //if(WiFi_config_net == true) // anyway, send base info to mobile after connected, no need to check the source
         {
             ESP_LOGI(TAG, "send base info via %s",
                      WiFi_config_from_ch583 == true ? "CH583" : "BLE");
@@ -381,6 +590,8 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
         return 1;
     }
 
+    s_wifi_connect_active = false;
+    server_network_sta_stop_retry_timer();
     ESP_LOGE(TAG, "Server Network STA failed bits=0x%08lx", (unsigned long)bits);
     return 0;
 }
@@ -492,6 +703,22 @@ uint8_t User_Network_mode_app_init(const char *base_path)
     if (!credential.is_valid) {
         ESP_LOGW(TAG, "No saved WiFi credential, return 0xA1");
         UserLedStatus_Set(USER_LED_STATE_WIFI_FAIL);
+
+            {
+                char reply_json[160];
+                snprintf(reply_json, sizeof(reply_json),
+                            "{\"result\":1,\"message\":\"wakeup No-WiFi\",\"stage\":\"error\"}");
+
+                    #if(USER_BLE_ENABLE == 1)
+                    SendData_indicate((uint8_t *)reply_json, strlen(reply_json));
+                        // 杈撳嚭缁撴灉
+                        printf("JSON:\n%s\n", reply_json);
+                    #else
+                    ch583_wifi_uart_send_wifi_data((const char *)reply_json);
+                    #endif
+            }
+
+
         return SERVER_NETWORK_STA_NO_SAVED_WIFI;
     }
 
@@ -509,8 +736,21 @@ uint8_t User_Network_mode_app_init(const char *base_path)
     }
     #endif
 
-    UserLedStatus_Set(USER_LED_STATE_WIFI_CONNECTING);
-    uint8_t sta_ret = ServerPort_NetworkSTAInit(credential);
+    uint8_t sta_ret = 0;
+    for (int round = 1; round <= SERVER_NETWORK_STA_INIT_RETRY_ROUNDS; round++) {
+        UserLedStatus_Set(USER_LED_STATE_WIFI_CONNECTING);
+        ESP_LOGI(TAG, "WiFi connect round %d/%d", round, SERVER_NETWORK_STA_INIT_RETRY_ROUNDS);
+        sta_ret = ServerPort_NetworkSTAInit(credential);
+        if (sta_ret != 0) {
+            break;
+        }
+        if (round < SERVER_NETWORK_STA_INIT_RETRY_ROUNDS) {
+            ESP_LOGW(TAG,
+                     "WiFi connect round failed, retry after %d ms",
+                     SERVER_NETWORK_STA_INIT_RETRY_DELAY_MS);
+            vTaskDelay(pdMS_TO_TICKS(SERVER_NETWORK_STA_INIT_RETRY_DELAY_MS));
+        }
+    }
     if (sta_ret == 0) {
         UserLedStatus_Set(USER_LED_STATE_WIFI_FAIL);
         return SERVER_NETWORK_STA_CONNECT_FAIL;

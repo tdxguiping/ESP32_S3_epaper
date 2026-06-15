@@ -71,7 +71,16 @@ extern "C" {
 #define SERVER_NETWORK_STA_FAIL_BIT BIT1
 
 // Keep the STA connection timeout configurable from one header for board bring-up tuning.
-#define SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS 20000
+#define SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS 30000
+
+// Print the /data file tree during startup. Keep enabled by default for bring-up visibility.
+#define USER_STORAGE_LIST_ON_STARTUP_ENABLE 0
+
+// Enable SD card probing before SPIFFS. Set to 0 when the board has no SD card to boot faster.
+#define USER_STORAGE_SD_CARD_ENABLE 1
+
+// Hint the known AP channel to reduce WiFi scan time without binding to a fixed BSSID.
+#define SERVER_NETWORK_STA_WIFI_CHANNEL_HINT 11
 
 
 // Keep the migrated /dataUP upload body limit here so browser upload behavior can be tuned in one place.
@@ -171,9 +180,9 @@ extern "C" {
 #define SERVER_NETWORK_STA_DELETE_MAX_FILES 50
 
 // Keep WiFi keep-alive limits here so phone commands cannot request an unbounded online window.
-#define SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS 40   // 秒
+#define SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS 60   // 秒
 #define SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS 3600 // 秒
-#define SERVER_NETWORK_STA_WIFI_WORK_TIME_DEFAULT_SECONDS 60 // 秒
+#define SERVER_NETWORK_STA_WIFI_WORK_TIME_DEFAULT_SECONDS 300 // 秒
 
 // Keep sleep/work-state NVS keys here so BLE, HTTP, and network timers share one saved runtime state.
 #define USER_WORK_STATE_NVS_NAMESPACE "work_state"
