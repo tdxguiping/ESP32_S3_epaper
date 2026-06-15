@@ -18,13 +18,10 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "net-ota-upload";
-
-#define OTA_UPLOAD_MAX_BODY_SIZE (6 * 1024 * 1024)
-#define POWER_MODE_TRUE true
-#define POWER_MODE_FALSE false
 
 static void log_heap_watermark(const char *point)
 {
@@ -44,19 +41,23 @@ typedef struct {
 
 typedef struct {
     char func[24];
-    char version[40];
+    char version[SERVER_NETWORK_STA_OTA_VERSION_MAX];
     size_t firmware_size;
     bool reboot;
 } ota_upload_meta_t;
 
 static void PowerMode_SetOtaInProgress(bool in_progress)
 {
-    (void)in_progress;
+    ServerNetworkStaWifiWorkTime_SetOtaInProgress(in_progress);
 }
 
-static const char *NetworkOtaUpload_GetVersion(void)
+static const esp_app_desc_t *get_firmware_app_desc(const uint8_t *firmware, size_t firmware_len)
 {
-    return "2.2.3";
+    size_t desc_offset = sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t);
+    if (firmware == NULL || firmware_len < desc_offset + sizeof(esp_app_desc_t)) {
+        return NULL;
+    }
+    return (const esp_app_desc_t *)(firmware + desc_offset);
 }
 
 static const char *ota_state_name(esp_ota_img_states_t state)
@@ -125,8 +126,25 @@ bool NetworkOtaUpload_IsOtaRequest(httpd_req_t *req, const char *content_type)
 
 size_t NetworkOtaUpload_GetMaxBodySize(void)
 {
-    ESP_LOGI(TAG, "ota max body size=%u", (unsigned int)OTA_UPLOAD_MAX_BODY_SIZE);
-    return OTA_UPLOAD_MAX_BODY_SIZE;
+    size_t max_body_size = SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE;
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+    if (update_partition != NULL) {
+        size_t partition_body_limit = update_partition->size + SERVER_NETWORK_STA_OTA_MULTIPART_OVERHEAD_BYTES;
+        if (partition_body_limit < max_body_size) {
+            max_body_size = partition_body_limit;
+        }
+        ESP_LOGI(TAG, "ota max body size=%u cfg=%u partition=%s size=%u overhead=%u",
+                 (unsigned int)max_body_size,
+                 (unsigned int)SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE,
+                 update_partition->label,
+                 (unsigned int)update_partition->size,
+                 (unsigned int)SERVER_NETWORK_STA_OTA_MULTIPART_OVERHEAD_BYTES);
+    } else {
+        ESP_LOGW(TAG, "ota max body size=%u cfg=%u partition=<null>",
+                 (unsigned int)max_body_size,
+                 (unsigned int)SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE);
+    }
+    return max_body_size;
 }
 
 static const char *find_bytes(const char *haystack, size_t haystack_len,
@@ -448,23 +466,30 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
     }
 
     const esp_app_desc_t *current_app = esp_app_get_description();
-    const char *new_version = NetworkOtaUpload_GetVersion();
+    const esp_app_desc_t *new_app = get_firmware_app_desc(firmware, firmware_len);
+    if (new_app == NULL) {
+        ESP_LOGE(TAG, "ota write reject: app desc missing");
+        send_ota_eventf(req, "validate_failed", 1, "app_desc_missing", ESP_ERR_INVALID_SIZE,
+                        ",\"firmware_size\":%u",
+                        (unsigned int)firmware_len);
+        return ESP_ERR_INVALID_SIZE;
+    }
     ESP_LOGI(TAG, "ota image version: current=%s new=%s meta=%s",
              current_app != NULL ? current_app->version : "<null>",
-             new_version,
+             new_app->version,
              meta->version[0] ? meta->version : "<empty>");
     send_ota_eventf(req, "version_checked", 0, "version_checked", ESP_OK,
                     ",\"current_version\":\"%s\",\"new_version\":\"%s\",\"meta_version\":\"%s\"",
                     current_app != NULL ? current_app->version : "",
-                    new_version,
+                    new_app->version,
                     meta->version[0] ? meta->version : "");
 
-    if (meta->version[0] != '\0' && strcmp(meta->version, new_version) != 0) {
-        ESP_LOGE(TAG, "ota write reject: version mismatch meta=%s image=%s", meta->version, new_version);
+    if (meta->version[0] != '\0' && strcmp(meta->version, new_app->version) != 0) {
+        ESP_LOGE(TAG, "ota write reject: version mismatch meta=%s image=%s", meta->version, new_app->version);
         send_ota_eventf(req, "validate_failed", 1, "version_mismatch", ESP_ERR_INVALID_VERSION,
                         ",\"meta_version\":\"%s\",\"image_version\":\"%s\"",
                         meta->version,
-                        new_version);
+                        new_app->version);
         return ESP_ERR_INVALID_VERSION;
     }
 
@@ -583,7 +608,7 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
                                                size_t body_len,
                                                const char *content_type)
 {
-    char boundary[96] = {0};
+    char boundary[SERVER_NETWORK_STA_OTA_BOUNDARY_MAX] = {0};
     multipart_field_t meta_field = {0};
     multipart_field_t firmware_field = {0};
     ota_upload_meta_t meta = {0};
@@ -648,14 +673,14 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
                     ",\"firmware_size\":%u",
                     (unsigned int)firmware_field.len);
 
-    PowerMode_SetOtaInProgress(POWER_MODE_TRUE);
+    PowerMode_SetOtaInProgress(true);
     send_ota_eventf(req, "power_hold", 0, "ota_power_hold_enabled", ESP_OK, NULL);
     esp_err_t err = write_firmware_to_ota_partition(req,
                                                     (const uint8_t *)firmware_field.data,
                                                     firmware_field.len,
                                                     &meta);
     if (err != ESP_OK) {
-        PowerMode_SetOtaInProgress(POWER_MODE_FALSE);
+        PowerMode_SetOtaInProgress(false);
         send_ota_eventf(req, "power_hold_release", 0, "ota_power_hold_disabled", ESP_OK, NULL);
         send_ota_resultf(req, 1, esp_err_to_name(err), err,
                          ",\"failed_stage\":\"write_or_verify\"");
@@ -677,7 +702,7 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
     } else {
         ESP_LOGI(TAG, "ota reboot skipped by meta");
         send_ota_eventf(req, "reboot_skipped", 0, "reboot_skipped", ESP_OK, NULL);
-        PowerMode_SetOtaInProgress(POWER_MODE_FALSE);
+        PowerMode_SetOtaInProgress(false);
         send_ota_eventf(req, "power_hold_release", 0, "ota_power_hold_disabled", ESP_OK, NULL);
         return ota_stream_finish(req);
     }

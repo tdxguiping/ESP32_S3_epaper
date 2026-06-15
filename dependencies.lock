@@ -23,5 +23,5 @@ direct_dependencies:
 - espressif/mdns
 - protocol_examples_common
 manifest_hash: d3c53e18afc5885977e293b9fcbf8fc93e2aa104db6b438ac0e9fcabe5bc1047
-target: esp32s3
+target: esp32c5
 version: 2.0.0

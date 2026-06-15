@@ -26,7 +26,7 @@ void ePaperPort::EpdType16001200_133_Sleep()
 
 void ePaperPort::EpdType16001200_133_Init()
 {
-    // LOG_Purple("1600x1200 %s>%d",__func__,__LINE__);
+    LOG_Purple("1600x1200 %s>%d",__func__,__LINE__);
     NT61522_Init();
 }
 
@@ -55,8 +55,6 @@ void ePaperPort::EpdType16001200_133_NT61522_Init()
 	unsigned char rb0DataBuf[1]={0x01};
 	unsigned char rb1DataBuf[1]={0x02};
     #define Delay_time_133   9
-
-
 
     EPD_Reset();
     setPinCsAll(GPIO_HIGH);
@@ -167,7 +165,6 @@ void ePaperPort::EpdType16001200_133_NT61522_InitDisplay()
     image_countger_ =0;
     u8flag_ = 0xAA;
 
-
 	setPinCsAll(GPIO_LOW);
 	spiTransmit(RE0_CCSET, CCSET_V_LOCK, sizeof(CCSET_V_LOCK));
 	setPinCsAll(GPIO_HIGH);
@@ -181,10 +178,11 @@ void ePaperPort::EpdType16001200_133_NT61522_InitDisplay()
 	setPinCs(TARGET_MASTER,GPIO_HIGH);
 	delayms(30);
 	EPD_Check_Busy();
-	
 
     //Temptr[0] =  WHT20_Temp+10;
 	temptr_fill = Temptr[0]<<1;
+    LOG_Blue("Temptr[0]=%d, temptr_fill=%d", Temptr[0], temptr_fill);   
+
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmit(RE5_TSSET, &temptr_fill, 1);
 	setPinCs(TARGET_MASTER,GPIO_HIGH);
@@ -192,7 +190,6 @@ void ePaperPort::EpdType16001200_133_NT61522_InitDisplay()
 
     EPD_Select_Master();
     spiTransmitCommand(R10_DTM);
-
 }
 
 void ePaperPort::EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize)
@@ -251,7 +248,6 @@ void ePaperPort::EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData
         ESP_LOGE(TAG, "EPD 1600x1200 13.3 image exceeds display size");
         return;
     }
-
 
     size_t remain = imageSize;
     u32posi = 0;
@@ -364,9 +360,9 @@ unsigned char ePaperPort::Read_Temptr(void)
 	setPinCs(TARGET_MASTER,GPIO_HIGH);
 	EPD_Check_Busy();
 
-	Temptr[0] = Temptr[0] > 50 ? 48 : Temptr[0];
-    
+	Temptr[0] = Temptr[0] > 50 ? 48 : Temptr[0];    
 
     if(Temptr[0] <=1) Temptr[0]=0x2A;    
+    LOG_INFO(".... Temptr=%d",Temptr[0]);
 	return Temptr[0];
 }

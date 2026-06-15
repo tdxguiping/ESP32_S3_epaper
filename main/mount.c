@@ -218,7 +218,7 @@ static void print_text_file_content(const char *path)
     }
 }
 
-static void list_storage_tree(const char *path, int depth, size_t *file_count)
+static void __attribute__((unused)) list_storage_tree(const char *path, int depth, size_t *file_count)
 {
     if (file_count == NULL || *file_count >= STORAGE_INFO_MAX_FILES) {
         return;
@@ -453,17 +453,32 @@ esp_err_t example_mount_storage(const char* base_path)
     ESP_LOGI(TAG, "Using SPI peripheral");
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = USER_SD_SPI_HOST;
     spi_bus_config_t bus_cfg = {
-        .mosi_io_num = CONFIG_EXAMPLE_PIN_MOSI,
-        .miso_io_num = CONFIG_EXAMPLE_PIN_MISO,
-        .sclk_io_num = CONFIG_EXAMPLE_PIN_CLK,
+        .mosi_io_num = USER_SD_SPI_MOSI_PIN,
+        .miso_io_num = USER_SD_SPI_MISO_PIN,
+        .sclk_io_num = USER_SD_SPI_CLK_PIN,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = 4000,
     };
 
+    // Print the C5 SDSPI wiring before mounting so board bring-up can verify the shared SPI bus.
+    // 挂载前打印 C5 SDSPI 接线，方便板级调试时确认共用 SPI 总线配置。
+    ESP_LOGI(TAG, "SDSPI pins: host=%d mosi=%d miso=%d clk=%d cs=%d",
+             (int)host.slot,
+             USER_SD_SPI_MOSI_PIN,
+             USER_SD_SPI_MISO_PIN,
+             USER_SD_SPI_CLK_PIN,
+             USER_SD_SPI_CS_PIN);
+
     ret = spi_bus_initialize(host.slot, &bus_cfg, SDSPI_DEFAULT_DMA);
-    if (ret != ESP_OK) {
+    if (ret == ESP_ERR_INVALID_STATE) {
+        // Reuse the SPI bus initialized by the EPD driver because C5 shares SD and EPD SPI pins.
+        // 复用墨水屏驱动已经初始化的 SPI 总线，因为 C5 的 SD 和墨水屏共用 SPI 引脚。
+        ESP_LOGW(TAG, "SDSPI bus already initialized, reuse host=%d", (int)host.slot);
+        ret = ESP_OK;
+    } else if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize bus.");
         return ret;
     }
@@ -471,7 +486,7 @@ esp_err_t example_mount_storage(const char* base_path)
     // This initializes the slot without card detect (CD) and write protect (WP) signals.
     // Modify slot_config.gpio_cd and slot_config.gpio_wp if your board has these signals.
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.gpio_cs = CONFIG_EXAMPLE_PIN_CS;
+    slot_config.gpio_cs = USER_SD_SPI_CS_PIN;
     slot_config.host_id = host.slot;
     for (int attempt = 1; attempt <= STORAGE_MOUNT_RETRY_COUNT; attempt++) {
         ret = esp_vfs_fat_sdspi_mount(base_path, &host, &slot_config, &mount_config, &card);

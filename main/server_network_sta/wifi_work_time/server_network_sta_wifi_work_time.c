@@ -18,6 +18,7 @@ static const char *TAG = "server_sta_wifi_time";
 static TickType_t s_wifi_work_start_tick = 0;
 static TickType_t s_last_network_data_tick = 0;
 static TaskHandle_t s_work_state_task = NULL;
+static bool s_ota_in_progress = false;
 
 // Keep these globals compatible with the old sleep/work-time flow for BLE and HTTP handlers.
 uint32_t working_time = 0;
@@ -276,14 +277,24 @@ static void work_state_task(void *arg)
 
 
         if (elapsed > server_required_continue_work_time) {
-            ESP_LOGI(TAG,
-                     "working_time timeout, send CH583 power off elapsed=%lu target=%lu standby=%lu",
-                     (unsigned long)elapsed,
-                     (unsigned long)server_required_continue_work_time,
-                     (unsigned long)wifi_standby_time_s);
-            int power_off_ret = ch583_wifi_uart_send_power_off();
-            if (power_off_ret < 0) {
-                ESP_LOGW(TAG, "CH583 power off command failed ret=%d", power_off_ret);
+            if (s_ota_in_progress) {
+                if (counter == 0) {
+                    ESP_LOGI(TAG,
+                             "working_time timeout ignored during OTA elapsed=%lu target=%lu standby=%lu",
+                             (unsigned long)elapsed,
+                             (unsigned long)server_required_continue_work_time,
+                             (unsigned long)wifi_standby_time_s);
+                }
+            } else {
+                ESP_LOGI(TAG,
+                         "working_time timeout, send CH583 power off elapsed=%lu target=%lu standby=%lu",
+                         (unsigned long)elapsed,
+                         (unsigned long)server_required_continue_work_time,
+                         (unsigned long)wifi_standby_time_s);
+                int power_off_ret = ch583_wifi_uart_send_power_off();
+                if (power_off_ret < 0) {
+                    ESP_LOGW(TAG, "CH583 power off command failed ret=%d", power_off_ret);
+                }
             }
         }
 
@@ -395,6 +406,12 @@ void ServerNetworkStaWifiWorkTime_OnNetworkData(void)
                  (unsigned long)server_required_continue_work_time,
                  (unsigned int)((s_last_network_data_tick - s_wifi_work_start_tick) * portTICK_PERIOD_MS));
     }
+}
+
+void ServerNetworkStaWifiWorkTime_SetOtaInProgress(bool in_progress)
+{
+    s_ota_in_progress = in_progress;
+    ESP_LOGI(TAG, "ota in progress=%d", in_progress ? 1 : 0);
 }
 
 esp_err_t ServerNetworkStaWifiWorkTime_Init(void)

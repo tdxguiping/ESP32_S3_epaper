@@ -1,32 +1,42 @@
 #include "led_status.h"
 
-#include "driver/gpio.h"
+#include "ch583_wifi_uart_protocol.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "tdx_cfg.h"
 
+#include <stdbool.h>
+
 static const char *TAG = "led_status";
 static TaskHandle_t s_led_task;
 static volatile user_led_state_t s_led_state = USER_LED_STATE_OFF;
 
-static void set_led_level(gpio_num_t pin, int level)
+static void set_ch583_led_level(const char *port, int pin, const char *level)
 {
-    esp_err_t ret = gpio_set_level(pin, level);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "gpio_set_level pin=%d level=%d failed: %s",
-                 (int)pin, level, esp_err_to_name(ret));
+    int ret = ch583_wifi_uart_send_gpio(port, pin, "OUT", level);
+    if (ret < 0) {
+        ESP_LOGW(TAG, "CH583 LED set failed port=%s pin=%d level=%s ret=%d",
+                 port, pin, level, ret);
     }
 }
 
 static void set_red(bool on)
 {
-    set_led_level(USER_LED_RED_PIN, on ? USER_LED_ON_LEVEL : USER_LED_OFF_LEVEL);
+    // Send red LED state through CH583 because ESP32-C5 has no local status LED.
+    // 通过 CH583 发送红灯状态，因为 ESP32-C5 本机没有状态灯。
+    set_ch583_led_level(USER_LED_CH583_RED_PORT,
+                        USER_LED_CH583_RED_PIN,
+                        on ? USER_LED_CH583_ON_LEVEL : USER_LED_CH583_OFF_LEVEL);
 }
 
 static void set_green(bool on)
 {
-    set_led_level(USER_LED_GREEN_PIN, on ? USER_LED_ON_LEVEL : USER_LED_OFF_LEVEL);
+    // Send green LED state through CH583 so existing status states keep the same behavior.
+    // 通过 CH583 发送绿灯状态，让现有状态机保持相同表现。
+    set_ch583_led_level(USER_LED_CH583_GREEN_PORT,
+                        USER_LED_CH583_GREEN_PIN,
+                        on ? USER_LED_CH583_ON_LEVEL : USER_LED_CH583_OFF_LEVEL);
 }
 
 static void set_all_off(void)
@@ -112,20 +122,15 @@ static void UserLedStatus_Task(void *arg)
 esp_err_t UserLedStatus_Init(void)
 {
 #if USER_LED_STATUS_ENABLE
-    gpio_config_t gpio_conf = {
-        .pin_bit_mask = (1ULL << USER_LED_GREEN_PIN) | (1ULL << USER_LED_RED_PIN),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-
-    esp_err_t ret = gpio_config(&gpio_conf);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "LED gpio_config failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
+    // Initialize CH583 LED outputs by sending both LEDs to the configured off level.
+    // 初始化 CH583 LED 输出，先把两个灯都设置为配置的关闭电平。
+    ESP_LOGI(TAG, "LED backend=CH583 green=%s%d red=%s%d on=%s off=%s",
+             USER_LED_CH583_GREEN_PORT,
+             USER_LED_CH583_GREEN_PIN,
+             USER_LED_CH583_RED_PORT,
+             USER_LED_CH583_RED_PIN,
+             USER_LED_CH583_ON_LEVEL,
+             USER_LED_CH583_OFF_LEVEL);
     set_all_off();
     s_led_state = USER_LED_STATE_BOOTING;
     if (s_led_task == NULL) {

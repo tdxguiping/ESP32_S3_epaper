@@ -171,7 +171,7 @@ static void server_network_sta_schedule_retry(int reason)
              (unsigned long)delay_ms);
 }
 
-static void server_network_sta_scan_target_ssid(const char *ssid)
+static void __attribute__((unused)) server_network_sta_scan_target_ssid(const char *ssid)
 {
     if (ssid == NULL || ssid[0] == '\0') {
         return;
@@ -634,7 +634,7 @@ static esp_err_t ServerPort_init(const char *base_path)
     return ret;
 }
 
-static bool server_network_sta_skip_same_wifi(const wifi_credential_t *credential)
+static bool __attribute__((unused)) server_network_sta_skip_same_wifi(const wifi_credential_t *credential)
 {
     wifi_config_t current_config = {0};
     wifi_ap_record_t ap_info = {0};

@@ -1,11 +1,11 @@
 {
     "idf.currentSetup": "C:\\esp\\v5.5.3\\esp-idf",
     "idf.openOcdConfigs": [
-        "board/esp32s3-builtin.cfg"
+        "board/esp32c5-builtin.cfg"
     ],
     "idf.customExtraVars": {
-        "IDF_TARGET": "esp32s3"
+        "IDF_TARGET": "esp32c5"
     },
-    "idf.portWin": "COM40",
+    "idf.portWin": "COM41",
     "idf.flashType": "UART"
 }

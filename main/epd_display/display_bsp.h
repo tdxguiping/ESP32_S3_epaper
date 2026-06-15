@@ -42,22 +42,28 @@ extern uint8_t Hardware_Version_;
 extern uint8_t EPD_which_one_;
 
 
-#define EPD_CS_PIN_2    46
+// Map legacy display pin names to the ESP32-C5 board macros in tdx_cfg.h.
+// 将旧显示驱动里的引脚名映射到 tdx_cfg.h 中的 ESP32-C5 板级宏。
+#define EPD_CS_PIN_2    USER_EPD_CS2_PIN
 
-#define EPD_DC_PIN      8
-#define EPD_CS_PIN      9
-#define EPD_RST_PIN     12
-#define EPD_BUSY_PIN    13
+// Keep primary EPD pins board-driven so display code does not carry fixed GPIO numbers.
+// 主墨水屏引脚从板级宏取得，避免显示代码继续携带固定 GPIO 数字。
+#define EPD_DC_PIN      USER_EPD_DC_PIN
+#define EPD_CS_PIN      USER_EPD_CS_PIN
+#define EPD_RST_PIN     USER_EPD_RST_PIN
+#define EPD_BUSY_PIN    USER_EPD_BUSY_PIN
 
+// Keep the second EPD target on shared control pins with its own CS2 line.
+// 第二路墨水屏目标复用控制线，只单独使用 CS2 片选。
+#define EPD2_DC_PIN     USER_EPD2_DC_PIN
+#define EPD2_CS_PIN     USER_EPD2_CS_PIN
+#define EPD2_RST_PIN    USER_EPD2_RST_PIN
+#define EPD2_BUSY_PIN   USER_EPD2_BUSY_PIN
 
-#define EPD2_DC_PIN      21
-#define EPD2_CS_PIN      14
-#define EPD2_RST_PIN     47
-#define EPD2_BUSY_PIN    48
-
-
-#define EPD_SCK_PIN     10
-#define EPD_MOSI_PIN    11
+// Keep SPI signal names mapped to the C5 shared EPD and SD SPI bus.
+// SPI 信号名映射到 C5 上墨水屏和 SD 卡共用的 SPI 总线。
+#define EPD_SCK_PIN     USER_EPD_SCK_PIN
+#define EPD_MOSI_PIN    USER_EPD_MOSI_PIN
 
 
 
@@ -174,7 +180,7 @@ class ePaperPort {
     friend void EpdType800480_4S_75_Mofang_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
 
     spi_device_handle_t spi = nullptr;
-    spi_host_device_t    spi_host_ = SPI3_HOST;
+    spi_host_device_t    spi_host_ = USER_EPD_SPI_HOST;
     uint32_t             i2c_data_pdMS_TICKS = 0;
     uint32_t             i2c_done_pdMS_TICKS = 0;
     const char          *TAG = "Display";
@@ -344,7 +350,7 @@ class ePaperPort {
     void NT61522_DisplayImage(const uint8_t *imageData, size_t imageSize);
     ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int busy,
                uint16_t width, uint16_t height, uint16_t scale_MaxWidth, uint16_t scale_MaxHeight,
-               spi_host_device_t spihost = SPI3_HOST);
+               spi_host_device_t spihost = USER_EPD_SPI_HOST);
     ~ePaperPort();
 
     unsigned char Read_Temptr();

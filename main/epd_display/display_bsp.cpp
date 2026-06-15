@@ -88,7 +88,7 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
     
     DisplayLen = transfer / 2;
 
-    buscfg.miso_io_num = -1;
+    buscfg.miso_io_num = USER_EPD_MISO_PIN;
     buscfg.mosi_io_num = mosi_;
     buscfg.sclk_io_num = scl_;
     buscfg.quadwp_io_num = -1;
@@ -118,6 +118,15 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
     // devcfg.queue_size                    = 7;                //We want to be able to queue 7 transactions at a time
     // //devcfg.flags                         = SPI_DEVICE_HALFDUPLEX;
 
+    // Initialize the shared C5 SPI bus with SD MISO present so SDSPI can reuse the same bus later.
+    // 初始化 C5 共用 SPI 总线时带上 SD MISO，便于后续 SDSPI 复用同一总线。
+    ESP_LOGI(TAG, "EPD SPI bus init host=%d mosi=%d miso=%d sck=%d cs=%d cs2=%d",
+             (int)spi_host_,
+             mosi_,
+             USER_EPD_MISO_PIN,
+             scl_,
+             cs_,
+             cs_2_);
     ret = spi_bus_initialize(spi_host_, &buscfg, SPI_DMA_CH_AUTO);
     ESP_ERROR_CHECK(ret);
     ret = spi_bus_add_device(spi_host_, &devcfg, &spi);
@@ -284,17 +293,16 @@ void ePaperPort::delay_ms(uint16_t ms) {
 
 void ePaperPort::EPD_Reset(void) {
 
-    gpio_set_level((gpio_num_t)cs_,1);
-    gpio_set_level((gpio_num_t)cs_2_,1);
-    if (EPD_which_one_ == 2) {
-        gpio_set_level((gpio_num_t)EPD2_CS_PIN,1);
-    }   
-
+    // gpio_set_level((gpio_num_t)cs_,1);
+    // gpio_set_level((gpio_num_t)cs_2_,1);
+    // if (EPD_which_one_ == 2) {
+    //     gpio_set_level((gpio_num_t)EPD2_CS_PIN,1);
+    // }   
 
     Set_ResetIOLevel(0);
-    vTaskDelay(pdMS_TO_TICKS(20)); //100
+    vTaskDelay(pdMS_TO_TICKS(60)); //100
     Set_ResetIOLevel(1);
-    vTaskDelay(pdMS_TO_TICKS(20));  //100      
+    vTaskDelay(pdMS_TO_TICKS(60));  //100      
 }
 
 void ePaperPort::EPD_LoopBusy(void) {
@@ -376,7 +384,7 @@ uint8_t ePaperPort::EPD_SPI_Read(void) {
 void ePaperPort::EPD_Select_None(void) {
 
      gpio_set_level((gpio_num_t)cs_,1);
-     gpio_set_level((gpio_num_t)cs_,1);
+     gpio_set_level((gpio_num_t)cs_2_,1);
      if (EPD_which_one_ == 2) {
      gpio_set_level((gpio_num_t)EPD2_CS_PIN,1);
      }    
@@ -726,8 +734,7 @@ void ePaperPort::EPD_TurnOnDisplay(void) {
 
 void ePaperPort::EPD_sleep(void) {
    isEPDInit = false;
-
-EpdType_DispatchSleep(*this);
+   EpdType_DispatchSleep(*this);
 }
 
 void ePaperPort::EPD_refresh(void) {
@@ -761,11 +768,11 @@ void ePaperPort::EPD_Init() {
     if (isEPDInit) {
         ESP_LOGI(TAG, "EPD step EPD_Init reused elapsed_ms=%lld",
                  (long long)((esp_timer_get_time() - start_us) / 1000));
-        return;
+        // return;  // force re-init for each EPD_Init call, to ensure the display is always in a known state.
     }
     isEPDInit = true;    
 
-EpdType_DispatchInit(*this);
+    EpdType_DispatchInit(*this);
 
     ESP_LOGI(TAG, "EPD step EPD_Init done elapsed_ms=%lld",
              (long long)((esp_timer_get_time() - start_us) / 1000));
@@ -1142,6 +1149,8 @@ EpdType_DispatchNT61522Init(*this);
 void ePaperPort::NT61522_Display() {
     int64_t start_us = esp_timer_get_time();
     ESP_LOGI(TAG, "EPD step NT61522_Display start");    
+
+
     EpdType_DispatchNT61522Display(*this);
 
 #if 0
@@ -1163,8 +1172,9 @@ void ePaperPort::NT61522_Init_display()
     ESP_LOGI(TAG, "EPD step NT61522_Init_display start");
     sleep_time=0;// delay network sleep time
 
-EpdType_DispatchNT61522InitDisplay(*this);
-    ESP_LOGI(TAG, "EPD step NT61522_Init_display done elapsed_ms=%lld",
+     EpdType_DispatchNT61522InitDisplay(*this);
+
+     ESP_LOGI(TAG, "EPD step NT61522_Init_display done elapsed_ms=%lld",
              (long long)((esp_timer_get_time() - start_us) / 1000));
 }
 /* 中文注释：
@@ -1190,7 +1200,9 @@ void ePaperPort::NT61522_Display_net(const uint8_t *imageData, size_t imageSize)
 {   
     int64_t start_us = esp_timer_get_time();
     ESP_LOGI(TAG, "EPD step NT61522_Display_net start size=%u", (unsigned int)imageSize);
+
     EpdType_DispatchNT61522DisplayNet(*this, imageData, imageSize);
+
     ESP_LOGI(TAG, "EPD step NT61522_Display_net done size=%u elapsed_ms=%lld",
              (unsigned int)imageSize,
              (long long)((esp_timer_get_time() - start_us) / 1000));

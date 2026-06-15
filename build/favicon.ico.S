@@ -1,4 +1,4 @@
-/* * Data converted from H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/main/favicon.ico
+/* * Data converted from H:/AI2/file_serving/main/favicon.ico
  */
 .data
 #if !defined (__APPLE__) && !defined (__linux__)

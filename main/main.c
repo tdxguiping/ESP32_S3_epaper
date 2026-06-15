@@ -62,7 +62,7 @@ static void pm_diag_dump_once(const char *reason)
 #endif
 }
 
-static void pm_diag_task(void *arg)
+static void __attribute__((unused)) pm_diag_task(void *arg)
 {
     (void)arg;
 
@@ -74,6 +74,21 @@ static void pm_diag_task(void *arg)
 #endif
 
     vTaskDelete(NULL);
+}
+
+static void usb_console_ansi_color_test(void)
+{
+#if USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE
+    // Print ANSI color samples so the PC USB console can verify xterm_256color rendering.
+    // 打印 ANSI 颜色样例，用于 PC 端 USB 串口窗口验证 xterm_256color 渲染。
+    printf("\033[0mANSI color test begin\r\n");
+    printf("\033[30mblack\033[0m \033[31mred\033[0m \033[32mgreen\033[0m \033[33myellow\033[0m\r\n");
+    printf("\033[34mblue\033[0m \033[35mmagenta\033[0m \033[36mcyan\033[0m \033[37mwhite\033[0m\r\n");
+    printf("\033[90mbright black\033[0m \033[91mbright red\033[0m \033[92mbright green\033[0m \033[94mbright blue\033[0m\r\n");
+    printf("\033[1m\033[38;5;202m256 orange bold fg\033[0m \033[38;5;45m256 cyan fg\033[0m \033[48;5;24m256 blue bg\033[0m\r\n");
+    printf("\033[0mANSI color test end\r\n");
+    fflush(stdout);
+#endif
 }
 
 /* This example demonstrates how to create file server
@@ -282,17 +297,19 @@ void app_main(void)
 
 
     print_base_info();
+    // Start CH583 UART before LED status because C5 status LEDs are controlled by CH583 GPIO.
+    // 先启动 CH583 串口再初始化 LED 状态，因为 C5 状态灯由 CH583 GPIO 控制。
+    ESP_ERROR_CHECK(Ch583UartApp_Init());
     ESP_ERROR_CHECK(UserLedStatus_Init());
 #if USER_BLE_ENABLE
     // Start BLE after NVS/event loop so BT state and callbacks have the required system services.
     // 中文：在 NVS 和事件循环初始化之后启动 BLE，保证蓝牙状态和回调依赖的系统服务已经就绪。
     Init_Bl();
 #endif
-    ESP_ERROR_CHECK(Ch583UartApp_Init());
     /* English: Initialize the migrated EPD driver at startup before network cast/upload can request display. */
     /* 中文：启动时初始化移植过来的 EPD 驱动，保证网络 cast/upload 请求显示前屏幕已经就绪。 */
     ESP_ERROR_CHECK(ServerNetworkStaEpdDisplay_Init());
-    
+
 
     /* Initialize file storage */
     const char* base_path = "/data";
@@ -327,7 +344,9 @@ void app_main(void)
     // xTaskCreate(pm_diag_task, "pm_diag", 4096, NULL, 1, NULL);
     // #endif
     //  test power only over
-    
+
+
+    usb_console_ansi_color_test();
     ESP_LOGI(TAG, "Server Version=2.2.5");
     char ble_mac[13] = {0};
     get_ble_mac_no_colon(ble_mac, sizeof(ble_mac));

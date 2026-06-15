@@ -21,7 +21,9 @@
 #define CH583_WIFI_MAX_BLE_MESSAGE_LEN 2048
 
 #ifndef CH583_WIFI_UART_PORT
-#define CH583_WIFI_UART_PORT UART_NUM_0
+// Use the board-level CH583 UART port so protocol TX follows the C5 UART1 wiring.
+// 使用板级 CH583 串口号，保证协议发送跟随 C5 的 UART1 接线。
+#define CH583_WIFI_UART_PORT USER_CH583_UART_PORT
 #endif
 
 #ifndef CH583_WIFI_UART_DEBUG_PRINT_ENABLE
@@ -750,7 +752,7 @@ int ch583_wifi_uart_send_gpio(const char *port, int pin, const char *mode, const
     }
 
     snprintf(arg, sizeof(arg), "%s,%d,%s,%s", port, pin, mode, level);
-    return ch583_wifi_send_frame("GPIO", arg,1);
+    return ch583_wifi_send_frame("GPIO", arg,0);
 }
 
 int ch583_wifi_uart_send_gpio_read(const char *port, int pin)

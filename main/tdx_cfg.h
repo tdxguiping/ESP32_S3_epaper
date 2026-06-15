@@ -140,7 +140,11 @@ extern "C" {
 #define USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE (64 * 1024)
 
 // Keep OTA upload limits here so the partition size and HTTP body policy can be checked together.
+// 中文：OTA 上传限制集中放在这里，便于同时检查 HTTP body 和 OTA 分区容量。
 #define SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE (6 * 1024 * 1024)
+// Reserve multipart header room above the firmware partition size when rejecting oversize OTA bodies early.
+// 中文：提前拒绝超大 OTA body 时，为 multipart 头部和 meta 字段预留这部分空间。
+#define SERVER_NETWORK_STA_OTA_MULTIPART_OVERHEAD_BYTES (64 * 1024)
 #define SERVER_NETWORK_STA_OTA_BOUNDARY_MAX 96
 #define SERVER_NETWORK_STA_OTA_VERSION_MAX 40
 
@@ -211,13 +215,18 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 // Keep the ping URI here so heartbeat routing can change without touching GET resource handlers.
 #define SERVER_NETWORK_STA_PING_URI "/ping"
 
+// Select ESP32-C5 as the only supported board for this project build.
+// 选择 ESP32-C5 作为当前工程唯一支持的板级配置。
+#define USER_BOARD_ESP32C5 1
+
 // Keep CH583 UART receive enabled from one switch so board bring-up can disable it without touching task code.
 #define USER_CH583_UART_ENABLE 1
 
 // Keep CH583 UART pins and baud rate here so protocol TX and RX always use the same physical port.
-#define USER_CH583_UART_PORT UART_NUM_0
-#define USER_CH583_UART_TX_PIN GPIO_NUM_43
-#define USER_CH583_UART_RX_PIN GPIO_NUM_44
+// 将 CH583 串口引脚和波特率集中在这里，保证协议发送和接收使用同一个物理串口。
+#define USER_CH583_UART_PORT UART_NUM_1
+#define USER_CH583_UART_TX_PIN GPIO_NUM_24
+#define USER_CH583_UART_RX_PIN GPIO_NUM_23
 #define USER_CH583_UART_BAUD_RATE 115200
 #define CH583_WIFI_UART_PORT USER_CH583_UART_PORT
 
@@ -247,14 +256,31 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 #define USER_EPD_TYPE 2
 
 // Keep EPD SPI pins here so board pin changes do not require editing display_bsp.cpp.
-#define USER_EPD_MOSI_PIN 11
-#define USER_EPD_SCK_PIN 10
-#define USER_EPD_DC_PIN 8
-#define USER_EPD_CS_PIN 9
-#define USER_EPD_CS2_PIN 46
-#define USER_EPD_RST_PIN 12
-#define USER_EPD_BUSY_PIN 13
-#define USER_EPD_SPI_HOST SPI3_HOST
+// 将墨水屏 SPI 引脚集中在这里，后续改板时不用修改 display_bsp.cpp。
+#define USER_EPD_MOSI_PIN GPIO_NUM_1
+#define USER_EPD_MISO_PIN GPIO_NUM_25
+#define USER_EPD_SCK_PIN GPIO_NUM_6
+#define USER_EPD_DC_PIN GPIO_NUM_8
+#define USER_EPD_CS_PIN GPIO_NUM_7
+#define USER_EPD_CS2_PIN GPIO_NUM_0
+#define USER_EPD_RST_PIN GPIO_NUM_10
+#define USER_EPD_BUSY_PIN GPIO_NUM_9
+#define USER_EPD_SPI_HOST SPI2_HOST
+
+// Keep the second EPD target mapped to the shared C5 EPD control lines plus CS2.
+// 将第二路墨水屏目标映射到 C5 共用控制线和 CS2，避免使用旧 S3 的独立 EPD2 引脚。
+#define USER_EPD2_DC_PIN USER_EPD_DC_PIN
+#define USER_EPD2_CS_PIN USER_EPD_CS2_PIN
+#define USER_EPD2_RST_PIN USER_EPD_RST_PIN
+#define USER_EPD2_BUSY_PIN USER_EPD_BUSY_PIN
+
+// Keep SD SPI pins here because the C5 board shares MOSI and CLK with the EPD bus.
+// 将 SD SPI 引脚集中在这里，因为 C5 板上 SD 与墨水屏共用 MOSI 和 CLK。
+#define USER_SD_SPI_MOSI_PIN GPIO_NUM_1
+#define USER_SD_SPI_MISO_PIN GPIO_NUM_25
+#define USER_SD_SPI_CLK_PIN GPIO_NUM_6
+#define USER_SD_SPI_CS_PIN GPIO_NUM_26
+#define USER_SD_SPI_HOST SPI2_HOST
 
 // Keep EPD task settings here so display latency and stack pressure can be tuned in one place.
 #define USER_EPD_DISPLAY_QUEUE_LENGTH 2
@@ -291,11 +317,18 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 // Keep LED status enable here so bring-up can disable indicators without changing business code.
 #define USER_LED_STATUS_ENABLE 1
 
-// Keep LED pins and active level here because GPIO42/GPIO45 are low-level-on board LEDs.
-#define USER_LED_GREEN_PIN GPIO_NUM_42
-#define USER_LED_RED_PIN GPIO_NUM_45
-#define USER_LED_ON_LEVEL 0
-#define USER_LED_OFF_LEVEL 1
+// Route status LEDs through CH583 GPIO because the ESP32-C5 board has no local LEDs.
+// C5 板载没有本机 LED，状态灯通过 CH583 GPIO 控制。
+#define USER_LED_BACKEND_CH583 1
+
+// Keep CH583 LED pins and active levels here so status behavior can change without touching LED logic.
+// 将 CH583 LED 引脚和有效电平集中在这里，后续调整状态灯不用修改 LED 逻辑。
+#define USER_LED_CH583_GREEN_PORT "PB"
+#define USER_LED_CH583_GREEN_PIN 6
+#define USER_LED_CH583_RED_PORT "PB"
+#define USER_LED_CH583_RED_PIN 5
+#define USER_LED_CH583_ON_LEVEL "LOW"
+#define USER_LED_CH583_OFF_LEVEL "HIGH"
 
 // Keep LED blink timing here so status behavior can be tuned without editing the LED task.
 #define USER_LED_FAST_BLINK_MS 100
@@ -305,6 +338,8 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 #define USER_LED_SUCCESS_HOLD_MS 1000
 #define USER_LED_STATUS_TASK_STACK_SIZE (4 * 1024)
 #define USER_LED_STATUS_TASK_PRIORITY 3
+
+#define USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE 1
 
 #ifdef __cplusplus
 }

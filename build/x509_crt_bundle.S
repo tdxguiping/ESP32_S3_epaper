@@ -1,4 +1,4 @@
-/* * Data converted from H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/esp-idf/mbedtls/x509_crt_bundle
+/* * Data converted from H:/AI2/file_serving/build/esp-idf/mbedtls/x509_crt_bundle
  */
 .data
 #if !defined (__APPLE__) && !defined (__linux__)

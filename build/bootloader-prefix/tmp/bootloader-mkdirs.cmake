@@ -10,18 +10,18 @@ if(NOT EXISTS "C:/esp/v5.5.3/esp-idf/components/bootloader/subproject")
   file(MAKE_DIRECTORY "C:/esp/v5.5.3/esp-idf/components/bootloader/subproject")
 endif()
 file(MAKE_DIRECTORY
-  "H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/bootloader"
-  "H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/bootloader-prefix"
-  "H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/bootloader-prefix/tmp"
-  "H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/bootloader-prefix/src/bootloader-stamp"
-  "H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/bootloader-prefix/src"
-  "H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/bootloader-prefix/src/bootloader-stamp"
+  "H:/AI2/file_serving/build/bootloader"
+  "H:/AI2/file_serving/build/bootloader-prefix"
+  "H:/AI2/file_serving/build/bootloader-prefix/tmp"
+  "H:/AI2/file_serving/build/bootloader-prefix/src/bootloader-stamp"
+  "H:/AI2/file_serving/build/bootloader-prefix/src"
+  "H:/AI2/file_serving/build/bootloader-prefix/src/bootloader-stamp"
 )
 
 set(configSubDirs )
 foreach(subDir IN LISTS configSubDirs)
-    file(MAKE_DIRECTORY "H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/bootloader-prefix/src/bootloader-stamp/${subDir}")
+    file(MAKE_DIRECTORY "H:/AI2/file_serving/build/bootloader-prefix/src/bootloader-stamp/${subDir}")
 endforeach()
 if(cfgdir)
-  file(MAKE_DIRECTORY "H:/AI2/example/esp-idf-master/examples/protocols/http_server/file_serving/build/bootloader-prefix/src/bootloader-stamp${cfgdir}") # cfgdir has leading slash
+  file(MAKE_DIRECTORY "H:/AI2/file_serving/build/bootloader-prefix/src/bootloader-stamp${cfgdir}") # cfgdir has leading slash
 endif()

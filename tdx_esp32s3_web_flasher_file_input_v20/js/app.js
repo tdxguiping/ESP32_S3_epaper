@@ -114,6 +114,8 @@ const clearConsoleButton = document.getElementById("clearConsoleButton");
 const sendConsoleButton = document.getElementById("sendConsoleButton");
 
 const openSerialProtocolButton = document.getElementById("openSerialProtocolButton");
+const CONSOLE_DISPLAY_MAX_CHARS = 180000;
+let consoleDisplayText = "";
 
 const terminal = {
   clean() { logEl.textContent = ""; },
@@ -143,7 +145,29 @@ function settleWithin(promise, ms, label) {
 }
 function appendLog(message) { logEl.textContent += String(message); logEl.scrollTop = logEl.scrollHeight; }
 function logLine(message) { appendLog(`${message}\n`); }
-function appendConsole(message) { consoleOutputEl.textContent += String(message); consoleOutputEl.scrollTop = consoleOutputEl.scrollHeight; }
+function escapeHtml(text) {
+  return String(text || "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;",
+  }[ch]));
+}
+function renderAnsiText(text) {
+  const plainText = String(text || "");
+  return window.TdxAnsiTerminalRender?.render ?
+    window.TdxAnsiTerminalRender.render(plainText) :
+    escapeHtml(plainText.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""));
+}
+function appendConsole(message) {
+  consoleDisplayText += String(message);
+  if (consoleDisplayText.length > CONSOLE_DISPLAY_MAX_CHARS) {
+    consoleDisplayText = consoleDisplayText.slice(-CONSOLE_DISPLAY_MAX_CHARS);
+  }
+  consoleOutputEl.innerHTML = renderAnsiText(consoleDisplayText);
+  consoleOutputEl.scrollTop = consoleOutputEl.scrollHeight;
+}
 function consoleLine(message) { appendConsole(`${message}\n`); }
 
 function nowTimeText() { return new Date().toLocaleTimeString(); }
@@ -1093,7 +1117,8 @@ consoleDisconnectButton?.addEventListener("click", () => runAction(disconnectDev
 openConsoleButton.addEventListener("click", () => runAction(openConsoleFromUserClick, openConsoleButton));
 closeConsoleButton.addEventListener("click", () => runAction(closeConsoleByUser, closeConsoleButton));
 clearConsoleButton.addEventListener("click", () => {
-  consoleOutputEl.textContent = "";
+  consoleDisplayText = "";
+  consoleOutputEl.innerHTML = "";
   showOperationToast("清空控制台已执行");
 });
 sendConsoleButton.addEventListener("click", () => runAction(sendConsoleText, sendConsoleButton));

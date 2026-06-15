@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -16,6 +17,7 @@ esp_err_t ServerNetworkStaWifiWorkTime_ProcessJson(httpd_req_t *req,
 esp_err_t ServerNetworkStaWifiWorkTime_Init(void);
 esp_err_t ServerNetworkStaWifiWorkTime_SetAndSave(uint32_t seconds);
 void ServerNetworkStaWifiWorkTime_OnNetworkData(void);
+void ServerNetworkStaWifiWorkTime_SetOtaInProgress(bool in_progress);
 
 #ifdef __cplusplus
 }
