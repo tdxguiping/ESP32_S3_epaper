@@ -219,6 +219,13 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 // 选择 ESP32-C5 作为当前工程唯一支持的板级配置。
 #define USER_BOARD_ESP32C5 1
 
+// Keep the mDNS host name here so board/product naming does not leak into network code.
+// 中文：将 mDNS 主机名集中在这里，避免板级/产品命名散落到网络代码里。
+#define USER_MDNS_HOSTNAME "esp32-c5-photopainter"
+// Keep the mDNS instance name here so logs and discovery identify the C5 build correctly.
+// 中文：将 mDNS 实例名集中在这里，确保日志和发现服务正确标识 C5 版本。
+#define USER_MDNS_INSTANCE_NAME "ESP32-C5-WebServer"
+
 // Keep CH583 UART receive enabled from one switch so board bring-up can disable it without touching task code.
 #define USER_CH583_UART_ENABLE 1
 

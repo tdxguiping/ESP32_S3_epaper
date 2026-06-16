@@ -580,8 +580,12 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
         //if(WiFi_config_net == true && (WiFi_config_from_ch583 == true || WiFi_config_from_ble == true))
         //if(WiFi_config_net == true) // anyway, send base info to mobile after connected, no need to check the source
         {
+            const char *base_info_path = "CH583";
+#if USER_BLE_ENABLE
+            base_info_path = WiFi_config_from_ch583 == true ? "CH583" : "BLE";
+#endif
             ESP_LOGI(TAG, "send base info via %s",
-                     WiFi_config_from_ch583 == true ? "CH583" : "BLE");
+                     base_info_path);
             send_base_info_to_mobile();
             WiFi_config_from_ch583 = false;
             WiFi_config_from_ble = false;
@@ -608,8 +612,8 @@ static void Mdns_init_config(void)
         ESP_LOGE(TAG, "mdns_init failed: %s", esp_err_to_name(ret));
         return;
     }
-    ESP_ERROR_CHECK(mdns_hostname_set("esp32-s3-photopainter"));
-    ESP_ERROR_CHECK(mdns_instance_name_set("ESP32-S3-WebServer"));
+    ESP_ERROR_CHECK(mdns_hostname_set(USER_MDNS_HOSTNAME));
+    ESP_ERROR_CHECK(mdns_instance_name_set(USER_MDNS_INSTANCE_NAME));
     ret = mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "mdns_service_add failed: %s", esp_err_to_name(ret));
@@ -617,7 +621,7 @@ static void Mdns_init_config(void)
     }
 
     s_mdns_service_started = true;
-    ESP_LOGI(TAG, "mDNS ready: http://esp32-s3-photopainter.local/index.html");
+    ESP_LOGI(TAG, "mDNS ready: http://%s.local/index.html", USER_MDNS_HOSTNAME);
 }
 
 static esp_err_t ServerPort_init(const char *base_path)
