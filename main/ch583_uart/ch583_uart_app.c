@@ -32,6 +32,39 @@ static void Ch583Uart_HandleBleDataText(const char *data)
     User_HandleWifiJsonTextFromCh583(data);
 }
 
+static void Ch583Uart_ReadAndProcess(size_t rx_size)
+{
+    uint8_t data[USER_CH583_UART_RECEIVE_BUF_SIZE + 1];
+
+    while (rx_size > 0) {
+        size_t want = rx_size;
+        if (want > USER_CH583_UART_RECEIVE_BUF_SIZE) {
+            want = USER_CH583_UART_RECEIVE_BUF_SIZE;
+        }
+
+        int len = uart_read_bytes(USER_CH583_UART_PORT,
+                                  data,
+                                  want,
+                                  pdMS_TO_TICKS(20));
+        if (len <= 0) {
+            ESP_LOGD(TAG, "UART_DATA read empty rx_size=%u", (unsigned int)rx_size);
+            break;
+        }
+
+        data[len] = '\0';
+        ESP_LOGD(TAG, "UART_DATA read len=%d first=0x%02x", len, data[0]);
+
+        // Feed UART bytes only after the driver reports data.
+        // 只在 UART 驱动上报有数据后，才把字节送入 CH583 协议解析器。
+        ch583_wifi_uart_process_bytes(data, (size_t)len, Ch583Uart_HandleBleDataText);
+
+        if ((size_t)len >= rx_size) {
+            break;
+        }
+        rx_size -= (size_t)len;
+    }
+}
+
 static void User_UartEventTask(void *arg)
 {
     (void)arg;
@@ -48,6 +81,12 @@ static void User_UartEventTask(void *arg)
         }
 
         switch (event.type) {
+        case UART_DATA:
+            // Read UART data from the event task to avoid the old 20 ms polling wakeups.
+            // 在事件任务中读取 UART 数据，避免旧的 20ms 轮询唤醒 CPU。
+            ESP_LOGD(TAG, "UART_DATA event size=%u", (unsigned int)event.size);
+            Ch583Uart_ReadAndProcess(event.size);
+            break;
         case UART_BUFFER_FULL:
             // Report RX ring-buffer full events to confirm whether CH583 data is lost before the receive task reads it.
             /* 中文：打印 RX 环形缓冲区已满事件，用于确认 CH583 数据是否已经丢失。 */
@@ -76,7 +115,7 @@ static void User_UartEventTask(void *arg)
     }
 }
 
-static void User_UartReceiveTask(void *arg)
+static void __attribute__((unused)) User_UartReceiveTask(void *arg)
 {
     (void)arg;
     uint8_t data[USER_CH583_UART_RECEIVE_BUF_SIZE + 1];
@@ -154,17 +193,19 @@ esp_err_t Ch583UartApp_Init(void)
     // Configure UART RX wake threshold for future low-power testing, but keep failures non-fatal for board bring-up.
     /* 中文：配置 UART RX 唤醒阈值用于后续低功耗测试，但失败不影响串口接收。 */
     ret = uart_set_wakeup_threshold(USER_CH583_UART_PORT, USER_CH583_UART_WAKEUP_THRESHOLD);
-    ESP_LOGI(TAG, "uart wake threshold ret=%d(%s) port=%d threshold=%d",
+    ESP_LOGI(TAG, "uart wake threshold ret=%d(%s) port=%d rx=%d threshold=%d",
              ret,
              esp_err_to_name(ret),
              USER_CH583_UART_PORT,
+             USER_CH583_UART_RX_PIN,
              USER_CH583_UART_WAKEUP_THRESHOLD);
     if (ret == ESP_OK) {
         ret = esp_sleep_enable_uart_wakeup(USER_CH583_UART_PORT);
-        ESP_LOGI(TAG, "uart wake enable ret=%d(%s) port=%d",
+        ESP_LOGI(TAG, "uart wake enable ret=%d(%s) port=%d rx=%d",
                  ret,
                  esp_err_to_name(ret),
-                 USER_CH583_UART_PORT);
+                 USER_CH583_UART_PORT,
+                 USER_CH583_UART_RX_PIN);
     }
 
     if (s_ch583_uart_event_queue != NULL) {
@@ -175,13 +216,6 @@ esp_err_t Ch583UartApp_Init(void)
                     2,
                     NULL);
     }
-
-    xTaskCreate(User_UartReceiveTask,
-                "User_UartReceiveTask",
-                USER_CH583_UART_RECEIVE_TASK_STACK_SIZE,
-                NULL,
-                2,
-                NULL);
 
     (void)ch583_wifi_uart_get_ble_mac();
 
