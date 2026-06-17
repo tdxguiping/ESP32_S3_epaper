@@ -6272,7 +6272,7 @@ sequenceDiagram
     alt already has IP
         ESP-->>CH583: WIFI_DATA {result:0,stage:IP}
     else no saved WiFi
-        ESP-->>CH583: WIFI_DATA {result:1,message:wakeup No-WiFi}
+        ESP-->>CH583: WIFI_DATA {result:1205,message:wakeup No-WiFi}
     end
     CH583-->>APP: BLE notify
     APP->>HTTP: GET /ping

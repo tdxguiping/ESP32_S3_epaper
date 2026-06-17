@@ -22,6 +22,7 @@
 #include "tdx_cfg.h"
 
 static const char *TAG = "net-ota-upload";
+static int s_last_ota_result = TDX_JSON_RESULT_OK;
 
 static void log_heap_watermark(const char *point)
 {
@@ -389,14 +390,32 @@ static esp_err_t send_ota_resultf(httpd_req_t *req,
     return ota_stream_send_line(req, response);
 }
 
+static int ota_result_from_stage(const char *stage)
+{
+    if (stage == NULL) {
+        return TDX_JSON_RESULT_INTERNAL_ERROR;
+    }
+    if (strcmp(stage, "upload_busy") == 0) {
+        return TDX_JSON_RESULT_OTA_BUSY;
+    }
+    if (strcmp(stage, "empty_body") == 0) {
+        return TDX_JSON_RESULT_FIELD_MISSING;
+    }
+    if (strcmp(stage, "body_too_large") == 0) {
+        return TDX_JSON_RESULT_BODY_TOO_LARGE;
+    }
+    return TDX_JSON_RESULT_INTERNAL_ERROR;
+}
+
 esp_err_t NetworkOtaUpload_SendErrorAndFinish(httpd_req_t *req,
                                               const char *stage,
                                               const char *message,
                                               esp_err_t err)
 {
+    int result = ota_result_from_stage(stage);
     ota_stream_begin(req);
-    send_ota_eventf(req, stage, 1, message, err, NULL);
-    send_ota_resultf(req, 1, message, err,
+    send_ota_eventf(req, stage, result, message, err, NULL);
+    send_ota_resultf(req, result, message, err,
                      ",\"failed_stage\":\"%s\"",
                      stage != NULL ? stage : "unknown");
     return ota_stream_finish(req);
@@ -409,10 +428,11 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
 {
     if (firmware == NULL || firmware_len == 0 || meta == NULL) {
         ESP_LOGE(TAG, "ota write reject: empty firmware");
-        send_ota_eventf(req, "validate_failed", 1, "empty_firmware", ESP_ERR_INVALID_ARG, NULL);
+        s_last_ota_result = TDX_JSON_RESULT_OTA_FIRMWARE_MISSING;
+        send_ota_eventf(req, "validate_failed", s_last_ota_result, "empty_firmware", ESP_ERR_INVALID_ARG, NULL);
         return ESP_ERR_INVALID_ARG;
     }
-    send_ota_eventf(req, "write_prepare", 0, "write_prepare", ESP_OK,
+    send_ota_eventf(req, "write_prepare", TDX_JSON_RESULT_OK, "write_prepare", ESP_OK,
                     ",\"firmware_size\":%u,\"meta_size\":%u",
                     (unsigned int)firmware_len,
                     (unsigned int)meta->firmware_size);
@@ -435,7 +455,8 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
 
     if (firmware_len < sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t)) {
         ESP_LOGE(TAG, "ota write reject: firmware too small len=%u", (unsigned int)firmware_len);
-        send_ota_eventf(req, "validate_failed", 1, "firmware_too_small", ESP_ERR_INVALID_SIZE,
+        s_last_ota_result = TDX_JSON_RESULT_OTA_FIRMWARE_SIZE_INVALID;
+        send_ota_eventf(req, "validate_failed", s_last_ota_result, "firmware_too_small", ESP_ERR_INVALID_SIZE,
                         ",\"firmware_size\":%u",
                         (unsigned int)firmware_len);
         return ESP_ERR_INVALID_SIZE;
@@ -450,7 +471,8 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
              (unsigned long)image_header->entry_addr);
     if (image_header->magic != ESP_IMAGE_HEADER_MAGIC) {
         ESP_LOGE(TAG, "ota write reject: invalid image magic=0x%02X", image_header->magic);
-        send_ota_eventf(req, "validate_failed", 1, "invalid_image_magic", ESP_ERR_INVALID_VERSION,
+        s_last_ota_result = TDX_JSON_RESULT_OTA_VERIFY_FAILED;
+        send_ota_eventf(req, "validate_failed", s_last_ota_result, "invalid_image_magic", ESP_ERR_INVALID_VERSION,
                         ",\"magic\":%u",
                         (unsigned int)image_header->magic);
         return ESP_ERR_INVALID_VERSION;
@@ -458,7 +480,8 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
     if (meta->firmware_size != 0 && meta->firmware_size != firmware_len) {
         ESP_LOGE(TAG, "ota write reject: size mismatch meta=%u real=%u",
                  (unsigned int)meta->firmware_size, (unsigned int)firmware_len);
-        send_ota_eventf(req, "validate_failed", 1, "size_mismatch", ESP_ERR_INVALID_SIZE,
+        s_last_ota_result = TDX_JSON_RESULT_OTA_FIRMWARE_SIZE_INVALID;
+        send_ota_eventf(req, "validate_failed", s_last_ota_result, "size_mismatch", ESP_ERR_INVALID_SIZE,
                         ",\"meta_size\":%u,\"real_size\":%u",
                         (unsigned int)meta->firmware_size,
                         (unsigned int)firmware_len);
@@ -469,7 +492,8 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
     const esp_app_desc_t *new_app = get_firmware_app_desc(firmware, firmware_len);
     if (new_app == NULL) {
         ESP_LOGE(TAG, "ota write reject: app desc missing");
-        send_ota_eventf(req, "validate_failed", 1, "app_desc_missing", ESP_ERR_INVALID_SIZE,
+        s_last_ota_result = TDX_JSON_RESULT_OTA_VERIFY_FAILED;
+        send_ota_eventf(req, "validate_failed", s_last_ota_result, "app_desc_missing", ESP_ERR_INVALID_SIZE,
                         ",\"firmware_size\":%u",
                         (unsigned int)firmware_len);
         return ESP_ERR_INVALID_SIZE;
@@ -478,7 +502,7 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
              current_app != NULL ? current_app->version : "<null>",
              new_app->version,
              meta->version[0] ? meta->version : "<empty>");
-    send_ota_eventf(req, "version_checked", 0, "version_checked", ESP_OK,
+    send_ota_eventf(req, "version_checked", TDX_JSON_RESULT_OK, "version_checked", ESP_OK,
                     ",\"current_version\":\"%s\",\"new_version\":\"%s\",\"meta_version\":\"%s\"",
                     current_app != NULL ? current_app->version : "",
                     new_app->version,
@@ -486,7 +510,8 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
 
     if (meta->version[0] != '\0' && strcmp(meta->version, new_app->version) != 0) {
         ESP_LOGE(TAG, "ota write reject: version mismatch meta=%s image=%s", meta->version, new_app->version);
-        send_ota_eventf(req, "validate_failed", 1, "version_mismatch", ESP_ERR_INVALID_VERSION,
+        s_last_ota_result = TDX_JSON_RESULT_OTA_VERSION_MISMATCH;
+        send_ota_eventf(req, "validate_failed", s_last_ota_result, "version_mismatch", ESP_ERR_INVALID_VERSION,
                         ",\"meta_version\":\"%s\",\"image_version\":\"%s\"",
                         meta->version,
                         new_app->version);
@@ -496,7 +521,8 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
     const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
     if (update_partition == NULL) {
         ESP_LOGE(TAG, "ota write failed: no update partition");
-        send_ota_eventf(req, "partition_failed", 1, "no_update_partition", ESP_ERR_NOT_FOUND, NULL);
+        s_last_ota_result = TDX_JSON_RESULT_OTA_PARTITION_TOO_SMALL;
+        send_ota_eventf(req, "partition_failed", s_last_ota_result, "no_update_partition", ESP_ERR_NOT_FOUND, NULL);
         return ESP_ERR_NOT_FOUND;
     }
     const esp_partition_t *running_partition = esp_ota_get_running_partition();
@@ -505,7 +531,7 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
              update_partition->label,
              (unsigned long)update_partition->address,
              (unsigned int)update_partition->size);
-    send_ota_eventf(req, "write_begin", 0, "write_begin", ESP_OK,
+    send_ota_eventf(req, "write_begin", TDX_JSON_RESULT_OK, "write_begin", ESP_OK,
                     ",\"running\":\"%s\",\"target\":\"%s\",\"target_addr\":\"0x%lx\",\"target_size\":%u,\"firmware_size\":%u",
                     running_partition != NULL ? running_partition->label : "",
                     update_partition->label,
@@ -515,7 +541,8 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
     if (firmware_len > update_partition->size) {
         ESP_LOGE(TAG, "ota write reject: firmware=%u partition=%u",
                  (unsigned int)firmware_len, (unsigned int)update_partition->size);
-        send_ota_eventf(req, "validate_failed", 1, "partition_too_small", ESP_ERR_INVALID_SIZE,
+        s_last_ota_result = TDX_JSON_RESULT_OTA_PARTITION_TOO_SMALL;
+        send_ota_eventf(req, "validate_failed", s_last_ota_result, "partition_too_small", ESP_ERR_INVALID_SIZE,
                         ",\"firmware_size\":%u,\"partition_size\":%u",
                         (unsigned int)firmware_len,
                         (unsigned int)update_partition->size);
@@ -531,11 +558,12 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
     esp_err_t err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
-        send_ota_eventf(req, "ota_begin_failed", 1, esp_err_to_name(err), err, NULL);
+        s_last_ota_result = TDX_JSON_RESULT_OTA_BEGIN_FAILED;
+        send_ota_eventf(req, "ota_begin_failed", s_last_ota_result, esp_err_to_name(err), err, NULL);
         return err;
     }
     ESP_LOGI(TAG, "esp_ota_begin ok: handle=%lu", (unsigned long)update_handle);
-    send_ota_eventf(req, "ota_begin_ok", 0, "ota_begin_ok", ESP_OK,
+    send_ota_eventf(req, "ota_begin_ok", TDX_JSON_RESULT_OK, "ota_begin_ok", ESP_OK,
                     ",\"target\":\"%s\"",
                     update_partition->label);
 
@@ -550,7 +578,8 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
             ESP_LOGE(TAG, "esp_ota_write failed: %s written=%u chunk=%u",
                      esp_err_to_name(err), (unsigned int)written, (unsigned int)chunk);
             esp_ota_abort(update_handle);
-            send_ota_eventf(req, "write_failed", 1, esp_err_to_name(err), err,
+            s_last_ota_result = TDX_JSON_RESULT_OTA_WRITE_FAILED;
+            send_ota_eventf(req, "write_failed", s_last_ota_result, esp_err_to_name(err), err,
                             ",\"written\":%u,\"total\":%u,\"chunk\":%u",
                             (unsigned int)written,
                             (unsigned int)firmware_len,
@@ -561,7 +590,7 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
         if ((written % (256 * 1024)) == 0 || written == firmware_len) {
             ESP_LOGI(TAG, "ota write progress: %u/%u", (unsigned int)written, (unsigned int)firmware_len);
             unsigned int percent = firmware_len > 0 ? (unsigned int)((written * 100) / firmware_len) : 0;
-            send_ota_eventf(req, "write_progress", 0, "write_progress", ESP_OK,
+            send_ota_eventf(req, "write_progress", TDX_JSON_RESULT_OK, "write_progress", ESP_OK,
                             ",\"written\":%u,\"total\":%u,\"percent\":%u",
                             (unsigned int)written,
                             (unsigned int)firmware_len,
@@ -569,7 +598,7 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
         }
     }
 
-    send_ota_eventf(req, "verify_begin", 0, "verify_begin", ESP_OK,
+    send_ota_eventf(req, "verify_begin", TDX_JSON_RESULT_OK, "verify_begin", ESP_OK,
                     ",\"written\":%u,\"total\":%u",
                     (unsigned int)written,
                     (unsigned int)firmware_len);
@@ -577,26 +606,28 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
     ESP_LOGI(TAG, "esp_ota_end returned: %s", esp_err_to_name(err));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
-        send_ota_eventf(req, "verify_failed", 1, esp_err_to_name(err), err, NULL);
+        s_last_ota_result = TDX_JSON_RESULT_OTA_END_FAILED;
+        send_ota_eventf(req, "verify_failed", s_last_ota_result, esp_err_to_name(err), err, NULL);
         return err;
     }
-    send_ota_eventf(req, "verify_ok", 0, "verify_ok", ESP_OK, NULL);
+    send_ota_eventf(req, "verify_ok", TDX_JSON_RESULT_OK, "verify_ok", ESP_OK, NULL);
 
     err = esp_ota_set_boot_partition(update_partition);
     ESP_LOGI(TAG, "esp_ota_set_boot_partition returned: %s", esp_err_to_name(err));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
-        send_ota_eventf(req, "set_boot_failed", 1, esp_err_to_name(err), err,
+        s_last_ota_result = TDX_JSON_RESULT_OTA_SET_BOOT_FAILED;
+        send_ota_eventf(req, "set_boot_failed", s_last_ota_result, esp_err_to_name(err), err,
                         ",\"target\":\"%s\"",
                         update_partition->label);
         return err;
     }
-    send_ota_eventf(req, "set_boot_ok", 0, "set_boot_ok", ESP_OK,
+    send_ota_eventf(req, "set_boot_ok", TDX_JSON_RESULT_OK, "set_boot_ok", ESP_OK,
                     ",\"next\":\"%s\"",
                     update_partition->label);
 
     ESP_LOGI(TAG, "ota write success: next boot partition=%s", update_partition->label);
-    send_ota_eventf(req, "write_done", 0, "write_done", ESP_OK,
+    send_ota_eventf(req, "write_done", TDX_JSON_RESULT_OK, "write_done", ESP_OK,
                     ",\"next\":\"%s\",\"firmware_size\":%u",
                     update_partition->label,
                     (unsigned int)firmware_len);
@@ -614,46 +645,47 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
     ota_upload_meta_t meta = {0};
 
     log_heap_watermark("ota_start");
+    s_last_ota_result = TDX_JSON_RESULT_OK;
     ota_stream_begin(req);
-    send_ota_eventf(req, "body_received", 0, "body_received", ESP_OK,
+    send_ota_eventf(req, "body_received", TDX_JSON_RESULT_OK, "body_received", ESP_OK,
                     ",\"body_len\":%u",
                     (unsigned int)body_len);
     ESP_LOGI(TAG, "process ota body: len=%u content_type=%s",
              (unsigned int)body_len,
              content_type != NULL ? content_type : "<null>");
     ESP_LOGI(TAG, "process ota body: body_ptr=%p", body);
-    send_ota_eventf(req, "parse_begin", 0, "parse_begin", ESP_OK, NULL);
+    send_ota_eventf(req, "parse_begin", TDX_JSON_RESULT_OK, "parse_begin", ESP_OK, NULL);
 
     if (!extract_boundary(content_type, boundary, sizeof(boundary))) {
         ESP_LOGE(TAG, "process ota body failed: no boundary");
-        send_ota_eventf(req, "missing_boundary", 1, "missing_boundary", ESP_ERR_INVALID_ARG, NULL);
-        send_ota_resultf(req, 1, "missing_boundary", ESP_ERR_INVALID_ARG,
+        send_ota_eventf(req, "missing_boundary", TDX_JSON_RESULT_OTA_BOUNDARY_MISSING, "missing_boundary", ESP_ERR_INVALID_ARG, NULL);
+        send_ota_resultf(req, TDX_JSON_RESULT_OTA_BOUNDARY_MISSING, "missing_boundary", ESP_ERR_INVALID_ARG,
                          ",\"failed_stage\":\"missing_boundary\"");
         return ota_stream_finish(req);
     }
     ESP_LOGI(TAG, "process ota body: boundary=%s", boundary);
-    send_ota_eventf(req, "boundary_ok", 0, "boundary_ok", ESP_OK,
+    send_ota_eventf(req, "boundary_ok", TDX_JSON_RESULT_OK, "boundary_ok", ESP_OK,
                     ",\"boundary_len\":%u",
                     (unsigned int)strlen(boundary));
 
     if (!extract_multipart_field(body, body_len, boundary, "meta", &meta_field)) {
         ESP_LOGE(TAG, "process ota body failed: missing meta field");
-        send_ota_eventf(req, "missing_meta", 1, "missing_meta", ESP_ERR_INVALID_ARG, NULL);
-        send_ota_resultf(req, 1, "missing_meta", ESP_ERR_INVALID_ARG,
+        send_ota_eventf(req, "missing_meta", TDX_JSON_RESULT_OTA_META_MISSING, "missing_meta", ESP_ERR_INVALID_ARG, NULL);
+        send_ota_resultf(req, TDX_JSON_RESULT_OTA_META_MISSING, "missing_meta", ESP_ERR_INVALID_ARG,
                          ",\"failed_stage\":\"missing_meta\"");
         return ota_stream_finish(req);
     }
-    send_ota_eventf(req, "meta_received", 0, "meta_received", ESP_OK,
+    send_ota_eventf(req, "meta_received", TDX_JSON_RESULT_OK, "meta_received", ESP_OK,
                     ",\"meta_len\":%u",
                     (unsigned int)meta_field.len);
     if (!parse_meta_json(meta_field.data, meta_field.len, &meta)) {
         ESP_LOGE(TAG, "process ota body failed: invalid meta");
-        send_ota_eventf(req, "invalid_meta", 1, "invalid_meta", ESP_ERR_INVALID_ARG, NULL);
-        send_ota_resultf(req, 1, "invalid_meta", ESP_ERR_INVALID_ARG,
+        send_ota_eventf(req, "invalid_meta", TDX_JSON_RESULT_OTA_META_INVALID, "invalid_meta", ESP_ERR_INVALID_ARG, NULL);
+        send_ota_resultf(req, TDX_JSON_RESULT_OTA_META_INVALID, "invalid_meta", ESP_ERR_INVALID_ARG,
                          ",\"failed_stage\":\"invalid_meta\"");
         return ota_stream_finish(req);
     }
-    send_ota_eventf(req, "meta_ok", 0, "meta_ok", ESP_OK,
+    send_ota_eventf(req, "meta_ok", TDX_JSON_RESULT_OK, "meta_ok", ESP_OK,
                     ",\"version\":\"%s\",\"firmware_size\":%u,\"reboot\":%u",
                     meta.version[0] ? meta.version : "",
                     (unsigned int)meta.firmware_size,
@@ -661,39 +693,40 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
     if (!extract_multipart_field(body, body_len, boundary, "firmware", &firmware_field) &&
         !extract_multipart_field(body, body_len, boundary, "bin", &firmware_field)) {
         ESP_LOGE(TAG, "process ota body failed: missing firmware field");
-        send_ota_eventf(req, "missing_firmware", 1, "missing_firmware", ESP_ERR_INVALID_ARG, NULL);
-        send_ota_resultf(req, 1, "missing_firmware", ESP_ERR_INVALID_ARG,
+        send_ota_eventf(req, "missing_firmware", TDX_JSON_RESULT_OTA_FIRMWARE_MISSING, "missing_firmware", ESP_ERR_INVALID_ARG, NULL);
+        send_ota_resultf(req, TDX_JSON_RESULT_OTA_FIRMWARE_MISSING, "missing_firmware", ESP_ERR_INVALID_ARG,
                          ",\"failed_stage\":\"missing_firmware\"");
         return ota_stream_finish(req);
     }
     ESP_LOGI(TAG, "process ota body: fields ready meta_len=%u firmware_len=%u",
              (unsigned int)meta_field.len,
              (unsigned int)firmware_field.len);
-    send_ota_eventf(req, "firmware_received", 0, "firmware_received", ESP_OK,
+    send_ota_eventf(req, "firmware_received", TDX_JSON_RESULT_OK, "firmware_received", ESP_OK,
                     ",\"firmware_size\":%u",
                     (unsigned int)firmware_field.len);
 
     PowerMode_SetOtaInProgress(true);
-    send_ota_eventf(req, "power_hold", 0, "ota_power_hold_enabled", ESP_OK, NULL);
+    send_ota_eventf(req, "power_hold", TDX_JSON_RESULT_OK, "ota_power_hold_enabled", ESP_OK, NULL);
     esp_err_t err = write_firmware_to_ota_partition(req,
                                                     (const uint8_t *)firmware_field.data,
                                                     firmware_field.len,
                                                     &meta);
     if (err != ESP_OK) {
         PowerMode_SetOtaInProgress(false);
-        send_ota_eventf(req, "power_hold_release", 0, "ota_power_hold_disabled", ESP_OK, NULL);
-        send_ota_resultf(req, 1, esp_err_to_name(err), err,
+        int result = s_last_ota_result != TDX_JSON_RESULT_OK ? s_last_ota_result : TDX_JSON_RESULT_INTERNAL_ERROR;
+        send_ota_eventf(req, "power_hold_release", TDX_JSON_RESULT_OK, "ota_power_hold_disabled", ESP_OK, NULL);
+        send_ota_resultf(req, result, esp_err_to_name(err), err,
                          ",\"failed_stage\":\"write_or_verify\"");
         return ota_stream_finish(req);
     }
 
-    send_ota_resultf(req, 0, "ok", ESP_OK,
+    send_ota_resultf(req, TDX_JSON_RESULT_OK, "ok", ESP_OK,
                      ",\"reboot\":%u,\"firmware_size\":%u",
                      meta.reboot ? 1 : 0,
                      (unsigned int)firmware_field.len);
     ESP_LOGI(TAG, "process ota body: success result sent reboot=%u", meta.reboot ? 1 : 0);
     if (meta.reboot) {
-        send_ota_eventf(req, "rebooting", 0, "rebooting", ESP_OK,
+        send_ota_eventf(req, "rebooting", TDX_JSON_RESULT_OK, "rebooting", ESP_OK,
                         ",\"delay_ms\":1000");
         ota_stream_finish(req);
         ESP_LOGI(TAG, "ota reboot scheduled after response");
@@ -701,9 +734,9 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
         esp_restart();
     } else {
         ESP_LOGI(TAG, "ota reboot skipped by meta");
-        send_ota_eventf(req, "reboot_skipped", 0, "reboot_skipped", ESP_OK, NULL);
+        send_ota_eventf(req, "reboot_skipped", TDX_JSON_RESULT_OK, "reboot_skipped", ESP_OK, NULL);
         PowerMode_SetOtaInProgress(false);
-        send_ota_eventf(req, "power_hold_release", 0, "ota_power_hold_disabled", ESP_OK, NULL);
+        send_ota_eventf(req, "power_hold_release", TDX_JSON_RESULT_OK, "ota_power_hold_disabled", ESP_OK, NULL);
         return ota_stream_finish(req);
     }
     return ESP_OK;
