@@ -104,6 +104,26 @@ static bool starts_with_http_method(const char *buffer, size_t buffer_used)
     return false;
 }
 
+// Log the first USB chunk to confirm whether bytes reached the ESP32-C5 FIFO.
+// 打印 USB 首包预览，用于确认 PC 发出的字节是否已经到达 ESP32-C5 FIFO。
+static void log_usb_rx_preview(const uint8_t *data, int len)
+{
+    char preview[33];
+    int preview_len = len < (int)(sizeof(preview) - 1) ? len : (int)(sizeof(preview) - 1);
+
+    if (data == NULL || len <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < preview_len; i++) {
+        uint8_t ch = data[i];
+        preview[i] = (ch >= 32 && ch <= 126) ? (char)ch : '.';
+    }
+    preview[preview_len] = '\0';
+
+    ESP_LOGI(TAG, "USB RX first chunk len=%d preview=\"%s\"", len, preview);
+}
+
 static void keep_only_possible_http_prefix(char *buffer, size_t *buffer_used)
 {
     static const char *methods[] = {"GET ", "POST ", "PUT ", "DELETE ", "PATCH ", "HEAD "};
@@ -181,6 +201,7 @@ static void UsbConsoleEcho_Task(void *arg)
                 request_start_tick = xTaskGetTickCount();
                 request_start_us = esp_timer_get_time();
                 next_progress_bytes = USB_CONSOLE_RX_PROGRESS_STEP_BYTES;
+                log_usb_rx_preview(rx, len);
             }
 
             if (!grow_request_buffer(&request_buffer, &request_capacity, request_used + (size_t)len + 1)) {
@@ -197,7 +218,16 @@ static void UsbConsoleEcho_Task(void *arg)
             request_used += (size_t)len;
             request_buffer[request_used] = '\0';
             request_start_tick = xTaskGetTickCount();
+            size_t before_filter_used = request_used;
             keep_only_possible_http_prefix(request_buffer, &request_used);
+            if (before_filter_used > 0 && request_used == 0) {
+                ESP_LOGW(TAG, "USB RX dropped non-HTTP bytes len=%u",
+                         (unsigned int)before_filter_used);
+            } else if (request_used != before_filter_used) {
+                ESP_LOGW(TAG, "USB RX trimmed prefix before HTTP used_before=%u used_after=%u",
+                         (unsigned int)before_filter_used,
+                         (unsigned int)request_used);
+            }
             while (USB_CONSOLE_RX_PROGRESS_STEP_BYTES > 0 && request_used >= next_progress_bytes) {
                 uint32_t elapsed_ms = elapsed_ms_since(request_start_us);
                 uint32_t rate_kb = elapsed_ms > 0 ? (uint32_t)((request_used * 1000U) / elapsed_ms / 1024U) : 0;

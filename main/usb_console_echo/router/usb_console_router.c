@@ -59,9 +59,11 @@ esp_err_t UsbConsoleRouter_Handle(const usb_console_http_request_t *request)
         return ESP_ERR_NO_MEM;
     }
 
-#if USB_CONSOLE_VERBOSE_LOG_ENABLE
-    ESP_LOGD(TAG, "route USB request method=%s path=%s", request->method, request->path);
-#endif
+    ESP_LOGI(TAG, "route USB request method=%s path=%s body_len=%u content_type=%s",
+             request->method,
+             request->path,
+             (unsigned int)request->body_len,
+             request->content_type);
 
     if (path_is(request->path, "/ping")) {
         ret = UsbConsolePing_Handle(request, response);
@@ -83,6 +85,10 @@ esp_err_t UsbConsoleRouter_Handle(const usb_console_http_request_t *request)
             ret = UsbConsoleEpdType_SendCurrent();
         }
     } else if (path_is(request->path, USB_CONSOLE_EPD_TEST_URI)) {
+        ESP_LOGI(TAG, "route epd_test matched uri=%s method=%s body_len=%u",
+                 USB_CONSOLE_EPD_TEST_URI,
+                 request->method,
+                 (unsigned int)request->body_len);
         ret = UsbConsoleEpdType_HandleTest(request, response);
     } else if (path_is(request->path, "/dataUP") || path_is(request->path, "/net_data")) {
         ret = UsbConsoleNetData_Handle(request, response);

@@ -68,9 +68,20 @@ int UsbConsoleTransport_Read(uint8_t *data, size_t data_size, TickType_t ticks_t
 void UsbConsoleTransport_FlushRx(void)
 {
     uint8_t discard[64];
+    size_t total_discarded = 0;
+    int read_len = 0;
 
-    while (usb_serial_jtag_ll_read_rxfifo(discard, sizeof(discard)) > 0) {
+    while ((read_len = (int)usb_serial_jtag_ll_read_rxfifo(discard, sizeof(discard))) > 0) {
+        total_discarded += (size_t)read_len;
         vTaskDelay(1);
+    }
+    // Log startup RX cleanup so early PC requests can be distinguished from lost routing.
+    // 记录启动阶段清理了多少 USB RX 数据，用于区分 PC 过早发送和路由未执行。
+    if (total_discarded > 0) {
+        ESP_LOGW(TAG, "USB RX flush discarded %u bytes before HTTP entry ready",
+                 (unsigned int)total_discarded);
+    } else {
+        ESP_LOGI(TAG, "USB RX flush discarded 0 bytes before HTTP entry ready");
     }
 }
 

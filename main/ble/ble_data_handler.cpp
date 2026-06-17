@@ -471,6 +471,8 @@ int parse_wifi_work_time_json(const char *json_str, wifi_work_time_json_t *out)
     cJSON *root = NULL;
     cJSON *item_func = NULL;
     cJSON *item_seconds = NULL;
+    cJSON *item_time = NULL;
+    cJSON *item_duration = NULL;
     char reply_json[160];
     esp_err_t set_ret = ESP_OK;
 
@@ -489,6 +491,7 @@ int parse_wifi_work_time_json(const char *json_str, wifi_work_time_json_t *out)
 
     item_func = cJSON_GetObjectItem(root, "func");
     item_seconds = cJSON_GetObjectItem(root, "seconds");
+    item_time = cJSON_GetObjectItem(root, "time");
 
     if (!cJSON_IsString(item_func) || item_func->valuestring == NULL) {
         cJSON_Delete(root);
@@ -498,14 +501,29 @@ int parse_wifi_work_time_json(const char *json_str, wifi_work_time_json_t *out)
 
     snprintf(out->func, sizeof(out->func), "%s", item_func->valuestring);
 
-    if (strcmp(out->func, "set_wifi_work_time") != 0) {
+    if (strcmp(out->func, "set_wifi_work_time") != 0 && strcmp(out->func, "wifi_standby") != 0) {
         cJSON_Delete(root);
         return -1;
     }
 
-    if (!cJSON_IsNumber(item_seconds) ||
-        item_seconds->valueint < SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS ||
-        item_seconds->valueint > SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS) {
+    item_duration = cJSON_IsNumber(item_seconds) ? item_seconds : item_time;
+    if (!cJSON_IsNumber(item_duration)) {
+        cJSON_Delete(root);
+        LOG_ERROR("set_wifi_work_time JSON missing seconds/time");
+        snprintf(reply_json, sizeof(reply_json),
+                 "{\"func\":\"set_wifi_work_time_result\",\"result\":%d,\"message\":\"set wifi work time failed\"}",
+                 TDX_JSON_RESULT_WIFI_WORK_TIME_MISSING);
+            #if(USER_BLE_ENABLE == 1)
+             SendData_indicate((uint8_t *)reply_json, strlen(reply_json));
+             printf("JSON:\n%s\n", reply_json);
+            #else
+             ch583_wifi_uart_send_wifi_data((const char *)reply_json);
+            #endif
+        return 0;
+    }
+
+    if (item_duration->valueint < SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS ||
+        item_duration->valueint > SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS) {
         cJSON_Delete(root);
         LOG_ERROR("set_wifi_work_time JSON invalid");
         snprintf(reply_json, sizeof(reply_json),
@@ -520,7 +538,7 @@ int parse_wifi_work_time_json(const char *json_str, wifi_work_time_json_t *out)
         return 0;
     }
 
-    out->seconds = item_seconds->valueint;
+    out->seconds = item_duration->valueint;
     set_ret = ServerNetworkStaWifiWorkTime_SetAndSave((uint32_t)out->seconds);
     cJSON_Delete(root);
 

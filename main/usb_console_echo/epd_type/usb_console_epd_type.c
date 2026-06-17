@@ -317,8 +317,14 @@ esp_err_t UsbConsoleEpdType_HandleTest(const usb_console_http_request_t *request
     if (request == NULL || response == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    ESP_LOGI(TAG, "epd_test handler enter method=%s body_len=%u body=\"%.*s\"",
+             request->method,
+             (unsigned int)request->body_len,
+             request->body_len > 96 ? 96 : (int)request->body_len,
+             request->body != NULL ? request->body : "");
     ret = ensure_epd_type_loaded();
     if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "epd_test load EPD type failed ret=%s", esp_err_to_name(ret));
         UsbConsoleHttp_SetJson(response,
                                500,
                                "Internal Server Error",
@@ -327,6 +333,7 @@ esp_err_t UsbConsoleEpdType_HandleTest(const usb_console_http_request_t *request
     }
     config = EpdType_GetCurrentConfig();
     if (strcasecmp(request->method, "POST") != 0) {
+        ESP_LOGW(TAG, "epd_test reject method=%s", request->method);
         UsbConsoleHttp_SetJson(response,
                                400,
                                "Bad Request",
@@ -334,6 +341,7 @@ esp_err_t UsbConsoleEpdType_HandleTest(const usb_console_http_request_t *request
         return ESP_OK;
     }
     if (config == NULL) {
+        ESP_LOGE(TAG, "epd_test current EPD config is null");
         UsbConsoleHttp_SetJson(response,
                                500,
                                "Internal Server Error",
@@ -347,6 +355,9 @@ esp_err_t UsbConsoleEpdType_HandleTest(const usb_console_http_request_t *request
              (unsigned int)config->type,
              config->name);
     test_epd_display();
+    ESP_LOGI(TAG, "epd_test display function returned type=%u name=%s",
+             (unsigned int)config->type,
+             config->name);
 
     snprintf(json,
              sizeof(json),
