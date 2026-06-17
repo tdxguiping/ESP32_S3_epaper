@@ -73,14 +73,19 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
                      !has_key ? TDX_JSON_RESULT_WIFI_KEY_MISSING :
                      !wifi_text_is_valid(ssid, sizeof(ssid)) ? TDX_JSON_RESULT_WIFI_SSID_INVALID :
                      TDX_JSON_RESULT_WIFI_KEY_INVALID;
+        const char *error = !has_ssid ? "ssid_missing" :
+                            !has_key ? "key_missing" :
+                            !wifi_text_is_valid(ssid, sizeof(ssid)) ? "ssid_invalid" :
+                            "key_invalid";
         ESP_LOGW(TAG, "wifi invalid request ssid_len=%u password_len=%u",
                  (unsigned int)strlen(ssid),
                  (unsigned int)strlen(password));
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"wifi_result\",\"result\":%d,\"message\":\"invalid wifi config\"}",
-                                         result);
+                                         "{\"func\":\"wifi_result\",\"result\":%d,\"message\":\"invalid wifi config\",\"error\":\"%s\"}",
+                                         result,
+                                         error);
     }
 
     ESP_LOGI(TAG, "wifi request ssid=%s password=%s body_len=%u",
@@ -100,7 +105,7 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"wifi_result\",\"result\":%d,\"message\":\"save wifi failed\"}",
+                                         "{\"func\":\"wifi_result\",\"result\":%d,\"message\":\"save wifi failed\",\"error\":\"wifi_save_failed\"}",
                                          TDX_JSON_RESULT_WIFI_SAVE_FAILED);
     }
 
@@ -113,7 +118,7 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"wifi_result\",\"result\":%d,\"message\":\"connect submit failed\"}",
+                                         "{\"func\":\"wifi_result\",\"result\":%d,\"message\":\"connect submit failed\",\"error\":\"wifi_connect_submit_failed\"}",
                                          TDX_JSON_RESULT_WIFI_CONNECT_SUBMIT_FAILED);
     }
 

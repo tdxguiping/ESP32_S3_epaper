@@ -185,20 +185,29 @@ static esp_err_t send_cast2pic_result(httpd_req_t *req, const char *result)
             result_code = TDX_JSON_RESULT_CAST2PIC_SCREEN_INVALID;
         } else if (strcmp(result, "display_request_failed") == 0) {
             result_code = TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED;
-        } else if (strstr(result, "write_bin") != NULL || strstr(result, "bin") != NULL) {
-            result_code = TDX_JSON_RESULT_SAVE_BIN_FAILED;
-        } else if (strstr(result, "image") != NULL) {
-            result_code = TDX_JSON_RESULT_SAVE_IMAGE_FAILED;
+        } else if (strcmp(result, "storage_not_ready") == 0) {
+            result_code = TDX_JSON_RESULT_STORAGE_NOT_READY;
+        } else if (strcmp(result, "storage_not_enough") == 0) {
+            result_code = TDX_JSON_RESULT_STORAGE_NO_SPACE;
+        } else if (strcmp(result, "missing_bin_file") == 0) {
+            result_code = TDX_JSON_RESULT_UPLOAD_BIN_MISSING;
+        } else if (strcmp(result, "missing_image_file") == 0) {
+            result_code = TDX_JSON_RESULT_UPLOAD_IMAGE_MISSING;
         } else if (strstr(result, "size") != NULL) {
             result_code = TDX_JSON_RESULT_UPLOAD_SIZE_MISMATCH;
+        } else if (strstr(result, "write_bin") != NULL) {
+            result_code = TDX_JSON_RESULT_SAVE_BIN_FAILED;
+        } else if (strstr(result, "write_image") != NULL) {
+            result_code = TDX_JSON_RESULT_SAVE_IMAGE_FAILED;
         } else if (strstr(result, "file") != NULL) {
             result_code = TDX_JSON_RESULT_UPLOAD_FILE_NAME_INVALID;
         } else {
             result_code = TDX_JSON_RESULT_UPLOAD_INVALID;
         }
         snprintf(json, sizeof(json),
-                 "{\"func\":\"cast2pic_result\",\"result\":%d,\"message\":\"%s\"}",
+                 "{\"func\":\"cast2pic_result\",\"result\":%d,\"message\":\"%s\",\"error\":\"%s\"}",
                  result_code,
+                 result,
                  result);
     }
 
@@ -403,9 +412,21 @@ static void assign_text_part(cast2pic_meta_t *meta, const char *name, const mult
     }
 }
 
+static bool image_field_matches(const char *name, const char *base_name)
+{
+    size_t base_len = strlen(base_name);
+
+    if (strcmp(name, base_name) == 0) {
+        return true;
+    }
+    return strncmp(name, base_name, base_len) == 0 &&
+           (name[base_len] == 'A' || name[base_len] == 'B') &&
+           name[base_len + 1] == '\0';
+}
+
 static bool assign_image_part(cast2pic_meta_t *meta, const char *name, const multipart_part_t *part)
 {
-    if (strcmp(name, "fileName") == 0) {
+    if (image_field_matches(name, "fileName")) {
         if (meta->image_count >= CAST2PIC_MAX_IMAGES) {
             return true;
         }
@@ -418,13 +439,13 @@ static bool assign_image_part(cast2pic_meta_t *meta, const char *name, const mul
         return true;
     }
     cast2pic_image_t *image = &meta->images[meta->image_count];
-    if (strcmp(name, "bin_size") == 0) {
+    if (image_field_matches(name, "bin_size")) {
         parse_size_text(part, &image->bin_size);
-    } else if (strcmp(name, "image_size") == 0) {
+    } else if (image_field_matches(name, "image_size")) {
         parse_size_text(part, &image->image_size);
-    } else if (strcmp(name, "bin") == 0) {
+    } else if (image_field_matches(name, "bin")) {
         image->bin_part = *part;
-    } else if (strcmp(name, "image") == 0) {
+    } else if (image_field_matches(name, "image")) {
         image->image_part = *part;
         meta->image_count++;
     }

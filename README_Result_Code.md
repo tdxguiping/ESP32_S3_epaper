@@ -203,6 +203,8 @@ This file defines suggested `result` codes for API JSON responses only.
 | result | 名称建议 | 含义 |
 |---:|---|---|
 | `0` | `TDX_JSON_RESULT_OK` | cast2pic 成功 |
+| `1012` | `TDX_JSON_RESULT_STORAGE_NOT_READY` | 存储未就绪 |
+| `1013` | `TDX_JSON_RESULT_STORAGE_NO_SPACE` | 存储空间不足 |
 | `1601` | `TDX_JSON_RESULT_UPLOAD_BOUNDARY_MISSING` | multipart boundary 缺失 |
 | `1602` | `TDX_JSON_RESULT_UPLOAD_FUNC_MISSING` | multipart `func` 缺失 |
 | `1603` | `TDX_JSON_RESULT_UPLOAD_INVALID` | 上传内容格式非法 |

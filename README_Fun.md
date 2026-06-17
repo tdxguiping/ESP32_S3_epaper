@@ -118,7 +118,7 @@ The full result-code table is in `README_Result_Code.md`; this file keeps featur
 | `app_nvs` 通用 NVS | `PhotoPainter` namespace | `key != NULL`；写字符串时 `value != NULL`；写入后必须 `nvs_commit()`；`read_u8` 发现 key 不存在时会写入默认值 | `read_u8` 要求 `out_value != NULL`；`read_str` 要求 `value != NULL` 且 `value_size > 0`；打开失败或读取失败时按默认值回退 |
 | WiFi 配网 NVS | `wifi:ssid/password`，`nvs.net80211:sta.ssid/sta.pswd` | USB `/wifi` 要求 `func=wifi`、`ssid` 可解析且长度 1..32、`key` 可解析且长度小于 65；两个 namespace 都写入成功后才提交 worker 连接 | STA 启动时从保存的 WiFi 配置恢复连接；USB 侧只负责保存和提交 worker，真正连接在 `User_Network_mode_app_init()` / `server_network_sta.c` |
 | `cast` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg`，`/data/bin_img/last_cast.txt` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename | `show=true` 时先使用请求体里的 bin 数据入队；保存成功后记录 last cast；重启恢复或快照等流程可读取 last cast 和 `/data/bin_img`、`/data/jpg_img` |
-| `cast2pic` 图片保存 | `screen=a` 保存 `/data/bin_img/screen_b.bin`、`/data/jpg_img/screen_b.jpg`；`screen=b` 保存 `/data/bin_img/screen_a.bin`、`/data/jpg_img/screen_a.jpg` | 当前源码 `screen` 只接受 `a` 或 `b`；`screen=a -> EPD2 -> screen_b`，`screen=b -> EPD1 -> screen_a`；每组 `fileName/bin_size/image_size/bin/image` 必须完整；大小必须匹配；`save=true` 才保存；写入使用 `.tmp`，大小校验通过后 rename；空间不足返回失败 | `show=true` 时按 screen 转成 EPD number 后入队显示；保存后从固定 screen 文件名读取 |
+| `cast2pic` 图片保存 | `screen=a` 保存 `/data/bin_img/screen_b.bin`、`/data/jpg_img/screen_b.jpg`；`screen=b` 保存 `/data/bin_img/screen_a.bin`、`/data/jpg_img/screen_a.jpg` | 当前源码 `screen` 只接受 `a` 或 `b`；`screen=a -> EPD2 -> screen_b`，`screen=b -> EPD1 -> screen_a`；每组 `fileName/bin_size/image_size/bin/image` 必须完整，并兼容 `fileNameA/bin_sizeA/image_sizeA/binA/imageA`、`fileNameB/bin_sizeB/image_sizeB/binB/imageB`；大小必须匹配；`save=true` 才保存；写入使用 `.tmp`，大小校验通过后 rename；空间不足返回失败 | `show=true` 时按 screen 转成 EPD number 后入队显示；保存后从固定 screen 文件名读取 |
 | `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | 字段、文件名安全、大小匹配、目录和剩余空间条件与 cast 类似；主要用于保存，`show=true` 时也可显示 | 图片列表、轮播、快照从 jpg/bin 目录取数据 |
 | `delete` 删除 | 删除 `/data/bin_img/*.bin`、`/data/jpg_img/*.jpg`，并清理关联状态 | 单次删除数量受 `SERVER_NETWORK_STA_DELETE_MAX_FILES=50` 限制；文件名必须安全；只删除匹配的 bin/jpg；如删除 last cast 或轮播中的文件，要同步清理关联状态 | 从 JSON `fileNames` 取删除列表；删除前按文件名拼路径 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从轮播配置/control 文件读取轮播状态 |
@@ -1301,6 +1301,8 @@ Result 定义建议：
 | 返回 | result | 说明 |
 |---|---|---|
 | `cast2pic_result` | `0` | cast2pic 成功 |
+| `cast2pic_result` | `1012` | 存储未就绪 |
+| `cast2pic_result` | `1013` | 存储空间不足 |
 | `cast2pic_result` | `1601` | multipart boundary 缺失 |
 | `cast2pic_result` | `1602` | multipart `func` 缺失 |
 | `cast2pic_result` | `1603` | 上传内容格式非法 |
@@ -1313,6 +1315,8 @@ Result 定义建议：
 | `cast2pic_result` | `1612` | 文件名非法 |
 | `cast2pic_result` | `1616` | `screen` 不是 `a` / `b` |
 | `cast2pic_result` | `1617` | `screen` 当前实现不支持 |
+
+失败返回会附带 `error` 字段，内容为源码中的具体错误名，例如 `missing_bin_file`、`storage_not_enough`、`display_request_failed`。
 
 功能说明：网络 `cast2pic` 用于单次刷新指定屏幕，当前源码只接受 `screen=a` 或 `screen=b`，并且 `CAST2PIC_MAX_IMAGES=1`。`screen=ab` 只属于 USB `cast2pic` 侧能力，不写入网络 HTTP 流程。
 
@@ -1327,7 +1331,7 @@ sequenceDiagram
     participant EPD as Screen A/B
     APP->>DATAUP: multipart func=cast2pic screen=a/b
     DATAUP->>C2P: route by func
-    C2P->>C2P: pair repeated fileName/bin/image by order
+    C2P->>C2P: parse fileName/bin/image or A/B suffix fields
     C2P->>SD: save each bin and jpg
     alt show=true
         C2P->>EPD: ServerNetworkStaEpdDisplay_QueueToScreen()
@@ -1392,6 +1396,10 @@ bin_size=123456
 image_size=23456
 bin=@26422.bin
 image=@26422.jpg
+
+兼容字段：
+fileNameA / bin_sizeA / image_sizeA / binA / imageA
+fileNameB / bin_sizeB / image_sizeB / binB / imageB
 ```
 
 字段说明：
@@ -1401,7 +1409,7 @@ func     固定为 cast2pic
 screen   只接受 a 或 b；a 映射到 EPD2，b 映射到 EPD1；不接受 ab
 save     是否保存
 show     是否立即显示
-当前网络版本只处理 1 组 fileName/bin/image，超过 1 组会被忽略或不进入有效流程
+当前网络版本只处理 1 组 fileName/bin/image；无后缀、A 后缀、B 后缀字段都可作为这一组输入，超过 1 组会被忽略或不进入有效流程
 ```
 
 screen 映射注意：
@@ -1439,13 +1447,13 @@ $screen = "a"
 curl.exe -X POST "$esp/dataUP" `
   -F "func=cast2pic" `
   -F "screen=$screen" `
-  -F "fileName=26423" `
-  -F "bin_size=$binSize" `
-  -F "image_size=$jpgSize" `
+  -F "fileNameA=26423" `
+  -F "bin_sizeA=$binSize" `
+  -F "image_sizeA=$jpgSize" `
   -F "save=true" `
   -F "show=true" `
-  -F "bin=@$bin;type=application/octet-stream" `
-  -F "image=@$jpg;type=image/jpeg"
+  -F "binA=@$bin;type=application/octet-stream" `
+  -F "imageA=@$jpg;type=image/jpeg"
 ```
 
 预期：设备返回 `cast2pic_result`，`result=0` 表示成功；`screen` 只能测试 `a` 或 `b`。
@@ -1459,7 +1467,7 @@ curl.exe -X POST "$esp/dataUP" `
 - 使用临时文件写入再 rename，避免半文件覆盖正式文件。
 
 取：
-- 读取 multipart 中重复出现的 fileName/bin_size/image_size/bin/image。
+- 读取 multipart 中的 fileName/bin_size/image_size/bin/image，兼容 A/B 后缀字段。
 - 根据 screen=a/b 转成 EPD screen number 后投递显示队列；screen=a -> EPD2，screen=b -> EPD1。
 - 写入前读取剩余空间做容量检查。
 ```
@@ -4005,6 +4013,8 @@ Result 定义建议：
 | `usb_unknown_result` | `1104` | USB 路由不存在 |
 | `usb_route_result` | `1105` | 路由 handler 返回失败 |
 
+错误返回会附带 `error` 字段：未知路径为 `route_not_found`，handler 失败为 `handler_failed`。
+
 功能说明：
 
 ```text
@@ -4772,6 +4782,8 @@ Result 定义建议：
 | `wifi_result` | `1304` | `key` 长度或内容非法 |
 | `wifi_result` | `1305` | 保存 WiFi 配置失败 |
 | `wifi_result` | `1306` | 提交 WiFi 连接任务失败 |
+
+错误返回会附带 `error` 字段：`ssid_missing`、`key_missing`、`ssid_invalid`、`key_invalid`、`wifi_save_failed`、`wifi_connect_submit_failed`。
 
 功能说明：
 
