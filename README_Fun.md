@@ -1,7 +1,15 @@
 # README_Fun.md
 
+文件名约定：
+
+```text
+本文档文件名统一为 README_Fun.md。
+不要在脚本、报告或链接里写成 readme_fun.md；GitHub/Linux 路径大小写敏感，小写文件名不等价。
+```
+
 ## 目录 <span id="toc"></span>
 
+- [调试日志与敏感信息约定](#sec-debug-log)
 - [1. 启动总流程](#sec-01)
 - [2. 配置与公共参数](#sec-02)
 - [3. NVS 配置读写](#sec-03)
@@ -119,6 +127,36 @@ This document groups the current project by feature, file, function, and call or
 | CH583 BLE MAC | `PhotoPainter:ch583_ble_mac` | 收到合法 `BLE_MAC` 帧并解析出 MAC 后保存；保存前需通过 CH583 帧校验 | `/ping` 或 base info 读取保存的 BLE MAC 用于返回给前端 |
 | USB 请求 / worker | RAM request buffer、response buffer、worker queue | 请求头/body 受 `USB_CONSOLE_HTTP_HEADER_MAX`、`USB_CONSOLE_HTTP_BODY_MAX` 限制；worker queue 长度受 `USB_CONSOLE_WORKER_QUEUE_LENGTH=4` 限制 | `UsbConsoleEcho_Task()` 读取 USB Serial/JTAG 数据，router/worker 取任务执行 |
 
+图片显示与保存说明：
+
+```text
+cast、cast2pic、upload 中的 show 和 save 是两个动作。
+show=true 表示把当前请求中的 bin 数据投递到 EPD 显示队列。
+save=true 表示把 bin/jpg 保存到 SD。
+因此可能出现显示成功但保存失败，或保存成功但不显示的状态；这不一定是 bug，文档和测试时要分开判断 show/save 结果。
+```
+
+## 调试日志与敏感信息约定 <span id="sec-debug-log"></span>
+
+```text
+当前工程调试日志较多，包括启动信息、heap/PSRAM、PM/light sleep、HTTP header/body、WiFi 配置和 CH583 通信状态。
+当前仍处于开发阶段，允许 WiFi password、HTTP body、OTA meta 等明文调试输出，便于确认配网、NVS 读取和协议字段是否正确。
+量产或外发固件前，再关闭详细日志或做敏感信息脱敏。
+
+开发阶段允许：
+- WiFi 配网/恢复流程打印 ssid/password 明文。
+- process_small_json_request() 打印完整 JSON body。
+- OTA 打印 meta、版本、大小、分区和进度信息。
+- PM/light sleep 打印锁和阻塞源，便于功耗调试。
+
+量产/外发前建议：
+- password 只打印长度或打印 ***。
+- HTTP body 只打印 body_len、func、Content-Type，不打印完整 body。
+- OTA raw meta 和进度细节降到 debug/verbose 或关闭。
+- PM/light sleep 诊断日志默认关闭。
+- 如仍需完整 body/password，应增加单独显式调试宏，默认关闭。
+```
+
 ## 1. 启动总流程 <span id="sec-01"></span>
 
 Mermaid 时序图：
@@ -129,8 +167,8 @@ sequenceDiagram
     participant SYS as ESP-IDF system
     participant USB as USB Console
     participant WORK as WiFi work time
-    participant LED as LED Status
     participant CH583 as CH583 UART
+    participant LED as LED Status
     participant EPD as EPD Display
     participant SD as SD/SPIFFS
     participant STA as WiFi STA/HTTP
@@ -140,8 +178,8 @@ sequenceDiagram
     APP->>SYS: esp_event_loop_create_default()
     APP->>USB: UsbConsoleEcho_Init()
     APP->>WORK: ServerNetworkStaWifiWorkTime_Init()
-    APP->>LED: UserLedStatus_Init()
     APP->>CH583: Ch583UartApp_Init()
+    APP->>LED: UserLedStatus_Init()
     APP->>EPD: ServerNetworkStaEpdDisplay_Init()
     APP->>SD: example_mount_storage("/data")
     APP->>STA: User_Network_mode_app_init("/data")
@@ -180,15 +218,16 @@ main/main.c
    ├─ app_nvs_read_str(TDX_SLIDESHOW_RANDOM_NVS_KEY)
    ├─ app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY)
    ├─ print_base_info()
+   ├─ Ch583UartApp_Init()
+   │  └─ ch583_uart/ch583_uart_app.c
+   │     ├─ User_UartEventTask()
+   │     ├─ User_UartReceiveTask()
+   │     └─ 先启动 CH583 UART，供 C5 GPIO/LED 状态使用
    ├─ UserLedStatus_Init()
    │  └─ led_status/led_status.c
    │     └─ UserLedStatus_Task()
    ├─ Init_Bl()
    │  └─ 仅 USER_BLE_ENABLE=1 时编译执行
-   ├─ Ch583UartApp_Init()
-   │  └─ ch583_uart/ch583_uart_app.c
-   │     ├─ User_UartEventTask()
-   │     └─ User_UartReceiveTask()
    ├─ ServerNetworkStaEpdDisplay_Init()
    │  └─ epd_display/epd_display_app.cpp
    │     └─ ServerNetworkStaEpdDisplay_Task()
@@ -575,6 +614,15 @@ file_server.c
          └─ register POST /ota_upload
 ```
 
+HTTP server 内存与生命周期说明：
+
+```text
+当前工程按 HTTP server 单次启动设计。
+file_server.c 中 server_data 为静态指针，example_start_file_server() 启动成功后持续使用。
+在当前不 stop/restart HTTP server 的流程下，这不是运行期泄漏。
+如果后续支持 WiFi 断开后 stop server、重连后 restart server，需要补充 httpd_stop(server)、free(server_data)、server_data=NULL 的释放路径。
+```
+
 ---
 
 
@@ -673,11 +721,24 @@ HTTP POST /dataUP or /ota or /ota_upload
          └─ process_multipart_upload_request()
 ```
 
+内存管理说明：
+
+```text
+/dataUP 当前实现会先通过 alloc_request_body_buffer() 申请 request body 缓冲区，优先使用 PSRAM。
+read_request_body_to_buffer() 会把完整 body 读入内存后再分发，不是 streaming parse，也不是边收边写。
+处理结束后由 receive_data_redirect_handler() 调用 heap_caps_free(body) 释放缓冲区。
+
+风险：
+- 大图片、大 multipart、OTA 都依赖 PSRAM 可用空间和 HTTP body 最大长度限制。
+- OTA 当前同样依赖 HTTP body 完整接收后再解析 firmware part，然后再写 OTA 分区。
+- 如果后续要降低内存峰值，建议改成 streaming parse / 边收边写 SD / 边收边写 OTA。
+```
+
 存 / 取信息（含条件限制）：
 
 ```text
 存：
-- net_data 入口本身只在 RAM 中申请 request body 缓冲区。
+- net_data 入口本身只在 RAM/PSRAM 中申请 request body 缓冲区，处理完成后释放。
 - 真正持久化由下游模块完成：cast/upload/cast2pic 写 SD，ota 写 OTA 分区，slideshow 写配置文件，wifi_work_time 写 NVS。
 
 取：
@@ -1640,7 +1701,13 @@ V2_相框传图协议.html 中没有定义网络 OTA 请求字段。
 当前 OTA 以仓库源码 /ota、/ota_upload 处理逻辑为准，和 V2 图片/控制协议分开。
 ```
 
+当前实现与后续优化：
 
+```text
+当前 OTA 请求仍先由 receive_data_redirect_handler() 完整接收 HTTP body，再交给 NetworkOtaUpload_ProcessReceivedBody() 解析 firmware part。
+OTA 写分区时会分块 esp_ota_write()，但 HTTP 接收阶段不是 streaming。
+开发阶段保持当前实现便于调试；如果后续固件体积增大或 PSRAM 压力明显，建议单独为 /ota 做 streaming handler，一边 httpd_req_recv() 一边 esp_ota_write()。
+```
 
 Powershell 测试用例：
 
@@ -1990,6 +2057,14 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 预期：设备保存 slideshow 配置，并按列表触发显示；如果文件不存在，源码会按校验结果返回失败。
 
+当前实现与后续优化：
+
+```text
+slideshow / slideshow_control 应区分“配置保存成功”和“运行时启动成功”。
+如果配置文件已保存，但 ServerNetworkStaSlideshow_StartSaved() 或显示队列启动失败，建议返回失败 JSON，例如 start slideshow runtime failed。
+开发阶段可先通过日志确认失败原因；后续建议把 runtime 启动失败明确反映到 result/message。
+```
+
 存 / 取信息（含条件限制）：
 
 ```text
@@ -2120,6 +2195,13 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 ```
 
 预期：`sw=1` 开启，`sw=0` 关闭；配置写入 slideshow control 文件。
+
+当前实现与后续优化：
+
+```text
+set_slideshow 的 sw=1 会更新控制文件并尝试启动轮播。
+后续建议把“控制文件写入成功”和“轮播 runtime 启动成功”分开返回；runtime 启动失败时，result/message 应明确提示失败原因。
+```
 
 存 / 取信息（含条件限制）：
 
