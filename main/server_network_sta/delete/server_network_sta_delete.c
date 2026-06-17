@@ -136,14 +136,17 @@ static bool parse_file_names(const char *body, delete_request_t *request)
     return closed && request->file_count > 0;
 }
 
-static esp_err_t send_delete_result(httpd_req_t *req, bool ok, const char *message)
+static esp_err_t send_delete_result(httpd_req_t *req, int result, const char *message)
 {
     char json[160];
-    if (ok) {
-        snprintf(json, sizeof(json), "{\"func\":\"delete_result\",\"result\":0}");
+    if (result == TDX_JSON_RESULT_OK) {
+        snprintf(json, sizeof(json),
+                 "{\"func\":\"delete_result\",\"result\":%d}",
+                 TDX_JSON_RESULT_OK);
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"delete_result\",\"result\":1,\"message\":\"%s\"}",
+                 "{\"func\":\"delete_result\",\"result\":%d,\"message\":\"%s\"}",
+                 result,
                  message != NULL ? message : "delete failed");
     }
 
@@ -437,7 +440,7 @@ esp_err_t ServerNetworkStaDelete_ProcessJson(httpd_req_t *req,
 
     delete_request_t request;
     if (!parse_file_names(body, &request)) {
-        return send_delete_result(req, false, "delete failed");
+        return send_delete_result(req, TDX_JSON_RESULT_FILE_NAMES_MISSING, "delete failed");
     }
 
     char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
@@ -450,7 +453,7 @@ esp_err_t ServerNetworkStaDelete_ProcessJson(httpd_req_t *req,
         (stat(bin_dir, &st) != 0 || !S_ISDIR(st.st_mode)) &&
         (stat(jpg_dir, &st) != 0 || !S_ISDIR(st.st_mode))) {
         ESP_LOGE(TAG, "delete image dirs missing bin=%s jpg=%s", bin_dir, jpg_dir);
-        return send_delete_result(req, false, "delete failed");
+        return send_delete_result(req, TDX_JSON_RESULT_DELETE_FAILED, "delete failed");
     }
 
     int removed_count = 0;
@@ -469,12 +472,12 @@ esp_err_t ServerNetworkStaDelete_ProcessJson(httpd_req_t *req,
     }
 
     if (removed_count <= 0) {
-        return send_delete_result(req, false, "delete failed");
+        return send_delete_result(req, TDX_JSON_RESULT_DELETE_FAILED, "delete failed");
     }
 
     cleanup_last_cast_if_deleted(base_path, &request);
     cleanup_slideshow_if_deleted(base_path, &request);
     ESP_LOGI(TAG, "delete success removed_count=%d request_count=%u",
              removed_count, (unsigned int)request.file_count);
-    return send_delete_result(req, true, NULL);
+    return send_delete_result(req, TDX_JSON_RESULT_OK, NULL);
 }

@@ -395,7 +395,8 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
     char *json = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
     if (json == NULL) {
         httpd_resp_set_type(req, "application/json");
-        return httpd_resp_sendstr(req, "{\"func\":\"get_snapshot_result\",\"result\":1}");
+        return httpd_resp_sendstr(req,
+                                  "{\"func\":\"get_snapshot_result\",\"result\":1404,\"message\":\"snapshot build failed\"}");
     }
 
     snapshot_slideshow_t slideshow;
@@ -414,7 +415,8 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
     if (ret != ESP_OK) {
         free(json);
         httpd_resp_set_type(req, "application/json");
-        return httpd_resp_sendstr(req, "{\"func\":\"get_snapshot_result\",\"result\":1}");
+        return httpd_resp_sendstr(req,
+                                  "{\"func\":\"get_snapshot_result\",\"result\":1404,\"message\":\"snapshot build failed\"}");
     }
 
     ESP_LOGI(TAG, "get_snapshot images/slideshow response len=%u sw=%d files=%u",

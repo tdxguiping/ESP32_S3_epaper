@@ -17,12 +17,13 @@ static uint32_t cast2pic_elapsed_ms_since(int64_t start_us)
     return (uint32_t)((esp_timer_get_time() - start_us) / 1000);
 }
 
-static esp_err_t set_cast2pic_error(usb_console_http_response_t *response, const char *error)
+static esp_err_t set_cast2pic_error(usb_console_http_response_t *response, int result, const char *error)
 {
     return UsbConsoleCommon_SetJsonf(response,
                                      200,
                                      "OK",
-                                     "{\"func\":\"cast2pic_result\",\"result\":1,\"message\":\"cast2pic failed\",\"error\":\"%s\"}",
+                                     "{\"func\":\"cast2pic_result\",\"result\":%d,\"message\":\"cast2pic failed\",\"error\":\"%s\"}",
+                                     result,
                                      error != NULL ? error : "unknown");
 }
 
@@ -88,7 +89,7 @@ static esp_err_t cast2pic_process_one(const usb_console_http_request_t *request,
                  (unsigned int)bin_size,
                  (unsigned int)image_part->len,
                  (unsigned int)image_size);
-        return set_cast2pic_error(response, "invalid_upload");
+        return set_cast2pic_error(response, TDX_JSON_RESULT_UPLOAD_INVALID, "invalid_upload");
     }
 
     ESP_LOGI(TAG,
@@ -117,7 +118,7 @@ static esp_err_t cast2pic_process_one(const usb_console_http_request_t *request,
                  (unsigned long)cast2pic_elapsed_ms_since(stage_start_us),
                  (unsigned long)cast2pic_elapsed_ms_since(total_start_us));
         if (save_bin_ret != ESP_OK) {
-            return set_cast2pic_error(response, "save_bin_failed");
+            return set_cast2pic_error(response, TDX_JSON_RESULT_SAVE_BIN_FAILED, "save_bin_failed");
         }
 
         stage_start_us = esp_timer_get_time();
@@ -129,7 +130,7 @@ static esp_err_t cast2pic_process_one(const usb_console_http_request_t *request,
                  (unsigned long)cast2pic_elapsed_ms_since(stage_start_us),
                  (unsigned long)cast2pic_elapsed_ms_since(total_start_us));
         if (save_image_ret != ESP_OK) {
-            return set_cast2pic_error(response, "save_image_failed");
+            return set_cast2pic_error(response, TDX_JSON_RESULT_SAVE_IMAGE_FAILED, "save_image_failed");
         }
     }
 
@@ -145,7 +146,7 @@ static esp_err_t cast2pic_process_one(const usb_console_http_request_t *request,
                  (unsigned long)cast2pic_elapsed_ms_since(stage_start_us),
                  (unsigned long)cast2pic_elapsed_ms_since(total_start_us));
         if (display_ret != ESP_OK) {
-            return set_cast2pic_error(response, "display_queue_failed");
+            return set_cast2pic_error(response, TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED, "display_queue_failed");
         }
     }
 
@@ -183,7 +184,7 @@ esp_err_t UsbConsoleCast2Pic_Process(const usb_console_http_request_t *request,
         return ESP_ERR_INVALID_ARG;
     }
     if (!UsbConsoleCommon_ExtractBoundary(request->content_type, boundary, sizeof(boundary))) {
-        return set_cast2pic_error(response, "missing_boundary");
+        return set_cast2pic_error(response, TDX_JSON_RESULT_UPLOAD_BOUNDARY_MISSING, "missing_boundary");
     }
     if (!UsbConsoleCommon_MultipartParts(request->body,
                                          request->body_len,
@@ -192,7 +193,7 @@ esp_err_t UsbConsoleCast2Pic_Process(const usb_console_http_request_t *request,
                                          parts,
                                          sizeof(parts) / sizeof(parts[0])) ||
         !func_part->present) {
-        return set_cast2pic_error(response, "missing_func");
+        return set_cast2pic_error(response, TDX_JSON_RESULT_UPLOAD_FUNC_MISSING, "missing_func");
     }
 
     UsbConsoleCommon_CopyPartText(func_part, func, sizeof(func));
@@ -208,7 +209,7 @@ esp_err_t UsbConsoleCast2Pic_Process(const usb_console_http_request_t *request,
         snprintf(screen, sizeof(screen), "ab");
     }
     if (strcasecmp(screen, "a") != 0 && strcasecmp(screen, "b") != 0 && strcasecmp(screen, "ab") != 0) {
-        return set_cast2pic_error(response, "invalid_screen");
+        return set_cast2pic_error(response, TDX_JSON_RESULT_CAST2PIC_SCREEN_INVALID, "invalid_screen");
     }
 
     ESP_LOGI(TAG,
@@ -239,6 +240,7 @@ esp_err_t UsbConsoleCast2Pic_Process(const usb_console_http_request_t *request,
     return UsbConsoleCommon_SetJsonf(response,
                                      200,
                                      "OK",
-                                     "{\"func\":\"cast2pic_result\",\"result\":0,\"message\":\"ok\",\"screen\":\"%s\"}",
+                                     "{\"func\":\"cast2pic_result\",\"result\":%d,\"message\":\"ok\",\"screen\":\"%s\"}",
+                                     TDX_JSON_RESULT_OK,
                                      screen);
 }

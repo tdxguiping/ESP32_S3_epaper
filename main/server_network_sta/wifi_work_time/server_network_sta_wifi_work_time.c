@@ -380,14 +380,17 @@ static bool parse_json_int(const char *body, const char *key, int *out)
     return true;
 }
 
-static esp_err_t send_wifi_work_time_result(httpd_req_t *req, bool ok, const char *message)
+static esp_err_t send_wifi_work_time_result(httpd_req_t *req, int result, const char *message)
 {
     char json[176];
-    if (ok) {
-        snprintf(json, sizeof(json), "{\"func\":\"set_wifi_work_time_result\",\"result\":0}");
+    if (result == TDX_JSON_RESULT_OK) {
+        snprintf(json, sizeof(json),
+                 "{\"func\":\"set_wifi_work_time_result\",\"result\":%d}",
+                 TDX_JSON_RESULT_OK);
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"set_wifi_work_time_result\",\"result\":1,\"message\":\"%s\"}",
+                 "{\"func\":\"set_wifi_work_time_result\",\"result\":%d,\"message\":\"%s\"}",
+                 result,
                  message != NULL ? message : "set wifi work time failed");
     }
 
@@ -497,17 +500,28 @@ esp_err_t ServerNetworkStaWifiWorkTime_ProcessJson(httpd_req_t *req,
     }
 
     int seconds = 0;
-    if (!parse_json_int(body, "seconds", &seconds) ||
-        seconds < SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS ||
-        seconds > SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS) {
+    if (!parse_json_int(body, "seconds", &seconds) &&
+        !parse_json_int(body, "time", &seconds)) {
         ESP_LOGW(TAG, "set_wifi_work_time invalid seconds body=%s", body != NULL ? body : "<null>");
-        return send_wifi_work_time_result(req, false, "set wifi work time failed");
+        return send_wifi_work_time_result(req,
+                                          TDX_JSON_RESULT_WIFI_WORK_TIME_MISSING,
+                                          "set wifi work time failed");
+    }
+    if (seconds < SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS ||
+        seconds > SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS) {
+        ESP_LOGW(TAG, "set_wifi_work_time seconds out of range seconds=%d body=%s",
+                 seconds, body != NULL ? body : "<null>");
+        return send_wifi_work_time_result(req,
+                                          TDX_JSON_RESULT_WIFI_WORK_TIME_RANGE,
+                                          "set wifi work time failed");
     }
 
     esp_err_t set_ret = ServerNetworkStaWifiWorkTime_SetAndSave((uint32_t)seconds);
     if (set_ret != ESP_OK) {
         ESP_LOGE(TAG, "set_wifi_work_time save failed: %s", esp_err_to_name(set_ret));
-        return send_wifi_work_time_result(req, false, "set wifi work time failed");
+        return send_wifi_work_time_result(req,
+                                          TDX_JSON_RESULT_WIFI_WORK_TIME_SAVE_FAILED,
+                                          "set wifi work time failed");
     }
 
     ESP_LOGI(TAG, "set_wifi_work_time updated seconds=%d max=%d working_time=%lu",
@@ -515,5 +529,5 @@ esp_err_t ServerNetworkStaWifiWorkTime_ProcessJson(httpd_req_t *req,
              SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS,
              (unsigned long)update_working_time_seconds());
     ESP_LOGI(TAG, "set_wifi_work_time saved, CH583 power-off timeout is enabled");
-    return send_wifi_work_time_result(req, true, NULL);
+    return send_wifi_work_time_result(req, TDX_JSON_RESULT_OK, NULL);
 }

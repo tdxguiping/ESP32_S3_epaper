@@ -5,6 +5,7 @@
 
 #include "esp_log.h"
 #include "nvs.h"
+#include "tdx_cfg.h"
 #include "usb_console_common.h"
 #include "usb_console_worker.h"
 
@@ -65,17 +66,21 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
         return ESP_ERR_NOT_SUPPORTED;
     }
 
-    if (!UsbConsoleCommon_JsonString(request->body, "ssid", ssid, sizeof(ssid)) ||
-        !UsbConsoleCommon_JsonString(request->body, "key", password, sizeof(password)) ||
-        !wifi_text_is_valid(ssid, sizeof(ssid)) ||
-        strlen(password) >= sizeof(password)) {
+    bool has_ssid = UsbConsoleCommon_JsonString(request->body, "ssid", ssid, sizeof(ssid));
+    bool has_key = UsbConsoleCommon_JsonString(request->body, "key", password, sizeof(password));
+    if (!has_ssid || !has_key || !wifi_text_is_valid(ssid, sizeof(ssid)) || strlen(password) >= sizeof(password)) {
+        int result = !has_ssid ? TDX_JSON_RESULT_WIFI_SSID_MISSING :
+                     !has_key ? TDX_JSON_RESULT_WIFI_KEY_MISSING :
+                     !wifi_text_is_valid(ssid, sizeof(ssid)) ? TDX_JSON_RESULT_WIFI_SSID_INVALID :
+                     TDX_JSON_RESULT_WIFI_KEY_INVALID;
         ESP_LOGW(TAG, "wifi invalid request ssid_len=%u password_len=%u",
                  (unsigned int)strlen(ssid),
                  (unsigned int)strlen(password));
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"wifi_result\",\"result\":1,\"message\":\"invalid wifi config\"}");
+                                         "{\"func\":\"wifi_result\",\"result\":%d,\"message\":\"invalid wifi config\"}",
+                                         result);
     }
 
     ESP_LOGI(TAG, "wifi request ssid=%s password=%s body_len=%u",
@@ -95,7 +100,8 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"wifi_result\",\"result\":1,\"message\":\"save wifi failed\"}");
+                                         "{\"func\":\"wifi_result\",\"result\":%d,\"message\":\"save wifi failed\"}",
+                                         TDX_JSON_RESULT_WIFI_SAVE_FAILED);
     }
 
     ESP_LOGI(TAG, "wifi saved ssid=%s password=%s",
@@ -107,11 +113,13 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"wifi_result\",\"result\":1,\"message\":\"connect submit failed\"}");
+                                         "{\"func\":\"wifi_result\",\"result\":%d,\"message\":\"connect submit failed\"}",
+                                         TDX_JSON_RESULT_WIFI_CONNECT_SUBMIT_FAILED);
     }
 
     return UsbConsoleCommon_SetJsonf(response,
                                      200,
                                      "OK",
-                                     "{\"func\":\"wifi_result\",\"result\":0,\"message\":\"ok\"}");
+                                     "{\"func\":\"wifi_result\",\"result\":%d,\"message\":\"ok\"}",
+                                     TDX_JSON_RESULT_OK);
 }

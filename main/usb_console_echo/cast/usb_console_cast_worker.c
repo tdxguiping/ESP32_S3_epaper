@@ -6,6 +6,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "tdx_cfg.h"
 #include "usb_console_common.h"
 #include "usb_console_http_text.h"
 #include "usb_console_worker.h"
@@ -61,7 +62,7 @@ static void cast_worker_job(void *ctx)
         UsbConsoleHttp_SetJson(response,
                                200,
                                "OK",
-                               "{\"func\":\"cast_result\",\"result\":1,\"message\":\"cast failed\",\"error\":\"worker_failed\"}");
+                               "{\"func\":\"cast_result\",\"result\":1106,\"message\":\"cast failed\",\"error\":\"worker_failed\"}");
     }
 
     int64_t send_start_us = esp_timer_get_time();
@@ -90,7 +91,8 @@ esp_err_t UsbConsoleCast_SubmitAsync(const usb_console_http_request_t *request,
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"cast_result\",\"result\":1,\"message\":\"cast failed\",\"error\":\"alloc_job_failed\"}");
+                                         "{\"func\":\"cast_result\",\"result\":%d,\"message\":\"cast failed\",\"error\":\"alloc_job_failed\"}",
+                                         TDX_JSON_RESULT_NO_MEMORY);
     }
 
     job->body = (char *)malloc(request->body_len + 1);
@@ -99,7 +101,8 @@ esp_err_t UsbConsoleCast_SubmitAsync(const usb_console_http_request_t *request,
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"cast_result\",\"result\":1,\"message\":\"cast failed\",\"error\":\"alloc_body_failed\"}");
+                                         "{\"func\":\"cast_result\",\"result\":%d,\"message\":\"cast failed\",\"error\":\"alloc_body_failed\"}",
+                                         TDX_JSON_RESULT_NO_MEMORY);
     }
 
     memcpy(job->body, request->body, request->body_len);
@@ -119,7 +122,8 @@ esp_err_t UsbConsoleCast_SubmitAsync(const usb_console_http_request_t *request,
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"cast_result\",\"result\":1,\"message\":\"cast failed\",\"error\":\"queue_failed\"}");
+                                         "{\"func\":\"cast_result\",\"result\":%d,\"message\":\"cast failed\",\"error\":\"queue_failed\"}",
+                                         TDX_JSON_RESULT_QUEUE_FAILED);
     }
 
     ESP_LOGI(TAG, "cast queued submit_ms=%lu",

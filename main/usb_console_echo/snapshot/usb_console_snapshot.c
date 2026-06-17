@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "tdx_cfg.h"
 #include "usb_console_common.h"
 
 static const char *TAG = "usb_console_snapshot";
@@ -39,7 +40,8 @@ esp_err_t UsbConsoleSnapshot_Process(const usb_console_http_request_t *request,
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"get_snapshot_result\",\"result\":1}");
+                                         "{\"func\":\"get_snapshot_result\",\"result\":%d,\"message\":\"snapshot build failed\"}",
+                                         TDX_JSON_RESULT_SNAPSHOT_BUILD_FAILED);
     }
     return ESP_OK;
 }

@@ -136,10 +136,10 @@ static void send_simple_result_with_sender(void (*send_json)(const char *),
 
     if (message == NULL || message[0] == '\0') {
         snprintf(json, sizeof(json), "{\"func\":\"%s\",\"result\":%d}",
-                 func, result == 0 ? 0 : 1);
+                 func, result);
     } else {
         snprintf(json, sizeof(json), "{\"func\":\"%s\",\"result\":%d,\"message\":\"%s\"}",
-                 func, result == 0 ? 0 : 1, message);
+                 func, result, message);
     }
     send_json(json);
 }
@@ -162,13 +162,14 @@ void send_base_info_to_mobile(void)
             working_time = 0;
             snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip.ip));
             snprintf(json_str, sizeof(json_str),
-                     "{\"result\":0,\"message\":\"wifi info\",\"stage\":\"%s\","
+                     "{\"func\":\"wifi_info_result\",\"result\":%d,\"message\":\"wifi info\",\"stage\":\"%s\","
                      "\"project\":\"%s\","
                      "\"version\":\"%s\","
                      "\"date\":\"%s\","
                      "\"time\":\"%s\","
                      "\"idf\":\"%s\","
                      "\"running\":\"%s\"}",
+                     TDX_JSON_RESULT_OK,
                      ip_str,
                      app != NULL ? app->project_name : "",
                      app != NULL ? app->version : "",
@@ -377,7 +378,8 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
             std::string wifi_password = out->key;
             // 3. 鎶婄粨鏋勪綋鐨勫€煎杩?JSON            
             snprintf(reply_json, sizeof(reply_json),
-                     "{\"result\":0,\"message\":\"Find wifi\",\"stage\":\"%s\"}",
+                     "{\"func\":\"wifi_result\",\"result\":%d,\"message\":\"Find wifi\",\"stage\":\"%s\"}",
+                     TDX_JSON_RESULT_OK,
                      wifi_cfg.ssid);
 
              WiFi_config_net =true;
@@ -449,7 +451,8 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
         ESP_LOGW(TAG, "No saved WiFi credential");
         char reply_json[160];
         snprintf(reply_json, sizeof(reply_json),
-                    "{\"result\":1,\"message\":\"wakeup No-WiFi\",\"stage\":\"error\"}");
+                    "{\"func\":\"wifi_wakeup_result\",\"result\":%d,\"message\":\"wakeup No-WiFi\",\"stage\":\"error\"}",
+                    TDX_JSON_RESULT_BLE_NO_SAVED_WIFI);
 
             #if(USER_BLE_ENABLE == 1)
              SendData_indicate((uint8_t *)reply_json, strlen(reply_json));
@@ -506,7 +509,8 @@ int parse_wifi_work_time_json(const char *json_str, wifi_work_time_json_t *out)
         cJSON_Delete(root);
         LOG_ERROR("set_wifi_work_time JSON invalid");
         snprintf(reply_json, sizeof(reply_json),
-                 "{\"func\":\"set_wifi_work_time_result\",\"result\":1,\"message\":\"set wifi work time failed\"}");
+                 "{\"func\":\"set_wifi_work_time_result\",\"result\":%d,\"message\":\"set wifi work time failed\"}",
+                 TDX_JSON_RESULT_WIFI_WORK_TIME_RANGE);
             #if(USER_BLE_ENABLE == 1)
              SendData_indicate((uint8_t *)reply_json, strlen(reply_json));
              printf("JSON:\n%s\n", reply_json);
@@ -522,10 +526,12 @@ int parse_wifi_work_time_json(const char *json_str, wifi_work_time_json_t *out)
 
     if (set_ret == ESP_OK) {
         snprintf(reply_json, sizeof(reply_json),
-                 "{\"func\":\"set_wifi_work_time_result\",\"result\":0}");
+                 "{\"func\":\"set_wifi_work_time_result\",\"result\":%d}",
+                 TDX_JSON_RESULT_OK);
     } else {
         snprintf(reply_json, sizeof(reply_json),
-                 "{\"func\":\"set_wifi_work_time_result\",\"result\":1,\"message\":\"set wifi work time failed\"}");
+                 "{\"func\":\"set_wifi_work_time_result\",\"result\":%d,\"message\":\"set wifi work time failed\"}",
+                 TDX_JSON_RESULT_WIFI_WORK_TIME_SAVE_FAILED);
     }
 
             #if(USER_BLE_ENABLE == 1)
@@ -543,7 +549,7 @@ static void handle_wifi_json_text_with_sender(const char *json_text,
                                               bool reply_to_ch583)
 {
     if (json_text == NULL || json_text[0] == '\0') {
-        send_simple_result_with_sender(send_json, "ble_json_result", 1, "empty json");
+        send_simple_result_with_sender(send_json, "ble_json_result", TDX_JSON_RESULT_BLE_JSON_EMPTY, "empty json");
         return;
     }
 
@@ -574,7 +580,7 @@ static void handle_wifi_json_text_with_sender(const char *json_text,
         return;
     }
 
-    send_simple_result_with_sender(send_json, "ble_json_result", 1, "unsupported func");
+    send_simple_result_with_sender(send_json, "ble_json_result", TDX_JSON_RESULT_BLE_FUNC_UNSUPPORTED, "unsupported func");
 }
 
 void User_HandleWifiJsonText(const char *json_text)

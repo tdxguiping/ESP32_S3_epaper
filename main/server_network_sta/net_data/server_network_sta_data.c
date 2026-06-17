@@ -142,8 +142,9 @@ static esp_err_t send_invalid_json_response(httpd_req_t *req, const char *func)
 {
     char json[160] = {0};
     snprintf(json, sizeof(json),
-             "{\"func\":\"%s\",\"result\":1,\"message\":\"invalid_Json\",\"stage\":\"receive_data_redirect_handler\"}",
-             func != NULL ? func : "get_saved_images");
+             "{\"func\":\"%s\",\"result\":%d,\"message\":\"invalid_Json\",\"stage\":\"receive_data_redirect_handler\"}",
+             func != NULL ? func : "get_saved_images",
+             TDX_JSON_RESULT_JSON_INVALID);
     return send_json_response(req, json);
 }
 
@@ -164,8 +165,12 @@ static bool body_looks_like_json(const char *body, size_t body_len)
 
 static esp_err_t send_unsupported_func_response(httpd_req_t *req)
 {
+    char json[128];
     ESP_LOGI(TAG, "send_unsupported_func_response");
-    return send_json_response(req, "{\"func\":\"unknown_result\",\"result\":1,\"message\":\"unsupported func\"}");
+    snprintf(json, sizeof(json),
+             "{\"func\":\"unknown_result\",\"result\":%d,\"message\":\"unsupported func\"}",
+             TDX_JSON_RESULT_FUNC_UNSUPPORTED);
+    return send_json_response(req, json);
 }
 
 static esp_err_t process_small_json_request(httpd_req_t *req, const char *body, size_t body_len)
@@ -408,7 +413,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
                 return NetworkOtaUpload_SendErrorAndFinish(req, "upload_busy", "upload_busy", ESP_ERR_TIMEOUT);
             }
             return send_json_response(req,
-                                      "{\"result\":1,\"message\":\"upload_busy\",\"error\":\"upload_busy\"}");
+                                      "{\"func\":\"dataup_result\",\"result\":1007,\"message\":\"upload_busy\",\"error\":\"upload_busy\"}");
         }
         upload_mutex_locked = true;
         ESP_LOGI(TAG, "receive_data_redirect_handler: upload slot acquired uri=%s",
@@ -494,7 +499,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
             resp_ret = process_multipart_upload_request(req, body, remaining, content_type);
             if (resp_ret == ESP_OK) {
                 resp_ret = send_json_response(req,
-                                              "{\"result\":0,\"message\":\"upload_success\",\"stage\":\"dataUP\"}");
+                                              "{\"func\":\"dataup_result\",\"result\":0,\"message\":\"upload_success\",\"stage\":\"dataUP\"}");
             } else {
                 httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save failed");
             }

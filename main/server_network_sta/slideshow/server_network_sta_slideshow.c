@@ -225,11 +225,20 @@ static bool parse_file_names(const char *body, slideshow_request_t *request)
 static esp_err_t send_start_slideshow_result(httpd_req_t *req, bool ok, const char *message)
 {
     char json[160];
+    int result = TDX_JSON_RESULT_OK;
+    if (!ok) {
+        result = (message != NULL && strstr(message, "runtime") != NULL) ?
+                 TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED :
+                 TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED;
+    }
     if (ok) {
-        snprintf(json, sizeof(json), "{\"func\":\"start_slideshow_result\",\"result\":0}");
+        snprintf(json, sizeof(json),
+                 "{\"func\":\"start_slideshow_result\",\"result\":%d}",
+                 TDX_JSON_RESULT_OK);
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"start_slideshow_result\",\"result\":1,\"message\":\"%s\"}",
+                 "{\"func\":\"start_slideshow_result\",\"result\":%d,\"message\":\"%s\"}",
+                 result,
                  message != NULL ? message : "start slideshow failed");
     }
 
@@ -728,6 +737,7 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
     esp_err_t start_ret = start_slideshow_runtime(base_path, &request, 0);
     if (start_ret != ESP_OK) {
         ESP_LOGW(TAG, "start_slideshow runtime start failed ret=%s", esp_err_to_name(start_ret));
+        return send_start_slideshow_result(req, false, "start slideshow runtime failed");
     }
 
     return send_start_slideshow_result(req, true, NULL);

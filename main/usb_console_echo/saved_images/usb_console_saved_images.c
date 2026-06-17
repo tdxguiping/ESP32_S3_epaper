@@ -31,7 +31,8 @@ static esp_err_t send_thumb_file(const char *uri, usb_console_http_response_t *r
         return UsbConsoleCommon_SetJsonf(response,
                                          400,
                                          "Bad Request",
-                                         "{\"func\":\"thumb_result\",\"result\":1,\"message\":\"invalid thumbnail name\"}");
+                                         "{\"func\":\"thumb_result\",\"result\":%d,\"message\":\"invalid thumbnail name\"}",
+                                         TDX_JSON_RESULT_THUMB_NAME_INVALID);
     }
 
     snprintf(path, sizeof(path), "%s/jpg_img/%s", USB_CONSOLE_BASE_PATH, name);
@@ -39,7 +40,8 @@ static esp_err_t send_thumb_file(const char *uri, usb_console_http_response_t *r
         return UsbConsoleCommon_SetJsonf(response,
                                          404,
                                          "Not Found",
-                                         "{\"func\":\"thumb_result\",\"result\":1,\"message\":\"thumbnail not found\"}");
+                                         "{\"func\":\"thumb_result\",\"result\":%d,\"message\":\"thumbnail not found\"}",
+                                         TDX_JSON_RESULT_THUMB_NOT_FOUND);
     }
 
     FILE *fp = fopen(path, "rb");
@@ -47,7 +49,8 @@ static esp_err_t send_thumb_file(const char *uri, usb_console_http_response_t *r
         return UsbConsoleCommon_SetJsonf(response,
                                          404,
                                          "Not Found",
-                                         "{\"func\":\"thumb_result\",\"result\":1,\"message\":\"thumbnail not found\"}");
+                                         "{\"func\":\"thumb_result\",\"result\":%d,\"message\":\"thumbnail not found\"}",
+                                         TDX_JSON_RESULT_THUMB_NOT_FOUND);
     }
 
     int header_len = snprintf(header,
@@ -134,7 +137,8 @@ esp_err_t UsbConsoleSavedImages_Process(const usb_console_http_request_t *reques
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"get_saved_images_result\",\"result\":1,\"message\":\"read saved images failed\"}");
+                                         "{\"func\":\"get_saved_images_result\",\"result\":%d,\"message\":\"read saved images failed\"}",
+                                         TDX_JSON_RESULT_IMAGES_READ_FAILED);
     }
     return ESP_OK;
 }

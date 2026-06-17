@@ -69,5 +69,6 @@ esp_err_t UsbConsoleNetData_Process(const usb_console_http_request_t *request,
     return UsbConsoleCommon_SetJsonf(response,
                                      200,
                                      "OK",
-                                     "{\"func\":\"unknown_result\",\"result\":1,\"message\":\"unsupported func\"}");
+                                     "{\"func\":\"unknown_result\",\"result\":%d,\"message\":\"unsupported func\"}",
+                                     TDX_JSON_RESULT_FUNC_UNSUPPORTED);
 }

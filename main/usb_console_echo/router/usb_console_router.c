@@ -111,7 +111,7 @@ esp_err_t UsbConsoleRouter_Handle(const usb_console_http_request_t *request)
         UsbConsoleHttp_SetJson(response,
                                404,
                                "Not Found",
-                               "{\"func\":\"usb_unknown_result\",\"result\":1,\"message\":\"route not found\"}");
+                               "{\"func\":\"usb_unknown_result\",\"result\":1104,\"message\":\"route not found\"}");
     }
 
     if (ret != ESP_OK) {
@@ -119,7 +119,7 @@ esp_err_t UsbConsoleRouter_Handle(const usb_console_http_request_t *request)
         UsbConsoleHttp_SetJson(response,
                                500,
                                "Internal Server Error",
-                               "{\"func\":\"usb_route_result\",\"result\":1,\"message\":\"handler failed\"}");
+                               "{\"func\":\"usb_route_result\",\"result\":1105,\"message\":\"handler failed\"}");
     }
 
     // Keep the 8 KB response buffer off the UsbConsoleEcho stack to avoid stack overflow after sending.

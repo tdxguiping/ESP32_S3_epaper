@@ -27,7 +27,8 @@ esp_err_t UsbConsoleSlideshowControl_Process(const usb_console_http_request_t *r
     }
     if (!UsbConsoleCommon_JsonInt(request->body, "sw", &sw) || (sw != 0 && sw != 1)) {
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",
-                                         "{\"func\":\"set_slideshow_result\",\"result\":1,\"message\":\"set slideshow failed\"}");
+                                         "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"set slideshow failed\"}",
+                                         TDX_JSON_RESULT_PARAM_INVALID);
     }
     (void)UsbConsoleCommon_JsonU32(request->body, "interval", &interval);
     (void)UsbConsoleCommon_JsonBool(request->body, "random", &random);
@@ -39,7 +40,8 @@ esp_err_t UsbConsoleSlideshowControl_Process(const usb_console_http_request_t *r
     FILE *fp = fopen(control_path, "wb");
     if (fp == NULL) {
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",
-                                         "{\"func\":\"set_slideshow_result\",\"result\":1,\"message\":\"set slideshow failed\"}");
+                                         "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"set slideshow failed\"}",
+                                         TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED);
     }
     fprintf(fp, "{\"sw\":%d,\"interval\":%lu,\"random\":%s,\"run_mode\":%d}",
             sw, (unsigned long)interval, random ? "true" : "false", TDX_SLIDESHOW_RUN_MODE);
@@ -48,12 +50,20 @@ esp_err_t UsbConsoleSlideshowControl_Process(const usb_console_http_request_t *r
     (void)app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY, random ? "true" : "false");
     g_slideshow_random_enable = random ? 1 : 0;
     if (sw == 1) {
-        (void)ServerNetworkStaSlideshow_StartSaved(USB_CONSOLE_BASE_PATH);
+        esp_err_t start_ret = ServerNetworkStaSlideshow_StartSaved(USB_CONSOLE_BASE_PATH);
+        if (start_ret != ESP_OK) {
+            return UsbConsoleCommon_SetJsonf(response,
+                                             200,
+                                             "OK",
+                                             "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"start slideshow runtime failed\"}",
+                                             TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED);
+        }
     } else {
         ServerNetworkStaSlideshow_Stop();
     }
     return UsbConsoleCommon_SetJsonf(response,
                                      200,
                                      "OK",
-                                     "{\"func\":\"set_slideshow_result\",\"result\":0}");
+                                     "{\"func\":\"set_slideshow_result\",\"result\":%d}",
+                                     TDX_JSON_RESULT_OK);
 }

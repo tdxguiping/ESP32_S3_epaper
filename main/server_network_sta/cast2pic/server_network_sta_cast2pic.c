@@ -173,10 +173,33 @@ static bool file_name_is_safe(const char *file_name)
 static esp_err_t send_cast2pic_result(httpd_req_t *req, const char *result)
 {
     char json[160];
+    int result_code = TDX_JSON_RESULT_OK;
     if (result == NULL || strcmp(result, "ok") == 0) {
-        snprintf(json, sizeof(json), "{\"func\":\"cast2pic_result\",\"result\":0}");
+        snprintf(json, sizeof(json),
+                 "{\"func\":\"cast2pic_result\",\"result\":%d}",
+                 TDX_JSON_RESULT_OK);
     } else {
-        snprintf(json, sizeof(json), "{\"func\":\"cast2pic_result\",\"result\":1,\"message\":\"%s\"}", result);
+        if (strcmp(result, "missing_func") == 0) {
+            result_code = TDX_JSON_RESULT_UPLOAD_FUNC_MISSING;
+        } else if (strcmp(result, "invalid_screen") == 0) {
+            result_code = TDX_JSON_RESULT_CAST2PIC_SCREEN_INVALID;
+        } else if (strcmp(result, "display_request_failed") == 0) {
+            result_code = TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED;
+        } else if (strstr(result, "write_bin") != NULL || strstr(result, "bin") != NULL) {
+            result_code = TDX_JSON_RESULT_SAVE_BIN_FAILED;
+        } else if (strstr(result, "image") != NULL) {
+            result_code = TDX_JSON_RESULT_SAVE_IMAGE_FAILED;
+        } else if (strstr(result, "size") != NULL) {
+            result_code = TDX_JSON_RESULT_UPLOAD_SIZE_MISMATCH;
+        } else if (strstr(result, "file") != NULL) {
+            result_code = TDX_JSON_RESULT_UPLOAD_FILE_NAME_INVALID;
+        } else {
+            result_code = TDX_JSON_RESULT_UPLOAD_INVALID;
+        }
+        snprintf(json, sizeof(json),
+                 "{\"func\":\"cast2pic_result\",\"result\":%d,\"message\":\"%s\"}",
+                 result_code,
+                 result);
     }
 
     httpd_resp_set_type(req, "application/json");

@@ -698,8 +698,9 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
     }
     if (!UsbConsoleCommon_ExtractBoundary(request->content_type, boundary, sizeof(boundary))) {
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",
-                                         "{\"func\":\"%s\",\"result\":1,\"message\":\"missing boundary\"}",
-                                         result_func);
+                                         "{\"func\":\"%s\",\"result\":%d,\"message\":\"missing boundary\"}",
+                                         result_func,
+                                         TDX_JSON_RESULT_UPLOAD_BOUNDARY_MISSING);
     }
     if (!UsbConsoleCommon_MultipartParts(request->body,
                                          request->body_len,
@@ -709,8 +710,9 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
                                          sizeof(parts) / sizeof(parts[0])) ||
         !func_part->present) {
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",
-                                         "{\"func\":\"%s\",\"result\":1,\"message\":\"missing func\"}",
-                                         result_func);
+                                         "{\"func\":\"%s\",\"result\":%d,\"message\":\"missing func\"}",
+                                         result_func,
+                                         TDX_JSON_RESULT_UPLOAD_FUNC_MISSING);
     }
     UsbConsoleCommon_CopyPartText(func_part, func, sizeof(func));
     if (strcmp(func, expected_func) != 0) {
@@ -735,8 +737,9 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
         !bin_part->present || !image_part->present ||
         bin_part->len != bin_size || image_part->len != image_size) {
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",
-                                         "{\"func\":\"%s\",\"result\":1,\"message\":\"invalid upload\"}",
-                                         result_func);
+                                         "{\"func\":\"%s\",\"result\":%d,\"message\":\"invalid upload\"}",
+                                         result_func,
+                                         TDX_JSON_RESULT_UPLOAD_INVALID);
     }
     ESP_LOGI(TAG, "%s meta file=%s save=%d show=%d body=%u bin=%u/%u image=%u/%u",
              expected_func,
@@ -750,8 +753,9 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
              (unsigned int)image_size);
     if (strcmp(expected_func, "cast") == 0 && !save) {
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",
-                                         "{\"func\":\"%s\",\"result\":1,\"message\":\"cast failed\",\"error\":\"save_required_for_last_cast\"}",
-                                         result_func);
+                                         "{\"func\":\"%s\",\"result\":%d,\"message\":\"cast failed\",\"error\":\"save_required_for_last_cast\"}",
+                                         result_func,
+                                         TDX_JSON_RESULT_SAVE_REQUIRED_FOR_LAST_CAST);
     }
     ESP_LOGI(TAG, "%s validate elapsed_ms=%lu total_ms=%lu",
              expected_func,
@@ -770,8 +774,9 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
                  (unsigned long)elapsed_ms_since(total_start_us));
         if (save_bin_ret != ESP_OK) {
             return UsbConsoleCommon_SetJsonf(response, 200, "OK",
-                                             "{\"func\":\"%s\",\"result\":1,\"message\":\"%s failed\",\"error\":\"save_bin_failed\"}",
+                                             "{\"func\":\"%s\",\"result\":%d,\"message\":\"%s failed\",\"error\":\"save_bin_failed\"}",
                                              result_func,
+                                             TDX_JSON_RESULT_SAVE_BIN_FAILED,
                                              expected_func);
         }
         stage_start_us = esp_timer_get_time();
@@ -783,8 +788,9 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
                  (unsigned long)elapsed_ms_since(total_start_us));
         if (save_image_ret != ESP_OK) {
             return UsbConsoleCommon_SetJsonf(response, 200, "OK",
-                                             "{\"func\":\"%s\",\"result\":1,\"message\":\"%s failed\",\"error\":\"save_image_failed\"}",
+                                             "{\"func\":\"%s\",\"result\":%d,\"message\":\"%s failed\",\"error\":\"save_image_failed\"}",
                                              result_func,
+                                             TDX_JSON_RESULT_SAVE_IMAGE_FAILED,
                                              expected_func);
         }
         if (strcmp(expected_func, "cast") == 0) {
@@ -797,8 +803,9 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
                      (unsigned long)elapsed_ms_since(total_start_us));
             if (record_ret != ESP_OK) {
                 return UsbConsoleCommon_SetJsonf(response, 200, "OK",
-                                                 "{\"func\":\"%s\",\"result\":1,\"message\":\"%s failed\",\"error\":\"last_cast_failed\"}",
+                                                 "{\"func\":\"%s\",\"result\":%d,\"message\":\"%s failed\",\"error\":\"last_cast_failed\"}",
                                                  result_func,
+                                                 TDX_JSON_RESULT_LAST_CAST_SAVE_FAILED,
                                                  expected_func);
             }
         }
@@ -820,8 +827,9 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
                  (unsigned long)elapsed_ms_since(total_start_us));
         if (display_ret != ESP_OK) {
             return UsbConsoleCommon_SetJsonf(response, 200, "OK",
-                                             "{\"func\":\"%s\",\"result\":1,\"message\":\"%s failed\",\"error\":\"display_queue_failed\"}",
+                                             "{\"func\":\"%s\",\"result\":%d,\"message\":\"%s failed\",\"error\":\"display_queue_failed\"}",
                                              result_func,
+                                             TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED,
                                              expected_func);
         }
         if (strcmp(expected_func, "cast") == 0) {
@@ -835,7 +843,8 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
     return UsbConsoleCommon_SetJsonf(response,
                                      200,
                                      "OK",
-                                     "{\"func\":\"%s\",\"result\":0,\"message\":\"ok\",\"fileName\":\"%s\"}",
+                                     "{\"func\":\"%s\",\"result\":%d,\"message\":\"ok\",\"fileName\":\"%s\"}",
                                      result_func,
+                                     TDX_JSON_RESULT_OK,
                                      file_name);
 }

@@ -6,6 +6,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "tdx_cfg.h"
 #include "usb_console_http_text.h"
 #include "usb_console_worker.h"
 
@@ -65,7 +66,7 @@ static void async_request_job(void *ctx)
         UsbConsoleHttp_SetJson(response,
                                500,
                                "Internal Server Error",
-                               "{\"func\":\"usb_async_result\",\"result\":1,\"message\":\"handler failed\"}");
+                               "{\"func\":\"usb_async_result\",\"result\":1106,\"message\":\"handler failed\"}");
     }
 
     esp_err_t send_ret = ESP_OK;

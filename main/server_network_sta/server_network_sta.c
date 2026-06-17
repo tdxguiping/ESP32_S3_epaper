@@ -711,7 +711,8 @@ uint8_t User_Network_mode_app_init(const char *base_path)
             {
                 char reply_json[160];
                 snprintf(reply_json, sizeof(reply_json),
-                            "{\"result\":1,\"message\":\"wakeup No-WiFi\",\"stage\":\"error\"}");
+                            "{\"func\":\"wifi_wakeup_result\",\"result\":%d,\"message\":\"wakeup No-WiFi\",\"stage\":\"error\"}",
+                            TDX_JSON_RESULT_BLE_NO_SAVED_WIFI);
 
                     #if(USER_BLE_ENABLE == 1)
                     SendData_indicate((uint8_t *)reply_json, strlen(reply_json));

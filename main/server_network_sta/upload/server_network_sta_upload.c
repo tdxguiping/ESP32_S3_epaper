@@ -247,12 +247,34 @@ static esp_err_t send_upload_result(httpd_req_t *req, bool ok, const char *messa
     char message_text[128] = {0};
     char error_text[128] = {0};
     const char *file_name = (meta != NULL && meta->file_name[0]) ? meta->file_name : "";
+    int result = TDX_JSON_RESULT_OK;
 
     strlcpy(message_text, message != NULL ? message : "", sizeof(message_text));
     if (ok && (error == NULL || error[0] == '\0')) {
         strlcpy(error_text, "no error", sizeof(error_text));
     } else {
         strlcpy(error_text, error != NULL ? error : "", sizeof(error_text));
+    }
+    if (!ok) {
+        if (strcmp(error_text, "invalid_fileName") == 0) {
+            result = TDX_JSON_RESULT_UPLOAD_FILE_NAME_INVALID;
+        } else if (strcmp(error_text, "missing_bin") == 0) {
+            result = TDX_JSON_RESULT_UPLOAD_BIN_MISSING;
+        } else if (strcmp(error_text, "missing_image") == 0) {
+            result = TDX_JSON_RESULT_UPLOAD_IMAGE_MISSING;
+        } else if (strstr(error_text, "size") != NULL) {
+            result = TDX_JSON_RESULT_UPLOAD_SIZE_MISMATCH;
+        } else if (strcmp(error_text, "show_failed") == 0) {
+            result = TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED;
+        } else if (strcmp(error_text, "sd_not_ready") == 0) {
+            result = TDX_JSON_RESULT_STORAGE_NOT_READY;
+        } else if (strcmp(error_text, "storage_not_enough") == 0) {
+            result = TDX_JSON_RESULT_STORAGE_NO_SPACE;
+        } else if (strcmp(error_text, "save_failed") == 0) {
+            result = TDX_JSON_RESULT_SAVE_BIN_FAILED;
+        } else {
+            result = TDX_JSON_RESULT_UPLOAD_INVALID;
+        }
     }
     if (file_name[0] != '\0') {
         snprintf(bin_file, sizeof(bin_file), "%s.bin", file_name);
@@ -262,7 +284,7 @@ static esp_err_t send_upload_result(httpd_req_t *req, bool ok, const char *messa
     int json_len = snprintf(json, sizeof(json),
                             "{\"func\":\"upload_result\",\"result\":%d,\"message\":\"%s\",\"fileName\":\"%s\","
                             "\"bin_file\":\"%s\",\"image_file\":\"%s\",\"save\":%s,\"show\":%s,\"error\":\"%s\"}",
-                            ok ? 0 : 1,
+                            result,
                             message_text,
                             file_name,
                             bin_file,
@@ -274,7 +296,7 @@ static esp_err_t send_upload_result(httpd_req_t *req, bool ok, const char *messa
         ESP_LOGE(TAG, "upload response json too long file=%s", file_name);
         httpd_resp_set_type(req, "application/json");
         return httpd_resp_sendstr(req,
-                                  "{\"func\":\"upload_result\",\"result\":1,\"message\":\"upload response too long\",\"error\":\"response_too_long\"}");
+                                  "{\"func\":\"upload_result\",\"result\":1010,\"message\":\"upload response too long\",\"error\":\"response_too_long\"}");
     }
     ESP_LOGI(TAG, "upload response: %s", json);
     httpd_resp_set_type(req, "application/json");

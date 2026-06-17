@@ -141,7 +141,7 @@ esp_err_t UsbConsoleEpdType_SendCurrent(void)
         UsbConsoleHttp_SetJson(response,
                                500,
                                "Internal Server Error",
-                               "{\"func\":\"epd_type\",\"result\":1,\"message\":\"invalid current EPD type\"}");
+                               "{\"func\":\"epd_type\",\"result\":1801,\"message\":\"invalid current EPD type\"}");
         ret = UsbConsoleHttp_SendResponse(response);
         free(response);
         return ret;
@@ -149,9 +149,10 @@ esp_err_t UsbConsoleEpdType_SendCurrent(void)
 
     snprintf(json,
              sizeof(json),
-             "{\"func\":\"epd_type\",\"result\":0,\"type\":%u,\"name\":\"%s\","
+             "{\"func\":\"epd_type\",\"result\":%d,\"type\":%u,\"name\":\"%s\","
              "\"width\":%u,\"height\":%u,\"display_size\":%u,\"color_type\":%u,"
              "\"color_name\":\"%s\",\"color_count\":%d}",
+             TDX_JSON_RESULT_OK,
              (unsigned int)config->type,
              config->name,
              (unsigned int)config->width,
@@ -197,7 +198,8 @@ esp_err_t UsbConsoleEpdType_SendList(void)
     // 从 EPD 模块发送类型列表，让 PC 端选项与固件保持一致，后续新增屏幕只改 EPD 列表。
     offset += snprintf(response->body + offset,
                        sizeof(response->body) - offset,
-                       "{\"func\":\"epd_type_list\",\"result\":0,\"current_type\":%u,\"count\":%u,\"types\":[",
+                       "{\"func\":\"epd_type_list\",\"result\":%d,\"current_type\":%u,\"count\":%u,\"types\":[",
+                       TDX_JSON_RESULT_OK,
                        current != NULL ? (unsigned int)current->type : 0U,
                        (unsigned int)count);
     for (size_t i = 0; i < count; i++) {
@@ -252,24 +254,24 @@ esp_err_t UsbConsoleEpdType_HandleSet(const usb_console_http_request_t *request,
     }
     ret = ensure_epd_type_loaded();
     if (ret != ESP_OK) {
-        set_epd_type_response_json(response, "set_epd_type_result", 1, false, NULL, esp_err_to_name(ret));
+        set_epd_type_response_json(response, "set_epd_type_result", TDX_JSON_RESULT_EPD_TYPE_INVALID, false, NULL, esp_err_to_name(ret));
         return ESP_OK;
     }
     if (strcasecmp(request->method, "POST") != 0) {
-        set_epd_type_response_json(response, "set_epd_type_result", 1, false, NULL, "method must be POST");
+        set_epd_type_response_json(response, "set_epd_type_result", TDX_JSON_RESULT_METHOD_UNSUPPORTED, false, NULL, "method must be POST");
         return ESP_OK;
     }
 
     root = cJSON_ParseWithLength(request->body, request->body_len);
     if (root == NULL) {
-        set_epd_type_response_json(response, "set_epd_type_result", 1, false, NULL, "invalid json");
+        set_epd_type_response_json(response, "set_epd_type_result", TDX_JSON_RESULT_JSON_INVALID, false, NULL, "invalid json");
         return ESP_OK;
     }
 
     type_item = cJSON_GetObjectItemCaseSensitive(root, "type");
     if (!cJSON_IsNumber(type_item)) {
         cJSON_Delete(root);
-        set_epd_type_response_json(response, "set_epd_type_result", 1, false, NULL, "missing numeric type");
+        set_epd_type_response_json(response, "set_epd_type_result", TDX_JSON_RESULT_FIELD_MISSING, false, NULL, "missing numeric type");
         return ESP_OK;
     }
 
@@ -278,7 +280,7 @@ esp_err_t UsbConsoleEpdType_HandleSet(const usb_console_http_request_t *request,
     if (type < 0 || type > 255 || config == NULL) {
         cJSON_Delete(root);
         ESP_LOGW(TAG, "reject invalid EPD type=%d", type);
-        set_epd_type_response_json(response, "set_epd_type_result", 1, false, NULL, "invalid EPD type");
+        set_epd_type_response_json(response, "set_epd_type_result", TDX_JSON_RESULT_EPD_TYPE_INVALID, false, NULL, "invalid EPD type");
         return ESP_OK;
     }
 
@@ -287,7 +289,7 @@ esp_err_t UsbConsoleEpdType_HandleSet(const usb_console_http_request_t *request,
     cJSON_Delete(root);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "set EPD type=%d failed ret=%s", type, esp_err_to_name(ret));
-        set_epd_type_response_json(response, "set_epd_type_result", 1, false, config, esp_err_to_name(ret));
+        set_epd_type_response_json(response, "set_epd_type_result", TDX_JSON_RESULT_EPD_TYPE_SAVE_FAILED, false, config, esp_err_to_name(ret));
         return ESP_OK;
     }
 
@@ -298,7 +300,7 @@ esp_err_t UsbConsoleEpdType_HandleSet(const usb_console_http_request_t *request,
 
     set_epd_type_response_json(response,
                                "set_epd_type_result",
-                               0,
+                               TDX_JSON_RESULT_OK,
                                changed,
                                config,
                                changed ? "saved" : "unchanged");
@@ -320,7 +322,7 @@ esp_err_t UsbConsoleEpdType_HandleTest(const usb_console_http_request_t *request
         UsbConsoleHttp_SetJson(response,
                                500,
                                "Internal Server Error",
-                               "{\"func\":\"test_epd_display_result\",\"result\":1,\"message\":\"load EPD type failed\"}");
+                               "{\"func\":\"test_epd_display_result\",\"result\":1801,\"message\":\"load EPD type failed\"}");
         return ESP_OK;
     }
     config = EpdType_GetCurrentConfig();
@@ -328,14 +330,14 @@ esp_err_t UsbConsoleEpdType_HandleTest(const usb_console_http_request_t *request
         UsbConsoleHttp_SetJson(response,
                                400,
                                "Bad Request",
-                               "{\"func\":\"test_epd_display_result\",\"result\":1,\"message\":\"method must be POST\"}");
+                               "{\"func\":\"test_epd_display_result\",\"result\":1005,\"message\":\"method must be POST\"}");
         return ESP_OK;
     }
     if (config == NULL) {
         UsbConsoleHttp_SetJson(response,
                                500,
                                "Internal Server Error",
-                               "{\"func\":\"test_epd_display_result\",\"result\":1,\"message\":\"invalid current EPD type\"}");
+                               "{\"func\":\"test_epd_display_result\",\"result\":1801,\"message\":\"invalid current EPD type\"}");
         return ESP_OK;
     }
 
@@ -348,7 +350,8 @@ esp_err_t UsbConsoleEpdType_HandleTest(const usb_console_http_request_t *request
 
     snprintf(json,
              sizeof(json),
-             "{\"func\":\"test_epd_display_result\",\"result\":0,\"type\":%u,\"name\":\"%s\"}",
+             "{\"func\":\"test_epd_display_result\",\"result\":%d,\"type\":%u,\"name\":\"%s\"}",
+             TDX_JSON_RESULT_OK,
              (unsigned int)config->type,
              config->name);
     UsbConsoleHttp_SetJson(response, 200, "OK", json);

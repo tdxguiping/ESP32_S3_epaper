@@ -1,6 +1,7 @@
 #include "usb_console_wifi_work_time.h"
 
 #include "server_network_sta_wifi_work_time.h"
+#include "tdx_cfg.h"
 #include "usb_console_common.h"
 
 esp_err_t UsbConsoleWifiWorkTime_Handle(const usb_console_http_request_t *request,
@@ -18,18 +19,21 @@ esp_err_t UsbConsoleWifiWorkTime_Process(const usb_console_http_request_t *reque
         !UsbConsoleCommon_JsonFuncEquals(request->body, "set_wifi_work_time")) {
         return ESP_ERR_NOT_SUPPORTED;
     }
-    if (!UsbConsoleCommon_JsonU32(request->body, "seconds", &seconds)) {
+    if (!UsbConsoleCommon_JsonU32(request->body, "seconds", &seconds) &&
+        !UsbConsoleCommon_JsonU32(request->body, "time", &seconds)) {
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"set_wifi_work_time_result\",\"result\":1,\"message\":\"set wifi work time failed\"}");
+                                         "{\"func\":\"set_wifi_work_time_result\",\"result\":%d,\"message\":\"set wifi work time failed\"}",
+                                         TDX_JSON_RESULT_WIFI_WORK_TIME_MISSING);
     }
     if (seconds < SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS ||
         seconds > SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS) {
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"set_wifi_work_time_result\",\"result\":1,\"message\":\"set wifi work time failed\"}");
+                                         "{\"func\":\"set_wifi_work_time_result\",\"result\":%d,\"message\":\"set wifi work time failed\"}",
+                                         TDX_JSON_RESULT_WIFI_WORK_TIME_RANGE);
     }
 
     esp_err_t ret = ServerNetworkStaWifiWorkTime_SetAndSave(seconds);
@@ -37,5 +41,5 @@ esp_err_t UsbConsoleWifiWorkTime_Process(const usb_console_http_request_t *reque
                                      200,
                                      "OK",
                                      "{\"func\":\"set_wifi_work_time_result\",\"result\":%d}",
-                                     ret == ESP_OK ? 0 : 1);
+                                     ret == ESP_OK ? TDX_JSON_RESULT_OK : TDX_JSON_RESULT_WIFI_WORK_TIME_SAVE_FAILED);
 }

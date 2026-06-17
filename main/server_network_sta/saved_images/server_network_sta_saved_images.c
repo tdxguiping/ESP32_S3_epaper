@@ -59,10 +59,13 @@ static const char *saved_image_entry_name(const char *entry_name)
 
 static esp_err_t send_saved_images_error(httpd_req_t *req)
 {
+    char json[128];
     ESP_LOGW(TAG, "get_saved_images failed");
+    snprintf(json, sizeof(json),
+             "{\"func\":\"get_saved_images_result\",\"result\":%d,\"message\":\"read saved images failed\"}",
+             TDX_JSON_RESULT_IMAGES_READ_FAILED);
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_sendstr(req,
-                              "{\"func\":\"get_saved_images_result\",\"result\":1,\"message\":\"read saved images failed\"}");
+    return httpd_resp_sendstr(req, json);
 }
 
 static esp_err_t send_saved_images_empty(httpd_req_t *req)

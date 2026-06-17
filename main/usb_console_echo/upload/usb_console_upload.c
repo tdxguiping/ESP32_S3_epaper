@@ -200,13 +200,15 @@ static esp_err_t process_raw_upload(const usb_console_http_request_t *request,
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"upload_raw_result\",\"result\":1,\"message\":\"missing path\"}");
+                                         "{\"func\":\"upload_raw_result\",\"result\":%d,\"message\":\"missing path\"}",
+                                         TDX_JSON_RESULT_UPLOAD_RAW_PATH_MISSING);
     }
     if (!raw_upload_path_is_safe(path)) {
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"upload_raw_result\",\"result\":1,\"message\":\"invalid path\"}");
+                                         "{\"func\":\"upload_raw_result\",\"result\":%d,\"message\":\"invalid path\"}",
+                                         TDX_JSON_RESULT_UPLOAD_RAW_PATH_INVALID);
     }
 
     ESP_LOGI(TAG,
@@ -220,14 +222,16 @@ static esp_err_t process_raw_upload(const usb_console_http_request_t *request,
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"upload_raw_result\",\"result\":1,\"message\":\"save failed\",\"error\":\"%s\"}",
+                                         "{\"func\":\"upload_raw_result\",\"result\":%d,\"message\":\"save failed\",\"error\":\"%s\"}",
+                                         TDX_JSON_RESULT_UPLOAD_RAW_SAVE_FAILED,
                                          esp_err_to_name(save_ret));
     }
 
     return UsbConsoleCommon_SetJsonf(response,
                                      200,
                                      "OK",
-                                     "{\"func\":\"upload_raw_result\",\"result\":0,\"message\":\"ok\",\"path\":\"%s\",\"size\":%u}",
+                                     "{\"func\":\"upload_raw_result\",\"result\":%d,\"message\":\"ok\",\"path\":\"%s\",\"size\":%u}",
+                                     TDX_JSON_RESULT_OK,
                                      path,
                                      (unsigned int)request->body_len);
 }

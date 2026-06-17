@@ -232,11 +232,28 @@ static bool file_name_is_safe(const char *file_name)
 static esp_err_t send_cast_result(httpd_req_t *req, bool ok, const char *message, const char *error)
 {
     char json[160];
+    int result = TDX_JSON_RESULT_OK;
+    if (!ok) {
+        if (error != NULL && strcmp(error, "invalid_fileName") == 0) {
+            result = TDX_JSON_RESULT_UPLOAD_FILE_NAME_INVALID;
+        } else if (error != NULL && (strcmp(error, "missing_bin") == 0)) {
+            result = TDX_JSON_RESULT_UPLOAD_BIN_MISSING;
+        } else if (error != NULL && (strcmp(error, "missing_image") == 0)) {
+            result = TDX_JSON_RESULT_UPLOAD_IMAGE_MISSING;
+        } else if (error != NULL && (strstr(error, "size") != NULL)) {
+            result = TDX_JSON_RESULT_UPLOAD_SIZE_MISMATCH;
+        } else if (error != NULL && strcmp(error, "save_required_for_last_cast") == 0) {
+            result = TDX_JSON_RESULT_SAVE_REQUIRED_FOR_LAST_CAST;
+        } else {
+            result = TDX_JSON_RESULT_UPLOAD_INVALID;
+        }
+    }
     if (ok) {
-        snprintf(json, sizeof(json), "{\"func\":\"cast_result\",\"result\":0}");
+        snprintf(json, sizeof(json), "{\"func\":\"cast_result\",\"result\":%d}", TDX_JSON_RESULT_OK);
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"cast_result\",\"result\":1,\"message\":\"%s\",\"error\":\"%s\"}",
+                 "{\"func\":\"cast_result\",\"result\":%d,\"message\":\"%s\",\"error\":\"%s\"}",
+                 result,
                  message != NULL ? message : "cast failed",
                  error != NULL ? error : "");
     }
@@ -258,7 +275,8 @@ static esp_err_t send_cast_received_chunk(httpd_req_t *req, const cast_meta_t *m
     char json[192];
     snprintf(json,
              sizeof(json),
-             "{\"func\":\"cast_received\",\"result\":0,\"fileName\":\"%s\"}\n",
+             "{\"func\":\"cast_received\",\"result\":%d,\"fileName\":\"%s\"}\n",
+             TDX_JSON_RESULT_OK,
              meta != NULL ? meta->file_name : "");
     return send_cast_chunk(req, json);
 }
@@ -266,13 +284,31 @@ static esp_err_t send_cast_received_chunk(httpd_req_t *req, const cast_meta_t *m
 static esp_err_t send_cast_final_chunk(httpd_req_t *req, bool ok, const char *message, const char *error)
 {
     char json[224];
+    int result = TDX_JSON_RESULT_OK;
+    if (!ok) {
+        if (error != NULL && strcmp(error, "display_queue_failed") == 0) {
+            result = TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED;
+        } else if (error != NULL && strcmp(error, "sd_not_ready") == 0) {
+            result = TDX_JSON_RESULT_STORAGE_NOT_READY;
+        } else if (error != NULL && strcmp(error, "storage_not_enough") == 0) {
+            result = TDX_JSON_RESULT_STORAGE_NO_SPACE;
+        } else if (error != NULL && strcmp(error, "record_last_cast_failed") == 0) {
+            result = TDX_JSON_RESULT_LAST_CAST_SAVE_FAILED;
+        } else if (error != NULL && strcmp(error, "save_failed") == 0) {
+            result = TDX_JSON_RESULT_SAVE_BIN_FAILED;
+        } else {
+            result = TDX_JSON_RESULT_UPLOAD_INVALID;
+        }
+    }
     if (ok) {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"cast_result\",\"result\":0,\"message\":\"saved\"}\n");
+                 "{\"func\":\"cast_result\",\"result\":%d,\"message\":\"saved\"}\n",
+                 TDX_JSON_RESULT_OK);
     } else {
         snprintf(json,
                  sizeof(json),
-                 "{\"func\":\"cast_result\",\"result\":1,\"message\":\"%s\",\"error\":\"%s\"}\n",
+                 "{\"func\":\"cast_result\",\"result\":%d,\"message\":\"%s\",\"error\":\"%s\"}\n",
+                 result,
                  message != NULL ? message : "cast failed",
                  error != NULL ? error : "");
     }

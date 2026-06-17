@@ -37,12 +37,20 @@ esp_err_t UsbConsoleSlideshow_Process(const usb_console_http_request_t *request,
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
-                                         "{\"func\":\"start_slideshow_result\",\"result\":1,\"message\":\"start slideshow failed\"}");
+                                         "{\"func\":\"start_slideshow_result\",\"result\":%d,\"message\":\"start slideshow failed\"}",
+                                         TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED);
     }
     esp_err_t ret = ServerNetworkStaSlideshow_StartSaved(USB_CONSOLE_BASE_PATH);
+    if (ret != ESP_OK) {
+        return UsbConsoleCommon_SetJsonf(response,
+                                         200,
+                                         "OK",
+                                         "{\"func\":\"start_slideshow_result\",\"result\":%d,\"message\":\"start slideshow runtime failed\"}",
+                                         TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED);
+    }
     return UsbConsoleCommon_SetJsonf(response,
                                      200,
                                      "OK",
                                      "{\"func\":\"start_slideshow_result\",\"result\":%d}",
-                                     ret == ESP_OK ? 0 : 1);
+                                     TDX_JSON_RESULT_OK);
 }
