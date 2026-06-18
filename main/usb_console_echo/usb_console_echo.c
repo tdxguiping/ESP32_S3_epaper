@@ -165,6 +165,7 @@ static void UsbConsoleEcho_Task(void *arg)
     size_t request_used = 0;
     TickType_t request_start_tick = 0;
     int64_t request_start_us = 0;
+    int64_t last_idle_log_us = 0;
     size_t next_progress_bytes = USB_CONSOLE_RX_PROGRESS_STEP_BYTES;
 
     request_buffer = (char *)malloc(request_capacity);
@@ -184,6 +185,7 @@ static void UsbConsoleEcho_Task(void *arg)
 
     UsbConsoleTransport_FlushRx();
     ESP_LOGI(TAG, "USB console HTTP text entry ready");
+    last_idle_log_us = esp_timer_get_time();
     // Send the EPD type list first so the PC page can build selection controls.
     // 先发送 EPD 类型列表，让 PC 页面可以构建选择控件。
     (void)UsbConsoleEpdType_SendList();
@@ -250,6 +252,12 @@ static void UsbConsoleEcho_Task(void *arg)
                                        "Request Timeout",
                                        "{\"func\":\"usb_receive_result\",\"result\":1102,\"message\":\"request timeout\"}");
                 request_used = 0;
+            }
+        } else {
+            int64_t now_us = esp_timer_get_time();
+            if (now_us - last_idle_log_us >= 10000000LL) {
+                ESP_LOGI(TAG, "USB RX idle: waiting for PC HTTP-like request");
+                last_idle_log_us = now_us;
             }
         }
 

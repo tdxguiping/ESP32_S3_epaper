@@ -14,6 +14,7 @@
 #include "usb_console_epd_type.h"
 #include "usb_console_net_data.h"
 #include "usb_console_ping.h"
+#include "usb_console_restart.h"
 #include "usb_console_saved_images.h"
 #include "usb_console_slideshow.h"
 #include "usb_console_slideshow_control.h"
@@ -67,6 +68,8 @@ esp_err_t UsbConsoleRouter_Handle(const usb_console_http_request_t *request)
 
     if (path_is(request->path, "/ping")) {
         ret = UsbConsolePing_Handle(request, response);
+    } else if (path_is(request->path, "/restart")) {
+        ret = UsbConsoleRestart_Handle(request, response);
     } else if (path_is(request->path, "/wifi")) {
         ret = UsbConsoleWifi_Handle(request, response);
     } else if (path_is(request->path, USB_CONSOLE_EPD_TYPE_LIST_URI)) {

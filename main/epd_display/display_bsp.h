@@ -217,6 +217,7 @@ class ePaperPort {
     void    EPD_SendData(uint8_t Data);
     void    EPD_Sendbuffera(uint8_t *Data, int len);
     void    EPD_TurnOnDisplay(void);
+    void    EPD_TurnOnDisplay_480(void);
     bool    EnsureDispBuffer();
     bool    EnsureRotationBuffer();
     void    ReleaseDispBuffer();
@@ -388,6 +389,15 @@ class ePaperPort {
     void EPD_refresh_17H();
     void EPD_initial();
     void EPD_Check_Busy();
+    void EPD_Check_Busy_480(uint16_t loop_counter);
+    void EPD_Check_Busy_4s75(uint16_t loop_counter);
+    void EPD_Check_Busy_75_2(uint16_t loop_counter);
+    void EPD_Check_Busy_75_3(uint16_t loop_counter);
+    void EPD_Check_Busy_600(uint16_t loop_counter);
+    void EPD_Check_Busy_79(uint16_t loop_counter);
+    void EPD_Check_Busy_1085(uint16_t loop_counter);
+    void EPD_Check_Busy_1085_3c(uint16_t loop_counter);
+    void EPD_Check_Busy_133(uint16_t loop_counter);
     void Epaper_Update_and_Deepsleep();    
     void Epaper_Update();
     void Epaper_Init();

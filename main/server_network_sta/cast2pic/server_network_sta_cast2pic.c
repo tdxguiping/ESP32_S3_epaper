@@ -5,14 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <sys/stat.h>
-#include <sys/unistd.h>
 
+#include "cast_core.h"
 #include "esp_log.h"
-#include "esp_vfs_fat.h"
-#include "esp_spiffs.h"
-#include "file_serving_example_common.h"
-#include "epd_display_app.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_cast2pic";
@@ -183,7 +178,7 @@ static esp_err_t send_cast2pic_result(httpd_req_t *req, const char *result)
             result_code = TDX_JSON_RESULT_UPLOAD_FUNC_MISSING;
         } else if (strcmp(result, "invalid_screen") == 0) {
             result_code = TDX_JSON_RESULT_CAST2PIC_SCREEN_INVALID;
-        } else if (strcmp(result, "display_request_failed") == 0) {
+        } else if (strcmp(result, "display_request_failed") == 0 || strcmp(result, "display_queue_failed") == 0) {
             result_code = TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED;
         } else if (strcmp(result, "storage_not_ready") == 0) {
             result_code = TDX_JSON_RESULT_STORAGE_NOT_READY;
@@ -195,9 +190,9 @@ static esp_err_t send_cast2pic_result(httpd_req_t *req, const char *result)
             result_code = TDX_JSON_RESULT_UPLOAD_IMAGE_MISSING;
         } else if (strstr(result, "size") != NULL) {
             result_code = TDX_JSON_RESULT_UPLOAD_SIZE_MISMATCH;
-        } else if (strstr(result, "write_bin") != NULL) {
+        } else if (strstr(result, "write_bin") != NULL || strcmp(result, "save_bin_failed") == 0) {
             result_code = TDX_JSON_RESULT_SAVE_BIN_FAILED;
-        } else if (strstr(result, "write_image") != NULL) {
+        } else if (strstr(result, "write_image") != NULL || strcmp(result, "save_image_failed") == 0) {
             result_code = TDX_JSON_RESULT_SAVE_IMAGE_FAILED;
         } else if (strstr(result, "file") != NULL) {
             result_code = TDX_JSON_RESULT_UPLOAD_FILE_NAME_INVALID;
@@ -213,6 +208,14 @@ static esp_err_t send_cast2pic_result(httpd_req_t *req, const char *result)
 
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, json);
+}
+
+static esp_err_t send_cast2pic_core_result(httpd_req_t *req, const tdx_cast_core_result_t *result)
+{
+    if (result == NULL || result->result == TDX_JSON_RESULT_OK) {
+        return send_cast2pic_result(req, "ok");
+    }
+    return send_cast2pic_result(req, result->error[0] ? result->error : "invalid_upload");
 }
 
 static bool screen_is_valid(const char *screen)
@@ -246,161 +249,35 @@ static const char *image_to_save_name(uint8_t screen_number)
     return screen_number == 2 ? "screen_b" : "screen_a";
 }
 
-static esp_err_t ensure_dir(const char *path)
+static void copy_cast2pic_part(const multipart_part_t *src, usb_console_multipart_part_t *dst)
 {
-    struct stat st = {0};
-
-    if (path == NULL) {
-        return ESP_ERR_INVALID_ARG;
+    if (src == NULL || dst == NULL) {
+        return;
     }
-    if (!example_storage_supports_directories()) {
-        return ESP_OK;
-    }
-
-    if (stat(path, &st) == 0) {
-        return S_ISDIR(st.st_mode) ? ESP_OK : ESP_FAIL;
-    }
-
-    errno = 0;
-    if (mkdir(path, 0775) == 0 || errno == EEXIST) {
-        return ESP_OK;
-    }
-
-    int err = errno;
-    if (err == ENOTSUP || err == EOPNOTSUPP) {
-        return ESP_OK;
-    }
-
-    ESP_LOGE(TAG, "cast2pic mkdir failed path=%s errno=%d", path, err);
-    return ESP_FAIL;
+    memset(dst, 0, sizeof(*dst));
+    dst->present = src->present;
+    dst->data = src->data;
+    dst->len = src->len;
+    snprintf(dst->filename, sizeof(dst->filename), "%s", src->filename);
 }
 
-static esp_err_t write_file_exact(const char *path, const char *data, size_t len)
+static esp_err_t process_cast2pic_items(const char *base_path, const cast2pic_meta_t *meta, tdx_cast_core_result_t *result)
 {
-    FILE *fp = fopen(path, "wb");
-    if (fp == NULL) {
-        ESP_LOGE(TAG, "cast2pic open failed path=%s errno=%d", path, errno);
-        return ESP_FAIL;
-    }
-
-    size_t written = fwrite(data, 1, len, fp);
-    fclose(fp);
-    return written == len ? ESP_OK : ESP_FAIL;
-}
-
-static esp_err_t save_one_cast2pic_file(const char *dir_path, const char *file_name,
-                                        const char *ext, const char *data, size_t len)
-{
-    char tmp_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX + 32];
-    char final_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX + 32];
-    struct stat st = {0};
-
-    snprintf(tmp_path, sizeof(tmp_path), "%s/%s.tmp", dir_path, file_name);
-    snprintf(final_path, sizeof(final_path), "%s/%s%s", dir_path, file_name, ext);
-
-    unlink(tmp_path);
-    esp_err_t ret = write_file_exact(tmp_path, data, len);
-    if (ret != ESP_OK) {
-        unlink(tmp_path);
-        return ret;
-    }
-
-    int stat_ret = stat(tmp_path, &st);
-    if (stat_ret != 0 || (size_t)st.st_size != len) {
-        unlink(tmp_path);
-        return ESP_FAIL;
-    }
-
-    unlink(final_path);
-    if (rename(tmp_path, final_path) != 0) {
-        ESP_LOGE(TAG, "cast2pic rename failed tmp=%s final=%s errno=%d", tmp_path, final_path, errno);
-        unlink(tmp_path);
-        return ESP_FAIL;
-    }
-    return ESP_OK;
-}
-
-static esp_err_t check_save_space(const char *base_path, size_t required_len)
-{
-    uint64_t free_bytes = 0;
-    if (base_path == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    esp_err_t info_ret = example_storage_get_free_bytes(base_path, &free_bytes);
-    if (info_ret != ESP_OK) {
-        ESP_LOGW(TAG, "cast2pic storage info failed base=%s ret=%s, continue without space check",
-                 base_path, esp_err_to_name(info_ret));
-        return ESP_OK;
-    }
-    return free_bytes >= (required_len + SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES) ? ESP_OK : ESP_ERR_NO_MEM;
-}
-
-static esp_err_t save_cast2pic_files(const char *base_path,
-                                     const cast2pic_meta_t *meta,
-                                     const char **error_out)
-{
-    char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
-    char jpg_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
-    size_t required_len = 0;
-
-    snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", base_path);
-    snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", base_path);
-
-    if (ensure_dir(bin_dir) != ESP_OK || ensure_dir(jpg_dir) != ESP_OK) {
-        *error_out = "storage_not_ready";
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    for (size_t i = 0; i < meta->image_count; i++) {
-        required_len += meta->images[i].bin_part.len + meta->images[i].image_part.len;
-    }
-    if (check_save_space(base_path, required_len) != ESP_OK) {
-        *error_out = "storage_not_enough";
-        return ESP_ERR_NO_MEM;
-    }
-
-    for (size_t i = 0; i < meta->image_count; i++) {
-        uint8_t screen_number = screen_to_epd_number(meta->screen);
-        const char *save_name = image_to_save_name(screen_number);
-
-        if (save_one_cast2pic_file(bin_dir, save_name, ".bin",
-                                   meta->images[i].bin_part.data,
-                                   meta->images[i].bin_part.len) != ESP_OK) {
-            *error_out = "write_bin_failed";
-            return ESP_FAIL;
-        }
-        if (save_one_cast2pic_file(jpg_dir, save_name, ".jpg",
-                                   meta->images[i].image_part.data,
-                                   meta->images[i].image_part.len) != ESP_OK) {
-            *error_out = "write_image_failed";
-            return ESP_FAIL;
-        }
-    }
-
-    return ESP_OK;
-}
-
-static esp_err_t queue_cast2pic_display(const cast2pic_meta_t *meta)
-{
+    tdx_image_transfer_item_t items[CAST2PIC_MAX_IMAGES] = {0};
+    size_t count = screen_required_images(meta->screen);
     uint8_t screen_number = screen_to_epd_number(meta->screen);
 
-    for (size_t i = 0; i < screen_required_images(meta->screen); i++) {
-        ESP_LOGI(TAG, "cast2pic display screen=%s epd=%u len=%u",
-                 meta->screen,
-                 (unsigned int)screen_number,
-                 (unsigned int)meta->images[i].bin_part.len);
-        esp_err_t display_ret = ServerNetworkStaEpdDisplay_QueueToScreen(
-            (const uint8_t *)meta->images[i].bin_part.data,
-            meta->images[i].bin_part.len,
-            screen_number);
-        if (display_ret != ESP_OK) {
-            ESP_LOGE(TAG, "cast2pic display failed screen=%s ret=%s",
-                     meta->screen, esp_err_to_name(display_ret));
-            return display_ret;
-        }
+    for (size_t i = 0; i < count; i++) {
+        const char *save_name = image_to_save_name(screen_number);
+        snprintf(items[i].save_name, sizeof(items[i].save_name), "%s", save_name);
+        items[i].save = meta->save;
+        items[i].show = meta->show;
+        items[i].record_last_cast = false;
+        items[i].epd_target = screen_number;
+        copy_cast2pic_part(&meta->images[i].bin_part, &items[i].bin_part);
+        copy_cast2pic_part(&meta->images[i].image_part, &items[i].image_part);
     }
-
-    return ESP_OK;
+    return TdxImageTransfer_ProcessItems(items, count, base_path, "network cast2pic", result);
 }
 
 static void assign_text_part(cast2pic_meta_t *meta, const char *name, const multipart_part_t *part)
@@ -598,21 +475,7 @@ esp_err_t ServerNetworkStaCast2Pic_Process(httpd_req_t *req,
         return send_cast2pic_result(req, validate_error);
     }
 
-    if (meta.show) {
-        esp_err_t display_ret = queue_cast2pic_display(&meta);
-        if (display_ret != ESP_OK) {
-            return send_cast2pic_result(req, "display_request_failed");
-        }
-    }
-
-    if (meta.save) {
-        const char *save_error = NULL;
-        if (save_cast2pic_files(base_path, &meta, &save_error) != ESP_OK) {
-            ESP_LOGW(TAG, "cast2pic save failed after display error=%s",
-                     save_error != NULL ? save_error : "write_bin_failed");
-            return send_cast2pic_result(req, save_error != NULL ? save_error : "write_bin_failed");
-        }
-    }
-
-    return send_cast2pic_result(req, "ok");
+    tdx_cast_core_result_t result = {0};
+    (void)process_cast2pic_items(base_path, &meta, &result);
+    return send_cast2pic_core_result(req, &result);
 }

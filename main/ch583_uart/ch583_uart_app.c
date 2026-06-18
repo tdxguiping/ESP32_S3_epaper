@@ -69,6 +69,7 @@ static void User_UartEventTask(void *arg)
 {
     (void)arg;
     uart_event_t event = {};
+    UBaseType_t min_free_stack = 0;
 
     while (1) {
         if (s_ch583_uart_event_queue == NULL) {
@@ -86,6 +87,11 @@ static void User_UartEventTask(void *arg)
             // 在事件任务中读取 UART 数据，避免旧的 20ms 轮询唤醒 CPU。
             ESP_LOGD(TAG, "UART_DATA event size=%u", (unsigned int)event.size);
             Ch583Uart_ReadAndProcess(event.size);
+            min_free_stack = uxTaskGetStackHighWaterMark(NULL);
+            if (min_free_stack < 1024) {
+                ESP_LOGW(TAG, "User_UartEventTask low stack watermark=%u bytes",
+                         (unsigned int)min_free_stack);
+            }
             break;
         case UART_BUFFER_FULL:
             // Report RX ring-buffer full events to confirm whether CH583 data is lost before the receive task reads it.
@@ -209,12 +215,19 @@ esp_err_t Ch583UartApp_Init(void)
     }
 
     if (s_ch583_uart_event_queue != NULL) {
-        xTaskCreate(User_UartEventTask,
-                    "User_UartEventTask",
-                    USER_CH583_UART_EVENT_TASK_STACK_SIZE,
-                    NULL,
-                    2,
-                    NULL);
+        BaseType_t task_ok = xTaskCreate(User_UartEventTask,
+                                         "User_UartEventTask",
+                                         USER_CH583_UART_EVENT_TASK_STACK_SIZE,
+                                         NULL,
+                                         2,
+                                         NULL);
+        if (task_ok != pdPASS) {
+            ESP_LOGE(TAG, "create User_UartEventTask failed stack=%u",
+                     (unsigned int)USER_CH583_UART_EVENT_TASK_STACK_SIZE);
+            return ESP_ERR_NO_MEM;
+        }
+        ESP_LOGI(TAG, "User_UartEventTask stack=%u",
+                 (unsigned int)USER_CH583_UART_EVENT_TASK_STACK_SIZE);
     }
 
     (void)ch583_wifi_uart_get_ble_mac();

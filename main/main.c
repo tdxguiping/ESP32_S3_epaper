@@ -357,7 +357,7 @@ void app_main(void)
     ESP_LOGI(TAG, "BLE MAC source=CH583 reported BLE MAC value=%s",
              ble_mac[0] != '\0' ? ble_mac : "<empty>");
 #endif
-    test_epd_display();
+//     test_epd_display();
 }
 // LOG_ERROR("%d %s %s",__LINE__,__func__,__FILE__);
 // LOG_WARN("%s>%d",__func__,__LINE__);

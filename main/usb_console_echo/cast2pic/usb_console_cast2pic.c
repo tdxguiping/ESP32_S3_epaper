@@ -4,9 +4,9 @@
 #include <string.h>
 #include <strings.h>
 
+#include "cast_core.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "epd_display_app.h"
 #include "tdx_cfg.h"
 #include "usb_console_common.h"
 
@@ -27,19 +27,18 @@ static esp_err_t set_cast2pic_error(usb_console_http_response_t *response, int r
                                      error != NULL ? error : "unknown");
 }
 
-static esp_err_t cast2pic_process_one(const usb_console_http_request_t *request,
-                                      usb_console_http_response_t *response,
-                                      const char *boundary,
-                                      const char *suffix,
-                                      const char *save_name,
-                                      uint8_t screen_number,
-                                      bool save,
-                                      bool show,
-                                      int64_t total_start_us)
+static esp_err_t cast2pic_parse_one(const usb_console_http_request_t *request,
+                                    usb_console_http_response_t *response,
+                                    const char *boundary,
+                                    const char *suffix,
+                                    const char *save_name,
+                                    uint8_t screen_number,
+                                    bool save,
+                                    bool show,
+                                    int64_t total_start_us,
+                                    tdx_image_transfer_item_t *item)
 {
     char user_file_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX] = {0};
-    char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
-    char jpg_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
     size_t bin_size = 0;
     size_t image_size = 0;
     char file_name_field[24];
@@ -105,51 +104,17 @@ static esp_err_t cast2pic_process_one(const usb_console_http_request_t *request,
              (unsigned long)cast2pic_elapsed_ms_since(stage_start_us),
              (unsigned long)cast2pic_elapsed_ms_since(total_start_us));
 
-    if (save) {
-        snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", USB_CONSOLE_BASE_PATH);
-        snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", USB_CONSOLE_BASE_PATH);
-
-        stage_start_us = esp_timer_get_time();
-        esp_err_t save_bin_ret = UsbConsoleCommon_SavePartFile(bin_dir, save_name, ".bin", bin_part);
-        ESP_LOGI(TAG,
-                 "cast2pic save bin suffix=%s ret=%s elapsed_ms=%lu total_ms=%lu",
-                 suffix,
-                 esp_err_to_name(save_bin_ret),
-                 (unsigned long)cast2pic_elapsed_ms_since(stage_start_us),
-                 (unsigned long)cast2pic_elapsed_ms_since(total_start_us));
-        if (save_bin_ret != ESP_OK) {
-            return set_cast2pic_error(response, TDX_JSON_RESULT_SAVE_BIN_FAILED, "save_bin_failed");
-        }
-
-        stage_start_us = esp_timer_get_time();
-        esp_err_t save_image_ret = UsbConsoleCommon_SavePartFile(jpg_dir, save_name, ".jpg", image_part);
-        ESP_LOGI(TAG,
-                 "cast2pic save image suffix=%s ret=%s elapsed_ms=%lu total_ms=%lu",
-                 suffix,
-                 esp_err_to_name(save_image_ret),
-                 (unsigned long)cast2pic_elapsed_ms_since(stage_start_us),
-                 (unsigned long)cast2pic_elapsed_ms_since(total_start_us));
-        if (save_image_ret != ESP_OK) {
-            return set_cast2pic_error(response, TDX_JSON_RESULT_SAVE_IMAGE_FAILED, "save_image_failed");
-        }
+    if (item == NULL) {
+        return ESP_ERR_INVALID_ARG;
     }
-
-    if (show) {
-        stage_start_us = esp_timer_get_time();
-        esp_err_t display_ret = ServerNetworkStaEpdDisplay_QueueToScreen((const uint8_t *)bin_part->data,
-                                                                         bin_part->len,
-                                                                         screen_number);
-        ESP_LOGI(TAG,
-                 "cast2pic display suffix=%s ret=%s elapsed_ms=%lu total_ms=%lu",
-                 suffix,
-                 esp_err_to_name(display_ret),
-                 (unsigned long)cast2pic_elapsed_ms_since(stage_start_us),
-                 (unsigned long)cast2pic_elapsed_ms_since(total_start_us));
-        if (display_ret != ESP_OK) {
-            return set_cast2pic_error(response, TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED, "display_queue_failed");
-        }
-    }
-
+    memset(item, 0, sizeof(*item));
+    snprintf(item->save_name, sizeof(item->save_name), "%s", save_name);
+    item->save = save;
+    item->show = show;
+    item->record_last_cast = false;
+    item->epd_target = screen_number;
+    item->bin_part = *bin_part;
+    item->image_part = *image_part;
     return ESP_OK;
 }
 
@@ -179,6 +144,8 @@ esp_err_t UsbConsoleCast2Pic_Process(const usb_console_http_request_t *request,
     usb_console_multipart_part_t *save_part = &parts[2];
     usb_console_multipart_part_t *show_part = &parts[3];
     int64_t total_start_us = esp_timer_get_time();
+    tdx_image_transfer_item_t items[2] = {0};
+    size_t item_count = 0;
 
     if (request == NULL || response == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -220,17 +187,27 @@ esp_err_t UsbConsoleCast2Pic_Process(const usb_console_http_request_t *request,
              (unsigned int)request->body_len);
 
     if (strcasecmp(screen, "b") != 0) {
-        esp_err_t ret = cast2pic_process_one(request, response, boundary, "A", "screen_a", 1, save, show, total_start_us);
+        esp_err_t ret = cast2pic_parse_one(request, response, boundary, "A", "screen_a", 1, save, show, total_start_us, &items[item_count]);
         if (ret != ESP_OK) {
             return ret;
         }
+        item_count++;
     }
 
     if (strcasecmp(screen, "a") != 0) {
-        esp_err_t ret = cast2pic_process_one(request, response, boundary, "B", "screen_b", 2, save, show, total_start_us);
+        esp_err_t ret = cast2pic_parse_one(request, response, boundary, "B", "screen_b", 2, save, show, total_start_us, &items[item_count]);
         if (ret != ESP_OK) {
             return ret;
         }
+        item_count++;
+    }
+
+    tdx_cast_core_result_t result = {0};
+    (void)TdxImageTransfer_ProcessItems(items, item_count, USB_CONSOLE_BASE_PATH, "usb cast2pic", &result);
+    if (result.result != TDX_JSON_RESULT_OK) {
+        return set_cast2pic_error(response,
+                                  result.result,
+                                  result.error[0] ? result.error : "cast2pic_failed");
     }
 
     ESP_LOGI(TAG,

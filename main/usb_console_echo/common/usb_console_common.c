@@ -762,6 +762,32 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
              (unsigned long)elapsed_ms_since(stage_start_us),
              (unsigned long)elapsed_ms_since(total_start_us));
 
+    if (show) {
+        stage_start_us = esp_timer_get_time();
+        esp_err_t display_ret = ESP_OK;
+        if (strcmp(expected_func, "cast2pic") == 0) {
+            uint8_t screen_number = (strcmp(screen, "b") == 0) ? 2 : 1;
+            display_ret = ServerNetworkStaEpdDisplay_QueueToScreen((const uint8_t *)bin_part->data, bin_part->len, screen_number);
+        } else {
+            display_ret = ServerNetworkStaEpdDisplay_Queue((const uint8_t *)bin_part->data, bin_part->len);
+        }
+        ESP_LOGI(TAG, "%s display queue ret=%s elapsed_ms=%lu total_ms=%lu",
+                 expected_func,
+                 esp_err_to_name(display_ret),
+                 (unsigned long)elapsed_ms_since(stage_start_us),
+                 (unsigned long)elapsed_ms_since(total_start_us));
+        if (display_ret != ESP_OK) {
+            return UsbConsoleCommon_SetJsonf(response, 200, "OK",
+                                             "{\"func\":\"%s\",\"result\":%d,\"message\":\"%s failed\",\"error\":\"display_queue_failed\"}",
+                                             result_func,
+                                             TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED,
+                                             expected_func);
+        }
+        if (strcmp(expected_func, "cast") == 0) {
+            ServerNetworkStaSlideshow_Stop();
+        }
+    }
+
     if (save) {
         snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", USB_CONSOLE_BASE_PATH);
         snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", USB_CONSOLE_BASE_PATH);
@@ -808,32 +834,6 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
                                                  TDX_JSON_RESULT_LAST_CAST_SAVE_FAILED,
                                                  expected_func);
             }
-        }
-    }
-
-    if (show) {
-        stage_start_us = esp_timer_get_time();
-        esp_err_t display_ret = ESP_OK;
-        if (strcmp(expected_func, "cast2pic") == 0) {
-            uint8_t screen_number = (strcmp(screen, "b") == 0) ? 2 : 1;
-            display_ret = ServerNetworkStaEpdDisplay_QueueToScreen((const uint8_t *)bin_part->data, bin_part->len, screen_number);
-        } else {
-            display_ret = ServerNetworkStaEpdDisplay_Queue((const uint8_t *)bin_part->data, bin_part->len);
-        }
-        ESP_LOGI(TAG, "%s display queue ret=%s elapsed_ms=%lu total_ms=%lu",
-                 expected_func,
-                 esp_err_to_name(display_ret),
-                 (unsigned long)elapsed_ms_since(stage_start_us),
-                 (unsigned long)elapsed_ms_since(total_start_us));
-        if (display_ret != ESP_OK) {
-            return UsbConsoleCommon_SetJsonf(response, 200, "OK",
-                                             "{\"func\":\"%s\",\"result\":%d,\"message\":\"%s failed\",\"error\":\"display_queue_failed\"}",
-                                             result_func,
-                                             TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED,
-                                             expected_func);
-        }
-        if (strcmp(expected_func, "cast") == 0) {
-            ServerNetworkStaSlideshow_Stop();
         }
     }
 

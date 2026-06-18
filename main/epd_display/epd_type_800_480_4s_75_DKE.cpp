@@ -28,15 +28,15 @@ void EpdType800480_4S_75_DKE_Display(ePaperPort &epd,
 void ePaperPort::EpdType800480_4S_75_DKE_Sleep()
 {
     EpdType800480_4S_75_DKE_WriteCommand(0x04);
-    EpdType800480_4S_75_DKE_WaitBusy("sleep_power_on");
+    EPD_Check_Busy_75_2(2);
 
     EpdType800480_4S_75_DKE_WriteCommand(0x12);
     EpdType800480_4S_75_DKE_WriteData(0x00);
-    EpdType800480_4S_75_DKE_WaitBusy("sleep_refresh");
+    EPD_Check_Busy_75_2(2);
 
     EpdType800480_4S_75_DKE_WriteCommand(0x02);
     EpdType800480_4S_75_DKE_WriteData(0x00);
-    EpdType800480_4S_75_DKE_WaitBusy("sleep_power_off");
+    EPD_Check_Busy_75_2(2);
 
     EpdType800480_4S_75_DKE_WriteCommand(0x07);
     EpdType800480_4S_75_DKE_WriteData(0xA5);
@@ -166,16 +166,33 @@ void ePaperPort::EpdType800480_4S_75_DKE_WriteData(uint8_t data)
 
 void ePaperPort::EpdType800480_4S_75_DKE_WaitBusy(const char *step)
 {
-    int64_t start_us = esp_timer_get_time();
-    uint16_t loops = 0;
+    (void)step;
+    EPD_Check_Busy_75_2(2);
+}
 
-    while (Get_BusyIOLevel() != 1U) {
+void ePaperPort::EPD_Check_Busy_75_2(uint16_t loop_counter)
+{
+    int64_t start_us = esp_timer_get_time();
+    int16_t i = 0;
+
+    if (loop_counter > 45) {
+        loop_counter = 45;
+    }
+
+    while (1) {
+        int level = Get_BusyIOLevel();
+        if (level) {
+            printf("Check Busy over\r\n");
+            return;
+        }
         vTaskDelay(pdMS_TO_TICKS(1000)); //  1000ms = 1s
-        ++loops;
-        printf("%d.",loops);
-        if (((esp_timer_get_time() - start_us) / 1000) > 45000) {
-            ESP_LOGE("epd_display", "EPD DKE busy timeout step=%s level=1",
-                     step != nullptr ? step : "unknown");
+        i++;
+        printf(".%d.", i);
+
+        if (i > loop_counter) {
+            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
+            ESP_LOGE(TAG, "EPD DKE busy timeout level=%d loops=%ld elapsed_ms=%d",
+                     Get_BusyIOLevel(), (long)i, elapsed_ms);
             return;
         }
     }
@@ -187,15 +204,15 @@ void ePaperPort::EpdType800480_4S_75_DKE_UpdateAndSleep()
     ESP_LOGI("epd_display", "EPD 800x480 4color DKE update start");
     
     EpdType800480_4S_75_DKE_WriteCommand(0x04);
-    EpdType800480_4S_75_DKE_WaitBusy("power_on");
+    EPD_Check_Busy_75_2(25);
     
     EpdType800480_4S_75_DKE_WriteCommand(0x12);
     EpdType800480_4S_75_DKE_WriteData(0x00);
-    EpdType800480_4S_75_DKE_WaitBusy("refresh");
+    EPD_Check_Busy_75_2(25);
     
     EpdType800480_4S_75_DKE_WriteCommand(0x02);
     EpdType800480_4S_75_DKE_WriteData(0x00);
-    EpdType800480_4S_75_DKE_WaitBusy("power_off");
+    EPD_Check_Busy_75_2(25);
 
     EpdType800480_4S_75_DKE_WriteCommand(0x07);
     EpdType800480_4S_75_DKE_WriteData(0xA5);

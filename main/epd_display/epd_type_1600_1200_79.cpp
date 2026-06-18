@@ -1,6 +1,7 @@
 #include "epd_type_1600_1200_79.h"
 #include "display_bsp.h"
 #include "epd_type_1600_1200_common.h"
+#include "esp_timer.h"
 
 namespace {
 const unsigned char PSR_V_79[2] = {	0xDF, 0x6B};
@@ -27,6 +28,35 @@ const unsigned char BTST_N_V_79[2] = {	0xE0, 0x20};
 const unsigned char BUCK_BOOST_VDDN_V_79[1] = {	0x01};
 const unsigned char TFT_VCOM_POWER_V_79[1] = {	0x02};
 }
+
+void ePaperPort::EPD_Check_Busy_79(uint16_t loop_counter)
+{
+    int16_t i;
+    int64_t start_us = esp_timer_get_time();
+
+    if (loop_counter > 45) {
+        loop_counter = 45;
+    }
+    i = 0;
+    while (1) {
+        int level = Get_BusyIOLevel();
+        if (level) {
+            printf("Check Busy over\r\n");
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        i++;
+        printf(".%d.", i);
+
+        if (i > loop_counter) {
+            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
+            ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
+                     Get_BusyIOLevel(), (long)i, elapsed_ms);
+            return;
+        }
+    }
+}
+
 void EpdType16001200_79_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)
 {
     static const size_t expected_image_size = 1600U * 1200U / 2U;
@@ -194,11 +224,11 @@ void ePaperPort::EpdType16001200_79_NT61522_Init()
 
 
     EPD_Reset();  
-    EPD_Check_Busy();
+    EPD_Check_Busy_79(2);
 
     NT61522_ReadTemperature();    
     EPD_Reset();  
-    EPD_Check_Busy();
+    EPD_Check_Busy_79(2);
 
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmit(AN_TM, AN_TM_V_79, sizeof(AN_TM_V_79));
@@ -292,20 +322,20 @@ void ePaperPort::EpdType16001200_79_NT61522_Display()
 	setPinCsAll(GPIO_LOW);
 	spiTransmitCommand(PON);
 	delayms(30);
-	EPD_Check_Busy();
+	EPD_Check_Busy_79(45);
 	setPinCsAll(GPIO_HIGH);
 
 	setPinCsAll(GPIO_LOW);
 	delayms(30);
 	spiTransmit(DRF, DRF_V_79, sizeof(DRF_V_79));
 	delayms(30);
-	EPD_Check_Busy();
+	EPD_Check_Busy_79(45);
 	setPinCsAll(GPIO_HIGH);
 
 	setPinCsAll(GPIO_LOW);
 	spiTransmit(POF, POF_V_79, sizeof(POF_V_79));
 	delayms(30);
-	EPD_Check_Busy();
+	EPD_Check_Busy_79(45);
 	setPinCsAll(GPIO_HIGH);
     ESP_LOGI(TAG, "EPD 1600x1200 7.9 refresh done");
 
@@ -351,11 +381,11 @@ void ePaperPort::EpdType16001200_79_NT61522_InitDisplay()
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmitCommand(R40_TSC);
 	delayms(10);
-	EPD_Check_Busy();
+	EPD_Check_Busy_79(2);
 	spiReceiveData(&dataBuff[0], 2);
 	setPinCs(TARGET_MASTER,GPIO_HIGH);
 	delayms(30);
-	EPD_Check_Busy();
+	EPD_Check_Busy_79(2);
 	
 
     //Temptr[0] =  WHT20_Temp+10;
@@ -538,10 +568,10 @@ uint8_t ePaperPort::NT61522_ReadTemperature() {
     setPinCs(TARGET_MASTER, 0);
     spiTransmitCommand(R40_TSC);
     delayms(10);
-    EPD_Check_Busy();
+    EPD_Check_Busy_79(2);
     spiReceiveData(&Temptr[0], 2);
     setPinCs(TARGET_MASTER, 1);
-    EPD_Check_Busy();
+    EPD_Check_Busy_79(2);
 
     Temptr[0] = Temptr[0] > 50 ? 48 : Temptr[0];
     return Temptr[0];

@@ -300,9 +300,9 @@ void ePaperPort::EPD_Reset(void) {
     // }   
 
     Set_ResetIOLevel(0);
-    vTaskDelay(pdMS_TO_TICKS(60)); //100
+    vTaskDelay(pdMS_TO_TICKS(100)); //100
     Set_ResetIOLevel(1);
-    vTaskDelay(pdMS_TO_TICKS(60));  //100      
+    vTaskDelay(pdMS_TO_TICKS(100));  //100      
 }
 
 void ePaperPort::EPD_LoopBusy(void) {

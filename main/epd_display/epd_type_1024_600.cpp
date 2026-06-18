@@ -1,5 +1,35 @@
 #include "epd_type_1024_600.h"
 #include "display_bsp.h"
+#include "esp_timer.h"
+
+void ePaperPort::EPD_Check_Busy_600(uint16_t loop_counter)
+{
+    int16_t i;
+    int64_t start_us = esp_timer_get_time();
+
+    if (loop_counter > 45) {
+        loop_counter = 45;
+    }
+    i = 0;
+    while (1) {
+        int level = Get_BusyIOLevel();
+        if (level) {
+            printf("Check Busy over\r\n");
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        i++;
+        printf(".%d.", i);
+
+        if (i > loop_counter) {
+            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
+            ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
+                     Get_BusyIOLevel(), (long)i, elapsed_ms);
+            return;
+        }
+    }
+}
+
 void EpdType1024600_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)
 {
     static const size_t expected_image_size = 1024U * 600U / 2U;
@@ -60,17 +90,17 @@ void ePaperPort::EpdType1024600_Display()
 
     EPD_WriteCMD_ToBoth(0x04);
     delay_ms(100);
-    EPD_Check_Busy();
+    EPD_Check_Busy_600(2);
 
     EPD_WriteCMD_ToBoth(0x12);
     EPD_WriteDATA_ToBoth(0x00);
     delay_ms(100);
-    EPD_Check_Busy();
+    EPD_Check_Busy_600(2);
 
     EPD_WriteCMD_ToBoth(R02_POF);
     EPD_WriteDATA_ToBoth(0x00);
     delay_ms(100);
-    EPD_Check_Busy();
+    EPD_Check_Busy_600(2);
     ReleaseRotationBuffer();
     ReleaseDispBuffer();
 }
@@ -82,17 +112,17 @@ void ePaperPort::EpdType1024600_NT61522_Display()
      //=====================================================
     EPD_WriteCMD_ToBoth(0x04);
     delay_ms(100);
-    EPD_Check_Busy();
+    EPD_Check_Busy_600(45);
 
     EPD_WriteCMD_ToBoth(0x12);
     EPD_WriteDATA_ToBoth(0x00);
     delay_ms(100);
-    EPD_Check_Busy();
+    EPD_Check_Busy_600(45);
 
     EPD_WriteCMD_ToBoth(R02_POF);
     EPD_WriteDATA_ToBoth(0x00);
     delay_ms(100);
-    EPD_Check_Busy();
+    EPD_Check_Busy_600(45);
 }
 
 void ePaperPort::EpdType1024600_NT61522_InitDisplay()
@@ -349,11 +379,11 @@ void ePaperPort::EPD_initial(void) {
     EPD_WriteCMD_ToBoth(R00_PSR);
     EPD_WriteDATA_ToBoth(0x5F);
     EPD_WriteDATA_ToBoth(0x69);
-    EPD_Check_Busy();
+    EPD_Check_Busy_600(2);
 
     EPD_WriteCMD_ToBoth(0xE0);
     EPD_WriteDATA_ToBoth(0x01);
-    EPD_Check_Busy();
+    EPD_Check_Busy_600(2);
 
     EPD_WriteCMD_ToBoth(R01_PWR);
     EPD_WriteDATA_ToBoth(0x3F);
@@ -404,7 +434,7 @@ void ePaperPort::EPD_initial(void) {
     EPD_WriteDATA_ToBoth(0x00);
     EPD_WriteDATA_ToBoth(0x02);
     EPD_WriteDATA_ToBoth(0x58);
-    EPD_Check_Busy();
+    EPD_Check_Busy_600(2);
 
     EPD_WriteCMD_ToBoth(0x84);
     EPD_WriteDATA_ToBoth(0x01);

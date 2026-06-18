@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <sys/unistd.h>
 
+#include "cast_core.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -245,11 +246,54 @@ esp_err_t UsbConsoleUpload_Handle(const usb_console_http_request_t *request,
 esp_err_t UsbConsoleUpload_Process(const usb_console_http_request_t *request,
                                   usb_console_http_response_t *response)
 {
+    tdx_cast_core_request_t upload = {0};
+    tdx_cast_core_result_t result = {0};
+
     if (request == NULL || response == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     if (content_type_is_octet_stream(request->content_type) || strchr(request->path, '?') != NULL) {
         return process_raw_upload(request, response);
     }
-    return UsbConsoleCommon_HandleImageTransfer(request, response, "upload", "upload_result");
+
+    esp_err_t parse_ret = TdxImageTransfer_ParseSingle(request->body,
+                                                       request->body_len,
+                                                       request->content_type,
+                                                       "upload",
+                                                       false,
+                                                       false,
+                                                       &upload,
+                                                       &result);
+    if (parse_ret == ESP_ERR_NOT_SUPPORTED) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (parse_ret == ESP_OK) {
+        tdx_image_transfer_item_t item = {
+            .save = upload.save,
+            .show = upload.show,
+            .record_last_cast = false,
+            .epd_target = 1,
+            .bin_part = upload.bin_part,
+            .image_part = upload.image_part,
+        };
+        snprintf(item.save_name, sizeof(item.save_name), "%s", upload.file_name);
+        (void)TdxImageTransfer_ProcessItems(&item, 1, USB_CONSOLE_BASE_PATH, "usb upload", &result);
+    }
+
+    if (result.result == TDX_JSON_RESULT_OK) {
+        return UsbConsoleCommon_SetJsonf(response,
+                                         200,
+                                         "OK",
+                                         "{\"func\":\"upload_result\",\"result\":%d,\"message\":\"ok\",\"fileName\":\"%s\"}",
+                                         TDX_JSON_RESULT_OK,
+                                         result.file_name[0] ? result.file_name : upload.file_name);
+    }
+
+    return UsbConsoleCommon_SetJsonf(response,
+                                     200,
+                                     "OK",
+                                     "{\"func\":\"upload_result\",\"result\":%d,\"message\":\"%s\",\"error\":\"%s\"}",
+                                     result.result,
+                                     result.message[0] ? result.message : "upload failed",
+                                     result.error[0] ? result.error : "");
 }

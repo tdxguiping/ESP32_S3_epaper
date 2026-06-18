@@ -3,6 +3,34 @@
 #include "epd_type_1600_1200_common.h"
 #include "esp_timer.h"
 
+void ePaperPort::EPD_Check_Busy_133(uint16_t loop_counter)
+{
+    int16_t i;
+    int64_t start_us = esp_timer_get_time();
+
+    if (loop_counter > 45) {
+        loop_counter = 45;
+    }
+    i = 0;
+    while (1) {
+        int level = Get_BusyIOLevel();
+        if (level) {
+            printf("Check Busy over\r\n");
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        i++;
+        printf("EPD_Check_Busy_133 %d", i);
+
+        if (i > loop_counter) {
+            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
+            ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
+                     Get_BusyIOLevel(), (long)i, elapsed_ms);
+            return;
+        }
+    }
+}
+
 void EpdType16001200_133_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)
 {
     static const size_t expected_image_size = 1600U * 1200U / 2U;
@@ -61,7 +89,7 @@ void ePaperPort::EpdType16001200_133_NT61522_Init()
     Read_Temptr();       //添加锁定当前温度函数(掉电重启时解除)，为了避免屏幕多次运行IC升温导致调取波形温度与实际环境温度不符
 
 	EPD_Reset();
-	EPD_Check_Busy();
+	EPD_Check_Busy_133(2);
 
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmit(0x74, r74DataBuf, sizeof(r74DataBuf));
@@ -140,20 +168,20 @@ void ePaperPort::EpdType16001200_133_NT61522_Display()
 	spiTransmitCommand(R04_PON);
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-	EPD_Check_Busy();
+	EPD_Check_Busy_133(45);
 	delayms(30);
 
     setPinCsAll(GPIO_LOW);
 	spiTransmit(R12_DRF,DRF_V,sizeof(DRF_V));
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-	EPD_Check_Busy();
+	EPD_Check_Busy_133(45);
 	delayms(30);
 	setPinCsAll(GPIO_LOW);
 	spiTransmit(R02_POF,POF_V,sizeof(POF_V));
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-	EPD_Check_Busy();
+	EPD_Check_Busy_133(45);
 	delayms(30);
 }
 
@@ -173,11 +201,11 @@ void ePaperPort::EpdType16001200_133_NT61522_InitDisplay()
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmitCommand(R40_TSC);
 	delayms(10);
-	EPD_Check_Busy();
+	EPD_Check_Busy_133(2);
 	spiReceiveData(&dataBuff[0], 2);
 	setPinCs(TARGET_MASTER,GPIO_HIGH);
 	delayms(30);
-	EPD_Check_Busy();
+	EPD_Check_Busy_133(2);
 
     //Temptr[0] =  WHT20_Temp+10;
 	temptr_fill = Temptr[0]<<1;
@@ -355,10 +383,10 @@ unsigned char ePaperPort::Read_Temptr(void)
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmitCommand(R40_TSC);
 	delayms(10);
-	EPD_Check_Busy();
+	EPD_Check_Busy_133(2);
 	spiReceiveData(&Temptr[0], 2);
 	setPinCs(TARGET_MASTER,GPIO_HIGH);
-	EPD_Check_Busy();
+	EPD_Check_Busy_133(2);
 
 	Temptr[0] = Temptr[0] > 50 ? 48 : Temptr[0];    
 

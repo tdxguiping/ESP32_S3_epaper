@@ -1,5 +1,9 @@
 #pragma once
 
+/* -------------------------------------------------------------------------- */
+/* 00. Header / Includes                                                       */
+/* -------------------------------------------------------------------------- */
+
 #include <stdint.h>
 #include <stddef.h>
 
@@ -14,57 +18,24 @@
 extern "C" {
 #endif
 
-// Keep STA connection debug logs here so WiFi failure checks can be enabled without changing STA logic.
-// 将 STA 连接调试日志开关放在这里，便于不修改 STA 逻辑就排查 WiFi 失败原因。
-#define SERVER_NETWORK_STA_DEBUG_LOG_ENABLE 1
+/* -------------------------------------------------------------------------- */
+/* 01. Board / Product / Global Startup Policy                                 */
+/* -------------------------------------------------------------------------- */
 
+// Select ESP32-C5 as the only supported board for this project build.
+// 选择 ESP32-C5 作为当前工程唯一支持的板级配置。
+#define USER_BOARD_ESP32C5 1
 
 // Keep old reset markers here so startup display policy can be changed without touching main.c.
 #define ESP_RST_low_power_No_Disp 0xFE
 #define ESP_RST_need_Disp_EPD 0xFD
 
-// Keep BLE optional so board bring-up can disable Bluetooth without editing BLE source files.
-#ifndef USER_BLE_ENABLE
-#define USER_BLE_ENABLE  0
-#endif
+// Keep large buffer fallback limit here so HTTP and EPD avoid exhausting internal RAM.
+#define USER_INTERNAL_RAM_FALLBACK_MAX_SIZE (128 * 1024)
 
-
-#if USER_BLE_ENABLE
-#include "esp_bt_defs.h"
-#endif
-
-
-// Keep all migrated BLE identifiers here so future app/protocol changes do not touch user_app.cpp.
-#define TDX_BLE_LOG_TAG "BLE"
-#define TDX_BLE_PROFILE_NUM 1
-#define TDX_BLE_PROFILE_APP_IDX 0
-#define TDX_BLE_APP_ID 0x56
-#define TDX_BLE_DEVICE_NAME "Tdx_6_color"
-#define TDX_BLE_SERVICE_INST_ID 0
-#define TDX_BLE_ATT_UUID_SIZE 16
-#define TDX_BLE_DATA_MAX_LEN 512
-#if USER_BLE_ENABLE
-#define TDX_BLE_TX_POWER_LOWEST ESP_PWR_LVL_N24
-#else
-#define TDX_BLE_TX_POWER_LOWEST 0
-#endif
-
-// Keep BLE JSON queue limits here so BLE write parsing can be tuned without touching the GATT callback.
-#define USER_BLE_JSON_BUF_SIZE 1024
-#define USER_BLE_WRITE_QUEUE_LENGTH 4
-#define USER_BLE_WRITE_TASK_STACK_SIZE (12 * 1024)
-#define USER_BLE_WRITE_TASK_PRIORITY 5
-
-// Keep the original source project's attribute alias visible for protocol mapping checks.
-#define TDX_BLE_SWITCH_MODE_VALUE_INDEX TDX_IDX_14_VAL
-
-// Keep declaration length in one place because every characteristic declaration depends on it.
-#define TDX_BLE_CHAR_DECLARATION_SIZE (sizeof(uint8_t))
-
-// Keep Server Network STA return codes here so main.c and the STA module share one result contract.
-#define SERVER_NETWORK_STA_OK 1
-#define SERVER_NETWORK_STA_CONNECT_FAIL 3
-#define SERVER_NETWORK_STA_NO_SAVED_WIFI 0xA1
+/* -------------------------------------------------------------------------- */
+/* 02. Common JSON Result Codes                                                */
+/* -------------------------------------------------------------------------- */
 
 // Keep JSON API result codes centralized so every response follows README_Result_Code.md.
 // 将 JSON API 返回码集中在这里，保证所有响应都按 README_Result_Code.md 统一维护。
@@ -85,6 +56,10 @@ extern "C" {
 #define TDX_JSON_RESULT_NOT_FOUND 1014
 #define TDX_JSON_RESULT_PATH_UNSAFE 1015
 #define TDX_JSON_RESULT_QUEUE_FAILED 1016
+
+/* -------------------------------------------------------------------------- */
+/* 03. USB / BLE / WiFi JSON Result Codes                                      */
+/* -------------------------------------------------------------------------- */
 
 // Keep USB JSON result codes separate so serial transport errors are easy to diagnose.
 // 将 USB JSON 返回码单独分组，便于定位串口传输和路由错误。
@@ -119,6 +94,10 @@ extern "C" {
 #define TDX_JSON_RESULT_WIFI_WORK_TIME_SAVE_FAILED 1353
 #define TDX_JSON_RESULT_WIFI_WORK_TIME_APPLY_FAILED 1354
 
+/* -------------------------------------------------------------------------- */
+/* 04. Image / Delete / Slideshow / Upload / OTA / EPD Result Codes            */
+/* -------------------------------------------------------------------------- */
+
 // Keep image, slideshow, upload, OTA, and EPD result codes here for feature-local response updates.
 // 将图片、轮播、上传、OTA 和 EPD 返回码集中在这里，便于按功能小步修改响应。
 #define TDX_JSON_RESULT_IMAGES_READ_FAILED 1401
@@ -126,6 +105,7 @@ extern "C" {
 #define TDX_JSON_RESULT_THUMB_NOT_FOUND 1403
 #define TDX_JSON_RESULT_SNAPSHOT_BUILD_FAILED 1404
 #define TDX_JSON_RESULT_BLE_MAC_EMPTY 1405
+
 #define TDX_JSON_RESULT_FILE_NAMES_MISSING 1501
 #define TDX_JSON_RESULT_FILE_NAME_INVALID 1502
 #define TDX_JSON_RESULT_DELETE_FAILED 1503
@@ -135,6 +115,7 @@ extern "C" {
 #define TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID 1507
 #define TDX_JSON_RESULT_SLIDESHOW_FILE_NOT_FOUND 1508
 #define TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED 1509
+
 #define TDX_JSON_RESULT_UPLOAD_BOUNDARY_MISSING 1601
 #define TDX_JSON_RESULT_UPLOAD_FUNC_MISSING 1602
 #define TDX_JSON_RESULT_UPLOAD_INVALID 1603
@@ -152,6 +133,7 @@ extern "C" {
 #define TDX_JSON_RESULT_UPLOAD_RAW_SAVE_FAILED 1615
 #define TDX_JSON_RESULT_CAST2PIC_SCREEN_INVALID 1616
 #define TDX_JSON_RESULT_CAST2PIC_SCREEN_UNSUPPORTED 1617
+
 #define TDX_JSON_RESULT_OTA_BOUNDARY_MISSING 1701
 #define TDX_JSON_RESULT_OTA_META_MISSING 1702
 #define TDX_JSON_RESULT_OTA_META_INVALID 1703
@@ -165,9 +147,23 @@ extern "C" {
 #define TDX_JSON_RESULT_OTA_VERSION_MISMATCH 1711
 #define TDX_JSON_RESULT_OTA_PARTITION_TOO_SMALL 1712
 #define TDX_JSON_RESULT_OTA_BUSY 1713
+
 #define TDX_JSON_RESULT_EPD_TYPE_INVALID 1801
 #define TDX_JSON_RESULT_EPD_TYPE_SAVE_FAILED 1802
 #define TDX_JSON_RESULT_EPD_TEST_DISPLAY_FAILED 1803
+
+/* -------------------------------------------------------------------------- */
+/* 05. Server Network STA / WiFi / mDNS                                        */
+/* -------------------------------------------------------------------------- */
+
+// Keep STA connection debug logs here so WiFi failure checks can be enabled without changing STA logic.
+// 将 STA 连接调试日志开关放在这里，便于不修改 STA 逻辑就排查 WiFi 失败原因。
+#define SERVER_NETWORK_STA_DEBUG_LOG_ENABLE 1
+
+// Keep Server Network STA return codes here so main.c and the STA module share one result contract.
+#define SERVER_NETWORK_STA_OK 1
+#define SERVER_NETWORK_STA_CONNECT_FAIL 3
+#define SERVER_NETWORK_STA_NO_SAVED_WIFI 0xA1
 
 // Keep STA wait bits here so future connection policy changes do not require editing the STA implementation.
 #define SERVER_NETWORK_STA_CONNECTED_BIT BIT0
@@ -176,21 +172,32 @@ extern "C" {
 // Keep the STA connection timeout configurable from one header for board bring-up tuning.
 #define SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS 30000
 
+// Hint the known AP channel to reduce WiFi scan time without binding to a fixed BSSID.
+#define SERVER_NETWORK_STA_WIFI_CHANNEL_HINT 11
+
+// Keep the ping URI here so heartbeat routing can change without touching GET resource handlers.
+#define SERVER_NETWORK_STA_PING_URI "/ping"
+
+// Keep the mDNS host name here so board/product naming does not leak into network code.
+// 中文：将 mDNS 主机名集中在这里，避免板级/产品命名散落到网络代码里。
+#define USER_MDNS_HOSTNAME "esp32-c5-photopainter"
+
+// Keep the mDNS instance name here so logs and discovery identify the C5 build correctly.
+// 中文：将 mDNS 实例名集中在这里，确保日志和发现服务正确标识 C5 版本。
+#define USER_MDNS_INSTANCE_NAME "ESP32-C5-WebServer"
+
+/* -------------------------------------------------------------------------- */
+/* 06. Storage / HTTP Upload / Multipart Parser                                */
+/* -------------------------------------------------------------------------- */
+
 // Print the /data file tree during startup. Keep enabled by default for bring-up visibility.
 #define USER_STORAGE_LIST_ON_STARTUP_ENABLE 0
 
 // Enable SD card probing before SPIFFS. Set to 0 when the board has no SD card to boot faster.
 #define USER_STORAGE_SD_CARD_ENABLE 1
 
-// Hint the known AP channel to reduce WiFi scan time without binding to a fixed BSSID.
-#define SERVER_NETWORK_STA_WIFI_CHANNEL_HINT 11
-
-
 // Keep the migrated /dataUP upload body limit here so browser upload behavior can be tuned in one place.
 #define SERVER_NETWORK_STA_DATAUP_MAX_BODY_SIZE (2 * 1024 * 1024)
-
-// Keep large buffer fallback limit here so HTTP and EPD avoid exhausting internal RAM.
-#define USER_INTERNAL_RAM_FALLBACK_MAX_SIZE (128 * 1024)
 
 // Keep /dataUP parser string limits here because they must match the old web page form field sizes.
 #define SERVER_NETWORK_STA_DATAUP_FIELD_NAME_MAX 32
@@ -204,6 +211,10 @@ extern "C" {
 // Keep the migrated HTTP receive dispatcher limits here so request routing can be tuned without touching parser code.
 #define SERVER_NETWORK_STA_HTTP_HEADER_VALUE_MAX 256
 #define SERVER_NETWORK_STA_SMALL_JSON_BODY_MAX 4096
+
+/* -------------------------------------------------------------------------- */
+/* 07. USB Console / USB HTTP Text Transport                                   */
+/* -------------------------------------------------------------------------- */
 
 // Keep USB console HTTP-text limits here so the serial entry can be tuned without touching feature modules.
 // 将 USB 串口 HTTP 文本限制放在这里，方便以后不改功能模块就调整串口入口。
@@ -222,9 +233,14 @@ extern "C" {
 #define USB_CONSOLE_WORKER_QUEUE_LENGTH 4
 #define USB_CONSOLE_WORKER_TASK_STACK_SIZE (8 * 1024)
 #define USB_CONSOLE_WORKER_TASK_PRIORITY 4
+#define CAST_SAVE_TASK_QUEUE_LENGTH 2
+#define CAST_SAVE_TASK_STACK_SIZE (8 * 1024)
+#define CAST_SAVE_TASK_PRIORITY 4
+
 // Use a longer idle USB read wait so the console task does not wake CPU too often without traffic.
 // USB 空闲时使用较长读等待，避免没有数据时频繁唤醒 CPU。
 #define USB_CONSOLE_READ_IDLE_TIMEOUT_MS 1000
+
 // Use a short active USB read wait once a request starts so large multipart bodies are received quickly.
 // 一旦请求开始接收就使用较短读等待，让大 multipart 数据尽快收完。
 #define USB_CONSOLE_READ_ACTIVE_TIMEOUT_MS 1
@@ -235,21 +251,34 @@ extern "C" {
 #define USB_CONSOLE_VERBOSE_LOG_ENABLE 0
 #define USB_CONSOLE_FRAME_HEAD "@#$\r\n"
 #define USB_CONSOLE_FRAME_TAIL "\r\n%^&\r\n"
+
 // Log USB receive progress every fixed byte step so serial upload bottlenecks can be located.
 // 按固定字节步进打印 USB 接收进度，便于定位串口上传瓶颈。
 #define USB_CONSOLE_RX_PROGRESS_STEP_BYTES (20 * 1024)
+
 // Keep file save stdio buffering configurable without touching USB feature code.
 // 将文件保存 stdio 缓冲大小集中配置，便于以后优化 SD/FATFS 写入。
 #define USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE (64 * 1024)
 
+#define USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE 1
+
+/* -------------------------------------------------------------------------- */
+/* 08. OTA Upload                                                              */
+/* -------------------------------------------------------------------------- */
+
 // Keep OTA upload limits here so the partition size and HTTP body policy can be checked together.
 // 中文：OTA 上传限制集中放在这里，便于同时检查 HTTP body 和 OTA 分区容量。
 #define SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE (6 * 1024 * 1024)
+
 // Reserve multipart header room above the firmware partition size when rejecting oversize OTA bodies early.
 // 中文：提前拒绝超大 OTA body 时，为 multipart 头部和 meta 字段预留这部分空间。
 #define SERVER_NETWORK_STA_OTA_MULTIPART_OVERHEAD_BYTES (64 * 1024)
 #define SERVER_NETWORK_STA_OTA_BOUNDARY_MAX 96
 #define SERVER_NETWORK_STA_OTA_VERSION_MAX 40
+
+/* -------------------------------------------------------------------------- */
+/* 09. Saved Images / Cast / Snapshot / Delete                                 */
+/* -------------------------------------------------------------------------- */
 
 // Keep the last-cast record name here so reboot recovery and cast saving use the same file.
 #define SERVER_NETWORK_STA_LAST_CAST_FILE "last_cast.txt"
@@ -257,6 +286,13 @@ extern "C" {
 // Keep saved-image listing limits here so JSON response size can be tuned without touching scan logic.
 #define SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX 8192
 #define SERVER_NETWORK_STA_THUMB_URI_PREFIX "/thumb/"
+
+// Keep delete request limits here so file removal cannot grow unbounded from one JSON request.
+#define SERVER_NETWORK_STA_DELETE_MAX_FILES 50
+
+/* -------------------------------------------------------------------------- */
+/* 10. Slideshow                                                               */
+/* -------------------------------------------------------------------------- */
 
 // Keep slideshow run modes here so software and future deep-sleep behavior share one switch.
 #define TDX_SLIDESHOW_RUN_MODE_SOFTWARE 0
@@ -279,17 +315,19 @@ extern "C" {
 #define TDX_SLIDESHOW_NVS_FLAG_KEY "slide_ds"
 #define TDX_SLIDESHOW_NVS_LAST_FILE_KEY "slide_last"
 #define TDX_SLIDESHOW_RANDOM_NVS_KEY "slide_random"
-#define SERVER_REQUIRED_CONTINUE_WORK_TIME_NVS_KEY "work_continue"
-#define WIFI_STANDBY_TIME_S_NVS_KEY "wifi_standby"
-#define CH583_BLE_MAC_NVS_KEY "ch583_ble_mac"
 
-// Keep delete request limits here so file removal cannot grow unbounded from one JSON request.
-#define SERVER_NETWORK_STA_DELETE_MAX_FILES 50
+/* -------------------------------------------------------------------------- */
+/* 11. WiFi Work Time / Sleep Runtime State / NVS Keys                         */
+/* -------------------------------------------------------------------------- */
 
 // Keep WiFi keep-alive limits here so phone commands cannot request an unbounded online window.
 #define SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS 60   // 秒
 #define SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS 3600 // 秒
 #define SERVER_NETWORK_STA_WIFI_WORK_TIME_DEFAULT_SECONDS 300 // 秒
+
+#define SERVER_REQUIRED_CONTINUE_WORK_TIME_NVS_KEY "work_continue"
+#define WIFI_STANDBY_TIME_S_NVS_KEY "wifi_standby"
+#define CH583_BLE_MAC_NVS_KEY "ch583_ble_mac"
 
 // Keep sleep/work-state NVS keys here so BLE, HTTP, and network timers share one saved runtime state.
 #define USER_WORK_STATE_NVS_NAMESPACE "work_state"
@@ -302,32 +340,50 @@ extern "C" {
 #define USER_WORK_STATE_TASK_PRIORITY 3
 #define USER_WORK_STATE_TASK_INTERVAL_MS 1000
 
-extern uint16_t sleep_time;
-extern uint32_t working_time;
-extern uint32_t server_required_continue_work_time;
-extern uint32_t wifi_standby_time_s;
-extern int g_app_reset_reason;
-extern uint8_t g_slideshow_random_enable;
+/* -------------------------------------------------------------------------- */
+/* 12. BLE / GATT Legacy Compatibility                                         */
+/* -------------------------------------------------------------------------- */
 
-void print_base_info(void);
-esp_err_t app_nvs_read_u8(const char *key, uint8_t *value, uint8_t default_value);
-esp_err_t app_nvs_write_u8(const char *key, uint8_t value);
-esp_err_t app_nvs_read_str(const char *key, char *value, size_t value_size, const char *default_value);
-esp_err_t app_nvs_write_str(const char *key, const char *value);
+// Keep BLE optional so board bring-up can disable Bluetooth without editing BLE source files.
+#ifndef USER_BLE_ENABLE
+#define USER_BLE_ENABLE 0
+#endif
 
-// Keep the ping URI here so heartbeat routing can change without touching GET resource handlers.
-#define SERVER_NETWORK_STA_PING_URI "/ping"
+#if USER_BLE_ENABLE
+#include "esp_bt_defs.h"
+#endif
 
-// Select ESP32-C5 as the only supported board for this project build.
-// 选择 ESP32-C5 作为当前工程唯一支持的板级配置。
-#define USER_BOARD_ESP32C5 1
+// Keep all migrated BLE identifiers here so future app/protocol changes do not touch user_app.cpp.
+#define TDX_BLE_LOG_TAG "BLE"
+#define TDX_BLE_PROFILE_NUM 1
+#define TDX_BLE_PROFILE_APP_IDX 0
+#define TDX_BLE_APP_ID 0x56
+#define TDX_BLE_DEVICE_NAME "Tdx_6_color"
+#define TDX_BLE_SERVICE_INST_ID 0
+#define TDX_BLE_ATT_UUID_SIZE 16
+#define TDX_BLE_DATA_MAX_LEN 512
 
-// Keep the mDNS host name here so board/product naming does not leak into network code.
-// 中文：将 mDNS 主机名集中在这里，避免板级/产品命名散落到网络代码里。
-#define USER_MDNS_HOSTNAME "esp32-c5-photopainter"
-// Keep the mDNS instance name here so logs and discovery identify the C5 build correctly.
-// 中文：将 mDNS 实例名集中在这里，确保日志和发现服务正确标识 C5 版本。
-#define USER_MDNS_INSTANCE_NAME "ESP32-C5-WebServer"
+#if USER_BLE_ENABLE
+#define TDX_BLE_TX_POWER_LOWEST ESP_PWR_LVL_N24
+#else
+#define TDX_BLE_TX_POWER_LOWEST 0
+#endif
+
+// Keep BLE JSON queue limits here so BLE write parsing can be tuned without touching the GATT callback.
+#define USER_BLE_JSON_BUF_SIZE 1024
+#define USER_BLE_WRITE_QUEUE_LENGTH 4
+#define USER_BLE_WRITE_TASK_STACK_SIZE (12 * 1024)
+#define USER_BLE_WRITE_TASK_PRIORITY 5
+
+// Keep the original source project's attribute alias visible for protocol mapping checks.
+#define TDX_BLE_SWITCH_MODE_VALUE_INDEX TDX_IDX_14_VAL
+
+// Keep declaration length in one place because every characteristic declaration depends on it.
+#define TDX_BLE_CHAR_DECLARATION_SIZE (sizeof(uint8_t))
+
+/* -------------------------------------------------------------------------- */
+/* 13. CH583 UART / CH583 WiFi Protocol                                        */
+/* -------------------------------------------------------------------------- */
 
 // Keep CH583 UART receive enabled from one switch so board bring-up can disable it without touching task code.
 #define USER_CH583_UART_ENABLE 1
@@ -345,15 +401,19 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 #define USER_CH583_UART_DRIVER_RX_BUF_SIZE 8192
 #define USER_CH583_UART_DRIVER_TX_BUF_SIZE 0
 #define USER_CH583_UART_EVENT_QUEUE_SIZE 20
-#define USER_CH583_UART_EVENT_TASK_STACK_SIZE (3 * 1024)
+#define USER_CH583_UART_EVENT_TASK_STACK_SIZE (8 * 1024)
 #define USER_CH583_UART_RECEIVE_TASK_STACK_SIZE (8 * 1024)
 #define USER_CH583_UART_WAKEUP_THRESHOLD 3
 
 // Keep CH583 protocol debug flags here so frame parsing logs can be enabled without editing the copied protocol file.
 #define CH583_WIFI_UART_DEBUG_PRINT_ENABLE 0
-#define CH583_WIFI_UART_DIRECTION_PRINT_ENABLE  1
+#define CH583_WIFI_UART_DIRECTION_PRINT_ENABLE 1
 #define CH583_WIFI_UART_TX_SILENCE_MS 10
 #define CH583_WIFI_UART_BAD_CRC_RETRY_MAX 5
+
+/* -------------------------------------------------------------------------- */
+/* 14. EPD Display / Panel Geometry / SPI Pins                                 */
+/* -------------------------------------------------------------------------- */
 
 // Keep EPD display enable here so network cast/upload can be tested without editing receive code.
 #define USER_EPD_ENABLE 1
@@ -384,6 +444,10 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 #define USER_EPD2_RST_PIN USER_EPD_RST_PIN
 #define USER_EPD2_BUSY_PIN USER_EPD_BUSY_PIN
 
+/* -------------------------------------------------------------------------- */
+/* 15. SD Card SPI Pins                                                        */
+/* -------------------------------------------------------------------------- */
+
 // Keep SD SPI pins here because the C5 board shares MOSI and CLK with the EPD bus.
 // 将 SD SPI 引脚集中在这里，因为 C5 板上 SD 与墨水屏共用 MOSI 和 CLK。
 #define USER_SD_SPI_MOSI_PIN GPIO_NUM_1
@@ -392,10 +456,15 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 #define USER_SD_SPI_CS_PIN GPIO_NUM_26
 #define USER_SD_SPI_HOST SPI2_HOST
 
+/* -------------------------------------------------------------------------- */
+/* 16. EPD Display Task / EPD USB Control API                                  */
+/* -------------------------------------------------------------------------- */
+
 // Keep EPD task settings here so display latency and stack pressure can be tuned in one place.
 #define USER_EPD_DISPLAY_QUEUE_LENGTH 2
 #define USER_EPD_DISPLAY_TASK_STACK_SIZE (8 * 1024)
 #define USER_EPD_DISPLAY_TASK_PRIORITY 5
+
 #define USER_EPD_TYPE_NVS_KEY "epd_type"
 #define USER_EPD_TYPE_DEFAULT 4
 #define USB_CONSOLE_EPD_TYPE_DEBUG_LOG_ENABLE 1
@@ -403,26 +472,38 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 #define USB_CONSOLE_EPD_TYPE_URI "/epd_type"
 #define USB_CONSOLE_EPD_TEST_URI "/epd_test"
 
+/* -------------------------------------------------------------------------- */
+/* 17. Display Log Compatibility Macros                                        */
+/* -------------------------------------------------------------------------- */
+
 // Map the copied display driver's colored logs to ESP-IDF logs for this project.
 #ifndef LOG_Blue
 #define LOG_Blue(fmt, ...) ESP_LOGI("Display", fmt, ##__VA_ARGS__)
 #endif
+
 #ifndef LOG_Purple
 #define LOG_Purple(fmt, ...) ESP_LOGI("Display", fmt, ##__VA_ARGS__)
 #endif
+
 #ifndef LOG_Cyan
 #define LOG_Cyan(fmt, ...) ESP_LOGI("Display", fmt, ##__VA_ARGS__)
 #endif
+
 #ifndef LOG_INFO
 #define LOG_INFO(fmt, ...) ESP_LOGI("Display", fmt, ##__VA_ARGS__)
 #endif
+
 #ifndef LOG_WARN
 #define LOG_WARN(fmt, ...) ESP_LOGW("Display", fmt, ##__VA_ARGS__)
 #endif
+
 #ifndef LOG_ERROR
 #define LOG_ERROR(fmt, ...) ESP_LOGE("Display", fmt, ##__VA_ARGS__)
 #endif
 
+/* -------------------------------------------------------------------------- */
+/* 18. LED Status / CH583 LED Backend                                          */
+/* -------------------------------------------------------------------------- */
 
 // Keep LED status enable here so bring-up can disable indicators without changing business code.
 #define USER_LED_STATUS_ENABLE 1
@@ -449,7 +530,23 @@ esp_err_t app_nvs_write_str(const char *key, const char *value);
 #define USER_LED_STATUS_TASK_STACK_SIZE (4 * 1024)
 #define USER_LED_STATUS_TASK_PRIORITY 3
 
-#define USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE 1
+/* -------------------------------------------------------------------------- */
+/* 19. Global Runtime Variables / Shared APIs                                  */
+/* -------------------------------------------------------------------------- */
+
+extern uint16_t sleep_time;
+extern uint32_t working_time;
+extern uint32_t server_required_continue_work_time;
+extern uint32_t wifi_standby_time_s;
+extern int g_app_reset_reason;
+extern uint8_t g_slideshow_random_enable;
+
+void print_base_info(void);
+
+esp_err_t app_nvs_read_u8(const char *key, uint8_t *value, uint8_t default_value);
+esp_err_t app_nvs_write_u8(const char *key, uint8_t value);
+esp_err_t app_nvs_read_str(const char *key, char *value, size_t value_size, const char *default_value);
+esp_err_t app_nvs_write_str(const char *key, const char *value);
 
 #ifdef __cplusplus
 }

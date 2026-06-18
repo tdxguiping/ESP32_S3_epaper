@@ -1,5 +1,52 @@
 #include "epd_type_800_480.h"
 #include "display_bsp.h"
+#include "esp_timer.h"
+
+void ePaperPort::EPD_Check_Busy_480(uint16_t loop_counter)
+{
+    int16_t i;
+    int64_t start_us = esp_timer_get_time();
+
+    if (loop_counter > 45) {
+        loop_counter = 45;
+    }
+    i = 0;
+    while (1) {
+        int level = Get_BusyIOLevel();
+        if (level) {
+            printf("Check Busy over\r\n");
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        i++;
+        printf(".%d.", i);
+
+        if (i > loop_counter) {
+            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
+            ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
+                     Get_BusyIOLevel(), (long)i, elapsed_ms);
+            return;
+        }
+    }
+}
+
+void ePaperPort::EPD_TurnOnDisplay_480(void)
+{
+    EPD_SendCommand(0x04);
+    EPD_Check_Busy_480(25);
+    EPD_SendCommand(0x06);
+    EPD_SendData(0x6F);
+    EPD_SendData(0x1F);
+    EPD_SendData(0x17);
+    EPD_SendData(0x49);
+    EPD_SendCommand(0x12);
+    EPD_SendData(0x00);
+    EPD_Check_Busy_480(25);
+    EPD_SendCommand(0x02);
+    EPD_SendData(0x00);
+    EPD_Check_Busy_480(25);
+}
+
 void EpdType800480_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)
 {
     static const size_t expected_image_size = 800U * 480U / 2U;
@@ -20,7 +67,7 @@ void ePaperPort::EpdType800480_Sleep()
 {
     EPD_WriteCMD(0x02);
     delay_ms(30);
-    EPD_Check_Busy();
+    EPD_Check_Busy_480(2);
     delay_ms(100);
     EPD_WriteCMD(0x07);
     EPD_WriteDATA(0xA5);
@@ -110,7 +157,7 @@ void ePaperPort::EpdType800480_Display()
     // EPD_PixelRotate();
     // EPD_SendCommand(0x10);
     // EPD_Sendbuffera(RotationBuffer, DisplayLen);
-    // EPD_TurnOnDisplay();
+    // EPD_TurnOnDisplay_480();
 
     //memcpy(RotationBuffer, DispBuffer, DisplayLen);
     if (!EnsureDispBuffer()) {
@@ -119,14 +166,14 @@ void ePaperPort::EpdType800480_Display()
     }
     EPD_SendCommand(0x10);
     EPD_Sendbuffera(DispBuffer, DisplayLen);
-    EPD_TurnOnDisplay();
+    EPD_TurnOnDisplay_480();
     ReleaseRotationBuffer();
     ReleaseDispBuffer();
 }
 
 void ePaperPort::EpdType800480_NT61522_Display()
 {
-    EPD_TurnOnDisplay();
+    EPD_TurnOnDisplay_480();
 }
 
 void ePaperPort::EpdType800480_NT61522_InitDisplay()

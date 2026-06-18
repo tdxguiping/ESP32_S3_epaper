@@ -6,6 +6,34 @@ namespace {
 constexpr size_t kEpd4sYieldInterval = 512U;
 }
 
+void ePaperPort::EPD_Check_Busy_4s75(uint16_t loop_counter)
+{
+    int16_t i;
+    int64_t start_us = esp_timer_get_time();
+
+    if (loop_counter > 45) {
+        loop_counter = 45;
+    }
+    i = 0;
+    while (1) {
+        int level = Get_BusyIOLevel();
+        if (level) {
+            printf("Check Busy over\r\n");
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        i++;
+        printf(".%d.", i);
+
+        if (i > loop_counter) {
+            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
+            ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
+                     Get_BusyIOLevel(), (long)i, elapsed_ms);
+            return;
+        }
+    }
+}
+
 void EpdType800480_4S_75_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)
 {
     static const size_t expected_image_size = 800U * 480U / 4U;
@@ -25,15 +53,15 @@ void ePaperPort::EpdType800480_4S_75_Sleep()
 {
 
 	EPD_SendCommand(0x04);   //Power on
-  	EPD_Check_Busy();   
+    EPD_Check_Busy_4s75(2);
  
 	EPD_SendCommand(0x12); //Update  
     EPD_SendData(0x00); 	
-	EPD_Check_Busy();
+	EPD_Check_Busy_4s75(2);
 
 	EPD_SendCommand(0x02); //Power off
 	EPD_SendData(0x00);
-	EPD_Check_Busy();
+	EPD_Check_Busy_4s75(2);
   
 	EPD_SendCommand(0x07); //Power off
 	EPD_SendData(0xA5);
@@ -142,15 +170,15 @@ void ePaperPort::Epaper_Update_and_Deepsleep() {
     ESP_LOGI("epd_display", "EPD step Epaper_Update_and_Deepsleep start");
 
 	EPD_WriteCMD(0x04);   //Power on
-  	 EPD_Check_Busy();   
+    EPD_Check_Busy_4s75(45);
  
 	EPD_WriteCMD(0x12); //Update  
     EPD_WriteDATA(0x00); 	
-	EPD_Check_Busy();
+	EPD_Check_Busy_4s75(45);
 
 	EPD_WriteCMD(0x02); //Power off
 	EPD_WriteDATA(0x00);
-	EPD_Check_Busy();
+	EPD_Check_Busy_4s75(45);
   
 	EPD_WriteCMD(0x07); //Power off
 	EPD_WriteDATA(0xA5);

@@ -25,18 +25,20 @@ static void set_red(bool on)
 {
     // Send red LED state through CH583 because ESP32-C5 has no local status LED.
     // 通过 CH583 发送红灯状态，因为 ESP32-C5 本机没有状态灯。
-    set_ch583_led_level(USER_LED_CH583_RED_PORT,
-                        USER_LED_CH583_RED_PIN,
-                        on ? USER_LED_CH583_ON_LEVEL : USER_LED_CH583_OFF_LEVEL);
+
+    // set_ch583_led_level(USER_LED_CH583_RED_PORT,
+    //                     USER_LED_CH583_RED_PIN,
+    //                     on ? USER_LED_CH583_ON_LEVEL : USER_LED_CH583_OFF_LEVEL);
 }
 
 static void set_green(bool on)
 {
     // Send green LED state through CH583 so existing status states keep the same behavior.
     // 通过 CH583 发送绿灯状态，让现有状态机保持相同表现。
-    set_ch583_led_level(USER_LED_CH583_GREEN_PORT,
-                        USER_LED_CH583_GREEN_PIN,
-                        on ? USER_LED_CH583_ON_LEVEL : USER_LED_CH583_OFF_LEVEL);
+
+    // set_ch583_led_level(USER_LED_CH583_GREEN_PORT,
+    //                     USER_LED_CH583_GREEN_PIN,
+    //                     on ? USER_LED_CH583_ON_LEVEL : USER_LED_CH583_OFF_LEVEL);
 }
 
 static void set_all_off(void)

@@ -17,6 +17,34 @@ void write_half_plane_to_target(ePaperPort &epd, EP_Target_t target, uint8_t com
 }
 }
 
+void ePaperPort::EPD_Check_Busy_1085_3c(uint16_t loop_counter)
+{
+    int16_t i;
+    int64_t start_us = esp_timer_get_time();
+
+    if (loop_counter > 45) {
+        loop_counter = 45;
+    }
+    i = 0;
+    while (1) {
+        int level = Get_BusyIOLevel();
+        if (level) {
+            printf("Check Busy over\r\n");
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        i++;
+        printf(".%d.", i);
+
+        if (i > loop_counter) {
+            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
+            ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
+                     Get_BusyIOLevel(), (long)i, elapsed_ms);
+            return;
+        }
+    }
+}
+
 void EpdType1360480_1085_3Color_Display(ePaperPort &epd,
                                          const uint8_t *display_buf,
                                          size_t display_size)
@@ -48,7 +76,7 @@ void ePaperPort::EpdType1360480_1085_3Color_Init()
     delay_ms(10);
     Set_ResetIOLevel(GPIO_HIGH);
     delay_ms(10);
-    EPD_Check_Busy();
+    EPD_Check_Busy_1085_3c(2);
 
     EPD_WriteCMD_Target(TARGET_BOTH, 0x08);
     EPD_WriteDATA_Target(TARGET_BOTH, 0x00);
@@ -124,15 +152,15 @@ void ePaperPort::EpdType1360480_1085_3Color_UpdateAndSleep()
     ESP_LOGI(TAG, "EPD 1360x480 3color refresh start");
 
     EPD_WriteCMD_Target(TARGET_BOTH, 0x04);
-    EPD_Check_Busy();
+    EPD_Check_Busy_1085_3c(25);
     delay_ms(100);
 
     EPD_WriteCMD_Target(TARGET_BOTH, 0x12);
     delay_ms(10);
-    EPD_Check_Busy();
+    EPD_Check_Busy_1085_3c(25);
 
     EPD_WriteCMD_Target(TARGET_BOTH, 0x04);
-    EPD_Check_Busy();
+    EPD_Check_Busy_1085_3c(25);
     delay_ms(100);
 
     EpdType1360480_1085_3Color_Sleep();

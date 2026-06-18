@@ -16,6 +16,34 @@ uint8_t convert_1085_color_byte(uint8_t value)
 }
 }
 
+void ePaperPort::EPD_Check_Busy_1085(uint16_t loop_counter)
+{
+    int16_t i;
+    int64_t start_us = esp_timer_get_time();
+
+    if (loop_counter > 45) {
+        loop_counter = 45;
+    }
+    i = 0;
+    while (1) {
+        int level = Get_BusyIOLevel();
+        if (level) {
+            printf("Check Busy over\r\n");
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        i++;
+        printf(".%d.", i);
+
+        if (i > loop_counter) {
+            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
+            ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
+                     Get_BusyIOLevel(), (long)i, elapsed_ms);
+            return;
+        }
+    }
+}
+
 void EpdType1360480_1085_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)
 {
     static const size_t expected_image_size = Source_BITS * Gate_BITS / 4;
@@ -41,7 +69,7 @@ void ePaperPort::EpdType1360480_1085_Sleep()
 void ePaperPort::EpdType1360480_1085_Init()
 {
     EPD_Reset();
-    EPD_Check_Busy();
+    EPD_Check_Busy_1085(2);
     Epaper_Init();
 }
 
@@ -113,12 +141,12 @@ void ePaperPort::EpdType1360480_1085_Update()
 
     EPD_WriteCMD(0x12);
     EPD_WriteDATA(0x00);
-    EPD_Check_Busy();
+    EPD_Check_Busy_1085(45);
     delay_ms(20);
 
     EPD_WriteCMD(0x02);
     EPD_WriteDATA(0x00);
-    EPD_Check_Busy();
+    EPD_Check_Busy_1085(45);
 
     EpdType1360480_1085_Sleep();
     ESP_LOGI(TAG, "EPD 1360x480 refresh done elapsed_ms=%lld",
@@ -275,5 +303,5 @@ void ePaperPort::Epaper_Init() {
   delay_ms(20);
 	
   EPD_WriteCMD(0x04);
-    EPD_Check_Busy();  //while(1);
+    EPD_Check_Busy_1085(2);  //while(1);
 }
