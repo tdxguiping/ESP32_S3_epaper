@@ -38,6 +38,7 @@ typedef struct {
     usb_console_multipart_part_t image_part;
 } tdx_image_transfer_item_t;
 
+esp_err_t TdxCastCore_Init(void);
 void TdxCastCore_ResultOk(tdx_cast_core_result_t *result, const char *file_name, const char *message);
 esp_err_t TdxImageTransfer_ParseSingle(const char *body,
                                        size_t body_len,

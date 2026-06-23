@@ -24,6 +24,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "ch583_uart_app.h"
+#include "cast_core.h"
 #include "epd_display_app.h"
 #include "file_serving_example_common.h"
 #include "gpio_test.h"
@@ -283,6 +284,7 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ESP_ERROR_CHECK(TdxCastCore_Init());
     ESP_ERROR_CHECK(UsbConsoleEcho_Init());
     ESP_ERROR_CHECK(ServerNetworkStaWifiWorkTime_Init());
     char random_value[8] = {0};

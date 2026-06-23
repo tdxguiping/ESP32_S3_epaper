@@ -52,7 +52,8 @@ void EpdType_Set(uint8_t type);
 #ifdef __cplusplus
 }
 
-void EpdType_DisplayCurrent(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
+esp_err_t EpdType_DisplayCurrent(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
+void EpdType_ReportDisplayFailure(esp_err_t error);
 void EpdType_DispatchSleep(ePaperPort &epd);
 void EpdType_DispatchInit(ePaperPort &epd);
 void EpdType_DispatchDisplay(ePaperPort &epd);

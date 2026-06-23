@@ -26,11 +26,16 @@ esp_err_t ServerNetworkStaPing_ProcessGet(httpd_req_t *req)
     get_ble_mac_no_colon(ble_mac, sizeof(ble_mac));
     if (ble_mac[0] == '\0') {
         ESP_LOGW(TAG, "ping Ble_MAC empty, CH583 BLE_MAC not received yet");
+        snprintf(json, sizeof(json),
+                 "{\"func\":\"ping_result\",\"result\":%d,\"message\":\"Ble_MAC not ready\",\"Ble_MAC\":\"\"}",
+                 TDX_JSON_RESULT_BLE_MAC_EMPTY);
+    } else {
+        snprintf(json, sizeof(json),
+                 "{\"func\":\"ping_result\",\"result\":%d,\"message\":\"ok\",\"Ble_MAC\":\"%s\"}",
+                 TDX_JSON_RESULT_OK,
+                 ble_mac);
     }
     ESP_LOGI(TAG, "ping request uri=%s method=GET Ble_MAC=%s", req->uri, ble_mac);
-    snprintf(json, sizeof(json),
-             "{\"func\":\"ping_result\",\"result\":0,\"message\":\"ok\",\"Ble_MAC\":\"%s\"}",
-             ble_mac);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, json);
 }

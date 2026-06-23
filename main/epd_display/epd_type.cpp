@@ -150,8 +150,31 @@ esp_err_t EpdType_SetAndSave(uint8_t type, bool *changed)
     return app_nvs_write_u8(USER_EPD_TYPE_NVS_KEY, type);
 }
 
-void EpdType_DisplayCurrent(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)
+static esp_err_t s_display_result = ESP_OK;
+
+void EpdType_ReportDisplayFailure(esp_err_t error)
 {
+    if (error != ESP_OK && s_display_result == ESP_OK) {
+        s_display_result = error;
+    }
+}
+
+esp_err_t EpdType_DisplayCurrent(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)
+{
+    const epd_type_config_t *config = EpdType_GetCurrentConfig();
+    s_display_result = ESP_OK;
+    if (config == nullptr) {
+        ESP_LOGE(TAG, "display rejected invalid EPD type=%u", (unsigned int)EPD_type);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (display_buf == nullptr || display_size != config->display_size) {
+        ESP_LOGE(TAG, "display rejected size type=%u input=%u expected=%u",
+                 (unsigned int)EPD_type,
+                 (unsigned int)display_size,
+                 (unsigned int)config->display_size);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
     EpdType_UpdateHardwareVersion(EPD_type);
     epd.Set_EPD_type(EPD_type);
 
@@ -188,8 +211,10 @@ void EpdType_DisplayCurrent(ePaperPort &epd, const uint8_t *display_buf, size_t 
         break;
     default:
         ESP_LOGE(TAG, "display rejected invalid EPD type=%u", (unsigned int)EPD_type);
+        s_display_result = ESP_ERR_INVALID_STATE;
         break;
     }
+    return s_display_result;
 }
 
 void EpdType_DispatchSleep(ePaperPort &epd)

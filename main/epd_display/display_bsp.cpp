@@ -363,6 +363,7 @@ void ePaperPort::EPD_LoopBusy(uint16_t loop_counter) {
         if (count > loop_counter)
         {
             ESP_LOGE(TAG, "EPD busy timeout");
+            EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
             return;
         }
     }
@@ -387,6 +388,7 @@ void ePaperPort::EPD_Check_Busy(uint16_t loop_counter) { // If BUSYN=0 then wait
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
             ESP_LOGE(TAG, "EPD-com busy timeout level=%d loops=%ld elapsed_ms=%d",
                      Get_BusyIOLevel(), (long)i, elapsed_ms);
+            EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
             return;
         }
     }

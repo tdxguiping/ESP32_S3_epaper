@@ -150,16 +150,10 @@ static bool parse_json_bool_optional(const char *body, const char *key, bool *ou
     return false;
 }
 
-static esp_err_t send_set_slideshow_result(httpd_req_t *req, bool ok, const char *message)
+static esp_err_t send_set_slideshow_result(httpd_req_t *req, int result, const char *message)
 {
     char json[160];
-    int result = TDX_JSON_RESULT_OK;
-    if (!ok) {
-        result = (message != NULL && strstr(message, "runtime") != NULL) ?
-                 TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED :
-                 TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED;
-    }
-    if (ok) {
+    if (result == TDX_JSON_RESULT_OK) {
         snprintf(json, sizeof(json),
                  "{\"func\":\"set_slideshow_result\",\"result\":%d}",
                  TDX_JSON_RESULT_OK);
@@ -333,7 +327,7 @@ esp_err_t ServerNetworkStaSlideshowControl_ProcessJson(httpd_req_t *req,
     if (ensure_paths(base_path, bin_dir, sizeof(bin_dir),
                      control_path, sizeof(control_path),
                      config_path, sizeof(config_path)) != ESP_OK) {
-        return send_set_slideshow_result(req, false, "set slideshow failed");
+        return send_set_slideshow_result(req, TDX_JSON_RESULT_STORAGE_NOT_READY, "storage not ready");
     }
 
     slideshow_control_t control;
@@ -341,31 +335,43 @@ esp_err_t ServerNetworkStaSlideshowControl_ProcessJson(httpd_req_t *req,
     if (ret == ESP_ERR_NOT_SUPPORTED) {
         return ESP_ERR_NOT_SUPPORTED;
     }
+    if (ret == ESP_ERR_INVALID_SIZE) {
+        return send_set_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID,
+                                         "invalid interval");
+    }
     if (ret != ESP_OK) {
-        return send_set_slideshow_result(req, false, "set slideshow failed");
+        return send_set_slideshow_result(req, TDX_JSON_RESULT_PARAM_INVALID,
+                                         "invalid slideshow parameters");
     }
 
     if (control.sw == 1 && !slideshow_config_has_files(config_path)) {
-        return send_set_slideshow_result(req, false, "set slideshow failed");
+        return send_set_slideshow_result(req, TDX_JSON_RESULT_FILE_NAMES_MISSING,
+                                         "slideshow fileNames missing");
     }
     if (write_control_file(control_path, &control) != ESP_OK) {
-        return send_set_slideshow_result(req, false, "set slideshow failed");
+        return send_set_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED,
+                                         "save slideshow control failed");
     }
     esp_err_t random_save_ret = app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
                                                   control.random ? "true" : "false");
     g_slideshow_random_enable = control.random ? 1 : 0;
     ESP_LOGI(TAG, "set_slideshow save random=%d ret=%s",
              g_slideshow_random_enable, esp_err_to_name(random_save_ret));
+    if (random_save_ret != ESP_OK) {
+        return send_set_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED,
+                                         "save slideshow random failed");
+    }
 
     if (control.sw == 1) {
         esp_err_t start_ret = ServerNetworkStaSlideshow_StartSaved(base_path);
         if (start_ret != ESP_OK) {
             ESP_LOGW(TAG, "set_slideshow runtime start failed ret=%s", esp_err_to_name(start_ret));
-            return send_set_slideshow_result(req, false, "start slideshow runtime failed");
+            return send_set_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED,
+                                             "start slideshow runtime failed");
         }
     } else {
         ServerNetworkStaSlideshow_Stop();
         ESP_LOGI(TAG, "set_slideshow disabled, current displayed image is unchanged");
     }
-    return send_set_slideshow_result(req, true, NULL);
+    return send_set_slideshow_result(req, TDX_JSON_RESULT_OK, NULL);
 }

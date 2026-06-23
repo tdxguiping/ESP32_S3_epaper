@@ -222,16 +222,10 @@ static bool parse_file_names(const char *body, slideshow_request_t *request)
     return closed && request->file_count > 0;
 }
 
-static esp_err_t send_start_slideshow_result(httpd_req_t *req, bool ok, const char *message)
+static esp_err_t send_start_slideshow_result(httpd_req_t *req, int result, const char *message)
 {
     char json[160];
-    int result = TDX_JSON_RESULT_OK;
-    if (!ok) {
-        result = (message != NULL && strstr(message, "runtime") != NULL) ?
-                 TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED :
-                 TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED;
-    }
-    if (ok) {
+    if (result == TDX_JSON_RESULT_OK) {
         snprintf(json, sizeof(json),
                  "{\"func\":\"start_slideshow_result\",\"result\":%d}",
                  TDX_JSON_RESULT_OK);
@@ -678,6 +672,9 @@ static esp_err_t parse_start_slideshow_request(const char *body, slideshow_reque
     if (!json_func_equals(body, "start_slideshow")) {
         return ESP_ERR_NOT_SUPPORTED;
     }
+    if (find_json_key(body, "fileNames") == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
     if (!parse_file_names(body, request)) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -701,32 +698,39 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
     if (ret == ESP_ERR_NOT_SUPPORTED) {
         return ESP_ERR_NOT_SUPPORTED;
     }
+    if (ret == ESP_ERR_NOT_FOUND) {
+        return send_start_slideshow_result(req, TDX_JSON_RESULT_FILE_NAMES_MISSING, "fileNames missing");
+    }
     if (ret == ESP_ERR_INVALID_ARG) {
-        return send_start_slideshow_result(req, false, "invalid fileNames");
+        return send_start_slideshow_result(req, TDX_JSON_RESULT_FILE_NAME_INVALID, "invalid fileNames");
     }
     if (ret == ESP_ERR_INVALID_SIZE) {
-        return send_start_slideshow_result(req, false, "invalid interval");
+        return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID, "invalid interval");
     }
     if (ret != ESP_OK) {
-        return send_start_slideshow_result(req, false, "start slideshow failed");
+        return send_start_slideshow_result(req, TDX_JSON_RESULT_JSON_INVALID, "start slideshow failed");
     }
 
     char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
     if (ensure_bin_dir(base_path, bin_dir, sizeof(bin_dir)) != ESP_OK) {
-        return send_start_slideshow_result(req, false, "sd card not ready");
+        return send_start_slideshow_result(req, TDX_JSON_RESULT_STORAGE_NOT_READY, "sd card not ready");
     }
     if (check_slideshow_files_exist(bin_dir, &request) != ESP_OK) {
-        return send_start_slideshow_result(req, false, "file not found");
+        return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_FILE_NOT_FOUND, "file not found");
     }
     if (save_slideshow_config(bin_dir, &request) != ESP_OK ||
         save_slideshow_control(bin_dir, &request) != ESP_OK) {
-        return send_start_slideshow_result(req, false, "save config failed");
+        return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED, "save config failed");
     }
     esp_err_t random_save_ret = app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
                                                   request.random ? "true" : "false");
     g_slideshow_random_enable = request.random ? 1 : 0;
     ESP_LOGI(TAG, "start_slideshow save random=%d ret=%s",
              g_slideshow_random_enable, esp_err_to_name(random_save_ret));
+    if (random_save_ret != ESP_OK) {
+        return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED,
+                                           "save random config failed");
+    }
 
     ESP_LOGI(TAG, "start_slideshow ready count=%u interval=%lu random=%d run_mode=%d",
              (unsigned int)request.file_count,
@@ -737,8 +741,12 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
     esp_err_t start_ret = start_slideshow_runtime(base_path, &request, 0);
     if (start_ret != ESP_OK) {
         ESP_LOGW(TAG, "start_slideshow runtime start failed ret=%s", esp_err_to_name(start_ret));
-        return send_start_slideshow_result(req, false, "start slideshow runtime failed");
+        return send_start_slideshow_result(req,
+                                           start_ret == ESP_ERR_NO_MEM ?
+                                               TDX_JSON_RESULT_SLIDESHOW_START_FAILED :
+                                               TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED,
+                                           "start slideshow runtime failed");
     }
 
-    return send_start_slideshow_result(req, true, NULL);
+    return send_start_slideshow_result(req, TDX_JSON_RESULT_OK, NULL);
 }

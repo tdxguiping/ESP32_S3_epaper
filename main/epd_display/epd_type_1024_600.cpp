@@ -25,6 +25,7 @@ void ePaperPort::EPD_Check_Busy_600(uint16_t loop_counter)
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
             ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
                      Get_BusyIOLevel(), (long)i, elapsed_ms);
+            EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
             return;
         }
     }
@@ -60,6 +61,7 @@ void ePaperPort::EpdType1024600_Display()
 {
     if (!EnsureDispBuffer()) {
         ESP_LOGE(TAG, "EPD_Display 1024x600 aborted, DispBuffer not ready");
+        EpdType_ReportDisplayFailure(ESP_ERR_NO_MEM);
         return;
     }
 

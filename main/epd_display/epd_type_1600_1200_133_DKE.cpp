@@ -63,6 +63,7 @@ void EpdType16001200_133_DKE_Display(ePaperPort &epd,
     epd.EpdType16001200_133_DKE_Init();
     if (!epd.EpdType16001200_133_DKE_NT61522_DisplayNet(display_buf, display_size)) {
         ESP_LOGE(kTag, "EPD 1600x1200 13.3 DKE display abort because frame write failed");
+        EpdType_ReportDisplayFailure(ESP_FAIL);
         return;
     }
     epd.EpdType16001200_133_DKE_Update();
@@ -115,6 +116,7 @@ void ePaperPort::EpdType16001200_133_DKE_Display()
 {
     if (!EnsureDispBuffer()) {
         ESP_LOGE(kTag, "EPD 1600x1200 13.3 DKE display buffer not ready");
+        EpdType_ReportDisplayFailure(ESP_ERR_NO_MEM);
         return;
     }
 
@@ -248,4 +250,5 @@ void ePaperPort::EpdType16001200_133_DKE_WaitBusy(const char *step, uint16_t max
              Get_BusyIOLevel(),
              (unsigned int)max_loops,
              (long long)((esp_timer_get_time() - start_us) / 1000));
+    EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
 }

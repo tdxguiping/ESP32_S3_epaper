@@ -468,6 +468,10 @@ esp_err_t ServerNetworkStaWifiWorkTime_SetAndSave(uint32_t seconds)
     if (seconds == 0) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (s_work_state_task == NULL) {
+        ESP_LOGE(TAG, "set work time apply failed because work_state task is not ready");
+        return ESP_ERR_INVALID_STATE;
+    }
 
     server_required_continue_work_time = clamp_continue_seconds(seconds);
     wifi_standby_time_s = seconds;
@@ -520,7 +524,9 @@ esp_err_t ServerNetworkStaWifiWorkTime_ProcessJson(httpd_req_t *req,
     if (set_ret != ESP_OK) {
         ESP_LOGE(TAG, "set_wifi_work_time save failed: %s", esp_err_to_name(set_ret));
         return send_wifi_work_time_result(req,
-                                          TDX_JSON_RESULT_WIFI_WORK_TIME_SAVE_FAILED,
+                                          set_ret == ESP_ERR_INVALID_STATE ?
+                                              TDX_JSON_RESULT_WIFI_WORK_TIME_APPLY_FAILED :
+                                              TDX_JSON_RESULT_WIFI_WORK_TIME_SAVE_FAILED,
                                           "set wifi work time failed");
     }
 

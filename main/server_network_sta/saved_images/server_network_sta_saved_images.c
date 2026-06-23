@@ -170,6 +170,18 @@ esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
     return ret;
 }
 
+static esp_err_t send_thumbnail_error(httpd_req_t *req, const char *status, int result, const char *message)
+{
+    char json[160];
+    snprintf(json, sizeof(json),
+             "{\"func\":\"thumb_result\",\"result\":%d,\"message\":\"%s\"}",
+             result,
+             message);
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, json);
+}
+
 esp_err_t ServerNetworkStaSavedImages_SendThumbnail(httpd_req_t *req,
                                                     const char *base_path,
                                                     const char *uri,
@@ -184,8 +196,8 @@ esp_err_t ServerNetworkStaSavedImages_SendThumbnail(httpd_req_t *req,
     const char *name = uri + strlen(SERVER_NETWORK_STA_THUMB_URI_PREFIX);
     if (!saved_image_name_is_safe(name) || !has_jpg_extension(name)) {
         ESP_LOGW(TAG, "thumb invalid name uri=%s", uri);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid thumbnail name");
-        return ESP_FAIL;
+        return send_thumbnail_error(req, HTTPD_400, TDX_JSON_RESULT_THUMB_NAME_INVALID,
+                                    "invalid thumbnail name");
     }
 
     char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX + 24];
@@ -194,8 +206,8 @@ esp_err_t ServerNetworkStaSavedImages_SendThumbnail(httpd_req_t *req,
     FILE *fp = fopen(path, "rb");
     if (fp == NULL) {
         ESP_LOGE(TAG, "thumb open failed path=%s", path);
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Thumbnail does not exist");
-        return ESP_FAIL;
+        return send_thumbnail_error(req, HTTPD_404, TDX_JSON_RESULT_THUMB_NOT_FOUND,
+                                    "thumbnail not found");
     }
 
     ESP_LOGI(TAG, "thumb send path=%s", path);

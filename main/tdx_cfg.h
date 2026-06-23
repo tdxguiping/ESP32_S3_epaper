@@ -157,6 +157,7 @@ extern "C" {
 #define TDX_JSON_RESULT_EPD_TYPE_INVALID 1801
 #define TDX_JSON_RESULT_EPD_TYPE_SAVE_FAILED 1802
 #define TDX_JSON_RESULT_EPD_TEST_DISPLAY_FAILED 1803
+#define TDX_JSON_RESULT_EPD_DISPLAY_FAILED 1804
 
 /* -------------------------------------------------------------------------- */
 /* 05. Server Network STA / WiFi / mDNS                                        */
@@ -470,6 +471,8 @@ extern "C" {
 #define USER_EPD_DISPLAY_QUEUE_LENGTH 2
 #define USER_EPD_DISPLAY_TASK_STACK_SIZE (8 * 1024)
 #define USER_EPD_DISPLAY_TASK_PRIORITY 5
+// Bound synchronous display waits; completion lifetime remains owned by both waiter and EPD task.
+#define USER_EPD_DISPLAY_WAIT_TIMEOUT_MS (5 * 60 * 1000)
 
 #define USER_EPD_TYPE_NVS_KEY "epd_type"
 #define USER_EPD_TYPE_DEFAULT 4

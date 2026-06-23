@@ -40,6 +40,7 @@ void ePaperPort::EPD_Check_Busy_1085_3c(uint16_t loop_counter)
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
             ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
                      Get_BusyIOLevel(), (long)i, elapsed_ms);
+            EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
             return;
         }
     }
@@ -114,6 +115,7 @@ void ePaperPort::EpdType1360480_1085_3Color_Display()
 {
     if (!EnsureDispBuffer()) {
         ESP_LOGE(TAG, "EPD 1360x480 3color display buffer not ready");
+        EpdType_ReportDisplayFailure(ESP_ERR_NO_MEM);
         return;
     }
 }

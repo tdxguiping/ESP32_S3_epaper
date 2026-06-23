@@ -30,10 +30,19 @@ esp_err_t UsbConsoleSlideshowControl_Process(const usb_console_http_request_t *r
                                          "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"set slideshow failed\"}",
                                          TDX_JSON_RESULT_PARAM_INVALID);
     }
-    (void)UsbConsoleCommon_JsonU32(request->body, "interval", &interval);
-    (void)UsbConsoleCommon_JsonBool(request->body, "random", &random);
-    if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS || interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
-        interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
+    bool interval_key_present = strstr(request->body, "\"interval\"") != NULL;
+    bool interval_present = UsbConsoleCommon_JsonU32(request->body, "interval", &interval);
+    if ((interval_key_present && !interval_present) || (sw == 1 && !interval_present) ||
+        interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS || interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
+        return UsbConsoleCommon_SetJsonf(response, 200, "OK",
+                                         "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"invalid interval\"}",
+                                         TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID);
+    }
+    if (strstr(request->body, "\"random\"") != NULL &&
+        !UsbConsoleCommon_JsonBool(request->body, "random", &random)) {
+        return UsbConsoleCommon_SetJsonf(response, 200, "OK",
+                                         "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"invalid random\"}",
+                                         TDX_JSON_RESULT_PARAM_INVALID);
     }
 
     snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, TDX_SLIDESHOW_CONTROL_FILE);
@@ -43,11 +52,19 @@ esp_err_t UsbConsoleSlideshowControl_Process(const usb_console_http_request_t *r
                                          "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"set slideshow failed\"}",
                                          TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED);
     }
-    fprintf(fp, "{\"sw\":%d,\"interval\":%lu,\"random\":%s,\"run_mode\":%d}",
-            sw, (unsigned long)interval, random ? "true" : "false", TDX_SLIDESHOW_RUN_MODE);
-    fclose(fp);
+    int written = fprintf(fp, "{\"sw\":%d,\"interval\":%lu,\"random\":%s,\"run_mode\":%d}",
+                          sw, (unsigned long)interval, random ? "true" : "false", TDX_SLIDESHOW_RUN_MODE);
+    if (fclose(fp) != 0 || written < 0) {
+        return UsbConsoleCommon_SetJsonf(response, 200, "OK",
+                                         "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"set slideshow failed\"}",
+                                         TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED);
+    }
 
-    (void)app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY, random ? "true" : "false");
+    if (app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY, random ? "true" : "false") != ESP_OK) {
+        return UsbConsoleCommon_SetJsonf(response, 200, "OK",
+                                         "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"set slideshow failed\"}",
+                                         TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED);
+    }
     g_slideshow_random_enable = random ? 1 : 0;
     if (sw == 1) {
         esp_err_t start_ret = ServerNetworkStaSlideshow_StartSaved(USB_CONSOLE_BASE_PATH);

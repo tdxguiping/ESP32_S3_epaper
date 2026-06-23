@@ -41,5 +41,7 @@ esp_err_t UsbConsoleWifiWorkTime_Process(const usb_console_http_request_t *reque
                                      200,
                                      "OK",
                                      "{\"func\":\"set_wifi_work_time_result\",\"result\":%d}",
-                                     ret == ESP_OK ? TDX_JSON_RESULT_OK : TDX_JSON_RESULT_WIFI_WORK_TIME_SAVE_FAILED);
+                                     ret == ESP_OK ? TDX_JSON_RESULT_OK :
+                                     ret == ESP_ERR_INVALID_STATE ? TDX_JSON_RESULT_WIFI_WORK_TIME_APPLY_FAILED :
+                                     TDX_JSON_RESULT_WIFI_WORK_TIME_SAVE_FAILED);
 }

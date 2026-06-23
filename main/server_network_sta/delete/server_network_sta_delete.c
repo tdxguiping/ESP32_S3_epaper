@@ -76,11 +76,18 @@ static bool file_name_is_safe(const char *file_name)
     return strlen(file_name) < TDX_SLIDESHOW_FILE_NAME_MAX_LEN;
 }
 
-static bool parse_file_names(const char *body, delete_request_t *request)
+typedef enum {
+    DELETE_PARSE_OK = 0,
+    DELETE_PARSE_MISSING,
+    DELETE_PARSE_INVALID_NAME,
+    DELETE_PARSE_INVALID_JSON,
+} delete_parse_result_t;
+
+static delete_parse_result_t parse_file_names(const char *body, delete_request_t *request)
 {
     const char *pos = find_json_key(body, "fileNames");
     if (pos == NULL || request == NULL) {
-        return false;
+        return DELETE_PARSE_MISSING;
     }
 
     memset(request, 0, sizeof(*request));
@@ -89,14 +96,14 @@ static bool parse_file_names(const char *body, delete_request_t *request)
         pos++;
     }
     if (*pos != ':') {
-        return false;
+        return DELETE_PARSE_INVALID_JSON;
     }
     pos++;
     while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
         pos++;
     }
     if (*pos != '[') {
-        return false;
+        return DELETE_PARSE_INVALID_JSON;
     }
     pos++;
 
@@ -110,7 +117,7 @@ static bool parse_file_names(const char *body, delete_request_t *request)
             break;
         }
         if (*pos != '"') {
-            return false;
+            return DELETE_PARSE_INVALID_JSON;
         }
         pos++;
 
@@ -120,20 +127,23 @@ static bool parse_file_names(const char *body, delete_request_t *request)
             file_name[len++] = *pos++;
         }
         if (*pos != '"') {
-            return false;
+            return DELETE_PARSE_INVALID_JSON;
         }
         pos++;
         file_name[len] = '\0';
 
         if (!file_name_is_safe(file_name) || request->file_count >= SERVER_NETWORK_STA_DELETE_MAX_FILES) {
-            return false;
+            return DELETE_PARSE_INVALID_NAME;
         }
         strlcpy(request->file_names[request->file_count], file_name,
                 sizeof(request->file_names[request->file_count]));
         request->file_count++;
     }
 
-    return closed && request->file_count > 0;
+    if (!closed) {
+        return DELETE_PARSE_INVALID_JSON;
+    }
+    return request->file_count > 0 ? DELETE_PARSE_OK : DELETE_PARSE_MISSING;
 }
 
 static esp_err_t send_delete_result(httpd_req_t *req, int result, const char *message)
@@ -439,8 +449,12 @@ esp_err_t ServerNetworkStaDelete_ProcessJson(httpd_req_t *req,
     }
 
     delete_request_t request;
-    if (!parse_file_names(body, &request)) {
-        return send_delete_result(req, TDX_JSON_RESULT_FILE_NAMES_MISSING, "delete failed");
+    delete_parse_result_t parse_result = parse_file_names(body, &request);
+    if (parse_result != DELETE_PARSE_OK) {
+        int result = parse_result == DELETE_PARSE_INVALID_NAME ? TDX_JSON_RESULT_FILE_NAME_INVALID :
+                     parse_result == DELETE_PARSE_INVALID_JSON ? TDX_JSON_RESULT_JSON_INVALID :
+                     TDX_JSON_RESULT_FILE_NAMES_MISSING;
+        return send_delete_result(req, result, "delete failed");
     }
 
     char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];

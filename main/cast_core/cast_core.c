@@ -247,7 +247,7 @@ static void CastSaveTask(void *arg)
     }
 }
 
-static esp_err_t cast_save_task_init(void)
+esp_err_t TdxCastCore_Init(void)
 {
     if (s_cast_save_task != NULL) {
         return ESP_OK;
@@ -285,7 +285,7 @@ static esp_err_t submit_save_item_and_wait(const tdx_image_transfer_item_t *item
     char save_error[64] = {0};
     SemaphoreHandle_t done = NULL;
 
-    esp_err_t init_ret = cast_save_task_init();
+    esp_err_t init_ret = TdxCastCore_Init();
     if (init_ret != ESP_OK) {
         set_result(result, TDX_JSON_RESULT_QUEUE_FAILED, "cast failed", "save_queue_failed");
         return init_ret;
@@ -362,7 +362,15 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
                  (unsigned long)elapsed_ms_since(stage_start_us),
                  (unsigned long)elapsed_ms_since(total_start_us));
         if (display_ret != ESP_OK) {
-            set_result(result, TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED, "image transfer failed", "display_queue_failed");
+            int display_result = display_ret == ESP_ERR_NO_MEM ? TDX_JSON_RESULT_NO_MEMORY :
+                                 display_ret == ESP_ERR_TIMEOUT ? TDX_JSON_RESULT_TIMEOUT :
+                                 display_ret == ESP_ERR_NOT_FINISHED ? TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED :
+                                 TDX_JSON_RESULT_EPD_DISPLAY_FAILED;
+            const char *display_error = display_ret == ESP_ERR_NOT_FINISHED ? "display_queue_failed" :
+                                        display_ret == ESP_ERR_TIMEOUT ? "display_timeout" :
+                                        display_ret == ESP_ERR_NO_MEM ? "display_no_memory" :
+                                        "display_failed";
+            set_result(result, display_result, "image transfer failed", display_error);
             return display_ret;
         }
     }

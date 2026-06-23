@@ -1,5 +1,6 @@
 #include "epd_display_app.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_heap_caps.h"
@@ -18,10 +19,16 @@
 static const char *TAG = "epd_display";
 
 typedef struct {
+    SemaphoreHandle_t done;
+    volatile uint32_t refs;
+    esp_err_t result;
+} epd_display_completion_t;
+
+typedef struct {
     uint8_t *data;
     size_t size;
     uint8_t epd_which_one;
-    SemaphoreHandle_t done;
+    epd_display_completion_t *completion;
 } epd_display_job_t;
 
 uint16_t sleep_time = 0;
@@ -29,6 +36,30 @@ EventGroupHandle_t sleep_group = NULL;
 
 static QueueHandle_t s_epd_display_queue = NULL;
 static TaskHandle_t s_epd_display_task = NULL;
+
+static epd_display_completion_t *create_completion(void)
+{
+    epd_display_completion_t *completion = (epd_display_completion_t *)calloc(1, sizeof(*completion));
+    if (completion == NULL) {
+        return NULL;
+    }
+    completion->done = xSemaphoreCreateBinary();
+    if (completion->done == NULL) {
+        free(completion);
+        return NULL;
+    }
+    completion->refs = 2;
+    completion->result = ESP_FAIL;
+    return completion;
+}
+
+static void release_completion(epd_display_completion_t *completion)
+{
+    if (completion != NULL && __atomic_sub_fetch(&completion->refs, 1U, __ATOMIC_ACQ_REL) == 0U) {
+        vSemaphoreDelete(completion->done);
+        free(completion);
+    }
+}
 
 ePaperPort ePaperDisplay(USER_EPD_MOSI_PIN,
                          USER_EPD_SCK_PIN,
@@ -96,6 +127,7 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
         ServerNetworkStaWifiWorkTime_OnNetworkData();
         int64_t display_start_us = esp_timer_get_time();
         const epd_type_config_t *config = EpdType_GetCurrentConfig();
+        esp_err_t display_ret = ESP_FAIL;
         if (config != NULL) {
             ESP_LOGI(TAG,
                      "EPD start target=%u type=%u name=%s resolution=%ux%u input=%u expected=%u",
@@ -117,10 +149,8 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
             UserLedStatus_Set(USER_LED_STATE_OPERATION_FAIL);
         } else {
             ePaperDisplay.Set_EPD_which_one(job.epd_which_one);
-            EpdType_DisplayCurrent(ePaperDisplay, (const uint8_t *)job.data, job.size);
-
-
-            UserLedStatus_Set(USER_LED_STATE_SUCCESS);
+            display_ret = EpdType_DisplayCurrent(ePaperDisplay, (const uint8_t *)job.data, job.size);
+            UserLedStatus_Set(display_ret == ESP_OK ? USER_LED_STATE_SUCCESS : USER_LED_STATE_OPERATION_FAIL);
         }
 
         ESP_LOGI(TAG, "EPD done target=%u type=%u name=%s size=%u total_ms=%lld",
@@ -129,10 +159,12 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
                  config != NULL ? config->name : "INVALID",
                  (unsigned int)job.size,
                  (long long)((esp_timer_get_time() - display_start_us) / 1000));
-        SemaphoreHandle_t done = job.done;
+        epd_display_completion_t *completion = job.completion;
         release_epd_job(&job);
-        if (done != NULL) {
-            xSemaphoreGive(done);
+        if (completion != NULL) {
+            completion->result = display_ret;
+            xSemaphoreGive(completion->done);
+            release_completion(completion);
         }
     }
 }
@@ -221,8 +253,8 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreenAndWait(const uint8_t *display
         return ESP_ERR_INVALID_STATE;
     }
 
-    SemaphoreHandle_t done = xSemaphoreCreateBinary();
-    if (done == NULL) {
+    epd_display_completion_t *completion = create_completion();
+    if (completion == NULL) {
         ESP_LOGE(TAG, "display wait semaphore alloc failed");
         return ESP_ERR_NO_MEM;
     }
@@ -230,29 +262,32 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreenAndWait(const uint8_t *display
     epd_display_job_t job = {};
     esp_err_t ret = copy_display_buffer(&job, display_buf, display_size);
     if (ret != ESP_OK) {
-        vSemaphoreDelete(done);
+        release_completion(completion);
+        release_completion(completion);
         return ret;
     }
     job.epd_which_one = (epd_which_one == 2) ? 2 : 1;
-    job.done = done;
+    job.completion = completion;
 
     if (xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
         ESP_LOGE(TAG, "display queue full, reject sync job ptr=%p size=%u",
                  job.data, (unsigned int)job.size);
         release_epd_job(&job);
-        vSemaphoreDelete(done);
-        return ESP_ERR_TIMEOUT;
+        release_completion(completion);
+        release_completion(completion);
+        return ESP_ERR_NOT_FINISHED;
     }
 
     ESP_LOGI(TAG, "EPD queued wait target=%u size=%u",
              (unsigned int)job.epd_which_one,
              (unsigned int)job.size);
-    if (xSemaphoreTake(done, portMAX_DELAY) != pdTRUE) {
-        vSemaphoreDelete(done);
+    if (xSemaphoreTake(completion->done, pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS)) != pdTRUE) {
+        release_completion(completion);
         return ESP_ERR_TIMEOUT;
     }
-    vSemaphoreDelete(done);
-    return ESP_OK;
+    ret = completion->result;
+    release_completion(completion);
+    return ret;
 #else
     (void)display_buf;
     (void)display_size;
