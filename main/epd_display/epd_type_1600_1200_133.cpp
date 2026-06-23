@@ -8,23 +8,41 @@ void ePaperPort::EPD_Check_Busy_133(uint16_t loop_counter)
     int16_t i;
     int64_t start_us = esp_timer_get_time();
 
-    if (loop_counter > 45) {
-        loop_counter = 45;
+    if (loop_counter > 31) {
+        loop_counter = 31;
     }
     i = 0;
     while (1) {
         int level = Get_BusyIOLevel();
         if (level) {
-            printf("Check Busy over\r\n");
+            printf("Check Busy over %d-%d \r\n",i,loop_counter);
             return;
         }
-        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        vTaskDelay(pdMS_TO_TICKS(500));
+        gpio_set_level(USER_GPIO_TEST_PIN_12, 0);
+
+        if (level) {
+            printf("Check Busy over %d-%d \r\n",i,loop_counter);
+            gpio_set_level(USER_GPIO_TEST_PIN_12, 1);
+            return;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(500));
+        gpio_set_level(USER_GPIO_TEST_PIN_12, 1);
+
         i++;
-        printf("EPD_Check_Busy_133 %d", i);
+        printf(".%d-%d.", i,loop_counter);
+
+        if (level) {
+            printf("Check Busy over %d-%d \r\n",i,loop_counter);
+            return;
+        }
+
 
         if (i > loop_counter) {
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
-            ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
+            ESP_LOGE(TAG, "EPD-133 busy timeout level=%d loops=%ld elapsed_ms=%d",
                      Get_BusyIOLevel(), (long)i, elapsed_ms);
             return;
         }
@@ -89,7 +107,7 @@ void ePaperPort::EpdType16001200_133_NT61522_Init()
     Read_Temptr();       //添加锁定当前温度函数(掉电重启时解除)，为了避免屏幕多次运行IC升温导致调取波形温度与实际环境温度不符
 
 	EPD_Reset();
-	EPD_Check_Busy_133(2);
+	EPD_Check_Busy_133(1);
 
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmit(0x74, r74DataBuf, sizeof(r74DataBuf));
@@ -168,21 +186,28 @@ void ePaperPort::EpdType16001200_133_NT61522_Display()
 	spiTransmitCommand(R04_PON);
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-	EPD_Check_Busy_133(45);
+    printf("---1---\r\n");
+	EPD_Check_Busy_133(1);
 	delayms(30);
 
     setPinCsAll(GPIO_LOW);
 	spiTransmit(R12_DRF,DRF_V,sizeof(DRF_V));
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-	EPD_Check_Busy_133(45);
+    printf("---2---\r\n");
+	EPD_Check_Busy_133(31);
 	delayms(30);
 	setPinCsAll(GPIO_LOW);
 	spiTransmit(R02_POF,POF_V,sizeof(POF_V));
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-	EPD_Check_Busy_133(45);
+    printf("---3---\r\n");
+	EPD_Check_Busy_133(1);
 	delayms(30);
+
+
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    Set_Power(0);
 }
 
 void ePaperPort::EpdType16001200_133_NT61522_InitDisplay()
@@ -201,11 +226,11 @@ void ePaperPort::EpdType16001200_133_NT61522_InitDisplay()
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmitCommand(R40_TSC);
 	delayms(10);
-	EPD_Check_Busy_133(2);
+	EPD_Check_Busy_133(1);
 	spiReceiveData(&dataBuff[0], 2);
 	setPinCs(TARGET_MASTER,GPIO_HIGH);
 	delayms(30);
-	EPD_Check_Busy_133(2);
+	EPD_Check_Busy_133(1);
 
     //Temptr[0] =  WHT20_Temp+10;
 	temptr_fill = Temptr[0]<<1;
@@ -222,14 +247,18 @@ void ePaperPort::EpdType16001200_133_NT61522_InitDisplay()
 
 void ePaperPort::EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize)
 {
-    // (void)imageData;
-     //#define  max_l_dat  300   
-     //uint8_t u8dat[max_l_dat];
+        // //piTransmitCommand(R10_DTM);
+        // EPD_WriteMultiData_ToMaster((uint8_t *)imageData, 480000);
 
+        // EPD_Select_Slave();
+        // spiTransmitCommand(R10_DTM);
+        // EPD_WriteMultiData_ToSlave((uint8_t *)imageData+480000, 480000);     
+
+
+#if 0
      uint32_t u32posi;
      static const size_t expected_image_size = 1600U * 1200U / 2U;
 
-#if 0
      uint32_t total;
      uint8_t Data_Buffer[NT61522_BUFFER_SIZE];
     //=======================Master==================================
@@ -263,8 +292,13 @@ void ePaperPort::EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData
 #endif
 
 #if 1
+     uint32_t u32posi;
+     static const size_t expected_image_size = 1600U * 1200U / 2U;
+
     /* 中文注释：       主屏区域总长度边界       0 ~ (1600*300 - 1) 属于 MASTER       >= 1600*300 属于 SLAVE    */
-    const uint32_t master_limit = 1600U * 300U;//=480000;
+    //const uint32_t master_limit = 1600U * 300U;//=480000;
+    const uint32_t master_limit = 16U * 30000U;//=480000;  DMA 模式默认只有约 4092 bytes
+
     /* 中文注释：       参数保护       按你的描述 imageSize 范围为 1 ~ 900    */
     if (imageData == nullptr || imageSize != expected_image_size) {
         ESP_LOGE(TAG, "EPD 1600x1200 13.3 image size invalid input=%u expected=%u",
@@ -282,7 +316,8 @@ void ePaperPort::EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData
     // memset(u8dat, epd_black,max_l_dat);
     while (remain > 0) {
         /* 中文注释：           单次最多处理 300        */
-        uint32_t chunk = (remain > 300) ? 300U : (uint32_t)remain;
+        //uint32_t chunk = (remain > 300) ? 300U : (uint32_t)remain;
+        uint32_t chunk = (remain > 30000) ? 30000U : (uint32_t)remain;
         /* 中文注释：           情况1：当前还在 MASTER 区域        */
 
         //LOG_Cyan("image_countger_ %ld, master_limit %ld",image_countger_, master_limit);
@@ -383,10 +418,10 @@ unsigned char ePaperPort::Read_Temptr(void)
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmitCommand(R40_TSC);
 	delayms(10);
-	EPD_Check_Busy_133(2);
+	EPD_Check_Busy_133(1);
 	spiReceiveData(&Temptr[0], 2);
 	setPinCs(TARGET_MASTER,GPIO_HIGH);
-	EPD_Check_Busy_133(2);
+	EPD_Check_Busy_133(1);
 
 	Temptr[0] = Temptr[0] > 50 ? 48 : Temptr[0];    
 

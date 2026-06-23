@@ -26,6 +26,7 @@
 #include "ch583_uart_app.h"
 #include "epd_display_app.h"
 #include "file_serving_example_common.h"
+#include "gpio_test.h"
 #include "led_status.h"
 #include "server_network_sta.h"
 #include "server_network_sta_slideshow.h"
@@ -99,11 +100,19 @@ static void usb_console_ansi_color_test(void)
 static void app_auto_light_sleep_init(void)
 {
 #if CONFIG_PM_ENABLE
+#if TDX_AUTO_LIGHT_SLEEP_ENABLE
     esp_pm_config_t pm_config = {
         .max_freq_mhz = 80, // 160
         .min_freq_mhz = 40,
         .light_sleep_enable = true,
     };
+#else
+    esp_pm_config_t pm_config = {
+        .max_freq_mhz = 240,
+        .min_freq_mhz = 240,
+        .light_sleep_enable = false,
+    };
+#endif
 
     ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
 
@@ -111,9 +120,11 @@ static void app_auto_light_sleep_init(void)
     //pm_diag_dump_once("after_pm_config");
     //  test power only over
 
-    ESP_LOGI(TAG, "Auto Light-sleep enabled max=%uMHz min=%uMHz",
+    ESP_LOGI(TAG, "Power policy: low_power=%d max=%uMHz min=%uMHz light_sleep=%d",
+             (int)TDX_AUTO_LIGHT_SLEEP_ENABLE,
              (unsigned int)pm_config.max_freq_mhz,
-             (unsigned int)pm_config.min_freq_mhz);
+             (unsigned int)pm_config.min_freq_mhz,
+             pm_config.light_sleep_enable ? 1 : 0);
 #else
     ESP_LOGW(TAG, "Auto Light-sleep not enabled because CONFIG_PM_ENABLE is off");
 #endif
@@ -297,6 +308,7 @@ void app_main(void)
 
 
     print_base_info();
+    ESP_ERROR_CHECK(GpioTest_Init());
     // Start CH583 UART before LED status because C5 status LEDs are controlled by CH583 GPIO.
     // 先启动 CH583 串口再初始化 LED 状态，因为 C5 状态灯由 CH583 GPIO 控制。
     ESP_ERROR_CHECK(Ch583UartApp_Init());
@@ -357,7 +369,7 @@ void app_main(void)
     ESP_LOGI(TAG, "BLE MAC source=CH583 reported BLE MAC value=%s",
              ble_mac[0] != '\0' ? ble_mac : "<empty>");
 #endif
-//     test_epd_display();
+     //  test_epd_display();
 }
 // LOG_ERROR("%d %s %s",__LINE__,__func__,__FILE__);
 // LOG_WARN("%s>%d",__func__,__LINE__);

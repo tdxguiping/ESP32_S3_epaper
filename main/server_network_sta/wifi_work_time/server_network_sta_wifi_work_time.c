@@ -264,7 +264,7 @@ static void work_state_task(void *arg)
 
 
         counter++;
-        if(counter >10)
+        if(counter >30)
         {
          counter = 0;
          ESP_LOGI(TAG, "work_state status elapsed=%lu target=%lu remaining=%lu standby=%lu",

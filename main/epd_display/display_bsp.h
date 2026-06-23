@@ -60,6 +60,8 @@ extern uint8_t EPD_which_one_;
 #define EPD2_RST_PIN    USER_EPD2_RST_PIN
 #define EPD2_BUSY_PIN   USER_EPD2_BUSY_PIN
 
+#define EPD_Power_PIN   GPIO_NUM_27
+
 // Keep SPI signal names mapped to the C5 shared EPD and SD SPI bus.
 // SPI 信号名映射到 C5 上墨水屏和 SD 卡共用的 SPI 总线。
 #define EPD_SCK_PIN     USER_EPD_SCK_PIN
@@ -176,6 +178,7 @@ class ePaperPort {
     friend void EpdType_DispatchNT61522InitDisplay(ePaperPort &epd);
     friend void EpdType_DispatchNT61522DisplayNet(ePaperPort &epd, const uint8_t *image_data, size_t image_size);
     friend void EpdType1360480_1085_3Color_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
+    friend void EpdType16001200_133_DKE_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
     friend void EpdType800480_4S_75_DKE_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
     friend void EpdType800480_4S_75_Mofang_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
 
@@ -206,16 +209,17 @@ class ePaperPort {
     uint8_t              u8flag_ = 0;
 
     void    Set_ResetIOLevel(uint8_t level);
+    void    Set_Power(uint8_t Power_switch);
     void    Set_CSIOLevel(uint8_t level);
     void    Set_DCIOLevel(uint8_t level);
     void    Set_CS2IOLevel(uint8_t level);
     uint8_t Get_BusyIOLevel();
     void    EPD_Reset(void);
-    void    EPD_LoopBusy(void);
+    void    EPD_LoopBusy(uint16_t loop_counter);
     void    SPI_Write(uint8_t data);
     void    EPD_SendCommand(uint8_t Reg);
     void    EPD_SendData(uint8_t Data);
-    void    EPD_Sendbuffera(uint8_t *Data, int len);
+    void    EPD_Sendbuffera(uint8_t *Data, uint16_t len);
     void    EPD_TurnOnDisplay(void);
     void    EPD_TurnOnDisplay_480(void);
     bool    EnsureDispBuffer();
@@ -258,6 +262,14 @@ class ePaperPort {
     void EpdType16001200_133_NT61522_Display();
     void EpdType16001200_133_NT61522_InitDisplay();
     void EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
+    void EpdType16001200_133_DKE_Sleep();
+    void EpdType16001200_133_DKE_Init();
+    void EpdType16001200_133_DKE_Display();
+    bool EpdType16001200_133_DKE_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
+    void EpdType16001200_133_DKE_Update();
+    void EpdType16001200_133_DKE_WriteCommandData(EP_Target_t target, uint8_t command, const uint8_t *data, size_t len);
+    bool EpdType16001200_133_DKE_WriteFrame(EP_Target_t target, const uint8_t *data, size_t len);
+    void EpdType16001200_133_DKE_WaitBusy(const char *step, uint16_t max_loops);
 
     void EpdType1360480_1085_Sleep();
     void EpdType1360480_1085_Init();
@@ -388,7 +400,7 @@ class ePaperPort {
     void EPD_refresh();
     void EPD_refresh_17H();
     void EPD_initial();
-    void EPD_Check_Busy();
+    void EPD_Check_Busy(uint16_t loop_counter);
     void EPD_Check_Busy_480(uint16_t loop_counter);
     void EPD_Check_Busy_4s75(uint16_t loop_counter);
     void EPD_Check_Busy_75_2(uint16_t loop_counter);

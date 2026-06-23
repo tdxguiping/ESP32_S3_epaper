@@ -351,9 +351,9 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
         }
         int64_t stage_start_us = esp_timer_get_time();
         uint8_t epd_target = item->epd_target == 0 ? 1 : item->epd_target;
-        esp_err_t display_ret = ServerNetworkStaEpdDisplay_QueueToScreen((const uint8_t *)item->bin_part.data,
-                                                                         item->bin_part.len,
-                                                                         epd_target);
+        esp_err_t display_ret = ServerNetworkStaEpdDisplay_QueueToScreenAndWait((const uint8_t *)item->bin_part.data,
+                                                                                item->bin_part.len,
+                                                                                epd_target);
         ESP_LOGI(TAG, "%s display item=%u target=%u ret=%s elapsed_ms=%lu total_ms=%lu",
                  log_prefix != NULL ? log_prefix : "image",
                  (unsigned int)i,

@@ -47,7 +47,11 @@ static bool s_wifi_scan_before_connect;
 #define SERVER_NETWORK_STA_SCAN_BEFORE_CONNECT 0
 #define SERVER_NETWORK_STA_INIT_RETRY_ROUNDS 3
 #define SERVER_NETWORK_STA_INIT_RETRY_DELAY_MS 100  // 2000
+#if TDX_AUTO_LIGHT_SLEEP_ENABLE
 #define SERVER_NETWORK_STA_CONNECTED_PS WIFI_PS_MAX_MODEM
+#else
+#define SERVER_NETWORK_STA_CONNECTED_PS WIFI_PS_NONE
+#endif
 
 static const char *wifi_disconnect_reason_name(int reason);
 

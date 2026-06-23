@@ -4,17 +4,19 @@
 #include "esp_timer.h"
 
 void ePaperPort::Epaper_Update() {   
+LOG_Purple("%s>%d",__func__,__LINE__);
+
   int64_t start_us = esp_timer_get_time();
   ESP_LOGI("epd_display", "EPD step Epaper_Update start");
 
   EPD_WriteCMD(0x12);
   EPD_WriteDATA(0x00);
-    EPD_Check_Busy();
+    EPD_Check_Busy(24);
 	delay_ms(20);
  
   EPD_WriteCMD(0x02);
   EPD_WriteDATA(0x00);
-    EPD_Check_Busy();	
+    EPD_Check_Busy(24);	
 //	
 ////	delay_ms(30);
 //	

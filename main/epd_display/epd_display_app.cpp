@@ -21,6 +21,7 @@ typedef struct {
     uint8_t *data;
     size_t size;
     uint8_t epd_which_one;
+    SemaphoreHandle_t done;
 } epd_display_job_t;
 
 uint16_t sleep_time = 0;
@@ -128,7 +129,11 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
                  config != NULL ? config->name : "INVALID",
                  (unsigned int)job.size,
                  (long long)((esp_timer_get_time() - display_start_us) / 1000));
+        SemaphoreHandle_t done = job.done;
         release_epd_job(&job);
+        if (done != NULL) {
+            xSemaphoreGive(done);
+        }
     }
 }
 
@@ -204,6 +209,55 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, s
     (void)display_buf;
     (void)display_size;
     ESP_LOGW(TAG, "EPD display queue ignored because USER_EPD_ENABLE=0");
+    return ESP_OK;
+#endif
+}
+
+esp_err_t ServerNetworkStaEpdDisplay_QueueToScreenAndWait(const uint8_t *display_buf, size_t display_size, uint8_t epd_which_one)
+{
+#if USER_EPD_ENABLE
+    if (s_epd_display_queue == NULL) {
+        ESP_LOGE(TAG, "display queue not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    SemaphoreHandle_t done = xSemaphoreCreateBinary();
+    if (done == NULL) {
+        ESP_LOGE(TAG, "display wait semaphore alloc failed");
+        return ESP_ERR_NO_MEM;
+    }
+
+    epd_display_job_t job = {};
+    esp_err_t ret = copy_display_buffer(&job, display_buf, display_size);
+    if (ret != ESP_OK) {
+        vSemaphoreDelete(done);
+        return ret;
+    }
+    job.epd_which_one = (epd_which_one == 2) ? 2 : 1;
+    job.done = done;
+
+    if (xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+        ESP_LOGE(TAG, "display queue full, reject sync job ptr=%p size=%u",
+                 job.data, (unsigned int)job.size);
+        release_epd_job(&job);
+        vSemaphoreDelete(done);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    ESP_LOGI(TAG, "EPD queued wait target=%u size=%u",
+             (unsigned int)job.epd_which_one,
+             (unsigned int)job.size);
+    if (xSemaphoreTake(done, portMAX_DELAY) != pdTRUE) {
+        vSemaphoreDelete(done);
+        return ESP_ERR_TIMEOUT;
+    }
+    vSemaphoreDelete(done);
+    return ESP_OK;
+#else
+    (void)display_buf;
+    (void)display_size;
+    (void)epd_which_one;
+    ESP_LOGW(TAG, "EPD display wait ignored because USER_EPD_ENABLE=0");
     return ESP_OK;
 #endif
 }
@@ -336,6 +390,11 @@ void test_epd_display_EPD_1600_1200_79(void)
 void test_epd_display_EPD_1600_1200_133(void)
 {
     test_epd_display_type(EPD_TYPE_1600_1200_133);
+}
+
+void test_epd_display_EPD_1600_1200_133_DKE(void)
+{
+    test_epd_display_type(EPD_TYPE_1600_1200_133_DKE);
 }
 
 
@@ -687,6 +746,10 @@ void test_epd_display(void)
 
     case EPD_TYPE_1600_1200_133:
         test_epd_display_EPD_1600_1200_133();
+        break;
+
+    case EPD_TYPE_1600_1200_133_DKE:
+        test_epd_display_EPD_1600_1200_133_DKE();
         break;
 
     case EPD_TYPE_1360_480_1085:

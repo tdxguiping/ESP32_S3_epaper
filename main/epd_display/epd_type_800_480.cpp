@@ -7,8 +7,8 @@ void ePaperPort::EPD_Check_Busy_480(uint16_t loop_counter)
     int16_t i;
     int64_t start_us = esp_timer_get_time();
 
-    if (loop_counter > 45) {
-        loop_counter = 45;
+    if (loop_counter > 31) {
+        loop_counter = 31;
     }
     i = 0;
     while (1) {
@@ -19,7 +19,7 @@ void ePaperPort::EPD_Check_Busy_480(uint16_t loop_counter)
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
         i++;
-        printf(".%d.", i);
+        printf("=%d.", i);
 
         if (i > loop_counter) {
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
@@ -81,7 +81,7 @@ void ePaperPort::EpdType800480_Init()
 {
 
     EPD_Reset();
-    EPD_LoopBusy();
+    EPD_LoopBusy(1);
     vTaskDelay(pdMS_TO_TICKS(50));
 
     EPD_SendCommand(0xAA);
@@ -146,7 +146,7 @@ void ePaperPort::EpdType800480_Init()
     EPD_SendData(0x2F);
 
     EPD_SendCommand(0x04);
-    EPD_LoopBusy();
+    EPD_LoopBusy(1);
     //EPD_DispClear(ColorWhite);
 }
 

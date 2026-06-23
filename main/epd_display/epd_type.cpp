@@ -5,6 +5,7 @@
 #include "epd_type_1360_480_1085.h"
 #include "epd_type_1360_480_1085_3color.h"
 #include "epd_type_1600_1200_133.h"
+#include "epd_type_1600_1200_133_DKE.h"
 #include "epd_type_1600_1200_79.h"
 #include "epd_type_800_480.h"
 #include "epd_type_800_480_4s_75.h"
@@ -28,6 +29,7 @@ static const epd_type_config_t s_epd_types[] = {
     {EPD_TYPE_1360_480_1085_3COLOR, 1360, 480, 163200, "EPD_1360_480_1085_3COLOR_YSGD", BWR_3_Color},//  3 色 亚寺光电
     {EPD_TYPE_800_480_4S_75_2, 800, 480, 96000, "EPD_800_480_4S_75_DKE", BWRY_4_Color},//  4 色 DKE
     {EPD_TYPE_800_480_4S_75_3, 800, 480, 96000, "EPD_800_480_4S_75_mofang", BWRY_4_Color},//  4 色 mofang 墨方
+    {EPD_TYPE_1600_1200_133_DKE, 1600, 1200, 960000, "EPD_1600_1200_133_DKE", BWYRBG_6_Color},//  6 色 DKE
 };
 
 static uint8_t EpdType_GetHardwareVersion(uint8_t type)
@@ -166,6 +168,9 @@ void EpdType_DisplayCurrent(ePaperPort &epd, const uint8_t *display_buf, size_t 
     case EPD_TYPE_1600_1200_133:
         EpdType16001200_133_Display(epd, display_buf, display_size);
         break;
+    case EPD_TYPE_1600_1200_133_DKE:
+        EpdType16001200_133_DKE_Display(epd, display_buf, display_size);
+        break;
     case EPD_TYPE_1360_480_1085:
         EpdType1360480_1085_Display(epd, display_buf, display_size);
         break;
@@ -194,6 +199,7 @@ void EpdType_DispatchSleep(ePaperPort &epd)
     case EPD_TYPE_1024_600: epd.EpdType1024600_Sleep(); break;
     case EPD_TYPE_1600_1200_79: epd.EpdType16001200_79_Sleep(); break;
     case EPD_TYPE_1600_1200_133: epd.EpdType16001200_133_Sleep(); break;
+    case EPD_TYPE_1600_1200_133_DKE: epd.EpdType16001200_133_DKE_Sleep(); break;
     case EPD_TYPE_1360_480_1085: epd.EpdType1360480_1085_Sleep(); break;
     case EPD_TYPE_800_480_4S_75: epd.EpdType800480_4S_75_Sleep(); break;
     case EPD_TYPE_1360_480_1085_3COLOR: epd.EpdType1360480_1085_3Color_Sleep(); break;
@@ -210,6 +216,7 @@ void EpdType_DispatchInit(ePaperPort &epd)
     case EPD_TYPE_1024_600: epd.EpdType1024600_Init(); break;
     case EPD_TYPE_1600_1200_79: epd.EpdType16001200_79_Init(); break;
     case EPD_TYPE_1600_1200_133: epd.EpdType16001200_133_Init(); break;
+    case EPD_TYPE_1600_1200_133_DKE: epd.EpdType16001200_133_DKE_Init(); break;
     case EPD_TYPE_1360_480_1085: epd.EpdType1360480_1085_Init(); break;
     case EPD_TYPE_800_480_4S_75: epd.EpdType800480_4S_75_Init(); break;
     case EPD_TYPE_1360_480_1085_3COLOR: epd.EpdType1360480_1085_3Color_Init(); break;
@@ -226,6 +233,7 @@ void EpdType_DispatchDisplay(ePaperPort &epd)
     case EPD_TYPE_1024_600: epd.EpdType1024600_Display(); break;
     case EPD_TYPE_1600_1200_79: epd.EpdType16001200_79_Display(); break;
     case EPD_TYPE_1600_1200_133: epd.EpdType16001200_133_Display(); break;
+    case EPD_TYPE_1600_1200_133_DKE: epd.EpdType16001200_133_DKE_Display(); break;
     case EPD_TYPE_1360_480_1085: epd.EpdType1360480_1085_Display(); break;
     case EPD_TYPE_800_480_4S_75: epd.EpdType800480_4S_75_Display(); break;
     case EPD_TYPE_1360_480_1085_3COLOR: epd.EpdType1360480_1085_3Color_Display(); break;
@@ -273,6 +281,7 @@ void EpdType_DispatchNT61522DisplayNet(ePaperPort &epd, const uint8_t *image_dat
     case EPD_TYPE_1024_600: epd.EpdType1024600_NT61522_DisplayNet(image_data, image_size); break;
     case EPD_TYPE_1600_1200_79: epd.EpdType16001200_79_NT61522_DisplayNet(image_data, image_size); break;
     case EPD_TYPE_1600_1200_133: epd.EpdType16001200_133_NT61522_DisplayNet(image_data, image_size); break;
+    case EPD_TYPE_1600_1200_133_DKE: epd.EpdType16001200_133_DKE_NT61522_DisplayNet(image_data, image_size); break;
     case EPD_TYPE_1360_480_1085: epd.EpdType1360480_1085_NT61522_DisplayNet(image_data, image_size); break;
     case EPD_TYPE_800_480_4S_75: epd.EpdType800480_4S_75_NT61522_DisplayNet(image_data, image_size); break;
     case EPD_TYPE_1360_480_1085_3COLOR: epd.EpdType1360480_1085_3Color_DisplayNet(image_data, image_size); break;

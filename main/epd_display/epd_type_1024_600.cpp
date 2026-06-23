@@ -7,8 +7,8 @@ void ePaperPort::EPD_Check_Busy_600(uint16_t loop_counter)
     int16_t i;
     int64_t start_us = esp_timer_get_time();
 
-    if (loop_counter > 45) {
-        loop_counter = 45;
+    if (loop_counter > 31) {
+        loop_counter = 31;
     }
     i = 0;
     while (1) {
@@ -19,7 +19,7 @@ void ePaperPort::EPD_Check_Busy_600(uint16_t loop_counter)
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
         i++;
-        printf(".%d.", i);
+        printf("$%d.", i);
 
         if (i > loop_counter) {
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
@@ -112,17 +112,17 @@ void ePaperPort::EpdType1024600_NT61522_Display()
      //=====================================================
     EPD_WriteCMD_ToBoth(0x04);
     delay_ms(100);
-    EPD_Check_Busy_600(45);
+    EPD_Check_Busy_600(28);
 
     EPD_WriteCMD_ToBoth(0x12);
     EPD_WriteDATA_ToBoth(0x00);
     delay_ms(100);
-    EPD_Check_Busy_600(45);
+    EPD_Check_Busy_600(28);
 
     EPD_WriteCMD_ToBoth(R02_POF);
     EPD_WriteDATA_ToBoth(0x00);
     delay_ms(100);
-    EPD_Check_Busy_600(45);
+    EPD_Check_Busy_600(28);
 }
 
 void ePaperPort::EpdType1024600_NT61522_InitDisplay()
@@ -143,7 +143,8 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
      static const size_t expected_image_size = 1024U * 600U / 2U;
 
     /* 中文注释：       主屏区域总长度边界       0 ~ (1600*300 - 1) 属于 MASTER       >= 1600*300 属于 SLAVE    */
-    const uint32_t master_limit = 1024U * 150U;//=307200;
+    //const uint32_t master_limit = 1024U * 150U;//=307200;
+    const uint32_t master_limit = 3072U * 50U;//=307200;   DMA 模式默认只有约 4092 bytes
     /* 中文注释：       参数保护       按你的描述 imageSize 范围为 1 ~ 900    */
     if (imageData == nullptr || imageSize != expected_image_size) {
         ESP_LOGE(TAG, "EPD 1024x600 image size invalid input=%u expected=%u",
@@ -164,7 +165,8 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
     // memset(u8dat, epd_black,max_l_dat);
     while (remain > 0) {
         /* 中文注释：           单次最多处理 300        */
-        uint32_t chunk = (remain > 300) ? 300U : (uint32_t)remain;
+        //uint32_t chunk = (remain > 300) ? 300U : (uint32_t)remain;
+        uint32_t chunk = (remain > 3072) ? 3072U : (uint32_t)remain;
         /* 中文注释：           情况1：当前还在 MASTER 区域        */
 
         //LOG_Cyan("image_countger_ %ld, master_limit %ld",image_countger_, master_limit);

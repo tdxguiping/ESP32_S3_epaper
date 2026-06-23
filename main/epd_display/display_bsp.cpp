@@ -97,9 +97,12 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
 
     spi_device_interface_config_t devcfg = {};
     memset(&devcfg, 0, sizeof(devcfg));
-    devcfg.spics_io_num = -1;
-    //devcfg.clock_speed_hz = 40 * 1000 * 1000;
-    devcfg.clock_speed_hz = 5 * 1000 * 1000;
+    devcfg.spics_io_num = -1;    
+    // devcfg.clock_speed_hz = 40 * 1000 * 1000;   // 40MHz is ok
+    //devcfg.clock_speed_hz = 5 * 1000 * 1000;
+    //devcfg.clock_speed_hz = 10 * 1000 * 1000;
+    devcfg.clock_speed_hz = 20 * 1000 * 1000;
+
 
     devcfg.mode = 0;
     devcfg.queue_size = 7;
@@ -139,7 +142,7 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
     if (Hardware_Version_ == 2) {
         gpio_conf.intr_type = GPIO_INTR_DISABLE;
         gpio_conf.mode = GPIO_MODE_OUTPUT;
-        gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_) | (0x1ULL << EPD2_DC_PIN) | (0x1ULL << EPD2_CS_PIN) | (0x1ULL << EPD2_RST_PIN);
+        gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_) | (0x1ULL << EPD2_DC_PIN) | (0x1ULL << EPD2_CS_PIN) | (0x1ULL << EPD2_RST_PIN) | (0x1ULL << EPD_Power_PIN);
         gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
         gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
         ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
@@ -157,7 +160,7 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
     } else {
         gpio_conf.intr_type = GPIO_INTR_DISABLE;
         gpio_conf.mode = GPIO_MODE_OUTPUT;
-        gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_);
+        gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_) | (0x1ULL << EPD_Power_PIN);
         gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
         gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
         ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
@@ -170,6 +173,8 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
         ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
     }
     ESP_LOGI(TAG, "EPD hardware version=%u", (unsigned int)Hardware_Version_);
+
+    Set_Power(0);
     
     EPD_interface_init();
     Set_ResetIOLevel(1);
@@ -234,6 +239,44 @@ ePaperPort::~ePaperPort() {
     spi_bus_free(spi_host_);
 }
 
+void ePaperPort::Set_Power(uint8_t Power_switch) {
+    gpio_config_t io_conf = {};
+    // gpio_set_level((gpio_num_t)EPD_Power_PIN, Power_switch ? 1 : 0);
+    //ESP_LOGI(TAG, "EPD power=%u", (unsigned int)(Power_switch ? 1 : 0));
+
+    // io_conf.pin_bit_mask = (1ULL << EPD_CS_PIN_2) |
+    //                        (1ULL << EPD_DC_PIN) |
+    //                        (1ULL << EPD_CS_PIN) |
+    //                        (1ULL << EPD_RST_PIN);
+
+    io_conf.pin_bit_mask = (1ULL << EPD_RST_PIN);
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+
+    if(Power_switch == 1)
+    {
+        ESP_LOGI(TAG, "----------EPD power on");
+        gpio_set_level((gpio_num_t)EPD_Power_PIN, 1);
+        io_conf.mode = GPIO_MODE_OUTPUT;
+    }
+    else
+    {
+        ESP_LOGI(TAG, "---------EPD power off");
+        gpio_set_level((gpio_num_t)EPD_Power_PIN, 1);
+        io_conf.mode = GPIO_MODE_DISABLE;
+    }    
+
+    esp_err_t ret = gpio_config(&io_conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "gpio_config failed ret=%s", esp_err_to_name(ret));
+        return;
+    }
+
+}
+
+
+
 void ePaperPort::Set_ResetIOLevel(uint8_t level) {
     if(EPD_which_one_ == 1){
     gpio_set_level((gpio_num_t)rst_, level ? 1 : 0);
@@ -293,6 +336,7 @@ void ePaperPort::delay_ms(uint16_t ms) {
 
 void ePaperPort::EPD_Reset(void) {
 
+    Set_Power(1);
     // gpio_set_level((gpio_num_t)cs_,1);
     // gpio_set_level((gpio_num_t)cs_2_,1);
     // if (EPD_which_one_ == 2) {
@@ -305,7 +349,7 @@ void ePaperPort::EPD_Reset(void) {
     vTaskDelay(pdMS_TO_TICKS(100));  //100      
 }
 
-void ePaperPort::EPD_LoopBusy(void) {
+void ePaperPort::EPD_LoopBusy(uint16_t loop_counter) {
     int16_t count;
     count=0;
     while (1) {
@@ -316,7 +360,7 @@ void ePaperPort::EPD_LoopBusy(void) {
         vTaskDelay(pdMS_TO_TICKS(1000)); //  1000ms = 1s
         count++;
         printf(".%d.",count);
-        if (count > (45*1))
+        if (count > loop_counter)
         {
             ESP_LOGE(TAG, "EPD busy timeout");
             return;
@@ -324,11 +368,11 @@ void ePaperPort::EPD_LoopBusy(void) {
     }
 }
 
-void ePaperPort::EPD_Check_Busy(void) { // If BUSYN=0 then waiting
+void ePaperPort::EPD_Check_Busy(uint16_t loop_counter) { // If BUSYN=0 then waiting
     int16_t i;
 
     int64_t start_us = esp_timer_get_time();
-    i=0;
+    i=1;    
     while (1) {
         int level = Get_BusyIOLevel();
         if (level) {
@@ -339,9 +383,9 @@ void ePaperPort::EPD_Check_Busy(void) { // If BUSYN=0 then waiting
         i++;
         printf(".%d.",i);
 
-        if (i > (45*1)) {
+        if (i > loop_counter) {
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
-            ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
+            ESP_LOGE(TAG, "EPD-com busy timeout level=%d loops=%ld elapsed_ms=%d",
                      Get_BusyIOLevel(), (long)i, elapsed_ms);
             return;
         }
@@ -465,7 +509,7 @@ unsigned char Temptr[2] = {0};
 
 
 
-void ePaperPort::EPD_Sendbuffera(uint8_t *Data, int len) {
+void ePaperPort::EPD_Sendbuffera(uint8_t *Data, uint16_t len) {
     if (Data == nullptr || len <= 0) {
         return;
     }
@@ -718,7 +762,7 @@ void ePaperPort::EPD_Read_reg(uint8_t reg, uint8_t *pbuf, unsigned int len) {
 
 void ePaperPort::EPD_TurnOnDisplay(void) {
     EPD_SendCommand(0x04);
-    EPD_LoopBusy();
+    EPD_LoopBusy(23);
     EPD_SendCommand(0x06);
     EPD_SendData(0x6F);
     EPD_SendData(0x1F);
@@ -726,10 +770,10 @@ void ePaperPort::EPD_TurnOnDisplay(void) {
     EPD_SendData(0x49);
     EPD_SendCommand(0x12);
     EPD_SendData(0x00);
-    EPD_LoopBusy();
+    EPD_LoopBusy(23);
     EPD_SendCommand(0x02);
     EPD_SendData(0x00);
-    EPD_LoopBusy();
+    EPD_LoopBusy(23);
 }
 
 void ePaperPort::EPD_sleep(void) {
@@ -738,19 +782,23 @@ void ePaperPort::EPD_sleep(void) {
 }
 
 void ePaperPort::EPD_refresh(void) {
+    LOG_Purple("%s>%d",__func__,__LINE__);
+
     EPD_WriteCMD(0x04);
     delay_ms(30);
-    EPD_Check_Busy();
+    EPD_Check_Busy(24);
     EPD_WriteCMD(0x12);
     delay_ms(30);
-    EPD_Check_Busy();
+    EPD_Check_Busy(24);
 }
 
 void ePaperPort::EPD_refresh_17H(void) {
+    LOG_Purple("%s>%d",__func__,__LINE__);
+
     EPD_WriteCMD(0x17);
     EPD_WriteDATA(0xA5);
     delay_ms(30);
-    EPD_Check_Busy();
+    EPD_Check_Busy(24);
 }
 
 void ePaperPort::Set_Rotation(uint8_t rot) {
@@ -765,17 +813,18 @@ void ePaperPort::Set_Mirror(uint8_t mirr_x, uint8_t mirr_y) {
 void ePaperPort::EPD_Init() {   
     int64_t start_us = esp_timer_get_time();
     ESP_LOGI(TAG, "EPD step EPD_Init start");
-    if (isEPDInit) {
-        ESP_LOGI(TAG, "EPD step EPD_Init reused elapsed_ms=%lld",
-                 (long long)((esp_timer_get_time() - start_us) / 1000));
-        // return;  // force re-init for each EPD_Init call, to ensure the display is always in a known state.
-    }
-    isEPDInit = true;    
+
+    // if (isEPDInit) {
+    //     ESP_LOGI(TAG, "EPD step EPD_Init reused elapsed_ms=%lld",
+    //              (long long)((esp_timer_get_time() - start_us) / 1000));
+    //     // return;  // force re-init for each EPD_Init call, to ensure the display is always in a known state.
+    // }
+    //isEPDInit = true;    
 
     EpdType_DispatchInit(*this);
 
-    ESP_LOGI(TAG, "EPD step EPD_Init done elapsed_ms=%lld",
-             (long long)((esp_timer_get_time() - start_us) / 1000));
+    ESP_LOGI(TAG, "EPD step EPD_Init done elapsed_ms=%lld ,target=%d",
+             (long long)((esp_timer_get_time() - start_us) / 1000),EPD_which_one_);
 }
 
 void ePaperPort::EPD_DispClear(uint8_t color) {
@@ -1051,10 +1100,10 @@ esp_err_t ePaperPort::spiReceiveData(uint8_t *dataBuffer, size_t dataLength)
         remain -= chunk;
     }
 
-    // ESP_LOGI(TAG, "spiReceiveData: end len=%u, data[0]=0x%02X, data[1]=0x%02X",
-    //          (unsigned int)dataLength,
-    //          dataLength > 0 ? dataBuffer[0] : 0,
-    //          dataLength > 1 ? dataBuffer[1] : 0);
+    ESP_LOGI(TAG, "spiReceiveData: end len=%u, data[0]=0x%02X, data[1]=0x%02X",
+        dataLength > 0 ? dataBuffer[0] : 0,
+        (unsigned int)dataLength,
+             dataLength > 1 ? dataBuffer[1] : 0);
 
     return ESP_OK;
 }
@@ -1126,19 +1175,21 @@ void ePaperPort::setPinCs(EP_Target_t target, uint8_t setLevel) {
 
 // 0B 07  01/02/03 
 void ePaperPort::NT61522_ReadRevision() {
+    //LOG_Purple("%s>%d",__func__,__LINE__);
+
     memset(nt61522_chip_id_, 0, sizeof(nt61522_chip_id_));
     setPinCs(TARGET_MASTER, 0);
     spiTransmitCommand(0x70);
     spiReceiveData(nt61522_chip_id_, sizeof(nt61522_chip_id_));
     setPinCs(TARGET_MASTER, 1);
-    EPD_Check_Busy();
+    EPD_Check_Busy(1);
 
     memset(nt61522_chip_id_, 0, sizeof(nt61522_chip_id_));
     setPinCs(TARGET_SLAVE, 0);
     spiTransmitCommand(0x70);
     spiReceiveData(nt61522_chip_id_, sizeof(nt61522_chip_id_));
     setPinCs(TARGET_SLAVE, 1);
-    EPD_Check_Busy();
+    EPD_Check_Busy(1);
 }
 
 void ePaperPort::NT61522_Init() {
@@ -1162,8 +1213,8 @@ void ePaperPort::NT61522_Display() {
     xEventGroupSetBits(sleep_group, (EventBits_t)(1U << 0));//会导至 SLeep  
 #endif
     EPD_sleep();  // 加上这个后， 要重新 init  ,否则不会刷图
-    ESP_LOGI(TAG, "EPD step NT61522_Display done elapsed_ms=%lld",
-             (long long)((esp_timer_get_time() - start_us) / 1000));
+    ESP_LOGI(TAG, "EPD step NT61522_Display done elapsed_ms=%lld target=%d",
+             (long long)((esp_timer_get_time() - start_us) / 1000),EPD_which_one_);
 }
 
 void ePaperPort::NT61522_Init_display()
@@ -1174,8 +1225,8 @@ void ePaperPort::NT61522_Init_display()
 
      EpdType_DispatchNT61522InitDisplay(*this);
 
-     ESP_LOGI(TAG, "EPD step NT61522_Init_display done elapsed_ms=%lld",
-             (long long)((esp_timer_get_time() - start_us) / 1000));
+     ESP_LOGI(TAG, "EPD step NT61522_Init_display done elapsed_ms=%lld  target=%d",
+             (long long)((esp_timer_get_time() - start_us) / 1000),EPD_which_one_);
 }
 /* 中文注释：
    只保留一个 256 字节缓存
@@ -1203,7 +1254,7 @@ void ePaperPort::NT61522_Display_net(const uint8_t *imageData, size_t imageSize)
 
     EpdType_DispatchNT61522DisplayNet(*this, imageData, imageSize);
 
-    ESP_LOGI(TAG, "EPD step NT61522_Display_net done size=%u elapsed_ms=%lld",
+    ESP_LOGI(TAG, "EPD step NT61522_Display_net done size=%u elapsed_ms=%lld, target=%d",
              (unsigned int)imageSize,
-             (long long)((esp_timer_get_time() - start_us) / 1000));
+             (long long)((esp_timer_get_time() - start_us) / 1000),EPD_which_one_);
 }

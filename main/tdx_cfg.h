@@ -33,6 +33,12 @@ extern "C" {
 // Keep large buffer fallback limit here so HTTP and EPD avoid exhausting internal RAM.
 #define USER_INTERNAL_RAM_FALLBACK_MAX_SIZE (128 * 1024)
 
+// Enable Auto Light-sleep and WiFi modem-sleep after STA gets IP.
+// Set to 0 to keep CPU at 240 MHz and WiFi PS disabled without changing sdkconfig.
+#ifndef TDX_AUTO_LIGHT_SLEEP_ENABLE
+#define TDX_AUTO_LIGHT_SLEEP_ENABLE 0
+#endif
+
 /* -------------------------------------------------------------------------- */
 /* 02. Common JSON Result Codes                                                */
 /* -------------------------------------------------------------------------- */
@@ -502,7 +508,20 @@ extern "C" {
 #endif
 
 /* -------------------------------------------------------------------------- */
-/* 18. LED Status / CH583 LED Backend                                          */
+/* 18. GPIO Test Output                                                        */
+/* -------------------------------------------------------------------------- */
+
+// Enable local ESP32-C5 GPIO test output. GPIO11 toggles at 50% duty; GPIO12 is fixed output.
+#define USER_GPIO_TEST_OUTPUT_ENABLE 1
+#define USER_GPIO_TEST_PIN_11 GPIO_NUM_11
+#define USER_GPIO_TEST_PIN_12 GPIO_NUM_12
+#define USER_GPIO_TEST_PIN_12_LEVEL 0
+#define USER_GPIO_TEST_PERIOD_MS 500
+#define USER_GPIO_TEST_TASK_STACK_SIZE (2 * 1024)
+#define USER_GPIO_TEST_TASK_PRIORITY 1
+
+/* -------------------------------------------------------------------------- */
+/* 19. LED Status / CH583 LED Backend                                          */
 /* -------------------------------------------------------------------------- */
 
 // Keep LED status enable here so bring-up can disable indicators without changing business code.
@@ -531,7 +550,7 @@ extern "C" {
 #define USER_LED_STATUS_TASK_PRIORITY 3
 
 /* -------------------------------------------------------------------------- */
-/* 19. Global Runtime Variables / Shared APIs                                  */
+/* 20. Global Runtime Variables / Shared APIs                                  */
 /* -------------------------------------------------------------------------- */
 
 extern uint16_t sleep_time;

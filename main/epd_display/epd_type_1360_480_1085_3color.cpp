@@ -22,8 +22,8 @@ void ePaperPort::EPD_Check_Busy_1085_3c(uint16_t loop_counter)
     int16_t i;
     int64_t start_us = esp_timer_get_time();
 
-    if (loop_counter > 45) {
-        loop_counter = 45;
+    if (loop_counter > 31) {
+        loop_counter = 31;
     }
     i = 0;
     while (1) {
@@ -34,7 +34,7 @@ void ePaperPort::EPD_Check_Busy_1085_3c(uint16_t loop_counter)
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
         i++;
-        printf(".%d.", i);
+        printf("#%d.", i);
 
         if (i > loop_counter) {
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
