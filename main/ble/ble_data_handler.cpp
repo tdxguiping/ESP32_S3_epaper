@@ -161,13 +161,11 @@ void send_base_info_to_mobile(void)
         const esp_app_desc_t *app = esp_app_get_description();
         const esp_partition_t *running = esp_ota_get_running_partition();
 
-        esp_netif_ip_info_t ip;
-        esp_netif_t *esp_netif;
-        // we can use esp_netif_next_unsafe since we one time initialize the network and we don't de-init
-        esp_netif = esp_netif_next_unsafe(NULL);
-        if(esp_netif != NULL) {
-            esp_netif_get_ip_info(esp_netif, &ip);
-            esp_netif = esp_netif_next_unsafe(esp_netif);
+        esp_netif_ip_info_t ip = {};
+        esp_netif_t *esp_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (esp_netif != NULL &&
+            esp_netif_get_ip_info(esp_netif, &ip) == ESP_OK &&
+            ip.ip.addr != 0) {
             net_connect_OK =1;
             working_time = 0;
             snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip.ip));
@@ -322,12 +320,16 @@ static TaskHandle_t s_wifi_connect_task = NULL;
 static json_sender_t s_wifi_connect_reply_sender = NULL;
 static bool s_wifi_connect_notify_result = false;
 static const char *s_wifi_connect_result_func = NULL;
+static bool s_wifi_connect_force_reconnect = false;
 static uint8_t check_net_state(void);
 
 static void wifi_connect_task(void *arg)
 {
     (void)arg;
-    uint8_t init_result = ::User_Network_mode_app_init("/data");
+    bool force_reconnect = s_wifi_connect_force_reconnect;
+    uint8_t init_result = force_reconnect
+                              ? ::User_Network_mode_app_init_force("/data")
+                              : ::User_Network_mode_app_init("/data");
     int connect_result = ServerNetworkSta_GetLastConnectResult();
     ESP_LOGI(TAG, "BLE/CH583 WiFi connect task finished init=%u connect_result=%d",
              (unsigned int)init_result,
@@ -340,6 +342,7 @@ static void wifi_connect_task(void *arg)
     s_wifi_connect_reply_sender = NULL;
     s_wifi_connect_notify_result = false;
     s_wifi_connect_result_func = NULL;
+    s_wifi_connect_force_reconnect = false;
     if (notify_result && reply_sender != NULL) {
         s_active_send_json = reply_sender;
         if (connect_result == TDX_JSON_RESULT_OK && check_net_state() != 0) {
@@ -369,7 +372,8 @@ static void wifi_connect_task(void *arg)
 
 static esp_err_t submit_wifi_connect(json_sender_t reply_sender,
                                      bool notify_result,
-                                     const char *result_func)
+                                     const char *result_func,
+                                     bool force_reconnect)
 {
     if (s_wifi_connect_task != NULL) {
         return ESP_ERR_INVALID_STATE;
@@ -377,6 +381,7 @@ static esp_err_t submit_wifi_connect(json_sender_t reply_sender,
     s_wifi_connect_reply_sender = reply_sender;
     s_wifi_connect_notify_result = notify_result;
     s_wifi_connect_result_func = result_func;
+    s_wifi_connect_force_reconnect = force_reconnect;
     if (xTaskCreate(wifi_connect_task,
                     "ble_wifi_connect",
                     6144,
@@ -386,6 +391,7 @@ static esp_err_t submit_wifi_connect(json_sender_t reply_sender,
         s_wifi_connect_reply_sender = NULL;
         s_wifi_connect_notify_result = false;
         s_wifi_connect_result_func = NULL;
+        s_wifi_connect_force_reconnect = false;
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
@@ -393,16 +399,12 @@ static esp_err_t submit_wifi_connect(json_sender_t reply_sender,
 
 static uint8_t check_net_state(void)
 {
-    esp_netif_ip_info_t ip = {};
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-
-    if (netif == NULL) {
-        netif = esp_netif_next_unsafe(NULL);
-    }
-    if (netif != NULL && esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0) {
-        return 1;
-    }
-    return 0;
+    server_network_sta_status_t status = {};
+    return ServerNetworkSta_GetStatus(&status) == ESP_OK &&
+                   status.state == SERVER_NETWORK_STA_STATE_GOT_IP &&
+                   status.ip[0] != '\0'
+               ? 1
+               : 0;
 }
 
 int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
@@ -453,6 +455,13 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
 
     if(wifi_config_had_doing == 0)
     {
+            if (s_wifi_connect_task != NULL) {
+                send_simple_result_with_sender(s_active_send_json,
+                                               "wifi_result",
+                                               TDX_JSON_RESULT_BUSY,
+                                               "WiFi connect already in progress");
+                return 0;
+            }
             auto& wifi_ap = WifiConfigurationAp::GetInstance();
             std::string wifi_ssid = out->ssid;
             std::string wifi_password = out->key;
@@ -481,7 +490,7 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
                 return 0;
             }
 
-            esp_err_t submit_ret = submit_wifi_connect(s_active_send_json, true, "wifi_result");
+            esp_err_t submit_ret = submit_wifi_connect(s_active_send_json, true, "wifi_result", true);
             if (submit_ret != ESP_OK) {
                 send_simple_result_with_sender(s_active_send_json,
                                                "wifi_result",
@@ -544,9 +553,19 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
         return -1;
     }
     cJSON_Delete(root);
-    if(check_net_state()==1)
+    server_network_sta_status_t status = {};
+    (void)ServerNetworkSta_GetStatus(&status);
+    if (status.state == SERVER_NETWORK_STA_STATE_GOT_IP && status.ip[0] != '\0')
     {
        send_base_info_to_mobile();      
+    }
+    else if (status.state == SERVER_NETWORK_STA_STATE_CONNECTING)
+    {
+        char reply_json[192];
+        snprintf(reply_json, sizeof(reply_json),
+                 "{\"func\":\"wifi_wakeup_result\",\"result\":%d,\"message\":\"WiFi connection already in progress\",\"stage\":\"connecting\"}",
+                 TDX_JSON_RESULT_OK);
+        (void)s_active_send_json(reply_json);
     }
     else if (!ble_has_saved_wifi_info()) {
         ESP_LOGW(TAG, "No saved WiFi credential");
@@ -564,12 +583,13 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
             #endif
     }
     else {
-        esp_err_t submit_ret = submit_wifi_connect(s_active_send_json, true, "wifi_wakeup_result");
+        esp_err_t submit_ret = submit_wifi_connect(s_active_send_json, true, "wifi_wakeup_result", false);
         if (submit_ret == ESP_OK) {
-            send_simple_result_with_sender(s_active_send_json,
-                                           "wifi_wakeup_result",
-                                           TDX_JSON_RESULT_OK,
-                                           "WiFi wakeup submitted");
+            char reply_json[192];
+            snprintf(reply_json, sizeof(reply_json),
+                     "{\"func\":\"wifi_wakeup_result\",\"result\":%d,\"message\":\"WiFi wakeup submitted\",\"stage\":\"connecting\"}",
+                     TDX_JSON_RESULT_OK);
+            (void)s_active_send_json(reply_json);
         } else if (submit_ret == ESP_ERR_INVALID_STATE) {
             send_simple_result_with_sender(s_active_send_json,
                                            "wifi_wakeup_result",
@@ -754,7 +774,6 @@ static void handle_wifi_json_text_with_sender(const char *json_text,
     }
     if (strcmp(func, "wifi") == 0 && parse_wifi_config_json(json_text, &wifi_cfg) == 0) {
         printf("ssid=%s\n", wifi_cfg.ssid);
-        printf("password=%s\n", wifi_cfg.key);
         return;
     }
     if (reply_to_ch583) {

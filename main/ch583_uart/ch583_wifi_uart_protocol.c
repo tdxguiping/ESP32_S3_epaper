@@ -126,12 +126,12 @@ static void ch583_wifi_load_ble_mac_from_nvs(void)
     }
 }
 
-static void ch583_wifi_tx_mutex_init(void)
+int ch583_wifi_uart_protocol_init(void)
 {
     if (s_tx_mutex == NULL) {
-        // Create the TX mutex lazily so every WiFi-to-CH583 protocol frame uses the same serialized path.
         s_tx_mutex = xSemaphoreCreateMutex();
     }
+    return s_tx_mutex != NULL ? 0 : -1;
 }
 
 static int ch583_wifi_write_frame_text(const char *frame_text, size_t frame_len)
@@ -139,12 +139,6 @@ static int ch583_wifi_write_frame_text(const char *frame_text, size_t frame_len)
     int ret = -1;
 
     if (frame_text == NULL || frame_len == 0) {
-        return -1;
-    }
-
-    ch583_wifi_tx_mutex_init();
-    if (s_tx_mutex != NULL && xSemaphoreTake(s_tx_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
-        printf("CH583_PROTO tx mutex timeout\r\n");
         return -1;
     }
 
@@ -157,14 +151,10 @@ static int ch583_wifi_write_frame_text(const char *frame_text, size_t frame_len)
     uart_wait_tx_done(CH583_WIFI_UART_PORT, pdMS_TO_TICKS(100));
     // vTaskDelay(pdMS_TO_TICKS(CH583_WIFI_UART_TX_SILENCE_MS));
 
-    if (s_tx_mutex != NULL) {
-        xSemaphoreGive(s_tx_mutex);
-    }
-
-    return ret;
+    return ret == (int)frame_len ? 0 : -1;
 }
 
-static int ch583_wifi_retry_last_frame(void)
+static int ch583_wifi_retry_last_frame_locked(void)
 {
     if (!s_last_tx_retry_valid || s_last_tx_frame_len == 0) {
         return -1;
@@ -185,41 +175,41 @@ static int ch583_wifi_retry_last_frame(void)
     return ch583_wifi_write_frame_text(s_last_tx_frame, s_last_tx_frame_len);
 }
 
-static int ch583_wifi_send_frame(const char *cmd, const char *arg,uint8_t need_printf)
+static int ch583_wifi_send_frame(const char *cmd, const char *arg, uint8_t need_printf)
 {
     char body[CH583_WIFI_MAX_FRAME_BODY_LEN + 1];
     char frame_text[CH583_WIFI_MAX_FRAME_BODY_LEN + 24];
-    uint16_t crc = 0;
     size_t arg_len = (arg != NULL) ? strlen(arg) : 0;
-    int body_len = 0;
-    int frame_len = 0;
     int ret = -1;
-    uint16_t current_seq = s_tx_seq;
 
     if (cmd == NULL || arg_len > CH583_WIFI_MAX_ARG_LEN) {
-        printf("CH583_PROTO tx reject cmd=%s arg_len=%u\r\n", cmd ? cmd : "NULL", (unsigned int)arg_len);
+        printf("CH583_PROTO tx reject cmd=%s arg_len=%u\r\n",
+               cmd ? cmd : "NULL", (unsigned int)arg_len);
+        return -1;
+    }
+    if (s_tx_mutex == NULL || xSemaphoreTake(s_tx_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+        printf("CH583_PROTO tx mutex unavailable/timeout\r\n");
         return -1;
     }
 
-    body_len = snprintf(body,
-                        sizeof(body),
-                        "V1|SEQ=%u|CMD=%s|LEN=%u|PART=1|TOTAL=1|ARG=%s",
-                        (unsigned int)current_seq,
-                        cmd,
-                        (unsigned int)arg_len,
-                        arg ? arg : "");
+    uint16_t current_seq = s_tx_seq;
+    int body_len = snprintf(body,
+                            sizeof(body),
+                            "V1|SEQ=%u|CMD=%s|LEN=%u|PART=1|TOTAL=1|ARG=%s",
+                            (unsigned int)current_seq,
+                            cmd,
+                            (unsigned int)arg_len,
+                            arg ? arg : "");
     if (body_len <= 0 || body_len >= (int)sizeof(body)) {
         printf("CH583_PROTO tx body overflow cmd=%s\r\n", cmd);
-        return -1;
+        goto done;
     }
 
-    crc = ch583_wifi_crc16_ccitt_false(body, (size_t)body_len);
-    //printf("CH583_PROTO tx seq=%u cmd=%s arg=%s crc=%04X\r\n", (unsigned int)s_tx_seq, cmd, arg ? arg : "", crc);
-
-    frame_len = snprintf(frame_text, sizeof(frame_text), "@#%s|CRC=%04X^&\n\r", body, crc);
+    uint16_t crc = ch583_wifi_crc16_ccitt_false(body, (size_t)body_len);
+    int frame_len = snprintf(frame_text, sizeof(frame_text), "@#%s|CRC=%04X^&\n\r", body, crc);
     if (frame_len <= 0 || frame_len >= (int)sizeof(frame_text)) {
         printf("CH583_PROTO tx frame overflow cmd=%s\r\n", cmd);
-        return -1;
+        goto done;
     }
 
     memcpy(s_last_tx_frame, frame_text, (size_t)frame_len + 1);
@@ -228,16 +218,16 @@ static int ch583_wifi_send_frame(const char *cmd, const char *arg,uint8_t need_p
     s_last_tx_bad_crc_retry_count = 0;
     s_last_tx_retry_valid = true;
 
-    
-    // WiFi -> CH583: seq=9 cmd=PONG arg=24  //  除了心跳， 其他都打印
-    if(need_printf == 1)
-    {
-        CH583_WIFI_DIRECTION_PRINTF("WiFi -> CH583: seq=%u cmd=%s arg=%s\r\n", (unsigned int)current_seq, cmd, arg ? arg : "");
-    }    
-    
+    if (need_printf == 1) {
+        CH583_WIFI_DIRECTION_PRINTF("WiFi -> CH583: seq=%u cmd=%s arg=%s\r\n",
+                                    (unsigned int)current_seq, cmd, arg ? arg : "");
+    }
 
     ret = ch583_wifi_write_frame_text(frame_text, (size_t)frame_len);
     s_tx_seq++;
+
+done:
+    xSemaphoreGive(s_tx_mutex);
     return ret;
 }
 
@@ -363,17 +353,24 @@ static void ch583_wifi_handle_reply_status(const ch583_wifi_frame_t *frame)
         return;
     }
 
+    if (s_tx_mutex == NULL || xSemaphoreTake(s_tx_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+        return;
+    }
+
     if (!s_last_tx_retry_valid || reply_seq != s_last_tx_seq) {
+        xSemaphoreGive(s_tx_mutex);
         return;
     }
 
     if (strcmp(frame->cmd, "ERR") == 0 && strstr(frame->arg, "BAD_CRC") != NULL) {
-        ch583_wifi_retry_last_frame();
+        (void)ch583_wifi_retry_last_frame_locked();
+        xSemaphoreGive(s_tx_mutex);
         return;
     }
 
     // Any non-BAD_CRC reply for the cached frame means this send attempt is finished.
     s_last_tx_retry_valid = false;
+    xSemaphoreGive(s_tx_mutex);
 }
 
 static bool ch583_wifi_parse_frame(char *body, ch583_wifi_frame_t *frame, uint16_t *crc_received, const char **error_reason)

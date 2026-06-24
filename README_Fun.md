@@ -5371,6 +5371,8 @@ ch583_wifi_uart_send_power_off()
 ch583_wifi_uart_send_gpio()
 ```
 
+所有 WiFi -> CH583 命令共用同一个 TX mutex。锁覆盖 SEQ 分配、整帧组包、BAD_CRC 重发缓存、UART 写入和 SEQ 自增，禁止 LED、WIFI_DATA、GPIO、POWER_OFF、ACK 等命令并发取得相同 SEQ。协议发送接口成功时统一返回 `0`，失败返回负值。
+
 ---
 
 存 / 取信息（含条件限制）：
@@ -6573,7 +6575,8 @@ Result 定义建议：
 
 | 返回 | result | 说明 |
 |---|---|---|
-| `wifi_wakeup_result` | `0` | 已联网返回基础信息，或已提交 / 正在执行唤醒连接任务 |
+| `wifi_wakeup_result` | `0` | 已提交或正在执行唤醒连接；此时 `stage=connecting`，不代表已经联网 |
+| `wifi_info_result` | `0` | 已取得 STA IP；`stage` 为当前 IP，表示网络已经可用 |
 | `wifi_wakeup_result` | `1205` | 未找到已保存 WiFi |
 | `wifi_wakeup_result` | `1307` | WiFi 连接超时 |
 | `wifi_wakeup_result` | `1308` | WiFi 认证失败 |
@@ -6592,8 +6595,12 @@ sequenceDiagram
     ESP->>ESP: parse_wifi_wakeup_json()
     alt already has IP
         ESP-->>CH583: WIFI_DATA {result:0,stage:IP}
+    else connection in progress
+        ESP-->>CH583: WIFI_DATA {func:wifi_wakeup_result,result:0,stage:connecting}
     else no saved WiFi
         ESP-->>CH583: WIFI_DATA {result:1205,message:wakeup No-WiFi}
+    else idle or failed
+        ESP->>ESP: submit one WiFi connection task
     end
     CH583-->>APP: BLE notify
     APP->>HTTP: GET /ping
@@ -6653,6 +6660,17 @@ http://<host>/dataUP
 - ble_has_saved_wifi_info() 检查 namespace="wifi" 的 ssid 或 namespace="nvs.net80211" 的 sta.ssid 是否存在。
 - check_net_state() 读取当前 STA IP 状态。
 - send_base_info_to_mobile() 读取 IP、app 描述、running partition 信息。
+```
+
+连接规则：
+
+```text
+- GOT_IP：wifi_wakeup 不 disconnect、不 stop、不重新连接，直接返回 wifi_info_result 和当前 STA IP。
+- CONNECTING：wifi_wakeup 不创建第二条连接流程，返回 wifi_wakeup_result result=0 stage=connecting。
+- IDLE / FAILED：存在保存配置时才提交连接任务。
+- func=wifi 属于显式配网：保存配置后使用 force reconnect 策略；若已有 BLE/CH583 配网任务，先返回 BUSY，避免出现“配置已保存但未应用”。
+- WiFi 核心层使用全局 operation mutex，统一串行化开机、USB、BLE 和 CH583 连接入口。
+- 正常切换配置优先 disconnect / set_config / connect；仅在驱动仍处于 ESP_ERR_WIFI_STATE 时回退 stop / start。
 ```
 
 

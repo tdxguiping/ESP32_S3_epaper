@@ -308,9 +308,12 @@ void app_main(void)
     // esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
     // esp_log_level_set("mdns_mem", ESP_LOG_WARN);
 
+   // esp_log_level_set("server_sta_wifi_time", ESP_LOG_DEBUG);
+
 
     print_base_info();
     ESP_ERROR_CHECK(GpioTest_Init());
+    ESP_ERROR_CHECK(ServerNetworkSta_Init());
     // Start CH583 UART before LED status because C5 status LEDs are controlled by CH583 GPIO.
     // 先启动 CH583 串口再初始化 LED 状态，因为 C5 状态灯由 CH583 GPIO 控制。
     ESP_ERROR_CHECK(Ch583UartApp_Init());

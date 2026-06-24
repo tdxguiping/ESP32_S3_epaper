@@ -178,6 +178,7 @@ extern "C" {
 // Keep STA wait bits here so future connection policy changes do not require editing the STA implementation.
 #define SERVER_NETWORK_STA_CONNECTED_BIT BIT0
 #define SERVER_NETWORK_STA_FAIL_BIT BIT1
+#define SERVER_NETWORK_STA_DISCONNECTED_BIT BIT2
 
 // Keep the STA connection timeout configurable from one header for board bring-up tuning.
 #define SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS 30000

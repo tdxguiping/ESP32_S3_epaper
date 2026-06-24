@@ -145,6 +145,10 @@ static void __attribute__((unused)) User_UartReceiveTask(void *arg)
 
 esp_err_t Ch583UartApp_Init(void)
 {
+    if (ch583_wifi_uart_protocol_init() != 0) {
+        ESP_LOGE(TAG, "CH583 protocol mutex init failed");
+        return ESP_ERR_NO_MEM;
+    }
 #if USER_CH583_UART_ENABLE
     if (s_ch583_uart_started) {
         ESP_LOGW(TAG, "CH583 UART already started");

@@ -538,7 +538,7 @@ wifi_info_result
 
 | result | 名称建议 | 含义 |
 |---:|---|---|
-| `0` | `TDX_JSON_RESULT_OK` | 唤醒成功或返回 WiFi 基础信息成功 |
+| `0` | `TDX_JSON_RESULT_OK` | `wifi_wakeup_result` 表示连接已提交/正在连接（`stage=connecting`）；`wifi_info_result` 表示已取得 IP（`stage=<IP>`） |
 | `1205` | `TDX_JSON_RESULT_BLE_NO_SAVED_WIFI` | 没有可用 WiFi 配置 |
 | `1307` | `TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT` | WiFi 连接超时 |
 | `1308` | `TDX_JSON_RESULT_WIFI_AUTH_FAILED` | WiFi 认证失败 |

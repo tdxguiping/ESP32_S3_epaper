@@ -36,7 +36,7 @@ static void handle_wifi_connect(void)
 
     s_wifi_connect_running = true;
     ESP_LOGI(TAG, "wifi connect task start base_path=%s", USB_CONSOLE_BASE_PATH);
-    uint8_t ret = User_Network_mode_app_init(USB_CONSOLE_BASE_PATH);
+    uint8_t ret = User_Network_mode_app_init_force(USB_CONSOLE_BASE_PATH);
     ESP_LOGI(TAG, "wifi connect task done ret=0x%02x", ret);
     s_wifi_connect_running = false;
 }
