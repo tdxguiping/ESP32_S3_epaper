@@ -43,6 +43,8 @@
 #define CH583_WIFI_UART_BAD_CRC_RETRY_MAX 10
 #endif
 
+#define CH583_WIFI_TX_PENDING_MAX 8
+
 #if CH583_WIFI_UART_DEBUG_PRINT_ENABLE
 #define CH583_WIFI_DEBUG_PRINTF(...) printf(__VA_ARGS__)
 #else
@@ -68,11 +70,17 @@ typedef struct {
 static uint16_t s_tx_seq;
 static SemaphoreHandle_t s_tx_mutex;
 
-static char s_last_tx_frame[CH583_WIFI_MAX_FRAME_BODY_LEN + 24];
-static size_t s_last_tx_frame_len;
-static uint16_t s_last_tx_seq;
-static uint8_t s_last_tx_bad_crc_retry_count;
-static bool s_last_tx_retry_valid;
+typedef struct {
+    bool valid;
+    uint16_t seq;
+    uint8_t bad_crc_retry_count;
+    uint32_t order;
+    size_t frame_len;
+    char frame[CH583_WIFI_MAX_FRAME_BODY_LEN + 24];
+} ch583_wifi_pending_tx_t;
+
+static ch583_wifi_pending_tx_t s_pending_tx[CH583_WIFI_TX_PENDING_MAX];
+static uint32_t s_pending_tx_order;
 
 // Cache partial UART bytes so split frames can still be parsed.
 static bool s_in_frame;
@@ -155,25 +163,59 @@ static int ch583_wifi_write_frame_text(const char *frame_text, size_t frame_len)
     return ret == (int)frame_len ? 0 : -1;
 }
 
-static int ch583_wifi_retry_last_frame_locked(void)
+static bool ch583_wifi_cmd_expects_reply(const char *cmd)
 {
-    if (!s_last_tx_retry_valid || s_last_tx_frame_len == 0) {
+    return cmd != NULL &&
+           strcmp(cmd, "ACK") != 0 &&
+           strcmp(cmd, "ERR") != 0 &&
+           strcmp(cmd, "PONG") != 0 &&
+           strcmp(cmd, "POWER_OFF") != 0;
+}
+
+static ch583_wifi_pending_tx_t *ch583_wifi_find_pending_tx_locked(uint16_t seq)
+{
+    for (size_t i = 0; i < CH583_WIFI_TX_PENDING_MAX; i++) {
+        if (s_pending_tx[i].valid && s_pending_tx[i].seq == seq) {
+            return &s_pending_tx[i];
+        }
+    }
+    return NULL;
+}
+
+static ch583_wifi_pending_tx_t *ch583_wifi_alloc_pending_tx_locked(void)
+{
+    ch583_wifi_pending_tx_t *oldest = &s_pending_tx[0];
+    for (size_t i = 0; i < CH583_WIFI_TX_PENDING_MAX; i++) {
+        if (!s_pending_tx[i].valid) {
+            return &s_pending_tx[i];
+        }
+        if (s_pending_tx[i].order < oldest->order) {
+            oldest = &s_pending_tx[i];
+        }
+    }
+    printf("CH583_PROTO pending evict seq=%u\r\n", (unsigned int)oldest->seq);
+    return oldest;
+}
+
+static int ch583_wifi_retry_pending_frame_locked(ch583_wifi_pending_tx_t *pending)
+{
+    if (pending == NULL || !pending->valid || pending->frame_len == 0) {
         return -1;
     }
 
-    if (s_last_tx_bad_crc_retry_count >= CH583_WIFI_UART_BAD_CRC_RETRY_MAX) {
+    if (pending->bad_crc_retry_count >= CH583_WIFI_UART_BAD_CRC_RETRY_MAX) {
         printf("CH583_PROTO retry stop seq=%u count=%u\r\n",
-               (unsigned int)s_last_tx_seq,
-               (unsigned int)s_last_tx_bad_crc_retry_count);
-        s_last_tx_retry_valid = false;
+               (unsigned int)pending->seq,
+               (unsigned int)pending->bad_crc_retry_count);
+        pending->valid = false;
         return -1;
     }
 
-    s_last_tx_bad_crc_retry_count++;
+    pending->bad_crc_retry_count++;
     printf("CH583_PROTO retry BAD_CRC seq=%u count=%u\r\n",
-           (unsigned int)s_last_tx_seq,
-           (unsigned int)s_last_tx_bad_crc_retry_count);
-    return ch583_wifi_write_frame_text(s_last_tx_frame, s_last_tx_frame_len);
+           (unsigned int)pending->seq,
+           (unsigned int)pending->bad_crc_retry_count);
+    return ch583_wifi_write_frame_text(pending->frame, pending->frame_len);
 }
 
 static int ch583_wifi_send_frame(const char *cmd, const char *arg, uint8_t need_printf)
@@ -213,11 +255,17 @@ static int ch583_wifi_send_frame(const char *cmd, const char *arg, uint8_t need_
         goto done;
     }
 
-    memcpy(s_last_tx_frame, frame_text, (size_t)frame_len + 1);
-    s_last_tx_frame_len = (size_t)frame_len;
-    s_last_tx_seq = current_seq;
-    s_last_tx_bad_crc_retry_count = 0;
-    s_last_tx_retry_valid = true;
+    ch583_wifi_pending_tx_t *pending = NULL;
+    if (ch583_wifi_cmd_expects_reply(cmd)) {
+        pending = ch583_wifi_alloc_pending_tx_locked();
+        *pending = (ch583_wifi_pending_tx_t){
+            .valid = true,
+            .seq = current_seq,
+            .order = ++s_pending_tx_order,
+            .frame_len = (size_t)frame_len,
+        };
+        memcpy(pending->frame, frame_text, (size_t)frame_len + 1);
+    }
 
     if (need_printf == 1) {
         CH583_WIFI_DIRECTION_PRINTF("WiFi -> CH583: seq=%u cmd=%s arg=%s\r\n",
@@ -225,6 +273,9 @@ static int ch583_wifi_send_frame(const char *cmd, const char *arg, uint8_t need_
     }
 
     ret = ch583_wifi_write_frame_text(frame_text, (size_t)frame_len);
+    if (ret != 0 && pending != NULL) {
+        pending->valid = false;
+    }
     s_tx_seq++;
 
 done:
@@ -358,19 +409,20 @@ static void ch583_wifi_handle_reply_status(const ch583_wifi_frame_t *frame)
         return;
     }
 
-    if (!s_last_tx_retry_valid || reply_seq != s_last_tx_seq) {
+    ch583_wifi_pending_tx_t *pending = ch583_wifi_find_pending_tx_locked(reply_seq);
+    if (pending == NULL) {
         xSemaphoreGive(s_tx_mutex);
         return;
     }
 
     if (strcmp(frame->cmd, "ERR") == 0 && strstr(frame->arg, "BAD_CRC") != NULL) {
-        (void)ch583_wifi_retry_last_frame_locked();
+        (void)ch583_wifi_retry_pending_frame_locked(pending);
         xSemaphoreGive(s_tx_mutex);
         return;
     }
 
-    // Any non-BAD_CRC reply for the cached frame means this send attempt is finished.
-    s_last_tx_retry_valid = false;
+    // Any non-BAD_CRC reply completes the matching pending frame only.
+    pending->valid = false;
     xSemaphoreGive(s_tx_mutex);
 }
 

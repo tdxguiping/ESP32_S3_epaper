@@ -354,8 +354,8 @@ static wifi_credential_t server_network_sta_read_saved_wifi(void)
         nvs_close(handle);
         if (ssid_ret == ESP_OK && pass_ret == ESP_OK && credential.ssid[0] != '\0') {
             credential.is_valid = true;
-            ESP_LOGI(TAG, "WiFi credential loaded ssid=%s password_len=%u",
-                     credential.ssid, (unsigned int)strlen(credential.password));
+            ESP_LOGI(TAG, "WiFi credential loaded ssid=%s password=%s",
+                     credential.ssid, credential.password);
             return credential;
         }
     } else {
@@ -383,8 +383,8 @@ static wifi_credential_t server_network_sta_read_saved_wifi(void)
 
     nvs_close(handle);
     credential.is_valid = credential.ssid[0] != '\0';
-    ESP_LOGI(TAG, "WiFi credential loaded ssid=%s password_len=%u",
-             credential.ssid, (unsigned int)strlen(credential.password));
+    ESP_LOGI(TAG, "WiFi credential loaded ssid=%s password=%s",
+             credential.ssid, credential.password);
     return credential;
 }
 
@@ -767,7 +767,7 @@ static esp_err_t ServerPort_init(const char *base_path)
     return ret;
 }
 
-static bool __attribute__((unused)) server_network_sta_skip_same_wifi(const wifi_credential_t *credential)
+static bool server_network_sta_skip_same_wifi(const wifi_credential_t *credential)
 {
     wifi_config_t current_config = {0};
     wifi_ap_record_t ap_info = {0};

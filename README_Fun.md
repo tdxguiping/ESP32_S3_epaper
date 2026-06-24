@@ -157,6 +157,7 @@ network cast 的执行顺序是 show=true 时先等待 EPD 显示任务完成，
 开发阶段允许：
 - server_network_sta.c 的 WiFi 配网/恢复流程打印 ssid/password 明文。
 - usb_console_wifi.c 的 USB WiFi 配网流程打印 ssid/password 明文。
+- ble_data_handler.cpp 开发阶段打印完整 WiFi JSON，因此其中的 key 也会明文输出。
 - process_small_json_request() 打印完整 JSON body。
 - OTA 打印 meta、版本、大小、分区和进度信息。
 - PM/light sleep 打印锁和阻塞源，便于功耗调试。
@@ -188,8 +189,10 @@ sequenceDiagram
     APP->>SYS: nvs_flash_init()
     APP->>SYS: esp_netif_init()
     APP->>SYS: esp_event_loop_create_default()
+    APP->>SYS: TdxCastCore_Init()
     APP->>USB: UsbConsoleEcho_Init()
     APP->>WORK: ServerNetworkStaWifiWorkTime_Init()
+    APP->>STA: ServerNetworkSta_Init()
     APP->>CH583: Ch583UartApp_Init()
     APP->>LED: UserLedStatus_Init()
     APP->>EPD: ServerNetworkStaEpdDisplay_Init()
@@ -221,6 +224,7 @@ main/main.c
    ├─ nvs_flash_init()
    ├─ esp_netif_init()
    ├─ esp_event_loop_create_default()
+   ├─ TdxCastCore_Init()
    ├─ UsbConsoleEcho_Init()
    │  └─ usb_console_echo/usb_console_echo.c
    │     └─ UsbConsoleEcho_Task()
@@ -230,6 +234,8 @@ main/main.c
    ├─ app_nvs_read_str(TDX_SLIDESHOW_RANDOM_NVS_KEY)
    ├─ app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY)
    ├─ print_base_info()
+   ├─ ServerNetworkSta_Init()
+   │  └─ 创建全局 WiFi operation mutex
    ├─ Ch583UartApp_Init()
    │  └─ ch583_uart/ch583_uart_app.c
    │     ├─ User_UartEventTask()
@@ -5371,7 +5377,7 @@ ch583_wifi_uart_send_power_off()
 ch583_wifi_uart_send_gpio()
 ```
 
-所有 WiFi -> CH583 命令共用同一个 TX mutex。锁覆盖 SEQ 分配、整帧组包、BAD_CRC 重发缓存、UART 写入和 SEQ 自增，禁止 LED、WIFI_DATA、GPIO、POWER_OFF、ACK 等命令并发取得相同 SEQ。协议发送接口成功时统一返回 `0`，失败返回负值。
+所有 WiFi -> CH583 命令共用同一个 TX mutex。锁覆盖 SEQ 分配、整帧组包、按 SEQ 管理的待确认队列、UART 写入和 SEQ 自增，禁止 LED、WIFI_DATA、GPIO、POWER_OFF、ACK 等命令并发取得相同 SEQ。最多保留 8 条需要回复的待确认帧；ACK/ERR 只完成匹配 SEQ，BAD_CRC 只重发匹配帧。ACK、ERR、PONG 不进入待确认队列；POWER_OFF 依靠工作时长任务持续发送，也不受待确认队列限制。协议发送接口成功时统一返回 `0`，失败返回负值。
 
 ---
 

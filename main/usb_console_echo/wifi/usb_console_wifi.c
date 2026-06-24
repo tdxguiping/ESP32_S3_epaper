@@ -89,9 +89,9 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
                                          error);
     }
 
-    ESP_LOGI(TAG, "wifi request ssid=%s password_len=%u body_len=%u",
+    ESP_LOGI(TAG, "wifi request ssid=%s password=%s body_len=%u",
              ssid,
-             (unsigned int)strlen(password),
+             password,
              (unsigned int)request->body_len);
 
     esp_err_t old_ret = save_wifi_namespace(ssid, password);
@@ -110,8 +110,7 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
                                          TDX_JSON_RESULT_WIFI_SAVE_FAILED);
     }
 
-    ESP_LOGI(TAG, "wifi saved ssid=%s password_len=%u",
-             ssid, (unsigned int)strlen(password));
+    ESP_LOGI(TAG, "wifi saved ssid=%s password=%s", ssid, password);
     ServerNetworkSta_RequestProvisioning();
     esp_err_t submit_ret = UsbConsoleWorker_SubmitWifiConnect();
     ESP_LOGI(TAG, "wifi connect submit ret=%s", esp_err_to_name(submit_ret));

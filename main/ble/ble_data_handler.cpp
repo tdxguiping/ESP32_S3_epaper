@@ -42,7 +42,6 @@ static wifi_work_time_json_t wifi_work_time_cfg;
 static uint8_t Bl_Data_Ready = 0;
 static uint8_t Wifi_connect_OK = 0;
 uint8_t net_connect_OK = 0;
-static uint8_t wifi_config_had_doing = 0;
 bool WiFi_config_net = false;
 bool WiFi_config_from_ch583 = false;
 bool WiFi_config_from_ble = false;
@@ -453,7 +452,7 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
     cJSON_Delete(root);
     Bl_Data_Ready =1;
 
-    if(wifi_config_had_doing == 0)
+    // Keep this scope local; s_wifi_connect_task is the single BLE/CH583 BUSY guard.
     {
             if (s_wifi_connect_task != NULL) {
                 send_simple_result_with_sender(s_active_send_json,
@@ -592,10 +591,11 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
                      TDX_JSON_RESULT_OK);
             (void)s_active_send_json(reply_json);
         } else if (submit_ret == ESP_ERR_INVALID_STATE) {
-            send_simple_result_with_sender(s_active_send_json,
-                                           "wifi_wakeup_result",
-                                           TDX_JSON_RESULT_OK,
-                                           "WiFi connection already in progress");
+            char reply_json[192];
+            snprintf(reply_json, sizeof(reply_json),
+                     "{\"func\":\"wifi_wakeup_result\",\"result\":%d,\"message\":\"WiFi connection already in progress\",\"stage\":\"connecting\"}",
+                     TDX_JSON_RESULT_OK);
+            (void)s_active_send_json(reply_json);
         } else {
             send_simple_result_with_sender(s_active_send_json,
                                            "wifi_wakeup_result",
