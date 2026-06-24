@@ -271,12 +271,15 @@ void app_main(void)
 
     // /* Hide most WiFi driver INFO logs. */
     // /* 关闭大部分 WiFi 驱动 INFO 日志。 */
-    // esp_log_level_set("wifi", ESP_LOG_ERROR);
-    // esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
-    // esp_log_level_set("pp", ESP_LOG_WARN);
-    // esp_log_level_set("phy_init", ESP_LOG_WARN);
-    // esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
-    // esp_log_level_set("mdns_mem", ESP_LOG_WARN);
+     esp_log_level_set("wifi", ESP_LOG_ERROR);
+     esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
+     esp_log_level_set("pp", ESP_LOG_WARN);
+     esp_log_level_set("phy_init", ESP_LOG_WARN);
+     esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
+     esp_log_level_set("mdns_mem", ESP_LOG_WARN);
+
+     esp_log_level_set("ch583_uart", ESP_LOG_WARN);
+
 
 
 
@@ -299,14 +302,15 @@ void app_main(void)
              random_value, (unsigned int)g_slideshow_random_enable);
 
 
-    // esp_log_level_set("wifi_init", ESP_LOG_WARN);
-    // esp_log_level_set("net80211", ESP_LOG_WARN);
-    // esp_log_level_set("wifi", ESP_LOG_ERROR);
-    // esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
-    // esp_log_level_set("pp", ESP_LOG_WARN);
-    // esp_log_level_set("phy_init", ESP_LOG_WARN);
-    // esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
-    // esp_log_level_set("mdns_mem", ESP_LOG_WARN);
+     esp_log_level_set("wifi_init", ESP_LOG_WARN);
+     esp_log_level_set("net80211", ESP_LOG_WARN);
+     esp_log_level_set("wifi", ESP_LOG_ERROR);
+     esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
+     esp_log_level_set("pp", ESP_LOG_WARN);
+     esp_log_level_set("phy_init", ESP_LOG_WARN);
+     esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
+     esp_log_level_set("mdns_mem", ESP_LOG_WARN);
+     esp_log_level_set("ch583_uart", ESP_LOG_WARN);
 
    // esp_log_level_set("server_sta_wifi_time", ESP_LOG_DEBUG);
 

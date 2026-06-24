@@ -453,35 +453,16 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
     (void)arg;
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        if (s_wifi_scan_before_connect) {
-            ESP_LOGI(TAG, "WiFi start wait scan");
-            return;
-        }
-#if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
-        ESP_LOGI(TAG, "WiFi start connect");
-#endif
-        server_network_sta_set_ps(WIFI_PS_NONE, "connecting");
-        esp_err_t ret = esp_wifi_connect();
-        ESP_LOGI(TAG, "esp_wifi_connect source=sta_start ret=%s", esp_err_to_name(ret));
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(ret));
-            s_wifi_connect_active = false;
-            s_wifi_state = SERVER_NETWORK_STA_STATE_FAILED;
-            if (s_sta_event_group != NULL) {
-                xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_FAIL_BIT);
-            }
-        }
+        ESP_LOGI(TAG, "WiFi event STA_START");
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t *)event_data;
         s_wifi_sta_connected_seen = true;
-#if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
         if (event != NULL) {
             ESP_LOGI(TAG, "WiFi connected ch=%u auth=%d bssid=%02x:%02x:%02x:%02x:%02x:%02x",
                      event->channel, event->authmode,
                      event->bssid[0], event->bssid[1], event->bssid[2],
                      event->bssid[3], event->bssid[4], event->bssid[5]);
         }
-#endif
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "WiFi IP=" IPSTR, IP2STR(&event->ip_info.ip));
@@ -682,23 +663,21 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
         return 0;
     }
 
-    bool connect_manually = (ret == ESP_ERR_INVALID_STATE);
 #if SERVER_NETWORK_STA_SCAN_BEFORE_CONNECT
     server_network_sta_scan_target_ssid(credential.ssid);
     s_wifi_scan_before_connect = false;
-    connect_manually = true;
 #endif
 
-    if (connect_manually) {
-        ret = esp_wifi_connect();
-        ESP_LOGI(TAG, "esp_wifi_connect source=manual ret=%s", esp_err_to_name(ret));
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(ret));
-            s_wifi_connect_active = false;
-            s_wifi_state = SERVER_NETWORK_STA_STATE_FAILED;
-            server_network_sta_stop_retry_timer();
-            return 0;
-        }
+    // esp_wifi_start() may return ESP_OK for an already-running driver without posting STA_START again.
+    // Always submit the actual STA connection explicitly instead of depending on that event.
+    ret = esp_wifi_connect();
+    ESP_LOGI(TAG, "esp_wifi_connect ret=%s", esp_err_to_name(ret));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_connect failed immediately: %s", esp_err_to_name(ret));
+        s_wifi_connect_active = false;
+        s_wifi_state = SERVER_NETWORK_STA_STATE_FAILED;
+        server_network_sta_stop_retry_timer();
+        return 0;
     }
 
     EventBits_t bits = xEventGroupWaitBits(s_sta_event_group,
@@ -727,7 +706,26 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
                                          ? TDX_JSON_RESULT_WIFI_GOT_IP_FAILED
                                          : TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT;
     }
-    ESP_LOGE(TAG, "Server Network STA failed bits=0x%08lx", (unsigned long)bits);
+    wifi_mode_t current_mode = WIFI_MODE_NULL;
+    wifi_ap_record_t current_ap = {0};
+    esp_netif_ip_info_t current_ip = {0};
+    esp_netif_t *current_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_err_t mode_ret = esp_wifi_get_mode(&current_mode);
+    esp_err_t ap_ret = esp_wifi_sta_get_ap_info(&current_ap);
+    bool has_ip = current_netif != NULL &&
+                  esp_netif_get_ip_info(current_netif, &current_ip) == ESP_OK &&
+                  current_ip.ip.addr != 0;
+    esp_ip4_addr_t logged_ip = has_ip ? current_ip.ip : (esp_ip4_addr_t){0};
+    ESP_LOGE(TAG,
+             "WiFi wait failed bits=0x%08lx state=%d connected_seen=%d retry=%d mode=%d(%s) ap=%s ip=" IPSTR,
+             (unsigned long)bits,
+             (int)s_wifi_state,
+             s_wifi_sta_connected_seen ? 1 : 0,
+             s_wifi_connect_retry_num,
+             (int)current_mode,
+             esp_err_to_name(mode_ret),
+             esp_err_to_name(ap_ret),
+             IP2STR(&logged_ip));
     return 0;
 }
 

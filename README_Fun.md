@@ -6674,6 +6674,7 @@ http://<host>/dataUP
 - 正常切换配置优先 disconnect / set_config / connect；仅在驱动仍处于 ESP_ERR_WIFI_STATE 时回退 stop / start。
 - 主动 disconnect 最多等待 100 ms 事件；连接使用 WIFI_FAST_SCAN、单轮 10 秒窗口和最多 2 次事件重试。
 - esp_wifi_connect() 只有 ESP_OK 才表示已启动；ESP_ERR_WIFI_CONN 等所有其它返回立即失败，不再空等完整超时。
+- 不再依赖 WIFI_EVENT_STA_START 发起连接：esp_wifi_start() 返回后统一显式调用一次 esp_wifi_connect()；STA_START 仅记录事件，避免驱动已运行时不重复发事件而造成 bits=0 空等。
 ```
 
 
