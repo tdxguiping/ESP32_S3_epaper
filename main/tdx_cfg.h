@@ -43,6 +43,9 @@ extern "C" {
 /* 02. Common JSON Result Codes                                                */
 /* -------------------------------------------------------------------------- */
 
+#define TDX_STRINGIFY_INNER(value) #value
+#define TDX_STRINGIFY(value) TDX_STRINGIFY_INNER(value)
+
 // Keep JSON API result codes centralized so every response follows README_Result_Code.md.
 // 将 JSON API 返回码集中在这里，保证所有响应都按 README_Result_Code.md 统一维护。
 #define TDX_JSON_RESULT_OK 0

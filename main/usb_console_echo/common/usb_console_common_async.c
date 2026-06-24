@@ -66,7 +66,7 @@ static void async_request_job(void *ctx)
         UsbConsoleHttp_SetJson(response,
                                500,
                                "Internal Server Error",
-                               "{\"func\":\"usb_async_result\",\"result\":1106,\"message\":\"handler failed\"}");
+                               "{\"func\":\"usb_async_result\",\"result\":" TDX_STRINGIFY(TDX_JSON_RESULT_USB_ASYNC_FAILED) ",\"message\":\"handler failed\"}");
     }
 
     esp_err_t send_ret = ESP_OK;

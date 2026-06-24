@@ -302,6 +302,49 @@ esp_err_t ServerNetworkStaEpdDisplay_Queue(const uint8_t *display_buf, size_t di
     return ServerNetworkStaEpdDisplay_QueueToScreen(display_buf, display_size, 1);
 }
 
+esp_err_t test_epd_display_and_wait(void)
+{
+    const epd_type_config_t *config = EpdType_GetCurrentConfig();
+    if (config == NULL || config->display_size == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint8_t *test_buf = (uint8_t *)heap_caps_malloc(config->display_size,
+                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (test_buf == NULL && config->display_size <= USER_INTERNAL_RAM_FALLBACK_MAX_SIZE) {
+        test_buf = (uint8_t *)heap_caps_malloc(config->display_size, MALLOC_CAP_8BIT);
+    }
+    if (test_buf == NULL) {
+        ESP_LOGE(TAG, "EPD sync test alloc failed name=%s size=%u",
+                 config->name,
+                 (unsigned int)config->display_size);
+        return ESP_ERR_NO_MEM;
+    }
+
+    static const uint8_t test_values[] = {0x00, 0xFF, 0x55, 0xAA};
+    const size_t block_size = config->display_size / sizeof(test_values);
+    for (size_t i = 0; i < sizeof(test_values); ++i) {
+        size_t offset = i * block_size;
+        size_t length = (i + 1U == sizeof(test_values))
+                            ? config->display_size - offset
+                            : block_size;
+        memset(test_buf + offset, test_values[i], length);
+    }
+
+    uint8_t target_count = (config->type == EPD_TYPE_800_480_4S_75_2 ||
+                            config->type == EPD_TYPE_800_480_4S_75_3)
+                               ? 2U
+                               : 1U;
+    esp_err_t ret = ESP_OK;
+    for (uint8_t target = 1U; target <= target_count && ret == ESP_OK; ++target) {
+        ret = ServerNetworkStaEpdDisplay_QueueToScreenAndWait(test_buf,
+                                                              config->display_size,
+                                                              target);
+    }
+    heap_caps_free(test_buf);
+    return ret;
+}
+
 
 
 

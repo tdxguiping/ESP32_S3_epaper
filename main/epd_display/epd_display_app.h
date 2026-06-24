@@ -16,6 +16,7 @@ esp_err_t ServerNetworkStaEpdDisplay_Init(void);
 esp_err_t ServerNetworkStaEpdDisplay_Queue(const uint8_t *display_buf, size_t display_size);
 esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, size_t display_size, uint8_t epd_which_one);
 esp_err_t ServerNetworkStaEpdDisplay_QueueToScreenAndWait(const uint8_t *display_buf, size_t display_size, uint8_t epd_which_one);
+esp_err_t test_epd_display_and_wait(void);
 void test_epd_display_EPD_1600_1200_79(void);
 void test_epd_display_EPD_1600_1200_133(void);
 void test_epd_display_EPD_1600_1200_133_DKE(void);

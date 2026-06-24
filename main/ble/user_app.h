@@ -14,7 +14,7 @@ extern bool is_connected;
 
 void Init_Bl(void);
 void get_ble_mac_no_colon(char *out, size_t out_size);
-void SendData_indicate(uint8_t *data, uint16_t len);
+esp_err_t SendData_indicate(uint8_t *data, uint16_t len);
 void Tdx01_indicate(uint8_t *data, uint16_t len);
 
 #ifdef __cplusplus

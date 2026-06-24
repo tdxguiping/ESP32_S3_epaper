@@ -248,7 +248,8 @@ esp_err_t UsbConsoleCommon_ListSavedImages(char *json, size_t json_size, size_t 
     const char *scan_dir = example_storage_supports_directories() ? jpg_dir : USB_CONSOLE_BASE_PATH;
     DIR *dir = opendir(scan_dir);
     if (dir == NULL) {
-        return append_text(json, json_size, used, "\"images\":[]");
+        ESP_LOGE(TAG, "image directory open failed path=%s", scan_dir);
+        return ESP_ERR_NOT_FOUND;
     }
 
     ESP_RETURN_ON_ERROR(append_text(json, json_size, used, "\"images\":["), TAG, "append image list failed");

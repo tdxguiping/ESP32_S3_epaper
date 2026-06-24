@@ -41,7 +41,9 @@ esp_err_t UsbConsoleSnapshot_Process(const usb_console_http_request_t *request,
                                          200,
                                          "OK",
                                          "{\"func\":\"get_snapshot_result\",\"result\":%d,\"message\":\"snapshot build failed\"}",
-                                         TDX_JSON_RESULT_SNAPSHOT_BUILD_FAILED);
+                                         ret == ESP_ERR_NOT_FOUND
+                                             ? TDX_JSON_RESULT_IMAGES_READ_FAILED
+                                             : TDX_JSON_RESULT_SNAPSHOT_BUILD_FAILED);
     }
     return ESP_OK;
 }

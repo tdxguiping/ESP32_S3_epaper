@@ -309,7 +309,8 @@ static esp_err_t append_images_json(char *json, size_t json_size, size_t *used, 
 
     DIR *dir = opendir(scan_dir);
     if (dir == NULL) {
-        return append_text(json, json_size, used, "\"images\":[]");
+        ESP_LOGE(TAG, "snapshot image directory open failed path=%s", scan_dir);
+        return ESP_ERR_NOT_FOUND;
     }
 
     ESP_RETURN_ON_ERROR(append_text(json, json_size, used, "\"images\":["), TAG, "append images begin failed");
@@ -394,9 +395,12 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
 
     char *json = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
     if (json == NULL) {
+        char error_json[144];
+        snprintf(error_json, sizeof(error_json),
+                 "{\"func\":\"get_snapshot_result\",\"result\":%d,\"message\":\"snapshot allocation failed\"}",
+                 TDX_JSON_RESULT_NO_MEMORY);
         httpd_resp_set_type(req, "application/json");
-        return httpd_resp_sendstr(req,
-                                  "{\"func\":\"get_snapshot_result\",\"result\":1404,\"message\":\"snapshot build failed\"}");
+        return httpd_resp_sendstr(req, error_json);
     }
 
     snapshot_slideshow_t slideshow;
@@ -405,18 +409,25 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
     size_t used = 0;
     esp_err_t ret = append_text(json, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX, &used,
                                 "{\"func\":\"get_snapshot_result\",\"result\":0,");
+    bool image_read_failed = false;
     if (ret == ESP_OK) {
         ret = append_images_json(json, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX, &used, base_path);
+        image_read_failed = (ret == ESP_ERR_NOT_FOUND);
     }
     if (ret == ESP_OK) {
         ret = append_slideshow_json(json, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX, &used, &slideshow);
     }
 
     if (ret != ESP_OK) {
+        char error_json[144];
+        snprintf(error_json, sizeof(error_json),
+                 "{\"func\":\"get_snapshot_result\",\"result\":%d,\"message\":\"%s\"}",
+                 image_read_failed ? TDX_JSON_RESULT_IMAGES_READ_FAILED
+                                   : TDX_JSON_RESULT_SNAPSHOT_BUILD_FAILED,
+                 image_read_failed ? "image list read failed" : "snapshot build failed");
         free(json);
         httpd_resp_set_type(req, "application/json");
-        return httpd_resp_sendstr(req,
-                                  "{\"func\":\"get_snapshot_result\",\"result\":1404,\"message\":\"snapshot build failed\"}");
+        return httpd_resp_sendstr(req, error_json);
     }
 
     ESP_LOGI(TAG, "get_snapshot images/slideshow response len=%u sw=%d files=%u",

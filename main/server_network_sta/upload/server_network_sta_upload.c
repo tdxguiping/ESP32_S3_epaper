@@ -31,7 +31,7 @@ typedef struct {
     bool show;
 } upload_meta_t;
 
-static esp_err_t send_upload_result(httpd_req_t *req, bool ok, const char *message,
+static esp_err_t send_upload_result(httpd_req_t *req, int core_result, bool ok, const char *message,
                                     const char *error, const upload_meta_t *meta)
 {
     char json[SERVER_NETWORK_STA_UPLOAD_RESULT_JSON_MAX];
@@ -40,7 +40,7 @@ static esp_err_t send_upload_result(httpd_req_t *req, bool ok, const char *messa
     char message_text[128] = {0};
     char error_text[128] = {0};
     const char *file_name = (meta != NULL && meta->file_name[0]) ? meta->file_name : "";
-    int result = TDX_JSON_RESULT_OK;
+    int result = core_result;
 
     strlcpy(message_text, message != NULL ? message : "", sizeof(message_text));
     if (ok && (error == NULL || error[0] == '\0')) {
@@ -48,7 +48,7 @@ static esp_err_t send_upload_result(httpd_req_t *req, bool ok, const char *messa
     } else {
         strlcpy(error_text, error != NULL ? error : "", sizeof(error_text));
     }
-    if (!ok) {
+    if (!ok && result == TDX_JSON_RESULT_OK) {
         if (strcmp(error_text, "missing_boundary") == 0) {
             result = TDX_JSON_RESULT_UPLOAD_BOUNDARY_MISSING;
         } else if (strcmp(error_text, "missing_func") == 0) {
@@ -94,8 +94,10 @@ static esp_err_t send_upload_result(httpd_req_t *req, bool ok, const char *messa
     if (json_len < 0 || (size_t)json_len >= sizeof(json)) {
         ESP_LOGE(TAG, "upload response json too long file=%s", file_name);
         httpd_resp_set_type(req, "application/json");
-        return httpd_resp_sendstr(req,
-                                  "{\"func\":\"upload_result\",\"result\":1010,\"message\":\"upload response too long\",\"error\":\"response_too_long\"}");
+        snprintf(json, sizeof(json),
+                 "{\"func\":\"upload_result\",\"result\":%d,\"message\":\"upload response too long\",\"error\":\"response_too_long\"}",
+                 TDX_JSON_RESULT_JSON_TOO_LONG);
+        return httpd_resp_sendstr(req, json);
     }
     ESP_LOGI(TAG, "upload response: %s", json);
     httpd_resp_set_type(req, "application/json");
@@ -145,9 +147,9 @@ esp_err_t ServerNetworkStaUpload_Process(httpd_req_t *req,
     }
 
     if (result.result == TDX_JSON_RESULT_OK) {
-        return send_upload_result(req, true, "upload success", "", &meta);
+        return send_upload_result(req, TDX_JSON_RESULT_OK, true, "upload success", "", &meta);
     }
-    return send_upload_result(req, false,
+    return send_upload_result(req, result.result, false,
                               result.message[0] ? result.message : "upload failed",
                               result.error[0] ? result.error : "upload_failed",
                               &meta);

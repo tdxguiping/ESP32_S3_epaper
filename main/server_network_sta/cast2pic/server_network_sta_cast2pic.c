@@ -176,6 +176,10 @@ static esp_err_t send_cast2pic_result(httpd_req_t *req, const char *result)
     } else {
         if (strcmp(result, "missing_func") == 0) {
             result_code = TDX_JSON_RESULT_UPLOAD_FUNC_MISSING;
+        } else if (strcmp(result, "missing_boundary") == 0) {
+            result_code = TDX_JSON_RESULT_UPLOAD_BOUNDARY_MISSING;
+        } else if (strcmp(result, "unsupported_screen") == 0) {
+            result_code = TDX_JSON_RESULT_CAST2PIC_SCREEN_UNSUPPORTED;
         } else if (strcmp(result, "invalid_screen") == 0) {
             result_code = TDX_JSON_RESULT_CAST2PIC_SCREEN_INVALID;
         } else if (strcmp(result, "display_request_failed") == 0 || strcmp(result, "display_queue_failed") == 0) {
@@ -215,7 +219,17 @@ static esp_err_t send_cast2pic_core_result(httpd_req_t *req, const tdx_cast_core
     if (result == NULL || result->result == TDX_JSON_RESULT_OK) {
         return send_cast2pic_result(req, "ok");
     }
-    return send_cast2pic_result(req, result->error[0] ? result->error : "invalid_upload");
+
+    char json[256];
+    const char *message = result->message[0] ? result->message : "cast2pic failed";
+    const char *error = result->error[0] ? result->error : "invalid_upload";
+    snprintf(json, sizeof(json),
+             "{\"func\":\"cast2pic_result\",\"result\":%d,\"message\":\"%s\",\"error\":\"%s\"}",
+             result->result,
+             message,
+             error);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, json);
 }
 
 static bool screen_is_valid(const char *screen)
@@ -409,6 +423,9 @@ static const char *validate_cast2pic_meta(const cast2pic_meta_t *meta)
     if (strcmp(meta->func, "cast2pic") != 0) {
         return "invalid_func";
     }
+    if (strcmp(meta->screen, "ab") == 0) {
+        return "unsupported_screen";
+    }
     if (!screen_is_valid(meta->screen)) {
         return "invalid_screen";
     }
@@ -459,6 +476,9 @@ esp_err_t ServerNetworkStaCast2Pic_Process(httpd_req_t *req,
     };
 
     if (!extract_boundary(content_type, boundary, sizeof(boundary))) {
+        if (body != NULL && strstr(body, "cast2pic") != NULL) {
+            return send_cast2pic_result(req, "missing_boundary");
+        }
         return ESP_ERR_NOT_SUPPORTED;
     }
 

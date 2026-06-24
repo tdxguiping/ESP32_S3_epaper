@@ -62,7 +62,7 @@ static void cast_worker_job(void *ctx)
         UsbConsoleHttp_SetJson(response,
                                200,
                                "OK",
-                               "{\"func\":\"cast_result\",\"result\":1106,\"message\":\"cast failed\",\"error\":\"worker_failed\"}");
+                               "{\"func\":\"cast_result\",\"result\":" TDX_STRINGIFY(TDX_JSON_RESULT_USB_ASYNC_FAILED) ",\"message\":\"cast failed\",\"error\":\"worker_failed\"}");
     }
 
     int64_t send_start_us = esp_timer_get_time();

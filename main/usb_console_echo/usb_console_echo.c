@@ -211,7 +211,7 @@ static void UsbConsoleEcho_Task(void *arg)
                          (unsigned int)request_used, len);
                 (void)send_simple_json(413,
                                        "Payload Too Large",
-                                       "{\"func\":\"usb_receive_result\",\"result\":1101,\"message\":\"request too large\"}");
+                                       "{\"func\":\"usb_receive_result\",\"result\":" TDX_STRINGIFY(TDX_JSON_RESULT_USB_REQUEST_TOO_LARGE) ",\"message\":\"request too large\"}");
                 request_used = 0;
                 continue;
             }
@@ -250,7 +250,7 @@ static void UsbConsoleEcho_Task(void *arg)
                 ESP_LOGW(TAG, "USB request timeout buffered=%u", (unsigned int)request_used);
                 (void)send_simple_json(408,
                                        "Request Timeout",
-                                       "{\"func\":\"usb_receive_result\",\"result\":1102,\"message\":\"request timeout\"}");
+                                       "{\"func\":\"usb_receive_result\",\"result\":" TDX_STRINGIFY(TDX_JSON_RESULT_USB_REQUEST_TIMEOUT) ",\"message\":\"request timeout\"}");
                 request_used = 0;
             }
         } else {
@@ -275,7 +275,7 @@ static void UsbConsoleEcho_Task(void *arg)
                          esp_err_to_name(ret), (unsigned int)request_used);
                 (void)send_simple_json(400,
                                        "Bad Request",
-                                       "{\"func\":\"usb_receive_result\",\"result\":1103,\"message\":\"bad request\"}");
+                                       "{\"func\":\"usb_receive_result\",\"result\":" TDX_STRINGIFY(TDX_JSON_RESULT_USB_BAD_REQUEST) ",\"message\":\"bad request\"}");
                 request_used = 0;
                 break;
             }

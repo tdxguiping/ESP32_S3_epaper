@@ -302,10 +302,10 @@ static esp_err_t send_notify_by_index(uint16_t idx, uint8_t *data, uint16_t len)
                                        spp_handle_table[idx], len, data, false);
 }
 
-extern "C" void SendData_indicate(uint8_t *data, uint16_t len)
+extern "C" esp_err_t SendData_indicate(uint8_t *data, uint16_t len)
 {
     ESP_LOGI(TDX_BLE_LOG_TAG, "SendData_indicate len=%u", (unsigned int)len);
-    (void)send_notify_by_index(TDX_IDX_14_VAL, data, len);
+    return send_notify_by_index(TDX_IDX_14_VAL, data, len);
 }
 
 extern "C" void Tdx01_indicate(uint8_t *data, uint16_t len)
@@ -496,10 +496,11 @@ extern "C" void get_ble_mac_no_colon(char *out, size_t out_size)
 
 
 
-extern "C" void SendData_indicate(uint8_t *data, uint16_t len)
+extern "C" esp_err_t SendData_indicate(uint8_t *data, uint16_t len)
 {
     (void)data;
     (void)len;
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 extern "C" void Tdx01_indicate(uint8_t *data, uint16_t len)

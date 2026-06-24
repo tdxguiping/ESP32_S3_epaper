@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
@@ -33,6 +34,12 @@ static int validate_file_names(const char *body)
         if (*pos++ != '"' || !UsbConsoleCommon_FileNameIsSafe(name) ||
             len >= TDX_SLIDESHOW_FILE_NAME_MAX_LEN || ++count > TDX_SLIDESHOW_MAX_FILES) {
             return TDX_JSON_RESULT_FILE_NAME_INVALID;
+        }
+        char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
+        struct stat st = {0};
+        snprintf(path, sizeof(path), "%s/bin_img/%s.bin", USB_CONSOLE_BASE_PATH, name);
+        if (stat(path, &st) != 0 || st.st_size <= 0) {
+            return TDX_JSON_RESULT_SLIDESHOW_FILE_NOT_FOUND;
         }
     }
     return TDX_JSON_RESULT_JSON_INVALID;

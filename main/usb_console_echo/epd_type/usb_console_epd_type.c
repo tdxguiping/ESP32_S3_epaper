@@ -354,10 +354,21 @@ esp_err_t UsbConsoleEpdType_HandleTest(const usb_console_http_request_t *request
     ESP_LOGI(TAG, "test current EPD type=%u name=%s",
              (unsigned int)config->type,
              config->name);
-    test_epd_display();
-    ESP_LOGI(TAG, "epd_test display function returned type=%u name=%s",
+    ret = test_epd_display_and_wait();
+    ESP_LOGI(TAG, "epd_test display completed type=%u name=%s ret=%s",
              (unsigned int)config->type,
-             config->name);
+             config->name,
+             esp_err_to_name(ret));
+    if (ret != ESP_OK) {
+        snprintf(json,
+                 sizeof(json),
+                 "{\"func\":\"test_epd_display_result\",\"result\":%d,\"message\":\"test display failed\",\"type\":%u,\"name\":\"%s\"}",
+                 TDX_JSON_RESULT_EPD_TEST_DISPLAY_FAILED,
+                 (unsigned int)config->type,
+                 config->name);
+        UsbConsoleHttp_SetJson(response, 500, "Internal Server Error", json);
+        return ESP_OK;
+    }
 
     snprintf(json,
              sizeof(json),
