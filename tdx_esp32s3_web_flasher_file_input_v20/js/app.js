@@ -237,6 +237,18 @@ function getReconnectIntervalMs() { return parseInt(reconnectIntervalMsEl.value 
 function getAutoConsoleAttempts() { return parseInt(autoConsoleAttemptsEl?.value || "8", 10); }
 function getAutoConsoleDelayMs() { return parseInt(autoConsoleDelayMsEl?.value || "1000", 10); }
 function setReconnectStatus(text) { reconnectStatusEl.textContent = `自动重连状态：${text}`; }
+function disableAutoReconnectFeature() {
+  reconnectToken++;
+  reconnecting = false;
+  if (autoReconnectEl) {
+    autoReconnectEl.checked = false;
+    autoReconnectEl.disabled = true;
+  }
+  try {
+    localStorage.setItem("tdx_flasher_autoReconnect", "false");
+  } catch (_) {}
+  setReconnectStatus("已关闭");
+}
 function setAutoConsoleDetectStatus(text) {
   if (autoConsoleDetectStatusEl) autoConsoleDetectStatusEl.textContent = `后台串口检测：${text}`;
 }
@@ -369,7 +381,7 @@ function isAutoConsoleTargetPort(port) {
 const SETTINGS_IDS = [
   "baudrate", "consoleBaudrate", "serialDataBits", "serialStopBits", "serialParity",
   "serialFlowControl", "serialBufferSize", "reconnectIntervalMs", "autoConsoleAttempts",
-  "autoConsoleDelayMs", "autoReconnect", "appendCRLF", "flashMode", "flashFreq",
+  "autoConsoleDelayMs", "appendCRLF", "flashMode", "flashFreq",
   "flashSize", "eraseAll", "strictS3"
 ];
 
@@ -601,6 +613,24 @@ async function cleanupAllSerialConnections() {
   setCurrentMode("none");
 }
 
+async function closePortIfAlreadyOpen(port, reason = "before-open") {
+  if (!port) return;
+  try {
+    if (port.readable || port.writable) {
+      logLine(`检测到串口已处于打开状态，先关闭再继续：${reason}`);
+      try { await port.close(); }
+      catch (closeErr) {
+        const msg = closeErr?.message || String(closeErr);
+        throw new Error(`串口已经被打开，但无法由当前页面关闭：${msg}。请关闭其他 Web Flasher 页面、Chrome/Edge 串口连接、VS Code/idf.py monitor/串口助手后重试。`);
+      }
+      await delay(150);
+    }
+  } catch (err) {
+    const msg = err?.message || String(err);
+    if (msg.includes("无法由当前页面关闭")) throw err;
+  }
+}
+
 function getSelectedFirmwareSource(fileDef) {
   const file = getSelectedFile(fileDef);
   if (file) return { type: "manual", file, name: file.name, size: file.size };
@@ -704,7 +734,10 @@ async function loadEsptoolJs() {
 }
 
 async function finishConnectAfterPortSelected(selectedDevice, options = {}) {
+  autoConsoleScanPausedUntil = Date.now() + 30000;
+  stopAutoReconnect();
   await cleanupAllSerialConnections();
+  await closePortIfAlreadyOpen(selectedDevice, "connect-loader");
   await settleWithin(loadEsptoolJs(), 10000, "load esptool-js").then((result) => {
     if (!result.ok) {
       throw result.err || new Error(result.timeout ? "加载 esptool-js 超时" : "加载 esptool-js 失败");
@@ -749,8 +782,9 @@ window.connectDeviceFromUserClick = async function connectDeviceFromUserClick() 
 
     // This must be called immediately inside the user click event.
     // 必须在用户点击事件里立即调用，否则 Chrome/Edge 不会弹出串口选择窗口。
-    const selectedDevice = await navigator.serial.requestPort({ filters: USB_PORT_FILTERS });
     stopAutoReconnect();
+    logLine("准备弹出浏览器串口选择窗口...");
+    const selectedDevice = await navigator.serial.requestPort({ filters: USB_PORT_FILTERS });
     logLine("已选择串口，开始加载 esptool-js...");
 
     connectButton.disabled = true;
@@ -777,11 +811,12 @@ async function openConsoleFromUserClick() {
       throw new Error("当前页面不是 secure context。请用 http://localhost:8000 或 HTTPS 打开。");
     }
 
+    stopAutoReconnect();
     let selectedDevice = device;
     if (!selectedDevice) {
+      logLine("准备弹出浏览器串口选择窗口，用于打开串口控制台...");
       selectedDevice = await navigator.serial.requestPort({ filters: USB_PORT_FILTERS });
     }
-    stopAutoReconnect();
     await openConsoleOnPort(selectedDevice, { auto: false });
     showOperationToast("连接设备控制台已执行");
   } catch (err) {
@@ -795,7 +830,9 @@ async function openConsoleFromUserClick() {
 }
 
 async function openConsoleOnPort(port, options = {}) {
+  autoConsoleScanPausedUntil = Date.now() + 3000;
   await cleanupAllSerialConnections();
+  await closePortIfAlreadyOpen(port, "open-console");
   rememberPort(port);
 
   const baudRate = parseInt(consoleBaudrateEl.value, 10);
@@ -943,8 +980,18 @@ async function flashDevice() {
   await esploader.after("hard_reset");
   await cleanupLoaderConnection();
   setCurrentMode("none");
-  setReconnectStatus("烧写完成，设备已运行应用，请手动打开串口控制台");
+  setReconnectStatus("烧写完成，设备已运行应用，准备打开串口控制台");
   logLine("Flash Done ⚡️");
+  const consoleOpened = await openConsoleAfterFlashWithRetry();
+  if (consoleOpened) {
+    try {
+      await resetDeviceFromOpenConsoleAfterFlash();
+    } catch (resetErr) {
+      const msg = resetErr?.message || String(resetErr);
+      logLine(`烧写后自动 Reset Device 失败：${msg}`);
+      logLine("请手动点击 Reset Device。 ");
+    }
+  }
   autoConsoleScanPausedUntil = Date.now() + 3000;
 }
 
@@ -1003,7 +1050,7 @@ function handleSerialLost(reason, targetMode, err = null) {
   const modeToReconnect = targetMode || currentMode || lastConnectedMode || "loader";
   logLine(`串口断开：${reason}。目标自动重连模式=${modeToReconnect}`);
   cleanupAllSerialConnections().finally(() => {
-    if (autoReconnectEl.checked) startAutoReconnect(modeToReconnect, reason);
+    if (autoReconnectEl?.checked) startAutoReconnect(modeToReconnect, reason);
     else setReconnectStatus("串口已断开，自动重连未开启");
   });
 }
@@ -1016,7 +1063,7 @@ async function startAutoReconnect(targetMode, reason) {
   setReconnectStatus(`重连中，目标=${targetMode}，原因=${reason}`);
 
   let attempt = 0;
-  while (reconnecting && token === reconnectToken && autoReconnectEl.checked) {
+  while (reconnecting && token === reconnectToken && autoReconnectEl?.checked) {
     attempt++;
     try {
       const port = await findRememberedPort();
@@ -1034,9 +1081,8 @@ async function startAutoReconnect(targetMode, reason) {
       setReconnectStatus(`自动重连成功，模式=${targetMode}`);
       logLine(`自动重连成功，模式=${targetMode}`);
       return;
-    } catch (reconnectErr) {
-      console.error(reconnectErr);
-      const msg = reconnectErr?.message || String(reconnectErr);
+    } catch (err) {
+      const msg = err?.message || String(err);
       setReconnectStatus(`第 ${attempt} 次失败：${msg}`);
       logLine(`自动重连第 ${attempt} 次失败：${msg}`);
       await cleanupAllSerialConnections();
@@ -1045,8 +1091,6 @@ async function startAutoReconnect(targetMode, reason) {
   }
 
   reconnecting = false;
-  setConnectedUi(currentMode);
-  setReconnectStatus("已停止");
 }
 
 async function runAction(action, button, label, options = {}) {
@@ -1074,7 +1118,6 @@ async function runAction(action, button, label, options = {}) {
 }
 
 loadSavedSettings();
-if (autoReconnectEl) autoReconnectEl.checked = false;
 bindSettingsPersistence();
 
 FIRMWARE_FILES.forEach((fileDef) => {
@@ -1129,7 +1172,7 @@ consoleInputEl.addEventListener("keydown", (event) => {
   }
 });
 
-autoReconnectEl.addEventListener("change", () => {
+autoReconnectEl?.addEventListener("change", () => {
   if (!autoReconnectEl.checked) stopAutoReconnect();
 });
 resetSettingsButton?.addEventListener("click", resetSavedSettings);
@@ -1145,7 +1188,7 @@ if (navigator.serial?.addEventListener) {
   navigator.serial.addEventListener("connect", (event) => {
     const port = event.target;
     if (reconnecting && portMatchesRemembered(port)) {
-      logLine("浏览器检测到串口设备重新插入，下一轮自动重连会尝试连接。 ");
+      logLine("浏览器检测到串口设备重新插入；自动重连循环将继续尝试连接。 ");
     }
     if (isAutoConsoleTargetPort(port)) {
       consoleLine(`

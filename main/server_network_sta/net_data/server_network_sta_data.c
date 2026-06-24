@@ -138,6 +138,24 @@ static esp_err_t send_json_response(httpd_req_t *req, const char *json)
     return httpd_resp_sendstr(req, json != NULL ? json : "{}");
 }
 
+static esp_err_t send_dataup_error_response(httpd_req_t *req,
+                                            const char *http_status,
+                                            int result,
+                                            const char *message,
+                                            const char *error)
+{
+    char json[192];
+    snprintf(json, sizeof(json),
+             "{\"func\":\"dataup_result\",\"result\":%d,\"message\":\"%s\",\"error\":\"%s\"}",
+             result,
+             message != NULL ? message : "dataUP failed",
+             error != NULL ? error : "dataup_failed");
+    if (http_status != NULL) {
+        httpd_resp_set_status(req, http_status);
+    }
+    return send_json_response(req, json);
+}
+
 static esp_err_t send_invalid_json_response(httpd_req_t *req, const char *func)
 {
     char json[160] = {0};
@@ -442,8 +460,11 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         if (is_network_ota) {
             return NetworkOtaUpload_SendErrorAndFinish(req, "body_too_large", "body_too_large", ESP_ERR_INVALID_SIZE);
         }
-        httpd_resp_send_err(req, HTTPD_413_CONTENT_TOO_LARGE, "Request body too large");
-        return ESP_OK;
+        return send_dataup_error_response(req,
+                                          "413 Content Too Large",
+                                          TDX_JSON_RESULT_BODY_TOO_LARGE,
+                                          "body too large",
+                                          "body_too_large");
     }
 
     bool is_multipart = (strstr(content_type, "multipart/form-data") != NULL);
@@ -457,8 +478,11 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
             xSemaphoreGive(s_upload_mutex);
         }
         ESP_LOGE(TAG, "body alloc failed len=%u", (unsigned int)remaining);
-        httpd_resp_send_500(req);
-        return ESP_ERR_NO_MEM;
+        return send_dataup_error_response(req,
+                                          HTTPD_500,
+                                          TDX_JSON_RESULT_NO_MEMORY,
+                                          "no memory",
+                                          "no_memory");
     }
     if (is_network_ota) {
         log_heap_watermark("body_alloc");

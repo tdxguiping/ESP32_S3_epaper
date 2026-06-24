@@ -6,6 +6,6 @@
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32c5"
     },
-    "idf.portWin": "COM41",
+    "idf.portWin": "COM42",
     "idf.flashType": "UART"
 }

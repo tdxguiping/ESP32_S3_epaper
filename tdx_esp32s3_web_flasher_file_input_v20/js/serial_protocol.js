@@ -26,6 +26,7 @@ const AUTO_CONSOLE_PORT_MATCHES = [
 const SERIAL_PROTOCOL_CHANNEL_NAME = "tdx_esp32s3_serial_protocol_channel";
 const SERIAL_PROTOCOL_ACTIVE_KEY = "tdx_serial_protocol_page_active";
 const SERIAL_PROTOCOL_HEARTBEAT_KEY = "tdx_serial_protocol_page_heartbeat";
+const SERIAL_PROTOCOL_JS_VERSION = "20260618_reset_no_wifi_window_v1";
 let serialProtocolBroadcastChannel = null;
 let serialProtocolHeartbeatTimer = null;
 
@@ -36,6 +37,17 @@ let manualDisconnect = false;
 let reconnectBusy = false;
 let rxTextBuffer = "";
 let autoDetectTimer = null;
+let serialOpenedAtMs = 0;
+let usbProtocolReady = false;
+let autoEpdQueryPending = false;
+let autoEpdQueryDone = false;
+let detectedWifiIp = "";
+let wifiIpOpenHandled = false;
+let wifiIpScanBuffer = "";
+let serialSelectPromptArmed = false;
+let serialSelectPromptShown = false;
+let wifiRootWindow = null;
+let wifiIndexWindow = null;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -61,6 +73,8 @@ let rxFloodBytes = 0;
 const SERIAL_DEFAULT_BUFFER_SIZE = 65536;
 const SERIAL_DEFAULT_WRITE_CHUNK_SIZE = 16384;
 const SERIAL_DEFAULT_WRITE_CHUNK_TIMEOUT_MS = 15000;
+const USB_PROTOCOL_READY_GRACE_MS = 3800;
+const USB_PROTOCOL_READY_MAX_WAIT_MS = 15000;
 const EPD_TYPE_TABLE = [
   { type: 1, width: 800, height: 480, display_size: 192000, name: "EPD_800_480", color_type: 3, color_name: "BWR_3_Color", color_count: 3, colors: "3 色" },
   { type: 2, width: 1024, height: 600, display_size: 307200, name: "EPD_1024_600", color_type: 6, color_name: "BWYRBG_6_Color", color_count: 6, colors: "6 色" },
@@ -71,6 +85,7 @@ const EPD_TYPE_TABLE = [
   { type: 7, width: 1360, height: 480, display_size: 163200, name: "EPD_1360_480_1085_3COLOR", color_type: 3, color_name: "BWR_3_Color", color_count: 3, colors: "3 色" },
   { type: 8, width: 800, height: 480, display_size: 96000, name: "EPD_800_480_4S_75_DKE", color_type: 4, color_name: "BWRY_4_Color", color_count: 4, colors: "4 色" },
   { type: 9, width: 800, height: 480, display_size: 96000, name: "EPD_800_480_4S_75_mofang", color_type: 4, color_name: "BWRY_4_Color", color_count: 4, colors: "4 色" },
+  { type: 10, width: 1600, height: 1200, display_size: 960000, name: "EPD_1600_1200_133_DKE", color_type: 6, color_name: "BWYRBG_6_Color", color_count: 6, colors: "6 色" },
 ];
 const EPD_COLOR_TABLE = {
   BWR_3_Color: [
@@ -496,6 +511,129 @@ function clearFaultPopup() {
 
 function isConnected() { return !!serialPort && serialPort.readable && serialPort.writable; }
 
+function keepAutoConnectAlwaysOn() {
+  if (!els.autoConnect) return;
+  els.autoConnect.checked = true;
+  els.autoConnect.disabled = true;
+  try {
+    localStorage.setItem("tdx_serial_protocol_autoConnect", "true");
+  } catch (_) {}
+}
+
+function extractWifiIpFromSerialText(text) {
+  const raw = String(text || "");
+  const wifiIpMatch = raw.match(/\bserver_network_sta:\s*WiFi\s+IP=([0-9]{1,3}(?:\.[0-9]{1,3}){3})\b/);
+  if (wifiIpMatch) return wifiIpMatch[1];
+
+  const staIpMatch = raw.match(/\besp_netif_handlers:\s*sta\s+ip:\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})\b/);
+  if (staIpMatch) return staIpMatch[1];
+
+  return "";
+}
+
+function isValidIpv4Text(ip) {
+  return String(ip || "").split(".").length === 4 &&
+    String(ip).split(".").every((part) => {
+      if (!/^\d+$/.test(part)) return false;
+      const value = Number(part);
+      return value >= 0 && value <= 255;
+    });
+}
+
+function setWifiPlaceholderWindow(win, label) {
+  if (!win || win.closed) return;
+  try {
+    win.document.title = label;
+    win.document.body.style.fontFamily = "system-ui, sans-serif";
+    win.document.body.style.padding = "24px";
+    win.document.body.textContent = `${label}: 等待 ESP32-C5 WiFi IP...`;
+  } catch (_) {}
+}
+
+function reserveWifiPageWindows() {
+  try {
+    if (!wifiRootWindow || wifiRootWindow.closed) {
+      wifiRootWindow = window.open("about:blank", "tdx_esp32c5_wifi_root");
+      setWifiPlaceholderWindow(wifiRootWindow, "ESP32-C5 /");
+    }
+    if (!wifiIndexWindow || wifiIndexWindow.closed) {
+      wifiIndexWindow = window.open("about:blank", "tdx_esp32c5_wifi_index");
+      setWifiPlaceholderWindow(wifiIndexWindow, "ESP32-C5 /index.html");
+    }
+  } catch (_) {}
+}
+
+function navigateReservedWifiWindow(win, url) {
+  if (!win || win.closed) return false;
+  try {
+    win.location.href = url;
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function openWifiPagesAndStopMonitor(ip) {
+  if (wifiIpOpenHandled || !isValidIpv4Text(ip)) return;
+  wifiIpOpenHandled = true;
+  detectedWifiIp = ip;
+
+  const rootUrl = `http://${ip}/`;
+  const indexUrl = `http://${ip}/index.html`;
+  rxLine(`[WiFi IP] 已从串口日志提取 IP=${ip}`);
+  rxLine(`[WiFi IP] 打开页面：${rootUrl}`);
+  rxLine(`[WiFi IP] 打开页面：${indexUrl}`);
+
+  const rootOk = navigateReservedWifiWindow(wifiRootWindow, rootUrl) ||
+    !!window.open(rootUrl, "tdx_esp32c5_wifi_root");
+  const indexOk = navigateReservedWifiWindow(wifiIndexWindow, indexUrl) ||
+    !!window.open(indexUrl, "tdx_esp32c5_wifi_index");
+  if (!rootOk || !indexOk) {
+    rxLine("[WiFi IP] 浏览器拦截了自动打开窗口，请允许此页面弹窗后重试。");
+    rxLine(`[WiFi IP] 可手动打开：${rootUrl}`);
+    rxLine(`[WiFi IP] 可手动打开：${indexUrl}`);
+    showFaultPopup("网络页面被浏览器拦截", `请允许弹窗，或手动打开：\n${rootUrl}\n${indexUrl}`);
+  }
+
+  setStatus(`已获取 WiFi IP=${ip}，停止 IP 检测，自动重连保持开启`);
+  rxLine("[WiFi IP] 已停止 IP 检测，串口自动重连保持开启。");
+}
+
+function monitorWifiIpFromSerialText(text) {
+  if (wifiIpOpenHandled) return;
+  wifiIpScanBuffer = `${wifiIpScanBuffer}${String(text || "")}`;
+  if (wifiIpScanBuffer.length > 4096) {
+    wifiIpScanBuffer = wifiIpScanBuffer.slice(-4096);
+  }
+  const ip = extractWifiIpFromSerialText(wifiIpScanBuffer);
+  if (ip) openWifiPagesAndStopMonitor(ip);
+}
+
+function armSerialSelectPrompt(reason = "没有找到已授权串口") {
+  if (!navigator.serial || isConnected()) return;
+  keepAutoConnectAlwaysOn();
+  if (!serialSelectPromptShown) {
+    serialSelectPromptShown = true;
+    rxLine(`[串口自动打开] ${reason}`);
+    rxLine("[串口自动打开] 浏览器需要用户点击才能弹出串口选择窗口。请点击“连接串口”按钮，或点击本页面任意位置。");
+    showFaultPopup("需要选择串口", `${reason}\n请点击“连接串口”按钮，或点击本页面任意位置后在浏览器窗口里选择串口。`);
+  }
+  serialSelectPromptArmed = true;
+  els.connectButton?.focus();
+}
+
+async function openSerialChooserFromUserGesture() {
+  if (!serialSelectPromptArmed || isConnected() || !navigator.serial) return;
+  serialSelectPromptArmed = false;
+  try {
+    await connectFromUser();
+    serialSelectPromptShown = false;
+  } catch (err) {
+    serialSelectPromptArmed = true;
+    showFaultPopup("打开串口选择失败", "如果浏览器没有弹出串口选择窗口，请直接点击“连接串口”按钮。", err);
+  }
+}
+
 function broadcastProtocolPageState(type) {
   const now = Date.now();
   try {
@@ -595,28 +733,64 @@ async function closeSerialHardware(reason = "close") {
 }
 
 async function disconnectOnSerialFault(reason, err) {
-  manualDisconnect = true;
   reconnectBusy = false;
   const detail = errorToText(err);
   rxLine(`\n[串口故障] ${reason}${detail ? `：${detail}` : ""}`);
-  rxLine("[处理] 已强制断开串口，停止本次自动重连，避免页面卡住。请重新点击“连接串口”。\n");
-  showFaultPopup("串口故障，已断开", `${reason}\n已强制断开串口，停止本次自动重连，避免页面卡住。`, err);
-  setStatus(`串口故障，已断开：${reason}`);
+  rxLine("[处理] 已释放当前串口连接，自动重连保持开启。\n");
+  showFaultPopup("串口故障，准备自动重连", `${reason}\n已释放当前串口连接，自动重连保持开启。`, err);
+  setStatus(`串口故障，准备自动重连：${reason}`);
   await closeSerialHardware(reason);
+  scheduleReconnect();
 }
 
 
 async function connectFromUser() {
   if (!navigator.serial) throw new Error("当前浏览器不支持 Web Serial，请使用 Chrome / Edge，并通过 http://localhost 打开页面。");
   manualDisconnect = false;
+  serialSelectPromptArmed = false;
+  reserveWifiPageWindows();
   const port = await navigator.serial.requestPort({ filters: USB_PORT_FILTERS });
   await openSerialPort(port, false);
+}
+
+function markUsbProtocolReady(reason) {
+  if (!usbProtocolReady) {
+    usbProtocolReady = true;
+    rxLine(`[USB debug] device HTTP entry ready detected by ${reason}`);
+  }
+  runAutoEpdTypeQueryIfReady(reason);
+}
+
+function runAutoEpdTypeQueryIfReady(reason = "ready") {
+  if (!usbProtocolReady || !autoEpdQueryPending || autoEpdQueryDone || !isConnected()) return;
+  autoEpdQueryDone = true;
+  autoEpdQueryPending = false;
+  setTimeout(async () => {
+    try {
+      rxLine(`[USB debug] auto query EPD type after serial open (${reason})`);
+      await sendGetRequest("/epd_type_list");
+      await delay(50);
+      await sendGetRequest("/epd_type");
+    } catch (err) {
+      rxLine(`[EPD_type] query failed: ${errorToText(err)}`);
+    }
+  }, 0);
 }
 
 async function openSerialPort(port, auto) {
   if (isConnected()) return;
   serialPort = port;
+  usbProtocolReady = false;
+  autoEpdQueryPending = true;
+  autoEpdQueryDone = false;
+  detectedWifiIp = "";
+  wifiIpOpenHandled = false;
+  wifiIpScanBuffer = "";
+  serialSelectPromptArmed = false;
+  serialSelectPromptShown = false;
+  serialOpenedAtMs = performance.now();
   rxLine(`${auto ? "自动连接" : "连接"}串口：${describePort(port)}`);
+  rxLine(`[USB debug] serial opened, wait up to ${USB_PROTOCOL_READY_GRACE_MS} ms for device HTTP entry ready`);
   try {
     await withTimeout(serialPort.open(getSerialOptions()), getMsSetting("serialOpenTimeoutMs", 8000, 1000, 30000), "串口打开超时");
   } catch (err) {
@@ -631,14 +805,25 @@ async function openSerialPort(port, auto) {
   setStatus(`已连接 ${describePort(port)}，baudrate=${els.baudrate.value}`);
   startReadLoop();
   setTimeout(async () => {
+    if (!usbProtocolReady) {
+      rxLine("[USB debug] auto EPD query pending: firmware HTTP entry ready/idle log not detected yet");
+      return;
+    }
+    runAutoEpdTypeQueryIfReady("timer");
+    return;
     try {
+      if (!usbProtocolReady) {
+        rxLine("[USB debug] skip auto EPD query: firmware HTTP entry ready log not detected yet");
+        return;
+      }
+      rxLine("[USB debug] auto query EPD type after serial open");
       await sendGetRequest("/epd_type_list");
       await delay(50);
       await sendGetRequest("/epd_type");
     } catch (err) {
       rxLine(`[EPD_type] 查询失败：${errorToText(err)}`);
     }
-  }, 150);
+  }, USB_PROTOCOL_READY_GRACE_MS);
 }
 
 
@@ -666,11 +851,11 @@ async function startReadLoop() {
   } finally {
     reading = false;
     if (readFault) {
-      manualDisconnect = true;
       reconnectBusy = false;
-      showFaultPopup("串口接收失败，已断开", "接收数据过程中发生错误。页面已释放串口，避免卡住不动。", readFault);
+      showFaultPopup("串口接收失败，准备自动重连", "接收数据过程中发生错误。页面已释放当前串口连接，自动重连保持开启。", readFault);
       await closeSerialHardware("read fault");
-      setStatus("串口接收失败，已断开");
+      setStatus("串口接收失败，准备自动重连");
+      scheduleReconnect();
       return;
     }
     const shouldReconnect = !manualDisconnect;
@@ -697,6 +882,13 @@ function handleIncomingBytes(value) {
   }
 
   const text = textDecoder.decode(value, { stream: true });
+  monitorWifiIpFromSerialText(text);
+  if (text.includes("USB console HTTP text entry ready")) {
+    markUsbProtocolReady("ready log");
+  }
+  if (text.includes("USB RX idle: waiting for PC HTTP-like request")) {
+    markUsbProtocolReady("rx idle log");
+  }
   if (!els.prettyRxJson.checked) {
     appendRx(text);
     return;
@@ -792,20 +984,25 @@ function scheduleReconnect() {
   reconnectBusy = true;
   setTimeout(async () => {
     reconnectBusy = false;
-    if (manualDisconnect || isConnected()) return;
+    if (isConnected()) return;
     await autoConnectKnownPort();
   }, 1000);
 }
 
 async function autoConnectKnownPort() {
-  if (!els.autoConnect.checked || !navigator.serial || isConnected()) return;
+  keepAutoConnectAlwaysOn();
+  if (!navigator.serial || isConnected()) return;
   try {
     const ports = await navigator.serial.getPorts();
     const port = ports.find(isAutoTargetPort) || ports[0];
-    if (!port) return;
+    if (!port) {
+      armSerialSelectPrompt("没有找到浏览器已授权的串口，无法静默自动打开。");
+      return;
+    }
     await openSerialPort(port, true);
   } catch (err) {
     setStatus(`自动连接失败：${err?.message || err}`);
+    armSerialSelectPrompt(`自动打开串口失败：${err?.message || err}`);
   }
 }
 
@@ -838,7 +1035,7 @@ async function releaseSerialHardwareInBackground(port, reader, reason = "manual 
 }
 
 async function disconnectSerial() {
-  manualDisconnect = true;
+  manualDisconnect = false;
   reconnectBusy = false;
 
   const port = serialPort;
@@ -855,27 +1052,18 @@ async function disconnectSerial() {
 
   setTimeout(() => {
     releaseSerialHardwareInBackground(port, reader, "手动断开").finally(() => {
-      setStatus("已断开");
+      setStatus("已断开，自动重连保持开启");
+      scheduleReconnect();
     });
   }, 0);
 }
 
 async function resetDevice() {
-  if (!serialPort?.setSignals) throw new Error("当前浏览器/串口不支持 setSignals，无法 Reset Device。");
   rxLine("\n[Reset Device]\n");
-  try {
-    const timeoutMs = getMsSetting("serialResetTimeoutMs", 3000, 500, 10000);
-    await withTimeout(serialPort.setSignals({ dataTerminalReady: false, requestToSend: true }), timeoutMs, "Reset Device 拉低 RTS 超时");
-    await delay(100);
-    await withTimeout(serialPort.setSignals({ requestToSend: false }), timeoutMs, "Reset Device 释放 RTS 超时");
-    await delay(100);
-  } catch (err) {
-    await disconnectOnSerialFault("Reset Device 失败", err);
-    throw err;
-  }
+  await sendGetRequest("/restart");
+  rxLine("[Reset Device] USB /restart command sent. ESP32-C5 will restart and the serial port may reconnect.\n");
+  setStatus("Reset Device sent by USB /restart; waiting for device restart");
 }
-
-
 function stringToBytes(text) { return textEncoder.encode(text); }
 function jsonToBytes(obj) { return stringToBytes(JSON.stringify(obj)); }
 
@@ -953,6 +1141,26 @@ async function writeBytesToSerial(bytes) {
 }
 
 
+async function waitForUsbProtocolReady(label = "HTTP-like request") {
+  if (usbProtocolReady || !serialOpenedAtMs) return;
+
+  const elapsedMs = performance.now() - serialOpenedAtMs;
+  const waitMs = USB_PROTOCOL_READY_MAX_WAIT_MS - elapsedMs;
+  if (waitMs <= 0) {
+    appendRx(`[TX wait] ${label}: firmware ready log not detected after ${USB_PROTOCOL_READY_MAX_WAIT_MS} ms, send anyway\n`);
+    return;
+  }
+
+  appendRx(`[TX wait] ${label}: firmware ready log not detected, wait up to ${Math.ceil(waitMs)} ms\n`);
+  const start = performance.now();
+  while (!usbProtocolReady && performance.now() - start < waitMs) {
+    await delay(100);
+  }
+  if (!usbProtocolReady) {
+    appendRx(`[TX wait] ${label}: firmware ready log still not detected, send anyway\n`);
+  }
+}
+
 function previewBytes(bytes, maxText = 4096) {
   const n = Math.min(bytes.byteLength, maxText);
   const text = textDecoder.decode(bytes.slice(0, n));
@@ -1006,9 +1214,11 @@ function previewHttpLikeBytes(bytes, maxText = 8192) {
 }
 
 async function sendHttpLikeRequest(opts) {
-  const startMs = performance.now();
   const bytes = buildHttpLikeRequestBytes(opts);
   const label = opts.label || `${opts.method} ${opts.path}`;
+  await waitForUsbProtocolReady(label);
+  const startMs = performance.now();
+  appendRx(`[USB debug] TX begin js=${SERIAL_PROTOCOL_JS_VERSION} label=${label} ready=${usbProtocolReady} elapsed_since_open_ms=${Math.round(performance.now() - serialOpenedAtMs)}\n`);
   appendRx(`\n[TX HTTP-like] ${label}, ${bytes.byteLength} bytes\n`);
   appendRx(previewHttpLikeBytes(bytes, opts.bodyBytes?.byteLength > 8192 ? 2048 : 8192) + "\n");
   try {
@@ -1388,7 +1598,11 @@ async function runAction(fn, button, label, options = {}) {
     rxLine(`\n[错误] ${errorToText(err)}\n`);
     showFaultPopup("操作失败", "当前操作失败。详细信息如下：", err);
   }
-  finally { if (button) button.disabled = !isConnected(); }
+  finally {
+    if (button) {
+      button.disabled = button === els.connectButton ? isConnected() : !isConnected();
+    }
+  }
 }
 
 
@@ -1492,8 +1706,19 @@ function bindEvents() {
   updateFileInfo();
 }
 
+function bindSerialSelectPromptGesture() {
+  document.addEventListener("pointerdown", (event) => {
+    if (!serialSelectPromptArmed || isConnected()) return;
+    const target = event.target;
+    if (target && typeof target.closest === "function" && target.closest("button, a, input, select, textarea, label")) return;
+    event.preventDefault();
+    reserveWifiPageWindows();
+    runAction(openSerialChooserFromUserGesture, els.connectButton, "连接串口");
+  });
+}
+
 function bindSettingsStorage() {
-  const ids = ["baudrate","dataBits","stopBits","parity","flowControl","bufferSize","serialOpenTimeoutMs","serialResetTimeoutMs","writeChunkSize","writeChunkDelayMs","writeChunkTimeoutMs","jsonRouteMode","fileRouteMode","autoConnect","prettyRxJson","directFilePath","directFileContentType","directFileFunc"];
+  const ids = ["baudrate","dataBits","stopBits","parity","flowControl","bufferSize","serialOpenTimeoutMs","serialResetTimeoutMs","writeChunkSize","writeChunkDelayMs","writeChunkTimeoutMs","jsonRouteMode","fileRouteMode","prettyRxJson","directFilePath","directFileContentType","directFileFunc"];
   const defaultUpgrades = {
     bufferSize: { oldValue: "255", newValue: String(SERIAL_DEFAULT_BUFFER_SIZE) },
     writeChunkSize: { oldValue: "4096", newValue: String(SERIAL_DEFAULT_WRITE_CHUNK_SIZE) },
@@ -1522,9 +1747,11 @@ function bindSettingsStorage() {
 }
 
 function startAutoDetect() {
+  keepAutoConnectAlwaysOn();
   if (autoDetectTimer) return;
   autoDetectTimer = setInterval(() => {
-    if (!els.autoConnect.checked || isConnected() || manualDisconnect) return;
+    keepAutoConnectAlwaysOn();
+    if (isConnected() || manualDisconnect) return;
     autoConnectKnownPort();
   }, 1500);
   autoConnectKnownPort();
@@ -1540,9 +1767,12 @@ window.addEventListener("unhandledrejection", (event) => {
 window.addEventListener("DOMContentLoaded", () => {
   startProtocolPageHeartbeat();
   bindSettingsStorage();
+  keepAutoConnectAlwaysOn();
   bindEvents();
+  bindSerialSelectPromptGesture();
   setUiConnected(false);
-  rxLine("串口 HTTP-like 协议页面 v20 已加载。WiFi POST /wifi 已按示例改成 HTTP-like JSON，请求预览会自动计算 Content-Length。 ");
+  rxLine(`串口 HTTP-like 协议页面 v20 已加载。JS=${SERIAL_PROTOCOL_JS_VERSION}`);
+  rxLine("WiFi POST /wifi 已按示例改成 HTTP-like JSON，请求预览会自动计算 Content-Length。 ");
   rxLine("v20 新增：接收窗口非阻塞刷新、自动截断和串口数据洪泛保护，避免配网后大量日志导致页面无响应。 ");
   rxLine("设备端接收必须按 Content-Length 判断请求完整性，不要用超时结束请求。 ");
   if (!navigator.serial) {

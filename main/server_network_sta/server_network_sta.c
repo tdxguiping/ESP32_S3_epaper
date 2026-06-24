@@ -17,8 +17,6 @@
 #include "nvs.h"
 
 #include "file_serving_example_common.h"
-#include "ble_data_handler.h"
-#include "ch583_wifi_uart_protocol.h"
 #include "led_status.h"
 
 typedef struct {
@@ -39,6 +37,8 @@ static int s_wifi_connect_retry_num;
 static TickType_t s_wifi_connect_start_tick;
 static bool s_wifi_connect_active;
 static bool s_wifi_scan_before_connect;
+static volatile bool s_wifi_sta_connected_seen;
+static volatile int s_wifi_last_connect_result = TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT;
 
 #define SERVER_NETWORK_STA_CONNECT_RETRY_MAX 10
 #define SERVER_NETWORK_STA_CONNECT_RETRY_BASE_DELAY_MS 100  // 500
@@ -54,6 +54,27 @@ static bool s_wifi_scan_before_connect;
 #endif
 
 static const char *wifi_disconnect_reason_name(int reason);
+
+int ServerNetworkSta_GetLastConnectResult(void)
+{
+    return s_wifi_last_connect_result;
+}
+
+static bool server_network_sta_reason_is_auth_failure(int reason)
+{
+    switch (reason) {
+    case WIFI_REASON_AUTH_EXPIRE:
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_GROUP_KEY_UPDATE_TIMEOUT:
+    case WIFI_REASON_AUTH_FAIL:
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+    case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+        return true;
+    default:
+        return false;
+    }
+}
 
 static void server_network_sta_set_ps(wifi_ps_type_t ps_type, const char *stage)
 {
@@ -393,6 +414,7 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t *)event_data;
+        s_wifi_sta_connected_seen = true;
 #if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
         if (event != NULL) {
             ESP_LOGI(TAG, "WiFi connected ch=%u auth=%d bssid=%02x:%02x:%02x:%02x:%02x:%02x",
@@ -413,6 +435,7 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
                      ap_info.primary, ap_info.rssi);
         }
         s_wifi_connect_active = false;
+        s_wifi_last_connect_result = TDX_JSON_RESULT_OK;
         server_network_sta_stop_retry_timer();
         server_network_sta_set_ps(SERVER_NETWORK_STA_CONNECTED_PS, "got_ip");
         s_wifi_connect_retry_num = 0;
@@ -430,12 +453,17 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
                      reason, wifi_disconnect_reason_name(reason),
                      event ? event->rssi : 0, wifi_disconnect_reason_hint(reason));
         }
+        if (server_network_sta_reason_is_auth_failure(reason)) {
+            s_wifi_last_connect_result = TDX_JSON_RESULT_WIFI_AUTH_FAILED;
+        }
         server_network_sta_schedule_retry(reason);
     }
 }
 
 static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
 {
+    s_wifi_sta_connected_seen = false;
+    s_wifi_last_connect_result = TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT;
     if (!credential.is_valid) {
         return 0;
     }
@@ -581,25 +609,16 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
     if (bits & SERVER_NETWORK_STA_CONNECTED_BIT) {
         s_wifi_connect_active = false;
         server_network_sta_stop_retry_timer();
-        //if(WiFi_config_net == true && (WiFi_config_from_ch583 == true || WiFi_config_from_ble == true))
-        //if(WiFi_config_net == true) // anyway, send base info to mobile after connected, no need to check the source
-        {
-            const char *base_info_path = "CH583";
-#if USER_BLE_ENABLE
-            base_info_path = WiFi_config_from_ch583 == true ? "CH583" : "BLE";
-#endif
-            ESP_LOGI(TAG, "send base info via %s",
-                     base_info_path);
-            send_base_info_to_mobile();
-            WiFi_config_from_ch583 = false;
-            WiFi_config_from_ble = false;
-
-        }
         return 1;
     }
 
     s_wifi_connect_active = false;
     server_network_sta_stop_retry_timer();
+    if (s_wifi_last_connect_result != TDX_JSON_RESULT_WIFI_AUTH_FAILED) {
+        s_wifi_last_connect_result = s_wifi_sta_connected_seen
+                                         ? TDX_JSON_RESULT_WIFI_GOT_IP_FAILED
+                                         : TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT;
+    }
     ESP_LOGE(TAG, "Server Network STA failed bits=0x%08lx", (unsigned long)bits);
     return 0;
 }
@@ -711,23 +730,6 @@ uint8_t User_Network_mode_app_init(const char *base_path)
     if (!credential.is_valid) {
         ESP_LOGW(TAG, "No saved WiFi credential, return 0xA1");
         UserLedStatus_Set(USER_LED_STATE_WIFI_FAIL);
-
-            {
-                char reply_json[160];
-                snprintf(reply_json, sizeof(reply_json),
-                            "{\"func\":\"wifi_wakeup_result\",\"result\":%d,\"message\":\"wakeup No-WiFi\",\"stage\":\"error\"}",
-                            TDX_JSON_RESULT_BLE_NO_SAVED_WIFI);
-
-                    #if(USER_BLE_ENABLE == 1)
-                    SendData_indicate((uint8_t *)reply_json, strlen(reply_json));
-                        // 杈撳嚭缁撴灉
-                        printf("JSON:\n%s\n", reply_json);
-                    #else
-                    ch583_wifi_uart_send_wifi_data((const char *)reply_json);
-                    #endif
-            }
-
-
         return SERVER_NETWORK_STA_NO_SAVED_WIFI;
     }
 

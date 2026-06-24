@@ -321,44 +321,62 @@ public:
 static TaskHandle_t s_wifi_connect_task = NULL;
 static json_sender_t s_wifi_connect_reply_sender = NULL;
 static bool s_wifi_connect_notify_result = false;
+static const char *s_wifi_connect_result_func = NULL;
 static uint8_t check_net_state(void);
 
 static void wifi_connect_task(void *arg)
 {
     (void)arg;
-    uint8_t result = ::User_Network_mode_app_init("/data");
-    ESP_LOGI(TAG, "BLE/CH583 WiFi connect task finished result=%u", (unsigned int)result);
+    uint8_t init_result = ::User_Network_mode_app_init("/data");
+    int connect_result = ServerNetworkSta_GetLastConnectResult();
+    ESP_LOGI(TAG, "BLE/CH583 WiFi connect task finished init=%u connect_result=%d",
+             (unsigned int)init_result,
+             connect_result);
     json_sender_t reply_sender = s_wifi_connect_reply_sender;
     bool notify_result = s_wifi_connect_notify_result;
+    const char *result_func = s_wifi_connect_result_func != NULL
+                                  ? s_wifi_connect_result_func
+                                  : "wifi_wakeup_result";
     s_wifi_connect_reply_sender = NULL;
     s_wifi_connect_notify_result = false;
-    s_wifi_connect_task = NULL;
+    s_wifi_connect_result_func = NULL;
     if (notify_result && reply_sender != NULL) {
         s_active_send_json = reply_sender;
-        if (result != SERVER_NETWORK_STA_OK) {
+        if (connect_result == TDX_JSON_RESULT_OK && check_net_state() != 0) {
+            send_base_info_to_mobile();
+        } else if (connect_result == TDX_JSON_RESULT_WIFI_AUTH_FAILED) {
             send_simple_result_with_sender(reply_sender,
-                                           "wifi_wakeup_result",
-                                           TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT,
-                                           "WiFi connect failed or timed out");
-        } else if (check_net_state() == 0) {
+                                           result_func,
+                                           TDX_JSON_RESULT_WIFI_AUTH_FAILED,
+                                           "WiFi authentication failed");
+        } else if (connect_result == TDX_JSON_RESULT_WIFI_GOT_IP_FAILED) {
             send_simple_result_with_sender(reply_sender,
-                                           "wifi_wakeup_result",
+                                           result_func,
                                            TDX_JSON_RESULT_WIFI_GOT_IP_FAILED,
                                            "WiFi did not obtain IP");
         } else {
-            send_base_info_to_mobile();
+            send_simple_result_with_sender(reply_sender,
+                                           result_func,
+                                           TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT,
+                                           "WiFi connect timed out");
         }
     }
+    WiFi_config_from_ch583 = false;
+    WiFi_config_from_ble = false;
+    s_wifi_connect_task = NULL;
     vTaskDelete(NULL);
 }
 
-static esp_err_t submit_wifi_connect(json_sender_t reply_sender, bool notify_result)
+static esp_err_t submit_wifi_connect(json_sender_t reply_sender,
+                                     bool notify_result,
+                                     const char *result_func)
 {
     if (s_wifi_connect_task != NULL) {
         return ESP_ERR_INVALID_STATE;
     }
     s_wifi_connect_reply_sender = reply_sender;
     s_wifi_connect_notify_result = notify_result;
+    s_wifi_connect_result_func = result_func;
     if (xTaskCreate(wifi_connect_task,
                     "ble_wifi_connect",
                     6144,
@@ -367,6 +385,7 @@ static esp_err_t submit_wifi_connect(json_sender_t reply_sender, bool notify_res
                     &s_wifi_connect_task) != pdPASS) {
         s_wifi_connect_reply_sender = NULL;
         s_wifi_connect_notify_result = false;
+        s_wifi_connect_result_func = NULL;
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
@@ -462,7 +481,7 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
                 return 0;
             }
 
-            esp_err_t submit_ret = submit_wifi_connect(s_active_send_json, false);
+            esp_err_t submit_ret = submit_wifi_connect(s_active_send_json, true, "wifi_result");
             if (submit_ret != ESP_OK) {
                 send_simple_result_with_sender(s_active_send_json,
                                                "wifi_result",
@@ -545,7 +564,7 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
             #endif
     }
     else {
-        esp_err_t submit_ret = submit_wifi_connect(s_active_send_json, true);
+        esp_err_t submit_ret = submit_wifi_connect(s_active_send_json, true, "wifi_wakeup_result");
         if (submit_ret == ESP_OK) {
             send_simple_result_with_sender(s_active_send_json,
                                            "wifi_wakeup_result",

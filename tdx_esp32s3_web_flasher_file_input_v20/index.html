@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TDX ESP32-S3 Web Flasher v20</title>
+  <title>TDX ESP32-C5 Web Flasher v20</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="css/style.css" />
 </head>
@@ -11,10 +11,10 @@
   <main class="page">
     <section class="card hero">
       <div>
-        <h1>TDX ESP32-S3 Web Flasher v20</h1>
+        <h1>TDX ESP32-C5 Web Flasher v20</h1>
         <p>固定 4 个烧写地址，文件名可变。支持自动加载上一级目录固件、Reset Device、手动打开串口控制台；主页面启动后不会自动连接串口。</p>
       </div>
-      <div class="badge">ESP32-S3 / Web Serial</div>
+      <div class="badge">ESP32-C5 / Web Serial</div>
     </section>
 
     <section class="card warning">
@@ -57,7 +57,7 @@
         </thead>
         <tbody>
           <tr>
-            <td><code>0x0000</code></td>
+            <td><code>0x2000</code></td>
             <td><strong>Bootloader</strong><br><small>自动文件：<code>../bootloader.bin</code></small></td>
             <td><input id="file_bootloader" type="file" accept=".bin,application/octet-stream"></td>
             <td id="status_bootloader" class="wait">未选择</td>
@@ -88,33 +88,33 @@
       <h2>烧写操作</h2>
       <label>Flash Mode
         <select id="flashMode">
-          <option value="dio" selected>dio</option>
+          <option value="keep" selected>keep</option>
+          <option value="dio">dio</option>
           <option value="qio">qio</option>
           <option value="dout">dout</option>
           <option value="qout">qout</option>
-          <option value="keep">keep</option>
         </select>
       </label>
       <label>Flash Frequency
         <select id="flashFreq">
-          <option value="80m" selected>80m</option>
+          <option value="keep" selected>keep</option>
+          <option value="80m">80m</option>
           <option value="40m">40m</option>
           <option value="26m">26m</option>
           <option value="20m">20m</option>
-          <option value="keep">keep</option>
         </select>
       </label>
       <label>Flash Size
         <select id="flashSize">
-          <option value="16MB" selected>16MB</option>
+          <option value="keep" selected>keep</option>
+          <option value="16MB">16MB</option>
           <option value="8MB">8MB</option>
           <option value="4MB">4MB</option>
           <option value="detect">detect</option>
-          <option value="keep">keep</option>
         </select>
       </label>
       <label class="checkbox"><input type="checkbox" id="eraseAll"> 烧写前整片擦除 Flash。默认不擦，保留 NVS / WiFi / 用户数据。</label>
-      <label class="checkbox"><input type="checkbox" id="strictS3" checked> 只允许 ESP32-S3。</label>
+      <label class="checkbox"><input type="checkbox" id="strictS3" checked> 只允许 ESP32-C5。</label>
       <div class="buttonRow">
         <button id="checkFilesButton">检查固件文件</button>
         <button id="connectButton" type="button" onclick="connectDeviceFromUserClick()">连接设备</button>
@@ -123,7 +123,7 @@
         <button id="resetButton" disabled>Reset Device</button>
         <button id="disconnectButton" disabled>断开</button>
       </div>
-      <p class="hint">烧写完成后会执行 hard_reset；如需查看日志，请手动打开串口控制台。</p>
+      <p class="hint">烧写完成后会执行 hard_reset，并自动尝试打开串口控制台接收日志。</p>
     </section>
 
     <section class="card settingsCard">
@@ -139,9 +139,9 @@
             <option value="2000000">2000000</option>
             <option value="1500000">1500000</option>
             <option value="1000000">1000000</option>
-            <option value="921600" selected>921600</option>
+            <option value="921600">921600</option>
             <option value="460800">460800</option>
-            <option value="230400">230400</option>
+            <option value="230400" selected>230400</option>
             <option value="115200">115200</option>
           </select>
         </label>
@@ -183,7 +183,7 @@
           </select>
         </label>
         <label>Buffer size（bytes）
-          <input id="serialBufferSize" type="number" min="1" max="16777216" value="255">
+          <input id="serialBufferSize" type="number" min="1" max="16777216" value="65536">
         </label>
         <label>自动重连间隔
           <select id="reconnectIntervalMs">
@@ -211,7 +211,7 @@
         </label>
       </div>
       <p class="hint">USB Serial/JTAG 下 baud 是 PC line coding 参数，不等于 USB 物理吞吐；长期稳定建议 921600 或 1000000，2000000 仅建议压测。</p>
-      <label class="checkbox"><input type="checkbox" id="autoReconnect"> 串口中途断开时自动重连。</label>
+      <label class="checkbox"><input type="checkbox" id="autoReconnect" checked> 串口中途断开时自动重连。</label>
       <label class="checkbox"><input type="checkbox" id="appendCRLF" checked> 控制台发送时追加 CRLF。</label>
       <div id="reconnectStatus" class="statusLine">自动重连状态：空闲</div>
       <div class="buttonRow">
@@ -226,9 +226,9 @@
 
     <section class="card consoleCard">
       <h2>串口控制台</h2>
-      <p>用于查看设备运行日志。主页面不会自动打开串口控制台；需要时请手动打开。打开控制台会关闭烧写连接，避免同一个串口被同时占用。</p>
-      <p class="hint">主页面不会自动连接串口；需要时请手动点击“连接设备”打开串口控制台。</p>
-      <div id="autoConsoleDetectStatus" class="statusLine">后台串口检测：已关闭，需手动点击连接设备</div>
+      <p>用于查看设备运行日志。烧写完成后会自动打开；也可以手动打开。打开控制台会关闭烧写连接，避免同一个串口被同时占用。</p>
+      <p class="hint">页面打开时不会自动打开串口控制台，避免占用烧写端口。烧写完成后会自动尝试打开串口控制台；也可以手动点击“打开串口控制台”。</p>
+      <div id="autoConsoleDetectStatus" class="statusLine">后台串口检测：已关闭，烧写完成后才打开控制台</div>
       <div class="buttonRow consoleDeviceRow">
         <button id="consoleConnectButton" type="button" onclick="openConsoleFromUserClick()">连接设备</button>
         <button id="consoleResetButton" disabled>Reset Device</button>
@@ -283,6 +283,53 @@
     window.openConsoleFromUserClick = window.connectDeviceFromUserClick;
   </script>
   <script src="js/ansi_terminal_render.js?v=20260615_ansi"></script>
-  <script src="js/app.js?v=20260615_ansi"></script>
+  <script>
+    (async function loadEsp32c5FlasherApp() {
+      try {
+        const response = await fetch("js/app.js?v=20260615_ansi", { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        let source = await response.text();
+
+        // Keep js/app.js unchanged, but run this page as the ESP32-C5 flasher.
+        source = source
+          .replaceAll("ESP32-S3", "ESP32-C5")
+          .replaceAll("ESP32S3", "ESP32C5")
+          .replaceAll("esp32s3", "esp32c5")
+          .replace('{ id: "bootloader", address: 0x0000', '{ id: "bootloader", address: 0x2000')
+          .replaceAll("arrayBufferToBinaryString(buffer)", "arrayBufferToUint8Array(buffer)")
+          .replace(
+            /function arrayBufferToUint8Array\(buffer\) \{[\s\S]*?return result;\n\}/,
+            "function arrayBufferToUint8Array(buffer) {\n  return new Uint8Array(buffer);\n}"
+          )
+          .replaceAll("readFileAsBinaryString(source.file)", "readFileAsUint8Array(source.file)")
+          .replace("reader.onload = () => resolve(reader.result);", "reader.onload = () => resolve(new Uint8Array(reader.result));")
+          .replace("reader.readAsBinaryString(file);", "reader.readAsArrayBuffer(file);")
+          .replace("esptool-js@0.5.4/bundle.js", "esptool-js@0.6.0/bundle.js")
+          .replace(
+            'const data = source.type === "manual" ? await readFileAsUint8Array(source.file) : source.data;\n    fileArray.push({ data, address: fileDef.address });',
+            'const data = source.type === "manual" ? await readFileAsUint8Array(source.file) : source.data;\n    if (!(data instanceof Uint8Array)) throw new Error(`${fileDef.label} data must be Uint8Array: ${source.name}`);\n    fileArray.push({ data, address: fileDef.address });'
+          )
+          .replace(
+            "loadSavedSettings();\nbindSettingsPersistence();",
+            'loadSavedSettings();\ntry {\n  baudrateEl.value = "230400";\n  flashModeEl.value = "keep";\n  flashFreqEl.value = "keep";\n  flashSizeEl.value = "keep";\n  serialBufferSizeEl.value = "65536";\n} catch (_) {}\nbindSettingsPersistence();'
+          );
+
+        const script = document.createElement("script");
+        script.src = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+        script.onload = () => URL.revokeObjectURL(script.src);
+        script.onerror = () => {
+          URL.revokeObjectURL(script.src);
+          throw new Error("Failed to execute ESP32-C5 flasher app");
+        };
+        document.body.appendChild(script);
+      } catch (err) {
+        const message = `ESP32-C5 flasher app load failed: ${err?.message || err}`;
+        console.error(message);
+        const log = document.getElementById("log");
+        if (log) log.textContent += `${message}\nPlease open this page through http://localhost, not file://.\n`;
+        alert(message);
+      }
+    })();
+  </script>
 </body>
 </html>

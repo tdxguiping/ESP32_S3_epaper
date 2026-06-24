@@ -97,9 +97,9 @@
         </label>
       </div>
       <p class="hint">USB Serial/JTAG 下 baud 是 PC line coding 参数，不等于 USB 物理吞吐；长期稳定建议 921600 或 1000000，2000000 仅建议压测。</p>
-      <label class="checkbox"><input id="autoConnect" type="checkbox" checked> 后台检测已授权的 USB JTAG/serial debug unit，未连接时自动连接。</label>
+      <label class="checkbox"><input id="autoConnect" type="checkbox" checked disabled> 后台检测已授权的 USB JTAG/serial debug unit，未连接时自动连接（始终开启）。</label>
       <label class="checkbox"><input id="prettyRxJson" type="checkbox" checked> 接收窗口尝试格式化 HTTP-like 响应中的 JSON body。</label>
-      <p class="hint">故障保护：串口打开、写入、Reset 或接收过程中如果发生错误/超时，会立即释放 reader/writer、关闭串口、停止本次自动重连，避免页面卡住无响应。</p>
+      <p class="hint">故障保护：串口打开、写入、Reset 或接收过程中如果发生错误/超时，会立即释放 reader/writer、关闭当前串口连接，并继续保持自动重连。</p>
       <div id="status" class="statusLine">状态：未连接</div>
       <div class="buttonRow">
         <button id="connectButton">连接串口</button>
@@ -294,6 +294,6 @@ Content-Length: 35
   </div>
 
   <script src="js/ansi_terminal_render.js?v=20260615_ansi"></script>
-  <script src="js/serial_protocol.js?v=20260615_ansi"></script>
+  <script src="js/serial_protocol.js?v=20260618_reset_no_wifi_window_v1"></script>
 </body>
 </html>
