@@ -16,6 +16,8 @@ const char *ch583_wifi_uart_get_ble_mac(void);
 int ch583_wifi_uart_send_power_off(void);
 int ch583_wifi_uart_send_gpio(const char *port, int pin, const char *mode, const char *level);
 int ch583_wifi_uart_send_gpio_read(const char *port, int pin);
+int ch583_wifi_uart_send_led_blink(const char *led, uint32_t interval_ms);
+int ch583_wifi_uart_send_led_blink_stop(const char *led);
 int ch583_wifi_uart_test_gpio_pa1_high(void);
 
 #ifdef __cplusplus

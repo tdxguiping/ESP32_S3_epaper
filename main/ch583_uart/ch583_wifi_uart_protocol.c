@@ -767,6 +767,33 @@ int ch583_wifi_uart_send_gpio_read(const char *port, int pin)
     return ch583_wifi_send_frame("GPIO_READ", arg,1);
 }
 
+static bool ch583_wifi_led_name_is_valid(const char *led)
+{
+    return led != NULL &&
+           (strcmp(led, "RED") == 0 || strcmp(led, "GREEN") == 0);
+}
+
+int ch583_wifi_uart_send_led_blink(const char *led, uint32_t interval_ms)
+{
+    char arg[32];
+
+    if (!ch583_wifi_led_name_is_valid(led) || interval_ms < 1U || interval_ms > 10000U) {
+        return -1;
+    }
+
+    snprintf(arg, sizeof(arg), "%s,%lu", led, (unsigned long)interval_ms);
+    return ch583_wifi_send_frame("LED_BLINK", arg, 1);
+}
+
+int ch583_wifi_uart_send_led_blink_stop(const char *led)
+{
+    if (!ch583_wifi_led_name_is_valid(led)) {
+        return -1;
+    }
+
+    return ch583_wifi_send_frame("LED_BLINK_STOP", led, 1);
+}
+
 int ch583_wifi_uart_test_gpio_pa1_high(void)
 {    // Send the fixed GPIO test command through the same V1 frame builder used by real protocol replies.
     // 闁俺绻冮惇鐔风杽閸楀繗顔呴崶鐐差槻閸忚京鏁ら惃?V1 缂佸嫬鎶氶崙鑺ユ殶閸欐垿鈧礁娴愮€?GPIO 濞村鐦崨鎴掓姢閿涘本鏌熸笟璺ㄢ€樼拋?CH583 閺勵垰鎯侀幍褑顢戦妴?

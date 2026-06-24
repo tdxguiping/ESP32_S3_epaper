@@ -806,7 +806,7 @@ async function openSerialPort(port, auto) {
   startReadLoop();
   setTimeout(async () => {
     if (!usbProtocolReady) {
-      rxLine("[USB debug] auto EPD query pending: firmware HTTP entry ready/idle log not detected yet");
+      markUsbProtocolReady("serial grace timeout");
       return;
     }
     runAutoEpdTypeQueryIfReady("timer");

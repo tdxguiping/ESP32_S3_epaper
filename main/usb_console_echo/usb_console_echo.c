@@ -256,7 +256,7 @@ static void UsbConsoleEcho_Task(void *arg)
         } else {
             int64_t now_us = esp_timer_get_time();
             if (now_us - last_idle_log_us >= 10000000LL) {
-                ESP_LOGI(TAG, "USB RX idle: waiting for PC HTTP-like request");
+                ESP_LOGD(TAG, "USB RX idle: waiting for PC HTTP-like request");
                 last_idle_log_us = now_us;
             }
         }

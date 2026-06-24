@@ -267,7 +267,7 @@ static void work_state_task(void *arg)
         if(counter >30)
         {
          counter = 0;
-         ESP_LOGI(TAG, "work_state status elapsed=%lu target=%lu remaining=%lu standby=%lu",
+         ESP_LOGD(TAG, "work_state status elapsed=%lu target=%lu remaining=%lu standby=%lu",
                  (unsigned long)elapsed,
                  (unsigned long)server_required_continue_work_time,
                  (unsigned long)remaining,
