@@ -243,6 +243,7 @@ static uint32_t update_working_time_seconds(void)
     return working_time;
 }
 
+//调用   ServerNetworkStaWifiWorkTime_OnNetworkData  从头计
 static void work_state_task(void *arg)
 {
     uint8_t counter = 0;
@@ -267,7 +268,7 @@ static void work_state_task(void *arg)
         if(counter >30)
         {
          counter = 0;
-         ESP_LOGD(TAG, "work_state status elapsed=%lu target=%lu remaining=%lu standby=%lu",
+         ESP_LOGI(TAG, "work_state status elapsed=%lu target=%lu remaining=%lu standby=%lu",
                  (unsigned long)elapsed,
                  (unsigned long)server_required_continue_work_time,
                  (unsigned long)remaining,

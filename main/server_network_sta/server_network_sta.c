@@ -41,15 +41,16 @@ static bool s_wifi_scan_before_connect;
 static volatile bool s_wifi_sta_connected_seen;
 static volatile int s_wifi_last_connect_result = TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT;
 static volatile server_network_sta_state_t s_wifi_state = SERVER_NETWORK_STA_STATE_IDLE;
+static volatile bool s_wifi_provisioning_requested;
 static SemaphoreHandle_t s_wifi_operation_mutex;
 static StaticSemaphore_t s_wifi_operation_mutex_buffer;
 
-#define SERVER_NETWORK_STA_CONNECT_RETRY_MAX 10
+#define SERVER_NETWORK_STA_CONNECT_RETRY_MAX 2
 #define SERVER_NETWORK_STA_CONNECT_RETRY_BASE_DELAY_MS 100  // 500
 #define SERVER_NETWORK_STA_CONNECT_RETRY_MAX_DELAY_MS 100  // 2000
 #define SERVER_NETWORK_STA_CONNECT_START_DELAY_MS 5   // 500
 #define SERVER_NETWORK_STA_SCAN_BEFORE_CONNECT 0
-#define SERVER_NETWORK_STA_INIT_RETRY_ROUNDS 3
+#define SERVER_NETWORK_STA_INIT_RETRY_ROUNDS 1
 #define SERVER_NETWORK_STA_INIT_RETRY_DELAY_MS 100  // 2000
 #if TDX_AUTO_LIGHT_SLEEP_ENABLE
 #define SERVER_NETWORK_STA_CONNECTED_PS WIFI_PS_MAX_MODEM
@@ -58,6 +59,7 @@ static StaticSemaphore_t s_wifi_operation_mutex_buffer;
 #endif
 
 static const char *wifi_disconnect_reason_name(int reason);
+static void server_network_sta_stop_retry_timer(void);
 
 int ServerNetworkSta_GetLastConnectResult(void)
 {
@@ -95,6 +97,17 @@ esp_err_t ServerNetworkSta_GetStatus(server_network_sta_status_t *status)
         status->last_result = TDX_JSON_RESULT_OK;
     }
     return ESP_OK;
+}
+
+void ServerNetworkSta_RequestProvisioning(void)
+{
+    s_wifi_provisioning_requested = true;
+    s_wifi_connect_active = false;
+    server_network_sta_stop_retry_timer();
+    if (s_sta_event_group != NULL) {
+        xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_FAIL_BIT);
+    }
+    ESP_LOGI(TAG, "WiFi provisioning requested; current connect cancelled");
 }
 
 static bool server_network_sta_reason_is_auth_failure(int reason)
@@ -161,8 +174,11 @@ static void server_network_sta_retry_timer_cb(void *arg)
 
     server_network_sta_set_ps(WIFI_PS_NONE, "retry_connect");
     esp_err_t ret = esp_wifi_connect();
-    if (ret != ESP_OK && ret != ESP_ERR_WIFI_CONN) {
+    ESP_LOGI(TAG, "esp_wifi_connect source=retry ret=%s", esp_err_to_name(ret));
+    if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_connect delayed retry failed: %s", esp_err_to_name(ret));
+        s_wifi_connect_active = false;
+        s_wifi_state = SERVER_NETWORK_STA_STATE_FAILED;
         if (s_sta_event_group != NULL) {
             xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_FAIL_BIT);
         }
@@ -446,8 +462,14 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
 #endif
         server_network_sta_set_ps(WIFI_PS_NONE, "connecting");
         esp_err_t ret = esp_wifi_connect();
-        if (ret != ESP_OK && ret != ESP_ERR_WIFI_CONN) {
+        ESP_LOGI(TAG, "esp_wifi_connect source=sta_start ret=%s", esp_err_to_name(ret));
+        if (ret != ESP_OK) {
             ESP_LOGE(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(ret));
+            s_wifi_connect_active = false;
+            s_wifi_state = SERVER_NETWORK_STA_STATE_FAILED;
+            if (s_sta_event_group != NULL) {
+                xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_FAIL_BIT);
+            }
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t *)event_data;
@@ -481,10 +503,11 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
         int reason = event ? event->reason : -1;
+        bool was_connect_active = s_wifi_connect_active;
         if (s_sta_event_group != NULL) {
             xEventGroupSetBits(s_sta_event_group, SERVER_NETWORK_STA_DISCONNECTED_BIT);
         }
-        if (!s_wifi_connect_active) {
+        if (!was_connect_active) {
             if (s_wifi_state != SERVER_NETWORK_STA_STATE_CONNECTING) {
                 s_wifi_state = SERVER_NETWORK_STA_STATE_IDLE;
             }
@@ -575,8 +598,8 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
     wifi_config_t wifi_config = {0};
     strlcpy((char *)wifi_config.sta.ssid, credential.ssid, sizeof(wifi_config.sta.ssid));
     strlcpy((char *)wifi_config.sta.password, credential.password, sizeof(wifi_config.sta.password));
-    wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-    wifi_config.sta.failure_retry_cnt = 5;
+    wifi_config.sta.scan_method = WIFI_FAST_SCAN;
+    wifi_config.sta.failure_retry_cnt = 1;
     wifi_config.sta.channel = SERVER_NETWORK_STA_WIFI_CHANNEL_HINT;
     wifi_config.sta.pmf_cfg.capable = true;
     wifi_config.sta.pmf_cfg.required = false;
@@ -602,7 +625,7 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
                                   SERVER_NETWORK_STA_DISCONNECTED_BIT,
                                   pdTRUE,
                                   pdFALSE,
-                                  pdMS_TO_TICKS(1000));
+                                  pdMS_TO_TICKS(100));
     } else if (ret != ESP_ERR_WIFI_NOT_STARTED && ret != ESP_ERR_WIFI_NOT_INIT) {
         ESP_LOGW(TAG, "esp_wifi_disconnect before reconfigure failed: %s", esp_err_to_name(ret));
     }
@@ -650,6 +673,7 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
     s_wifi_connect_start_tick = xTaskGetTickCount();
     s_wifi_scan_before_connect = SERVER_NETWORK_STA_SCAN_BEFORE_CONNECT != 0;
     ret = esp_wifi_start();
+    ESP_LOGI(TAG, "esp_wifi_start ret=%s", esp_err_to_name(ret));
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(ret));
         s_wifi_connect_active = false;
@@ -667,9 +691,11 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
 
     if (connect_manually) {
         ret = esp_wifi_connect();
-        if (ret != ESP_OK && ret != ESP_ERR_WIFI_CONN) {
+        ESP_LOGI(TAG, "esp_wifi_connect source=manual ret=%s", esp_err_to_name(ret));
+        if (ret != ESP_OK) {
             ESP_LOGE(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(ret));
             s_wifi_connect_active = false;
+            s_wifi_state = SERVER_NETWORK_STA_STATE_FAILED;
             server_network_sta_stop_retry_timer();
             return 0;
         }
@@ -684,6 +710,13 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
         s_wifi_connect_active = false;
         server_network_sta_stop_retry_timer();
         return 1;
+    }
+
+    if (s_wifi_provisioning_requested) {
+        s_wifi_connect_active = false;
+        server_network_sta_stop_retry_timer();
+        ESP_LOGI(TAG, "WiFi connect cancelled for new provisioning request");
+        return 0;
     }
 
     s_wifi_connect_active = false;
@@ -800,6 +833,13 @@ static uint8_t user_network_mode_app_init_internal(const char *base_path, bool f
         return SERVER_NETWORK_STA_CONNECT_FAIL;
     }
 
+    if (force_reconnect) {
+        s_wifi_provisioning_requested = false;
+    } else if (s_wifi_provisioning_requested) {
+        ESP_LOGI(TAG, "Skip stale WiFi connect because provisioning is pending");
+        goto done;
+    }
+
     credential = server_network_sta_read_saved_wifi();
 
     // strcpy(credential.ssid,"MERCURY_A662");
@@ -835,6 +875,10 @@ static uint8_t user_network_mode_app_init_internal(const char *base_path, bool f
         ESP_LOGI(TAG, "WiFi connect round %d/%d", round, SERVER_NETWORK_STA_INIT_RETRY_ROUNDS);
         sta_ret = ServerPort_NetworkSTAInit(credential);
         if (sta_ret != 0) {
+            break;
+        }
+        if (s_wifi_provisioning_requested && !force_reconnect) {
+            ESP_LOGI(TAG, "Stop stale WiFi retry rounds for provisioning");
             break;
         }
         if (round < SERVER_NETWORK_STA_INIT_RETRY_ROUNDS) {

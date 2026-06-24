@@ -181,7 +181,7 @@ extern "C" {
 #define SERVER_NETWORK_STA_DISCONNECTED_BIT BIT2
 
 // Keep the STA connection timeout configurable from one header for board bring-up tuning.
-#define SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS 30000
+#define SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS 10000
 
 // Hint the known AP channel to reduce WiFi scan time without binding to a fixed BSSID.
 #define SERVER_NETWORK_STA_WIFI_CHANNEL_HINT 11

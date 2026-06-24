@@ -490,6 +490,7 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
                 return 0;
             }
 
+            ServerNetworkSta_RequestProvisioning();
             esp_err_t submit_ret = submit_wifi_connect(s_active_send_json, true, "wifi_result", true);
             if (submit_ret != ESP_OK) {
                 send_simple_result_with_sender(s_active_send_json,

@@ -6669,8 +6669,11 @@ http://<host>/dataUP
 - CONNECTING：wifi_wakeup 不创建第二条连接流程，返回 wifi_wakeup_result result=0 stage=connecting。
 - IDLE / FAILED：存在保存配置时才提交连接任务。
 - func=wifi 属于显式配网：保存配置后使用 force reconnect 策略；若已有 BLE/CH583 配网任务，先返回 BUSY，避免出现“配置已保存但未应用”。
+- 显式配网会设置 provisioning cancel 标志并唤醒旧的开机连接等待；旧配置不再跑完剩余轮次，新配置取得全局 operation mutex 后立即执行。
 - WiFi 核心层使用全局 operation mutex，统一串行化开机、USB、BLE 和 CH583 连接入口。
 - 正常切换配置优先 disconnect / set_config / connect；仅在驱动仍处于 ESP_ERR_WIFI_STATE 时回退 stop / start。
+- 主动 disconnect 最多等待 100 ms 事件；连接使用 WIFI_FAST_SCAN、单轮 10 秒窗口和最多 2 次事件重试。
+- esp_wifi_connect() 只有 ESP_OK 才表示已启动；ESP_ERR_WIFI_CONN 等所有其它返回立即失败，不再空等完整超时。
 ```
 
 

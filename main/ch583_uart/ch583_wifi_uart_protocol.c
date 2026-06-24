@@ -3,6 +3,7 @@
 
 
 #include "ch583_wifi_uart_protocol.h"
+#include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 
 #include <stdbool.h>
@@ -646,8 +647,9 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
     } else if (strcmp(frame.cmd, "BLE_DATA") == 0) {       
       CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
            (unsigned int)frame.seq,frame.cmd,frame.arg);
-
         ch583_wifi_handle_ble_data(&frame, ble_data_callback);
+
+        ServerNetworkStaWifiWorkTime_OnNetworkData();  // standdy reset
     } else if (strcmp(frame.cmd, "ACK") == 0 ||
                strcmp(frame.cmd, "ERR") == 0 ||
                strcmp(frame.cmd, "PONG") == 0 ||

@@ -25,6 +25,7 @@ typedef struct {
 } server_network_sta_status_t;
 
 esp_err_t ServerNetworkSta_Init(void);
+void ServerNetworkSta_RequestProvisioning(void);
 uint8_t User_Network_mode_app_init(const char *base_path);
 uint8_t User_Network_mode_app_init_force(const char *base_path);
 int ServerNetworkSta_GetLastConnectResult(void);
