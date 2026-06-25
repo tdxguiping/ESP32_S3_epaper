@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_random.h"
+#include "nvs.h"
 #include "file_serving_example_common.h"
 #include "epd_display_app.h"
 #include "freertos/FreeRTOS.h"
@@ -21,6 +22,9 @@
 static const char *TAG = "server_sta_slide";
 #define SLIDESHOW_TASK_STACK_SIZE (12 * 1024)
 #define SLIDESHOW_TASK_PRIORITY 4
+#define SLIDESHOW_PROGRESS_MAGIC 0x534C4450UL
+#define SLIDESHOW_PROGRESS_VERSION 1U
+#define SLIDESHOW_PROGRESS_SAVE_RETRIES 3
 
 typedef struct {
     char file_names[TDX_SLIDESHOW_MAX_FILES][TDX_SLIDESHOW_FILE_NAME_MAX_LEN];
@@ -30,9 +34,21 @@ typedef struct {
 } slideshow_request_t;
 
 typedef struct {
+    uint32_t magic;
+    uint32_t config_hash;
+    uint32_t random_seed;
+    uint8_t version;
+    uint8_t random;
+    uint8_t order_count;
+    uint8_t position;
+    uint8_t order[TDX_SLIDESHOW_MAX_FILES];
+    char pending_file[TDX_SLIDESHOW_FILE_NAME_MAX_LEN];
+} slideshow_progress_t;
+
+typedef struct {
     char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
     slideshow_request_t request;
-    size_t current_index;
+    slideshow_progress_t progress;
 } slideshow_runtime_t;
 
 static TaskHandle_t s_slideshow_task = NULL;
@@ -288,7 +304,7 @@ static esp_err_t write_text_file(const char *path, const char *data)
     return written == len ? ESP_OK : ESP_FAIL;
 }
 
-static esp_err_t queue_slideshow_file(const char *base_path, const char *file_name)
+static esp_err_t display_slideshow_file_and_wait(const char *base_path, const char *file_name)
 {
     char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
     struct stat st = {0};
@@ -299,7 +315,7 @@ static esp_err_t queue_slideshow_file(const char *base_path, const char *file_na
 
     snprintf(path, sizeof(path), "%s/bin_img/%s.bin", base_path, file_name);
     if (stat(path, &st) != 0 || st.st_size <= 0) {
-        ESP_LOGE(TAG, "slideshow first file missing path=%s", path);
+        ESP_LOGE(TAG, "slideshow file missing path=%s", path);
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -308,7 +324,7 @@ static esp_err_t queue_slideshow_file(const char *base_path, const char *file_na
         buf = (uint8_t *)heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_8BIT);
     }
     if (buf == NULL) {
-        ESP_LOGE(TAG, "slideshow first file alloc failed path=%s size=%u",
+        ESP_LOGE(TAG, "slideshow file alloc failed path=%s size=%u",
                  path, (unsigned int)st.st_size);
         return ESP_ERR_NO_MEM;
     }
@@ -316,7 +332,7 @@ static esp_err_t queue_slideshow_file(const char *base_path, const char *file_na
     FILE *fp = fopen(path, "rb");
     if (fp == NULL) {
         heap_caps_free(buf);
-        ESP_LOGE(TAG, "slideshow first file open failed path=%s errno=%d", path, errno);
+        ESP_LOGE(TAG, "slideshow file open failed path=%s errno=%d", path, errno);
         return ESP_FAIL;
     }
 
@@ -324,37 +340,239 @@ static esp_err_t queue_slideshow_file(const char *base_path, const char *file_na
     fclose(fp);
     if (read_len != (size_t)st.st_size) {
         heap_caps_free(buf);
-        ESP_LOGE(TAG, "slideshow first file read failed path=%s expect=%u actual=%u",
+        ESP_LOGE(TAG, "slideshow file read failed path=%s expect=%u actual=%u",
                  path, (unsigned int)st.st_size, (unsigned int)read_len);
         return ESP_FAIL;
     }
 
-    esp_err_t ret = ServerNetworkStaEpdDisplay_Queue(buf, read_len);
+    ESP_LOGI(TAG, "slideshow display start file=%s size=%u",
+             file_name, (unsigned int)read_len);
+    esp_err_t ret = ServerNetworkStaEpdDisplay_QueueToScreenAndWait(buf, read_len, 1);
     heap_caps_free(buf);
-    ESP_LOGI(TAG, "slideshow first display queue file=%s size=%u ret=%s",
-             file_name, (unsigned int)read_len, esp_err_to_name(ret));
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "slideshow display done file=%s", file_name);
+    } else {
+        ESP_LOGW(TAG, "slideshow display failed file=%s ret=%s, progress unchanged",
+                 file_name, esp_err_to_name(ret));
+    }
     return ret;
 }
 
-static size_t slideshow_next_index(const slideshow_request_t *request, size_t current_index)
+static uint32_t slideshow_hash_byte(uint32_t hash, uint8_t value)
 {
-    if (request == NULL || request->file_count == 0) {
-        return 0;
-    }
-    if (request->random) {
-        return (size_t)(esp_random() % request->file_count);
-    }
-    return (current_index + 1) % request->file_count;
+    hash ^= value;
+    return hash * 16777619UL;
 }
 
-static void save_next_file_name(const slideshow_request_t *request, size_t next_index)
+static uint32_t slideshow_config_hash(const slideshow_request_t *request)
 {
-    if (request == NULL || request->file_count == 0 || next_index >= request->file_count) {
+    uint32_t hash = 2166136261UL;
+    if (request == NULL) {
+        return 0;
+    }
+
+    hash = slideshow_hash_byte(hash, (uint8_t)request->file_count);
+    hash = slideshow_hash_byte(hash, request->random ? 1U : 0U);
+    for (size_t i = 0; i < request->file_count; ++i) {
+        const uint8_t *name = (const uint8_t *)request->file_names[i];
+        while (*name != 0) {
+            hash = slideshow_hash_byte(hash, *name++);
+        }
+        hash = slideshow_hash_byte(hash, 0);
+    }
+    return hash;
+}
+
+static uint32_t slideshow_random_next(uint32_t *state)
+{
+    uint32_t value = *state;
+    if (value == 0) {
+        value = 0x6D2B79F5UL;
+    }
+    value ^= value << 13;
+    value ^= value >> 17;
+    value ^= value << 5;
+    *state = value;
+    return value;
+}
+
+static void slideshow_build_order(slideshow_progress_t *progress, size_t file_count, bool random)
+{
+    progress->order_count = (uint8_t)file_count;
+    for (size_t i = 0; i < file_count; ++i) {
+        progress->order[i] = (uint8_t)i;
+    }
+    if (!random || file_count < 2) {
         return;
     }
-    esp_err_t ret = app_nvs_write_str(TDX_SLIDESHOW_NVS_LAST_FILE_KEY, request->file_names[next_index]);
-    ESP_LOGI(TAG, "slideshow save next file=%s ret=%s",
-             request->file_names[next_index], esp_err_to_name(ret));
+
+    uint32_t state = progress->random_seed;
+    for (size_t i = file_count - 1; i > 0; --i) {
+        size_t other = (size_t)(slideshow_random_next(&state) % (i + 1));
+        uint8_t tmp = progress->order[i];
+        progress->order[i] = progress->order[other];
+        progress->order[other] = tmp;
+    }
+}
+
+static bool find_file_index(const slideshow_request_t *request,
+                            const char *file_name,
+                            size_t *index_out)
+{
+    if (request == NULL || file_name == NULL || index_out == NULL) {
+        return false;
+    }
+    for (size_t i = 0; i < request->file_count; ++i) {
+        if (strcmp(request->file_names[i], file_name) == 0) {
+            *index_out = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void slideshow_init_progress(const slideshow_request_t *request,
+                                    size_t first_index,
+                                    slideshow_progress_t *progress)
+{
+    memset(progress, 0, sizeof(*progress));
+    progress->magic = SLIDESHOW_PROGRESS_MAGIC;
+    progress->version = SLIDESHOW_PROGRESS_VERSION;
+    progress->config_hash = slideshow_config_hash(request);
+    progress->random = request->random ? 1U : 0U;
+    progress->random_seed = esp_random();
+    if (progress->random_seed == 0) {
+        progress->random_seed = 1;
+    }
+    slideshow_build_order(progress, request->file_count, request->random);
+
+    if (first_index >= request->file_count) {
+        first_index = 0;
+    }
+    for (size_t i = 0; i < request->file_count; ++i) {
+        if (progress->order[i] == first_index) {
+            uint8_t tmp = progress->order[0];
+            progress->order[0] = progress->order[i];
+            progress->order[i] = tmp;
+            break;
+        }
+    }
+    progress->position = 0;
+    strlcpy(progress->pending_file,
+            request->file_names[progress->order[0]],
+            sizeof(progress->pending_file));
+}
+
+static bool slideshow_progress_valid(const slideshow_request_t *request,
+                                     const slideshow_progress_t *progress)
+{
+    if (request == NULL || progress == NULL || request->file_count == 0 ||
+        progress->magic != SLIDESHOW_PROGRESS_MAGIC ||
+        progress->version != SLIDESHOW_PROGRESS_VERSION ||
+        progress->config_hash != slideshow_config_hash(request) ||
+        progress->random != (request->random ? 1U : 0U) ||
+        progress->order_count != request->file_count ||
+        progress->position >= progress->order_count ||
+        progress->pending_file[0] == '\0' ||
+        progress->pending_file[sizeof(progress->pending_file) - 1] != '\0') {
+        return false;
+    }
+
+    bool seen[TDX_SLIDESHOW_MAX_FILES] = {false};
+    for (size_t i = 0; i < progress->order_count; ++i) {
+        uint8_t index = progress->order[i];
+        if (index >= request->file_count || seen[index]) {
+            return false;
+        }
+        seen[index] = true;
+    }
+
+    uint8_t pending_index = progress->order[progress->position];
+    return strcmp(progress->pending_file, request->file_names[pending_index]) == 0;
+}
+
+static esp_err_t save_slideshow_progress(const slideshow_progress_t *progress)
+{
+    slideshow_progress_t verify;
+    esp_err_t ret = ESP_FAIL;
+
+    for (int attempt = 1; attempt <= SLIDESHOW_PROGRESS_SAVE_RETRIES; ++attempt) {
+        ret = app_nvs_write_blob(TDX_SLIDESHOW_NVS_PROGRESS_KEY, progress, sizeof(*progress));
+        if (ret == ESP_OK) {
+            memset(&verify, 0, sizeof(verify));
+            ret = app_nvs_read_blob(TDX_SLIDESHOW_NVS_PROGRESS_KEY, &verify, sizeof(verify));
+            if (ret == ESP_OK && memcmp(&verify, progress, sizeof(verify)) == 0) {
+                ESP_LOGI(TAG, "slideshow progress saved pending=%s position=%u/%u",
+                         progress->pending_file,
+                         (unsigned int)progress->position,
+                         (unsigned int)progress->order_count);
+                return ESP_OK;
+            }
+            ret = ESP_ERR_INVALID_CRC;
+        }
+        ESP_LOGW(TAG, "slideshow progress save attempt=%d ret=%s",
+                 attempt, esp_err_to_name(ret));
+        if (attempt < SLIDESHOW_PROGRESS_SAVE_RETRIES) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    }
+    return ret;
+}
+
+static esp_err_t load_or_create_slideshow_progress(const slideshow_request_t *request,
+                                                   bool reset,
+                                                   slideshow_progress_t *progress)
+{
+    esp_err_t progress_read_ret = ESP_ERR_NVS_NOT_FOUND;
+    if (!reset) {
+        progress_read_ret = app_nvs_read_blob(TDX_SLIDESHOW_NVS_PROGRESS_KEY,
+                                              progress,
+                                              sizeof(*progress));
+        if (progress_read_ret == ESP_OK && slideshow_progress_valid(request, progress)) {
+            ESP_LOGI(TAG, "slideshow resume pending=%s position=%u/%u",
+                     progress->pending_file,
+                     (unsigned int)progress->position,
+                     (unsigned int)progress->order_count);
+            return ESP_OK;
+        }
+    }
+
+    size_t first_index = 0;
+    if (!reset && progress_read_ret == ESP_ERR_NVS_NOT_FOUND) {
+        char legacy_file[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
+        size_t legacy_index = 0;
+        if (app_nvs_read_str(TDX_SLIDESHOW_NVS_LAST_FILE_KEY,
+                             legacy_file,
+                             sizeof(legacy_file),
+                             "") == ESP_OK &&
+            find_file_index(request, legacy_file, &legacy_index)) {
+            first_index = legacy_index;
+            ESP_LOGI(TAG, "slideshow migrate legacy pending=%s", legacy_file);
+        }
+    }
+
+    slideshow_init_progress(request, first_index, progress);
+    return save_slideshow_progress(progress);
+}
+
+static void prepare_next_slideshow_progress(const slideshow_request_t *request,
+                                            const slideshow_progress_t *current,
+                                            slideshow_progress_t *next)
+{
+    memcpy(next, current, sizeof(*next));
+    if ((size_t)next->position + 1U < next->order_count) {
+        next->position++;
+    } else {
+        next->position = 0;
+        next->random_seed = esp_random();
+        if (next->random_seed == 0) {
+            next->random_seed = 1;
+        }
+        slideshow_build_order(next, request->file_count, request->random);
+    }
+    strlcpy(next->pending_file,
+            request->file_names[next->order[next->position]],
+            sizeof(next->pending_file));
 }
 
 static void wait_slideshow_interval_seconds(uint32_t interval)
@@ -368,32 +586,6 @@ static void wait_slideshow_interval_seconds(uint32_t interval)
     for (uint32_t elapsed_s = 0; elapsed_s < interval && !s_slideshow_stop; elapsed_s++) {
         vTaskDelayUntil(&last_wake_tick, one_second_ticks);
     }
-}
-
-static size_t find_file_index(const slideshow_request_t *request, const char *file_name)
-{
-    if (request == NULL || file_name == NULL) {
-        return 0;
-    }
-    for (size_t i = 0; i < request->file_count; i++) {
-        if (strcmp(request->file_names[i], file_name) == 0) {
-            return i;
-        }
-    }
-    return 0;
-}
-
-static size_t get_saved_start_index(const slideshow_request_t *request)
-{
-    char file_name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
-    esp_err_t ret = app_nvs_read_str(TDX_SLIDESHOW_NVS_LAST_FILE_KEY,
-                                     file_name,
-                                     sizeof(file_name),
-                                     "");
-    if (ret != ESP_OK || file_name[0] == '\0') {
-        return 0;
-    }
-    return find_file_index(request, file_name);
 }
 
 static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_request_t *request)
@@ -495,23 +687,21 @@ static void slideshow_task(void *arg)
              (unsigned int)runtime->request.file_count,
              (unsigned long)runtime->request.interval,
              runtime->request.random ? 1 : 0,
-             (unsigned int)runtime->current_index);
+             (unsigned int)runtime->progress.order[runtime->progress.position]);
 
     while (!s_slideshow_stop && runtime->request.file_count > 0) {
-        if (runtime->current_index >= runtime->request.file_count) {
-            runtime->current_index = 0;
-        }
-
-        const char *file_name = runtime->request.file_names[runtime->current_index];
-        esp_err_t display_ret = queue_slideshow_file(runtime->base_path, file_name);
+        const char *file_name = runtime->progress.pending_file;
+        esp_err_t display_ret = display_slideshow_file_and_wait(runtime->base_path, file_name);
         if (display_ret == ESP_OK) {
-            size_t next_index = slideshow_next_index(&runtime->request, runtime->current_index);
-            save_next_file_name(&runtime->request, next_index);
-            runtime->current_index = next_index;
-        } else {
-            ESP_LOGW(TAG, "slideshow display failed file=%s ret=%s",
-                     file_name, esp_err_to_name(display_ret));
-            runtime->current_index = slideshow_next_index(&runtime->request, runtime->current_index);
+            slideshow_progress_t next;
+            prepare_next_slideshow_progress(&runtime->request, &runtime->progress, &next);
+            esp_err_t save_ret = save_slideshow_progress(&next);
+            if (save_ret == ESP_OK) {
+                memcpy(&runtime->progress, &next, sizeof(runtime->progress));
+            } else {
+                ESP_LOGE(TAG, "slideshow progress unchanged after display file=%s ret=%s",
+                         file_name, esp_err_to_name(save_ret));
+            }
         }
 
         wait_slideshow_interval_seconds(runtime->request.interval);
@@ -530,15 +720,23 @@ void ServerNetworkStaSlideshow_Stop(void)
 
 static esp_err_t start_slideshow_runtime(const char *base_path,
                                          const slideshow_request_t *request,
-                                         size_t start_index)
+                                         const slideshow_progress_t *progress)
 {
-    if (base_path == NULL || request == NULL || request->file_count == 0) {
+    if (base_path == NULL || request == NULL || progress == NULL ||
+        request->file_count == 0 || !slideshow_progress_valid(request, progress)) {
         return ESP_ERR_INVALID_ARG;
     }
 
     ServerNetworkStaSlideshow_Stop();
-    for (int i = 0; i < 30 && s_slideshow_task != NULL; i++) {
-        vTaskDelay(pdMS_TO_TICKS(100));
+    TickType_t stop_start = xTaskGetTickCount();
+    TickType_t stop_timeout = pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS + 5000U);
+    while (s_slideshow_task != NULL &&
+           (xTaskGetTickCount() - stop_start) < stop_timeout) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (s_slideshow_task != NULL) {
+        ESP_LOGE(TAG, "previous slideshow task did not stop");
+        return ESP_ERR_TIMEOUT;
     }
 
     slideshow_runtime_t *runtime = (slideshow_runtime_t *)calloc(1, sizeof(*runtime));
@@ -548,7 +746,7 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
 
     strlcpy(runtime->base_path, base_path, sizeof(runtime->base_path));
     memcpy(&runtime->request, request, sizeof(runtime->request));
-    runtime->current_index = start_index < request->file_count ? start_index : 0;
+    memcpy(&runtime->progress, progress, sizeof(runtime->progress));
     s_slideshow_stop = false;
 
     BaseType_t task_ret = xTaskCreate(slideshow_task,
@@ -577,7 +775,7 @@ esp_err_t ServerNetworkStaSlideshow_ShowFirst(const char *base_path)
         free(request);
         return ret;
     }
-    ret = queue_slideshow_file(base_path, request->file_names[0]);
+    ret = display_slideshow_file_and_wait(base_path, request->file_names[0]);
     free(request);
     return ret;
 }
@@ -607,8 +805,11 @@ esp_err_t ServerNetworkStaSlideshow_StartSaved(const char *base_path)
         request->interval = interval;
     }
     request->random = random;
-    size_t start_index = get_saved_start_index(request);
-    ret = start_slideshow_runtime(base_path, request, start_index);
+    slideshow_progress_t progress;
+    ret = load_or_create_slideshow_progress(request, false, &progress);
+    if (ret == ESP_OK) {
+        ret = start_slideshow_runtime(base_path, request, &progress);
+    }
     free(request);
     return ret;
 }
@@ -738,7 +939,11 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
              request.random ? 1 : 0,
              TDX_SLIDESHOW_RUN_MODE);
 
-    esp_err_t start_ret = start_slideshow_runtime(base_path, &request, 0);
+    slideshow_progress_t progress;
+    esp_err_t start_ret = load_or_create_slideshow_progress(&request, true, &progress);
+    if (start_ret == ESP_OK) {
+        start_ret = start_slideshow_runtime(base_path, &request, &progress);
+    }
     if (start_ret != ESP_OK) {
         ESP_LOGW(TAG, "start_slideshow runtime start failed ret=%s", esp_err_to_name(start_ret));
         return send_start_slideshow_result(req,

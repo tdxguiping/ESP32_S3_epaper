@@ -3,13 +3,19 @@
 #include "ch583_wifi_uart_protocol.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "tdx_cfg.h"
 
 #include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
 
 static const char *TAG = "led_status";
 static TaskHandle_t s_led_task;
+static QueueHandle_t s_led_event_queue;
+static SemaphoreHandle_t s_led_control_mutex;
 static volatile user_led_state_t s_led_state = USER_LED_STATE_OFF;
 
 typedef enum {
@@ -23,8 +29,17 @@ typedef struct {
     uint32_t interval_ms;
 } user_led_runtime_t;
 
+typedef struct {
+    user_led_activity_t source;
+    bool begin;
+} user_led_activity_event_t;
+
 static user_led_runtime_t s_red_runtime;
 static user_led_runtime_t s_green_runtime;
+static uint16_t s_activity_count[USER_LED_ACTIVITY_COUNT];
+static bool s_red_delay_armed;
+static TickType_t s_red_blink_deadline;
+static bool s_shutdown_pending;
 
 static void set_ch583_led_level(const char *port, int pin, const char *level)
 {
@@ -37,9 +52,6 @@ static void set_ch583_led_level(const char *port, int pin, const char *level)
 
 static void set_red(bool on)
 {
-    // Send red LED state through CH583 because ESP32-C5 has no local status LED.
-    // 通过 CH583 发送红灯状态，因为 ESP32-C5 本机没有状态灯。
-
     set_ch583_led_level(USER_LED_CH583_RED_PORT,
                         USER_LED_CH583_RED_PIN,
                         on ? USER_LED_CH583_ON_LEVEL : USER_LED_CH583_OFF_LEVEL);
@@ -47,18 +59,9 @@ static void set_red(bool on)
 
 static void set_green(bool on)
 {
-    // Send green LED state through CH583 so existing status states keep the same behavior.
-    // 通过 CH583 发送绿灯状态，让现有状态机保持相同表现。
-
     set_ch583_led_level(USER_LED_CH583_GREEN_PORT,
                         USER_LED_CH583_GREEN_PIN,
                         on ? USER_LED_CH583_ON_LEVEL : USER_LED_CH583_OFF_LEVEL);
-}
-
-static void set_all_off(void)
-{
-    set_red(false);
-    set_green(false);
 }
 
 static bool stop_blink(const char *led, user_led_runtime_t *runtime)
@@ -99,136 +102,143 @@ static bool start_blink(const char *led, uint32_t interval_ms, user_led_runtime_
     return true;
 }
 
-static bool set_red_off(void)
+static void set_red_solid(void)
 {
     if (!stop_blink("RED", &s_red_runtime)) {
-        return false;
+        return;
+    }
+    if (s_red_runtime.mode != USER_LED_MODE_SOLID) {
+        set_red(true);
+    }
+    s_red_runtime.mode = USER_LED_MODE_SOLID;
+    s_red_runtime.interval_ms = 0;
+}
+
+static void set_red_off(void)
+{
+    if (!stop_blink("RED", &s_red_runtime)) {
+        return;
     }
     if (s_red_runtime.mode == USER_LED_MODE_SOLID) {
         set_red(false);
     }
     s_red_runtime.mode = USER_LED_MODE_OFF;
     s_red_runtime.interval_ms = 0;
-    return true;
 }
 
-static bool set_green_off(void)
+static uint32_t activity_total(void)
 {
-    if (!stop_blink("GREEN", &s_green_runtime)) {
-        return false;
+    uint32_t total = 0;
+    for (size_t i = 0; i < USER_LED_ACTIVITY_COUNT; i++) {
+        total += s_activity_count[i];
     }
-    if (s_green_runtime.mode == USER_LED_MODE_SOLID) {
-        set_green(false);
-    }
-    s_green_runtime.mode = USER_LED_MODE_OFF;
-    s_green_runtime.interval_ms = 0;
-    return true;
+    return total;
 }
 
-static void set_green_solid(void)
+static void handle_activity_event(const user_led_activity_event_t *event)
 {
-    if (!stop_blink("GREEN", &s_green_runtime)) {
+    if (event == NULL || event->source >= USER_LED_ACTIVITY_COUNT || s_shutdown_pending) {
         return;
     }
-    if (s_green_runtime.mode != USER_LED_MODE_SOLID) {
-        set_green(true);
+
+    uint32_t total_before = activity_total();
+    if (event->begin) {
+        if (s_activity_count[event->source] < UINT16_MAX) {
+            s_activity_count[event->source]++;
+        }
+        if (total_before == 0 && activity_total() > 0) {
+            set_red_solid();
+            s_red_delay_armed = true;
+            s_red_blink_deadline = xTaskGetTickCount() +
+                                   pdMS_TO_TICKS(USER_LED_ACTIVITY_BLINK_DELAY_MS);
+        }
+        return;
     }
-    s_green_runtime.mode = USER_LED_MODE_SOLID;
-    s_green_runtime.interval_ms = 0;
+
+    if (s_activity_count[event->source] > 0) {
+        s_activity_count[event->source]--;
+    }
+    if (activity_total() == 0) {
+        s_red_delay_armed = false;
+        set_red_off();
+    }
 }
 
-static void apply_led_state(user_led_state_t state)
+static TickType_t red_delay_wait_ticks(void)
 {
-    ESP_LOGI(TAG, "apply LED state=%d", (int)state);
-    switch (state) {
-    case USER_LED_STATE_OFF:
-        set_red_off();
-        set_green_off();
-        break;
-    case USER_LED_STATE_BOOTING:
-        if (set_red_off()) {
-            (void)start_blink("GREEN", USER_LED_SLOW_BLINK_MS, &s_green_runtime);
-        }
-        break;
-    case USER_LED_STATE_WIFI_CONNECTING:
-        if (set_red_off()) {
-            (void)start_blink("GREEN", USER_LED_MID_BLINK_MS, &s_green_runtime);
-        }
-        break;
-    case USER_LED_STATE_SERVER_READY:
-        if (set_red_off()) {
-            (void)start_blink("GREEN", USER_LED_READY_BLINK_MS, &s_green_runtime);
-        }
-        break;
-    case USER_LED_STATE_TRANSFER:
-        if (set_green_off()) {
-            (void)start_blink("RED", USER_LED_FAST_BLINK_MS, &s_red_runtime);
-        }
-        break;
-    case USER_LED_STATE_EPD_REFRESH:
-    case USER_LED_STATE_WIFI_FAIL:
-        if (set_green_off()) {
-            (void)start_blink("RED", USER_LED_MID_BLINK_MS, &s_red_runtime);
-        }
-        break;
-    case USER_LED_STATE_OPERATION_FAIL:
-        if (set_green_off()) {
-            (void)start_blink("RED", USER_LED_FAST_BLINK_MS, &s_red_runtime);
-        }
-        break;
-    case USER_LED_STATE_SUCCESS:
-        if (set_red_off()) {
-            set_green_solid();
-        }
-        break;
-    default:
-        set_red_off();
-        set_green_off();
-        break;
+    if (!s_red_delay_armed) {
+        return portMAX_DELAY;
     }
+
+    TickType_t now = xTaskGetTickCount();
+    int32_t remaining = (int32_t)(s_red_blink_deadline - now);
+    return remaining > 0 ? (TickType_t)remaining : 0;
 }
 
 static void UserLedStatus_Task(void *arg)
 {
     (void)arg;
-    user_led_state_t last_state = (user_led_state_t)-1;
 
     for (;;) {
-        user_led_state_t state = s_led_state;
-        if (state != last_state) {
-            apply_led_state(state);
-            last_state = state;
+        user_led_activity_event_t event = {0};
+        TickType_t wait_ticks;
+
+        xSemaphoreTake(s_led_control_mutex, portMAX_DELAY);
+        wait_ticks = red_delay_wait_ticks();
+        xSemaphoreGive(s_led_control_mutex);
+
+        if (xQueueReceive(s_led_event_queue, &event, wait_ticks) == pdTRUE) {
+            xSemaphoreTake(s_led_control_mutex, portMAX_DELAY);
+            handle_activity_event(&event);
+            xSemaphoreGive(s_led_control_mutex);
+            continue;
         }
 
-        if (state == USER_LED_STATE_SUCCESS) {
-            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(USER_LED_SUCCESS_HOLD_MS)) == 0 &&
-                s_led_state == USER_LED_STATE_SUCCESS) {
-                s_led_state = USER_LED_STATE_SERVER_READY;
-            }
-        } else {
-            (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        xSemaphoreTake(s_led_control_mutex, portMAX_DELAY);
+        if (s_red_delay_armed && !s_shutdown_pending && activity_total() > 0) {
+            s_red_delay_armed = false;
+            (void)start_blink("RED", USER_LED_FAST_BLINK_MS, &s_red_runtime);
         }
+        xSemaphoreGive(s_led_control_mutex);
     }
 }
 
 esp_err_t UserLedStatus_Init(void)
 {
 #if USER_LED_STATUS_ENABLE
-    // Initialize CH583 LED outputs by sending both LEDs to the configured off level.
-    // 初始化 CH583 LED 输出，先把两个灯都设置为配置的关闭电平。
-    ESP_LOGI(TAG, "LED backend=CH583 green=%s%d red=%s%d on=%s off=%s",
-             USER_LED_CH583_GREEN_PORT,
-             USER_LED_CH583_GREEN_PIN,
-             USER_LED_CH583_RED_PORT,
-             USER_LED_CH583_RED_PIN,
-             USER_LED_CH583_ON_LEVEL,
-             USER_LED_CH583_OFF_LEVEL);
+    if (s_led_control_mutex == NULL) {
+        s_led_control_mutex = xSemaphoreCreateMutex();
+        if (s_led_control_mutex == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (s_led_event_queue == NULL) {
+        s_led_event_queue = xQueueCreate(USER_LED_ACTIVITY_QUEUE_LENGTH,
+                                         sizeof(user_led_activity_event_t));
+        if (s_led_event_queue == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    ESP_LOGI(TAG, "LED backend=CH583 work_green_ms=%u red_delay_ms=%u red_blink_ms=%u",
+             (unsigned int)USER_LED_WORK_BLINK_MS,
+             (unsigned int)USER_LED_ACTIVITY_BLINK_DELAY_MS,
+             (unsigned int)USER_LED_FAST_BLINK_MS);
+
     (void)ch583_wifi_uart_send_led_blink_stop("RED");
     (void)ch583_wifi_uart_send_led_blink_stop("GREEN");
-    set_all_off();
+    set_red(false);
+    set_green(false);
     s_red_runtime = (user_led_runtime_t){.mode = USER_LED_MODE_OFF};
     s_green_runtime = (user_led_runtime_t){.mode = USER_LED_MODE_OFF};
-    s_led_state = USER_LED_STATE_BOOTING;
+    memset(s_activity_count, 0, sizeof(s_activity_count));
+    s_shutdown_pending = false;
+    s_red_delay_armed = false;
+
+    if (!start_blink("GREEN", USER_LED_WORK_BLINK_MS, &s_green_runtime)) {
+        ESP_LOGW(TAG, "start GREEN work light failed");
+    }
+
     if (s_led_task == NULL) {
         BaseType_t task_ret = xTaskCreate(UserLedStatus_Task,
                                           "led_status",
@@ -241,7 +251,6 @@ esp_err_t UserLedStatus_Init(void)
             return ESP_ERR_NO_MEM;
         }
     }
-
     return ESP_OK;
 #else
     ESP_LOGW(TAG, "LED status disabled by USER_LED_STATUS_ENABLE");
@@ -259,10 +268,60 @@ void UserLedStatus_Set(user_led_state_t state)
         return;
     }
     s_led_state = state;
-    if (s_led_task != NULL) {
-        xTaskNotifyGive(s_led_task);
-    }
+    ESP_LOGI(TAG, "business state=%d (GREEN independent, RED activity-driven)", state_value);
 #else
     (void)state;
+#endif
+}
+
+static void post_activity_event(user_led_activity_t source, bool begin)
+{
+#if USER_LED_STATUS_ENABLE
+    if (source >= USER_LED_ACTIVITY_COUNT || s_led_event_queue == NULL || s_shutdown_pending) {
+        return;
+    }
+    user_led_activity_event_t event = {
+        .source = source,
+        .begin = begin,
+    };
+    if (xQueueSend(s_led_event_queue, &event, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGW(TAG, "LED activity queue failed source=%d begin=%d", (int)source, begin ? 1 : 0);
+    }
+#else
+    (void)source;
+    (void)begin;
+#endif
+}
+
+void UserLedStatus_ActivityBegin(user_led_activity_t source)
+{
+    post_activity_event(source, true);
+}
+
+void UserLedStatus_ActivityEnd(user_led_activity_t source)
+{
+    post_activity_event(source, false);
+}
+
+void UserLedStatus_PreparePowerOff(void)
+{
+#if USER_LED_STATUS_ENABLE
+    if (s_led_control_mutex == NULL) {
+        return;
+    }
+
+    xSemaphoreTake(s_led_control_mutex, portMAX_DELAY);
+    s_shutdown_pending = true;
+    s_red_delay_armed = false;
+    memset(s_activity_count, 0, sizeof(s_activity_count));
+
+    // Always send the physical stop/off commands before every POWER_OFF attempt.
+    (void)ch583_wifi_uart_send_led_blink_stop("RED");
+    set_red(false);
+    s_red_runtime = (user_led_runtime_t){.mode = USER_LED_MODE_OFF};
+    (void)ch583_wifi_uart_send_led_blink_stop("GREEN");
+    set_green(false);
+    s_green_runtime = (user_led_runtime_t){.mode = USER_LED_MODE_OFF};
+    xSemaphoreGive(s_led_control_mutex);
 #endif
 }

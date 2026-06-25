@@ -1004,30 +1004,37 @@ esp_err_t ePaperPort::spiTransmitCommand(uint8_t commandBuf) {
 }
 
 esp_err_t ePaperPort::spiTransmitData(const uint8_t *dataBuffer, size_t dataLength) {
-     esp_err_t ret;
-     spi_transaction_t t;
-    // uint32_t i;
-
     Set_DCIOLevel(1);delay_us(1);  // fro data
 
     if (dataBuffer == nullptr || dataLength == 0) return ESP_OK;
 
 
     //LOG_Purple("%s>%d L=%d",__func__,__LINE__,dataLength);
-    //for(i=0;i<dataLength;i+=256)
-    //{                
+    constexpr size_t kSafeDmaTxChunk = 4092U;
+    const uint8_t *ptr = dataBuffer;
+    size_t remaining = dataLength;
+    while (remaining > 0) {
+           size_t chunk = remaining > kSafeDmaTxChunk ? kSafeDmaTxChunk : remaining;
+           spi_transaction_t t;
            memset(&t, 0, sizeof(t));
-           t.length    = 8*dataLength;
-           t.tx_buffer = dataBuffer;
-           ret = spi_device_polling_transmit(spi, &t); //Transmit!
+           t.length    = 8 * chunk;
+           t.tx_buffer = ptr;
+           esp_err_t ret = spi_device_polling_transmit(spi, &t); //Transmit!
            if (ret != ESP_OK) {
-               ESP_LOGE(TAG, "spiTransmitData failed, len=%u err=%s",
-                        (unsigned int)dataLength, esp_err_to_name(ret));
+               ESP_LOGE(TAG, "spiTransmitData failed, chunk=%u remaining=%u total=%u err=%s dma_free=%u dma_largest=%u internal_free=%u",
+                        (unsigned int)chunk,
+                        (unsigned int)remaining,
+                        (unsigned int)dataLength,
+                        esp_err_to_name(ret),
+                        (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
+                        (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+                        (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
                return ret;
            }
-    //}            
-    //return ret;
-    return ret;
+           ptr += chunk;
+           remaining -= chunk;
+    }
+    return ESP_OK;
 
     // spi_transaction_ext_t trans_ext;
     // while (dataLength >= NT61522_SPI_MAX_BUFFER_SIZE) {

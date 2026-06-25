@@ -127,3 +127,60 @@ esp_err_t app_nvs_read_str(const char *key, char *value, size_t value_size, cons
 
     return ret;
 }
+
+esp_err_t app_nvs_write_blob(const char *key, const void *value, size_t value_size)
+{
+    nvs_handle_t handle;
+    esp_err_t ret;
+
+    if (key == NULL || value == NULL || value_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ret = nvs_open("PhotoPainter", NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "open PhotoPainter failed key=%s ret=%s", key, esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = nvs_set_blob(handle, key, value, value_size);
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    }
+    nvs_close(handle);
+
+    ESP_LOGI(TAG, "write_blob key=%s size=%u ret=%s",
+             key, (unsigned int)value_size, esp_err_to_name(ret));
+    return ret;
+}
+
+esp_err_t app_nvs_read_blob(const char *key, void *value, size_t value_size)
+{
+    nvs_handle_t handle;
+    esp_err_t ret;
+    size_t required_size = 0;
+
+    if (key == NULL || value == NULL || value_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ret = nvs_open("PhotoPainter", NVS_READONLY, &handle);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "open PhotoPainter failed key=%s ret=%s", key, esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = nvs_get_blob(handle, key, NULL, &required_size);
+    if (ret == ESP_OK && required_size != value_size) {
+        ret = ESP_ERR_INVALID_SIZE;
+    }
+    if (ret == ESP_OK) {
+        required_size = value_size;
+        ret = nvs_get_blob(handle, key, value, &required_size);
+    }
+    nvs_close(handle);
+
+    ESP_LOGI(TAG, "read_blob key=%s size=%u ret=%s",
+             key, (unsigned int)value_size, esp_err_to_name(ret));
+    return ret;
+}

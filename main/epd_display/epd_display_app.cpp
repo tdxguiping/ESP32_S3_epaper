@@ -143,15 +143,14 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
                      (unsigned int)EPD_type,
                      (unsigned int)job.size);
         }
-        UserLedStatus_Set(USER_LED_STATE_EPD_REFRESH);
+        UserLedStatus_ActivityBegin(USER_LED_ACTIVITY_EPD);
         if (job.data == NULL || job.size == 0) {
             ESP_LOGW(TAG, "EPD display task skip empty job");
-            UserLedStatus_Set(USER_LED_STATE_OPERATION_FAIL);
         } else {
             ePaperDisplay.Set_EPD_which_one(job.epd_which_one);
             display_ret = EpdType_DisplayCurrent(ePaperDisplay, (const uint8_t *)job.data, job.size);
-            UserLedStatus_Set(display_ret == ESP_OK ? USER_LED_STATE_SUCCESS : USER_LED_STATE_OPERATION_FAIL);
         }
+        UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_EPD);
 
         ESP_LOGI(TAG, "EPD done target=%u type=%u name=%s size=%u total_ms=%lld",
                  (unsigned int)job.epd_which_one,

@@ -469,13 +469,18 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
 
     bool is_multipart = (strstr(content_type, "multipart/form-data") != NULL);
     bool is_small_json = (!is_multipart && remaining <= SERVER_NETWORK_STA_SMALL_JSON_BODY_MAX);
-    if (is_multipart) {
-        UserLedStatus_Set(USER_LED_STATE_TRANSFER);
+    bool network_led_active = is_network_ota || is_multipart ||
+                              remaining > SERVER_NETWORK_STA_SMALL_JSON_BODY_MAX;
+    if (network_led_active) {
+        UserLedStatus_ActivityBegin(USER_LED_ACTIVITY_NETWORK);
     }
     char *body = alloc_request_body_buffer(remaining + 1);
     if (body == NULL) {
         if (upload_mutex_locked) {
             xSemaphoreGive(s_upload_mutex);
+        }
+        if (network_led_active) {
+            UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_NETWORK);
         }
         ESP_LOGE(TAG, "body alloc failed len=%u", (unsigned int)remaining);
         return send_dataup_error_response(req,
@@ -495,6 +500,9 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         }
         if (upload_mutex_locked) {
             xSemaphoreGive(s_upload_mutex);
+        }
+        if (network_led_active) {
+            UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_NETWORK);
         }
         return ESP_FAIL;
     }
@@ -543,8 +551,8 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         xSemaphoreGive(s_upload_mutex);
     }
 
-    if (is_multipart) {
-        UserLedStatus_Set(resp_ret == ESP_OK ? USER_LED_STATE_SUCCESS : USER_LED_STATE_OPERATION_FAIL);
+    if (network_led_active) {
+        UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_NETWORK);
     }
 
     return resp_ret;

@@ -325,6 +325,7 @@ extern "C" {
 #define TDX_SLIDESHOW_DEEP_SLEEP_FLAG_VALUE 0xA5
 #define TDX_SLIDESHOW_NVS_FLAG_KEY "slide_ds"
 #define TDX_SLIDESHOW_NVS_LAST_FILE_KEY "slide_last"
+#define TDX_SLIDESHOW_NVS_PROGRESS_KEY "slide_progress"
 #define TDX_SLIDESHOW_RANDOM_NVS_KEY "slide_random"
 
 /* -------------------------------------------------------------------------- */
@@ -562,6 +563,10 @@ extern "C" {
 #define USER_LED_MID_BLINK_MS USER_LED_BLINK_LEVEL_2_MS
 #define USER_LED_SLOW_BLINK_MS USER_LED_BLINK_LEVEL_3_MS
 #define USER_LED_READY_BLINK_MS USER_LED_BLINK_LEVEL_4_MS
+#define USER_LED_WORK_BLINK_MS USER_LED_BLINK_LEVEL_2_MS
+#define USER_LED_ACTIVITY_BLINK_DELAY_MS 300
+#define USER_LED_ACTIVITY_QUEUE_LENGTH 16
+#define USER_LED_UART_LARGE_DATA_THRESHOLD 256
 #define USER_LED_SUCCESS_HOLD_MS 1000
 #define USER_LED_STATUS_TASK_STACK_SIZE (4 * 1024)
 #define USER_LED_STATUS_TASK_PRIORITY 3
@@ -583,6 +588,8 @@ esp_err_t app_nvs_read_u8(const char *key, uint8_t *value, uint8_t default_value
 esp_err_t app_nvs_write_u8(const char *key, uint8_t value);
 esp_err_t app_nvs_read_str(const char *key, char *value, size_t value_size, const char *default_value);
 esp_err_t app_nvs_write_str(const char *key, const char *value);
+esp_err_t app_nvs_read_blob(const char *key, void *value, size_t value_size);
+esp_err_t app_nvs_write_blob(const char *key, const void *value, size_t value_size);
 
 #ifdef __cplusplus
 }

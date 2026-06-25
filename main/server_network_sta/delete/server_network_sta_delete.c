@@ -11,6 +11,7 @@
 
 #include "esp_log.h"
 #include "file_serving_example_common.h"
+#include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_delete";
@@ -339,6 +340,10 @@ static void cleanup_slideshow_if_deleted(const char *base_path, const delete_req
         return;
     }
 
+    // Stop the old runtime before replacing its file list. If an EPD refresh is active,
+    // the slideshow task records the next pending image only after that refresh completes.
+    ServerNetworkStaSlideshow_Stop();
+
     char *buf = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
     char *json = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
     if (buf == NULL || json == NULL) {
@@ -368,6 +373,7 @@ static void cleanup_slideshow_if_deleted(const char *base_path, const delete_req
 
     size_t used = 0;
     size_t kept = 0;
+    bool config_updated = false;
     uint32_t interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
     bool random = parse_json_bool_default(buf, "random", false);
     (void)parse_json_u32_default(buf, "interval", TDX_SLIDESHOW_INTERVAL_MIN_SECONDS, &interval);
@@ -416,9 +422,16 @@ static void cleanup_slideshow_if_deleted(const char *base_path, const delete_req
     if (written >= 0 && used + (size_t)written < SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX) {
         fp = fopen(config_path, "wb");
         if (fp != NULL) {
-            fwrite(json, 1, strlen(json), fp);
-            fclose(fp);
-            ESP_LOGI(TAG, "delete updated slideshow config kept=%u", (unsigned int)kept);
+            size_t json_len = strlen(json);
+            size_t write_len = fwrite(json, 1, json_len, fp);
+            int close_ret = fclose(fp);
+            config_updated = write_len == json_len && close_ret == 0;
+            if (config_updated) {
+                ESP_LOGI(TAG, "delete updated slideshow config kept=%u", (unsigned int)kept);
+            } else {
+                ESP_LOGE(TAG, "delete update slideshow config failed written=%u expected=%u",
+                         (unsigned int)write_len, (unsigned int)json_len);
+            }
         }
     }
 
@@ -436,6 +449,14 @@ static void cleanup_slideshow_if_deleted(const char *base_path, const delete_req
 
     free(buf);
     free(json);
+
+    if (kept > 0 && config_updated) {
+        esp_err_t restart_ret = ServerNetworkStaSlideshow_StartSaved(base_path);
+        ESP_LOGI(TAG, "delete restart slideshow kept=%u ret=%s",
+                 (unsigned int)kept, esp_err_to_name(restart_ret));
+    } else if (kept > 0) {
+        ESP_LOGE(TAG, "delete keeps slideshow stopped because config update failed");
+    }
 }
 
 esp_err_t ServerNetworkStaDelete_ProcessJson(httpd_req_t *req,

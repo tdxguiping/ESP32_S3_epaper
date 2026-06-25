@@ -12,6 +12,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "ch583_wifi_uart_protocol.h"
+#include "led_status.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_wifi_time";
@@ -292,6 +293,7 @@ static void work_state_task(void *arg)
                          (unsigned long)elapsed,
                          (unsigned long)server_required_continue_work_time,
                          (unsigned long)wifi_standby_time_s);
+                UserLedStatus_PreparePowerOff();
                 int power_off_ret = ch583_wifi_uart_send_power_off();
                 if (power_off_ret < 0) {
                     ESP_LOGW(TAG, "CH583 power off command failed ret=%d", power_off_ret);

@@ -8,9 +8,9 @@ namespace {
 constexpr const char *kTag = "epd_133_dke";
 constexpr size_t kDkeImageSize = 1600U * 1200U / 2U;
 constexpr size_t kDkeFrameSize = kDkeImageSize / 2U;
-// English: Match the proven 13.3 XingTai transfer chunk to stay below the ESP-IDF SPI hardware limit.
-// 中文：沿用已验证的 13.3 兴泰分包大小，避免超过 ESP-IDF SPI 硬件单次传输上限。
-constexpr size_t kDkeSpiChunkSize = 30000U;
+// English: Use a small SPI chunk because PSRAM source data may need a temporary DMA TX buffer.
+// 中文：使用小 SPI 分包，因为 PSRAM 源数据可能需要临时 DMA TX buffer。
+constexpr size_t kDkeSpiChunkSize = 4092U;
 constexpr uint16_t kDkeBusyMaxLoops = 3000U;
 
 constexpr uint8_t kCmdAnTm = 0x74;

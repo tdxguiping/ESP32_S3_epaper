@@ -3,6 +3,7 @@
 
 
 #include "ch583_wifi_uart_protocol.h"
+#include "led_status.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 
@@ -94,6 +95,7 @@ static uint16_t s_ble_expected_part;
 static uint16_t s_ble_total;
 static size_t s_ble_len;
 static char s_ble_buf[CH583_WIFI_MAX_BLE_MESSAGE_LEN + 1];
+static bool s_ble_activity_active;
 static char s_ble_mac[CH583_WIFI_BLE_MAC_LEN + 1];
 static bool s_ble_mac_loaded;
 
@@ -552,6 +554,10 @@ static bool ch583_wifi_validate_len_and_part(const ch583_wifi_frame_t *frame)
 
 static void ch583_wifi_reset_ble_join(void)
 {
+    if (s_ble_activity_active) {
+        UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_UART_RX);
+        s_ble_activity_active = false;
+    }
     s_ble_join_active = false;
     s_ble_expected_part = 0;
     s_ble_total = 0;
@@ -561,14 +567,21 @@ static void ch583_wifi_reset_ble_join(void)
 static void ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame, ch583_wifi_ble_data_callback_t ble_data_callback)
 {
     if (frame->total == 1) {
+        bool activity_active = frame->arg_len >= USER_LED_UART_LARGE_DATA_THRESHOLD;
         CH583_WIFI_DEBUG_PRINTF("CH583_PROTO ble single seq=%u len=%u data=%s\r\n",
                (unsigned int)frame->seq,
                (unsigned int)frame->arg_len,
                frame->arg);
         ch583_wifi_send_ack(frame->seq);
+        if (activity_active) {
+            UserLedStatus_ActivityBegin(USER_LED_ACTIVITY_UART_RX);
+        }
         if (ble_data_callback != NULL) {
             // Pass only ARG Data to the WiFi JSON handler, not the whole UART protocol frame.
             ble_data_callback(frame->arg);
+        }
+        if (activity_active) {
+            UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_UART_RX);
         }
         return;
     }
@@ -576,6 +589,8 @@ static void ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame, ch583_wi
     if (frame->part == 1) {
         ch583_wifi_reset_ble_join();
         s_ble_join_active = true;
+        s_ble_activity_active = true;
+        UserLedStatus_ActivityBegin(USER_LED_ACTIVITY_UART_RX);
         s_ble_expected_part = 1;
         s_ble_total = frame->total;
         CH583_WIFI_DEBUG_PRINTF("CH583_PROTO ble join start seq=%u total=%u\r\n",
@@ -779,8 +794,16 @@ int ch583_wifi_uart_send_wifi_data(const char *message)
                (unsigned int)CH583_WIFI_MAX_WIFI_DATA_LEN);
         return -1;
     }
+    bool activity_active = len >= USER_LED_UART_LARGE_DATA_THRESHOLD;
+    if (activity_active) {
+        UserLedStatus_ActivityBegin(USER_LED_ACTIVITY_UART_TX);
+    }
     // Send WiFi-to-frontend data as one WIFI_DATA frame.
-    return ch583_wifi_send_frame("WIFI_DATA", message,1);
+    int ret = ch583_wifi_send_frame("WIFI_DATA", message,1);
+    if (activity_active) {
+        UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_UART_TX);
+    }
+    return ret;
 }
 
 const char *ch583_wifi_uart_get_ble_mac(void)
