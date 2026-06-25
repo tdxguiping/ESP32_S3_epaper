@@ -812,6 +812,24 @@ const char *ch583_wifi_uart_get_ble_mac(void)
     return s_ble_mac[0] != '\0' ? s_ble_mac : NULL;
 }
 
+int ch583_wifi_uart_send_wake_timer_on(uint32_t seconds)
+{
+    char arg[24];
+
+    if (seconds < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS ||
+        seconds > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
+        return -1;
+    }
+
+    snprintf(arg, sizeof(arg), "ON,%lu", (unsigned long)seconds);
+    return ch583_wifi_send_frame("WAKE_TIMER", arg, 1);
+}
+
+int ch583_wifi_uart_send_wake_timer_off(void)
+{
+    return ch583_wifi_send_frame("WAKE_TIMER", "OFF,0", 1);
+}
+
 int ch583_wifi_uart_send_power_off(void)
 {    
     return ch583_wifi_send_frame("POWER_OFF", "",1);

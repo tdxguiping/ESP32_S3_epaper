@@ -65,6 +65,7 @@
   - [10.9 接收方处理原则](#sec-10-9)
   - [10.10 当前工程源码对应关系](#sec-10-10)
   - [10.11 LED 闪烁控制](#sec-10-11)
+  - [10.12 WAKE_TIMER：WiFi 定时唤醒配置](#sec-10-12)
 - [11. CH583 BLE JSON 配网与唤醒](#sec-11)
   - [11.1 蓝牙配网协议：wifi](#sec-11-1)
   - [11.2 蓝牙唤醒 WiFi：wifi_wakeup](#sec-11-2)
@@ -2779,6 +2780,12 @@ sequenceDiagram
         TIMER->>WT: compare elapsed and required time
     end
     alt timeout and OTA not busy
+        TIMER->>TIMER: read slideshow control sw/interval
+        alt slideshow sw=1
+            WT->>CH583: WAKE_TIMER ON,<interval>
+        else slideshow sw=0
+            WT->>CH583: WAKE_TIMER OFF,0
+        end
         WT->>CH583: ch583_wifi_uart_send_power_off()
     end
 ```
@@ -2815,6 +2822,14 @@ work_state_task()
 ├─ elapsed > server_required_continue_work_time && OTA busy
 │  └─ ignored during OTA
 └─ elapsed > server_required_continue_work_time && OTA not busy
+   ├─ ServerNetworkStaSlideshow_IsSavedEnabled("/data")
+   ├─ sw=1
+   │  └─ ch583_wifi_uart_send_wake_timer_on(interval)
+   ├─ sw=0 / control missing / parse failed
+   │  └─ ch583_wifi_uart_send_wake_timer_off()
+   ├─ 超时后立即发送一次；之后每 20 秒重发一次 WAKE_TIMER / LED 关闭 / POWER_OFF
+   ├─ 关机流程中发给 CH583/CH585 的命令之间至少间隔 100ms
+   ├─ UserLedStatus_PreparePowerOff()
    └─ ch583_wifi_uart_send_power_off()
 ```
 
@@ -2827,6 +2842,7 @@ server_network_sta_wifi_work_time.c
 ├─ ServerNetworkStaWifiWorkTime_ProcessJson()
 ├─ ServerNetworkStaWifiWorkTime_SetAndSave()
 ├─ ServerNetworkStaWifiWorkTime_SetOtaInProgress()
+├─ configure_ch583_wake_timer_before_power_off()
 └─ work_state_task()
 ```
 
@@ -5369,6 +5385,7 @@ CH583 串口通信协议汇总
 │  ├─ ACK / ERR
 │  ├─ PONG
 │  ├─ WIFI_DATA
+│  ├─ WAKE_TIMER
 │  ├─ POWER_OFF
 │  └─ GPIO / GPIO_READ
 └─ ESP32-C5 工程业务层
@@ -5390,6 +5407,8 @@ ch583_wifi_send_frame()
 ch583_wifi_send_ack()
 ch583_wifi_send_err()
 ch583_wifi_uart_send_wifi_data()
+ch583_wifi_uart_send_wake_timer_on()
+ch583_wifi_uart_send_wake_timer_off()
 ch583_wifi_uart_send_power_off()
 ch583_wifi_uart_send_gpio()
 ```
@@ -5403,7 +5422,7 @@ ch583_wifi_uart_send_gpio()
 ```text
 存：
 - BLE_MAC 命令收到合法 MAC 后，保存到 PhotoPainter NVS 的 CH583_BLE_MAC_NVS_KEY。
-- GPIO / POWER_OFF / WIFI_DATA 等串口命令本身不保存持久化数据。
+- GPIO / POWER_OFF / WIFI_DATA / WAKE_TIMER 等串口命令本身不在 ESP32-C5 侧保存持久化数据；WAKE_TIMER 由 CH583/CH585 侧校验并保存。
 
 取：
 - ch583_wifi_load_ble_mac_from_nvs() 读取已保存 BLE MAC。
@@ -6271,6 +6290,7 @@ ESP32-C5 主动发送方向：
 ├─ send_base_info_to_mobile()
 │  └─ ch583_wifi_uart_send_wifi_data()
 ├─ ServerNetworkStaWifiWorkTime
+│  ├─ ch583_wifi_uart_send_wake_timer_on() / off()
 │  └─ ch583_wifi_uart_send_power_off()
 ├─ led_status.c
 │  ├─ 常亮/关闭: ch583_wifi_uart_send_gpio()
@@ -6288,6 +6308,8 @@ Ch583Uart_ReadAndProcess()
 Ch583Uart_HandleBleDataText()
 ch583_wifi_uart_process_bytes()
 ch583_wifi_uart_send_wifi_data()
+ch583_wifi_uart_send_wake_timer_on()
+ch583_wifi_uart_send_wake_timer_off()
 ch583_wifi_uart_send_power_off()
 ch583_wifi_uart_send_gpio()
 ch583_wifi_uart_send_led_blink()
@@ -6418,6 +6440,87 @@ UserLedStatus_Set()
 当前仓库只包含 ESP32-C5 的发送接口；CH583 固件还需要实现 PB5/PB6 的独立定时事件以及上述 ACK/ERR 处理。
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-11)
+
+---
+
+### 10.12 WAKE_TIMER：WiFi 定时唤醒配置 <span id="sec-10-12"></span>
+
+该命令用于让 WiFi（ESP32-C5）在进入低功耗/关机前，告诉 CH583/CH585 下一次需要唤醒 WiFi 的时间。
+
+CH583/CH585 收到合法配置后立即保存，并在 WiFi 后续发送 `POWER_OFF` / `LOWPOWER` 后启动定时器。定时时间到后，CH583/CH585 拉高 WiFi 唤醒脚唤醒 WiFi。
+
+当前 CH585 方案使用 `PA6` 唤醒 WiFi；旧 CH583 方案如仍使用 `PB8`，以硬件版本为准。
+
+#### 10.12.1 开启定时唤醒
+
+WiFi 发送：
+
+```text
+@#V1|SEQ=<seq>|CMD=WAKE_TIMER|LEN=<len>|PART=1|TOTAL=1|ARG=ON,<seconds>|CRC=<crc>^&
+```
+
+参数：
+
+```text
+seconds 单位：秒
+允许范围：60..604800
+```
+
+示例：
+
+```text
+@#V1|SEQ=10|CMD=WAKE_TIMER|LEN=7|PART=1|TOTAL=1|ARG=ON,3600|CRC=XXXX^&
+```
+
+含义：WiFi 进入低功耗后，CH583/CH585 在 3600 秒后唤醒 WiFi。
+
+CH583/CH585 校验并保存成功后回复：
+
+```text
+ACK,<received_seq>
+```
+
+#### 10.12.2 关闭定时唤醒
+
+WiFi 发送：
+
+```text
+@#V1|SEQ=<seq>|CMD=WAKE_TIMER|LEN=5|PART=1|TOTAL=1|ARG=OFF,0|CRC=<crc>^&
+```
+
+CH583/CH585 校验并保存成功后回复：
+
+```text
+ACK,<received_seq>
+```
+
+#### 10.12.3 错误返回
+
+```text
+ON,59           ERR,<received_seq>,BAD_TIME
+ON,604801       ERR,<received_seq>,BAD_TIME
+ON,abc          ERR,<received_seq>,BAD_TIME
+OFF,1           ERR,<received_seq>,BAD_TIME
+参数格式错误     ERR,<received_seq>,BAD_ARG
+PART/TOTAL 错误 ERR,<received_seq>,BAD_PART
+LEN 错误         ERR,<received_seq>,BAD_LEN
+```
+
+ESP32-C5 侧使用：
+
+```text
+work_state_task() 工作时间到期且 OTA 不忙时：
+├─ 读取 slideshow control
+├─ sw=1：ch583_wifi_uart_send_wake_timer_on(interval)
+├─ sw=0：ch583_wifi_uart_send_wake_timer_off()
+├─ 超时后立即发送一次；之后每 20 秒重发一次 WAKE_TIMER / LED 关闭 / POWER_OFF
+├─ 关机流程中发给 CH583/CH585 的命令之间至少间隔 100ms
+└─ 然后继续 ch583_wifi_uart_send_power_off()
+```
+
+`WAKE_TIMER` 配置失败只打印 warning，不阻止后续 `POWER_OFF`；这样 CH583/CH585 固件暂未支持新命令时，也不会破坏原有关机链路。超时后关机流程按 20 秒节流重发，避免每秒重复写 CH583/CH585 配置，同时确保 CH583/CH585 最终收到关机请求。
+
+[⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-12)
 
 ---
 
@@ -7089,6 +7192,17 @@ EPD_Check_Busy()
 ePaperPort methods used by EpdType_* drivers
 ```
 
+SPI DMA 分包规则：
+
+```text
+EPD 显示数据可能来自 PSRAM。ESP-IDF SPI driver 对 PSRAM 源数据可能临时申请内部 DMA TX buffer；
+如果一次发送 30000/32768 bytes，在内部 DMA heap 碎片化时可能返回 ESP_ERR_NO_MEM。
+因此 EPD 大数据发送统一使用 NT61522_SPI_SAFE_DMA_TX_CHUNK=4092 bytes 小分包。
+spiTransmitData() 会兜底拆包；EPD_Sendbuffera()、EPD_WriteMultiData_ToMaster/Slave/Both() 也按同一安全分包发送。
+800x480、1024x600、1360x480、800x480 4S、DKE、mofang 等驱动若走上述底层函数，即自动受该规则保护。
+1024x600 旧直接 polling 路径本身使用 256 bytes 小包，不需要额外修改。
+```
+
 存 / 取信息（含条件限制）：
 
 ```text
@@ -7160,6 +7274,7 @@ type=EPD_TYPE_800_480, width=800, height=480, display_size=192000, color=BWR_3_C
 存：
 - 本驱动不写 SD/NVS；只向 EPD 控制器写命令和显示数据。
 - 是否保存屏幕类型由 EpdType_SetAndSave() 统一处理，不在本文件直接保存。
+- 帧数据通过 spiTransmitData() 发送，按 NT61522_SPI_SAFE_DMA_TX_CHUNK=4092 bytes 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
 
 取：
 - 从 RAM buffer 读取待显示数据。
@@ -7227,6 +7342,7 @@ type=EPD_TYPE_1024_600, width=1024, height=600, display_size=307200, color=BWYRB
 存：
 - 本驱动不写 SD/NVS；只向 EPD 控制器写命令和显示数据。
 - 是否保存屏幕类型由 EpdType_SetAndSave() 统一处理，不在本文件直接保存。
+- 帧数据通过 spiTransmitData() 发送，按 NT61522_SPI_SAFE_DMA_TX_CHUNK=4092 bytes 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
 
 取：
 - 从 RAM buffer 读取待显示数据。
@@ -7356,6 +7472,12 @@ type=EPD_TYPE_1600_1200_79, width=1600, height=1200, display_size=960000, color=
 名称：EPD_1600_1200_79_XingTai
 ```
 
+实现说明：
+
+```text
+- 帧数据通过 spiTransmitData() 发送，按 NT61522_SPI_SAFE_DMA_TX_CHUNK=4092 bytes 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
+```
+
 存 / 取信息（含条件限制）：
 
 ```text
@@ -7422,6 +7544,12 @@ EpdType16001200_133_NT61522_DisplayNet()
 ```text
 type=EPD_TYPE_1600_1200_133, width=1600, height=1200, display_size=960000, color=BWYRBG_6_Color
 名称：EPD_1600_1200_133_XingTai
+```
+
+实现说明：
+
+```text
+- 帧数据通过 spiTransmitData() 发送，按 NT61522_SPI_SAFE_DMA_TX_CHUNK=4092 bytes 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
 ```
 
 存 / 取信息（含条件限制）：

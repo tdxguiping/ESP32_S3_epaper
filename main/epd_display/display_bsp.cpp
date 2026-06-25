@@ -516,14 +516,14 @@ void ePaperPort::EPD_Sendbuffera(uint8_t *Data, uint16_t len) {
         return;
     }
 
-    // 参考 spiTransmitLargeData：大数据按 NT61522_SPI_MAX_BUFFER_SIZE 分包发送，避免超过 SPI DMA 单次传输上限。
+    // PSRAM 源数据可能触发 SPI driver 临时申请 DMA TX buffer，这里按安全小包发送。
     Set_DCIOLevel(1);
     Set_CSIOLevel(0);
 
     uint8_t *ptr = Data;
     int remaining = len;
     while (remaining > 0) {
-        int chunk = remaining > NT61522_SPI_MAX_BUFFER_SIZE ? NT61522_SPI_MAX_BUFFER_SIZE : remaining;
+        int chunk = remaining > (int)NT61522_SPI_SAFE_DMA_TX_CHUNK ? (int)NT61522_SPI_SAFE_DMA_TX_CHUNK : remaining;
         spi_transaction_ext_t trans_ext;
         memset(&trans_ext, 0, sizeof(trans_ext));
         trans_ext.command_bits = 0;
@@ -534,7 +534,13 @@ void ePaperPort::EPD_Sendbuffera(uint8_t *Data, uint16_t len) {
 
         esp_err_t ret = spi_device_transmit(spi, &trans_ext.base);
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "EPD_Sendbuffera failed chunk=%d remaining=%d ret=%d", chunk, remaining, (int)ret);
+            ESP_LOGE(TAG, "EPD_Sendbuffera failed chunk=%d remaining=%d ret=%s dma_free=%u dma_largest=%u internal_free=%u",
+                     chunk,
+                     remaining,
+                     esp_err_to_name(ret),
+                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
+                     (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
             break;
         }
         ptr += chunk;
@@ -577,7 +583,7 @@ void ePaperPort::EPD_WriteMultiData_ToMaster(uint8_t *data, unsigned int len) {
     uint8_t *ptr = data;
     unsigned int remaining = len;
     while (remaining > 0) {
-        unsigned int chunk = remaining > NT61522_SPI_MAX_BUFFER_SIZE ? NT61522_SPI_MAX_BUFFER_SIZE : remaining;
+        unsigned int chunk = remaining > NT61522_SPI_SAFE_DMA_TX_CHUNK ? NT61522_SPI_SAFE_DMA_TX_CHUNK : remaining;
         spi_transaction_ext_t trans_ext;
         memset(&trans_ext, 0, sizeof(trans_ext));
         trans_ext.command_bits = 0;
@@ -587,7 +593,13 @@ void ePaperPort::EPD_WriteMultiData_ToMaster(uint8_t *data, unsigned int len) {
         trans_ext.base.flags = SPI_TRANS_VARIABLE_CMD;
         esp_err_t ret = spi_device_transmit(spi, &trans_ext.base);
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "EPD_WriteMultiData_ToMaster failed chunk=%u remaining=%u ret=%d", chunk, remaining, (int)ret);
+            ESP_LOGE(TAG, "EPD_WriteMultiData_ToMaster failed chunk=%u remaining=%u ret=%s dma_free=%u dma_largest=%u internal_free=%u",
+                     chunk,
+                     remaining,
+                     esp_err_to_name(ret),
+                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
+                     (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
             break;
         }
         ptr += chunk;
@@ -605,7 +617,7 @@ void ePaperPort::EPD_WriteMultiData_ToSlave(uint8_t *data, unsigned int len) {
     uint8_t *ptr = data;
     unsigned int remaining = len;
     while (remaining > 0) {
-        unsigned int chunk = remaining > NT61522_SPI_MAX_BUFFER_SIZE ? NT61522_SPI_MAX_BUFFER_SIZE : remaining;
+        unsigned int chunk = remaining > NT61522_SPI_SAFE_DMA_TX_CHUNK ? NT61522_SPI_SAFE_DMA_TX_CHUNK : remaining;
         spi_transaction_ext_t trans_ext;
         memset(&trans_ext, 0, sizeof(trans_ext));
         trans_ext.command_bits = 0;
@@ -615,7 +627,13 @@ void ePaperPort::EPD_WriteMultiData_ToSlave(uint8_t *data, unsigned int len) {
         trans_ext.base.flags = SPI_TRANS_VARIABLE_CMD;
         esp_err_t ret = spi_device_transmit(spi, &trans_ext.base);
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "EPD_WriteMultiData_ToSlave failed chunk=%u remaining=%u ret=%d", chunk, remaining, (int)ret);
+            ESP_LOGE(TAG, "EPD_WriteMultiData_ToSlave failed chunk=%u remaining=%u ret=%s dma_free=%u dma_largest=%u internal_free=%u",
+                     chunk,
+                     remaining,
+                     esp_err_to_name(ret),
+                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
+                     (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
             break;
         }
         ptr += chunk;
@@ -645,7 +663,7 @@ void ePaperPort::EPD_WriteMultiData_ToBoth(uint8_t *data, unsigned int len) {
     uint8_t *ptr = data;
     unsigned int remaining = len;
     while (remaining > 0) {
-        unsigned int chunk = remaining > NT61522_SPI_MAX_BUFFER_SIZE ? NT61522_SPI_MAX_BUFFER_SIZE : remaining;
+        unsigned int chunk = remaining > NT61522_SPI_SAFE_DMA_TX_CHUNK ? NT61522_SPI_SAFE_DMA_TX_CHUNK : remaining;
         spi_transaction_ext_t trans_ext;
         memset(&trans_ext, 0, sizeof(trans_ext));
         trans_ext.command_bits = 0;
@@ -655,7 +673,13 @@ void ePaperPort::EPD_WriteMultiData_ToBoth(uint8_t *data, unsigned int len) {
         trans_ext.base.flags = SPI_TRANS_VARIABLE_CMD;
         esp_err_t ret = spi_device_transmit(spi, &trans_ext.base);
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "EPD_WriteMultiData_ToBoth failed chunk=%u remaining=%u ret=%d", chunk, remaining, (int)ret);
+            ESP_LOGE(TAG, "EPD_WriteMultiData_ToBoth failed chunk=%u remaining=%u ret=%s dma_free=%u dma_largest=%u internal_free=%u",
+                     chunk,
+                     remaining,
+                     esp_err_to_name(ret),
+                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
+                     (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
             break;
         }
         ptr += chunk;
@@ -1010,11 +1034,10 @@ esp_err_t ePaperPort::spiTransmitData(const uint8_t *dataBuffer, size_t dataLeng
 
 
     //LOG_Purple("%s>%d L=%d",__func__,__LINE__,dataLength);
-    constexpr size_t kSafeDmaTxChunk = 4092U;
     const uint8_t *ptr = dataBuffer;
     size_t remaining = dataLength;
     while (remaining > 0) {
-           size_t chunk = remaining > kSafeDmaTxChunk ? kSafeDmaTxChunk : remaining;
+           size_t chunk = remaining > NT61522_SPI_SAFE_DMA_TX_CHUNK ? NT61522_SPI_SAFE_DMA_TX_CHUNK : remaining;
            spi_transaction_t t;
            memset(&t, 0, sizeof(t));
            t.length    = 8 * chunk;

@@ -674,6 +674,13 @@ static bool read_slideshow_control_on(const char *base_path, uint32_t *interval,
     return sw == 1;
 }
 
+bool ServerNetworkStaSlideshow_IsSavedEnabled(const char *base_path,
+                                              uint32_t *interval,
+                                              bool *random)
+{
+    return read_slideshow_control_on(base_path, interval, random);
+}
+
 static void slideshow_task(void *arg)
 {
     slideshow_runtime_t *runtime = (slideshow_runtime_t *)arg;

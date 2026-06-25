@@ -13,11 +13,13 @@
 #include "nvs.h"
 #include "ch583_wifi_uart_protocol.h"
 #include "led_status.h"
+#include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_wifi_time";
 static TickType_t s_wifi_work_start_tick = 0;
 static TickType_t s_last_network_data_tick = 0;
+static TickType_t s_last_power_off_send_tick = 0;
 static TaskHandle_t s_work_state_task = NULL;
 static bool s_ota_in_progress = false;
 
@@ -85,6 +87,7 @@ static void apply_work_state_blob(const user_work_state_nvs_blob_t *blob)
 
     s_wifi_work_start_tick = xTaskGetTickCount();
     s_last_network_data_tick = s_wifi_work_start_tick;
+    s_last_power_off_send_tick = 0;
     ESP_LOGI(TAG,
              "restore globals sleep_time=%u working_time=%lu continue=%lu standby=%lu",
              (unsigned int)sleep_time,
@@ -245,6 +248,33 @@ static uint32_t update_working_time_seconds(void)
 }
 
 //调用   ServerNetworkStaWifiWorkTime_OnNetworkData  从头计
+// Configure CH583/CH585 wake timer before POWER_OFF so slideshow can resume after power cut.
+static void configure_ch583_wake_timer_before_power_off(void)
+{
+    uint32_t interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
+    bool random = false;
+    bool slideshow_on = ServerNetworkStaSlideshow_IsSavedEnabled("/data", &interval, &random);
+    int wake_ret;
+
+    if (slideshow_on) {
+        if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS ||
+            interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
+            interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
+        }
+        ESP_LOGI(TAG, "slideshow enabled before power off, wake timer on interval=%lu random=%d",
+                 (unsigned long)interval,
+                 random ? 1 : 0);
+        wake_ret = ch583_wifi_uart_send_wake_timer_on(interval);
+    } else {
+        ESP_LOGI(TAG, "slideshow disabled before power off, wake timer off");
+        wake_ret = ch583_wifi_uart_send_wake_timer_off();
+    }
+
+    if (wake_ret < 0) {
+        ESP_LOGW(TAG, "CH583 wake timer config failed ret=%d, continue power off", wake_ret);
+    }
+}
+
 static void work_state_task(void *arg)
 {
     uint8_t counter = 0;
@@ -288,17 +318,31 @@ static void work_state_task(void *arg)
                              (unsigned long)wifi_standby_time_s);
                 }
             } else {
+                TickType_t now = xTaskGetTickCount();
+                TickType_t retry_interval_ticks = pdMS_TO_TICKS(20000);
+                if (s_last_power_off_send_tick != 0 &&
+                    (now - s_last_power_off_send_tick) < retry_interval_ticks) {
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
+                s_last_power_off_send_tick = now;
+
                 ESP_LOGI(TAG,
                          "working_time timeout, send CH583 power off elapsed=%lu target=%lu standby=%lu",
                          (unsigned long)elapsed,
                          (unsigned long)server_required_continue_work_time,
                          (unsigned long)wifi_standby_time_s);
+                configure_ch583_wake_timer_before_power_off();
+                vTaskDelay(pdMS_TO_TICKS(100));
                 UserLedStatus_PreparePowerOff();
+                vTaskDelay(pdMS_TO_TICKS(100));
                 int power_off_ret = ch583_wifi_uart_send_power_off();
                 if (power_off_ret < 0) {
                     ESP_LOGW(TAG, "CH583 power off command failed ret=%d", power_off_ret);
                 }
             }
+        } else {
+            s_last_power_off_send_tick = 0;
         }
 
         vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
@@ -407,6 +451,7 @@ void ServerNetworkStaWifiWorkTime_OnNetworkData(void)
     working_time = 0;
     s_last_network_data_tick = xTaskGetTickCount();
     s_wifi_work_start_tick = s_last_network_data_tick;
+    s_last_power_off_send_tick = 0;
     if (server_required_continue_work_time > 0) {
         ESP_LOGI(TAG, "activity reset working_time continue=%lu elapsed_ms=%u",
                  (unsigned long)server_required_continue_work_time,
@@ -427,6 +472,7 @@ esp_err_t ServerNetworkStaWifiWorkTime_Init(void)
 
     s_wifi_work_start_tick = xTaskGetTickCount();
     s_last_network_data_tick = s_wifi_work_start_tick;
+    s_last_power_off_send_tick = 0;
 
     esp_err_t ret = load_work_state_from_nvs(&blob, &stored_size);
     if (ret == ESP_OK) {
@@ -481,6 +527,7 @@ esp_err_t ServerNetworkStaWifiWorkTime_SetAndSave(uint32_t seconds)
     working_time = 0;
     s_wifi_work_start_tick = xTaskGetTickCount();
     s_last_network_data_tick = s_wifi_work_start_tick;
+    s_last_power_off_send_tick = 0;
 
     ESP_LOGI(TAG, "set work time requested=%lu continue=%lu standby=%lu",
              (unsigned long)seconds,

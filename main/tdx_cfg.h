@@ -36,7 +36,7 @@ extern "C" {
 // Enable Auto Light-sleep and WiFi modem-sleep after STA gets IP.
 // Set to 0 to keep CPU at 240 MHz and WiFi PS disabled without changing sdkconfig.
 #ifndef TDX_AUTO_LIGHT_SLEEP_ENABLE
-#define TDX_AUTO_LIGHT_SLEEP_ENABLE 0
+#define TDX_AUTO_LIGHT_SLEEP_ENABLE 1
 #endif
 
 /* -------------------------------------------------------------------------- */

@@ -455,7 +455,6 @@ void ePaperPort::EpdType16001200_79_NT61522_DisplayNet(const uint8_t *imageData,
 #if 1
     /* 中文注释：       主屏区域总长度边界       0 ~ (1600*300 - 1) 属于 MASTER       >= 1600*300 属于 SLAVE    */
     const uint32_t master_limit = 1600U * 300U;//=480000;
-    //const uint32_t master_limit = 16U * 30000U;//=480000;
     /* 中文注释：       参数保护       按你的描述 imageSize 范围为 1 ~ 900    */
     if (imageData == nullptr || imageSize != expected_image_size) {
         ESP_LOGE(TAG, "EPD 1600x1200 7.9 image size invalid input=%u expected=%u",
@@ -474,7 +473,7 @@ void ePaperPort::EpdType16001200_79_NT61522_DisplayNet(const uint8_t *imageData,
     while (remain > 0) {
         /* 中文注释：           单次最多处理 300        */
         //uint32_t chunk = (remain > 300) ? 300U : (uint32_t)remain;
-        uint32_t chunk = (remain > 30000) ? 30000U : (uint32_t)remain;
+        uint32_t chunk = (remain > NT61522_SPI_SAFE_DMA_TX_CHUNK) ? (uint32_t)NT61522_SPI_SAFE_DMA_TX_CHUNK : (uint32_t)remain;
         /* 中文注释：           情况1：当前还在 MASTER 区域        */
 
         //LOG_Cyan("image_countger_ %ld, master_limit %ld",image_countger_, master_limit);

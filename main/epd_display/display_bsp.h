@@ -319,6 +319,7 @@ class ePaperPort {
 
 
     static constexpr size_t NT61522_SPI_MAX_BUFFER_SIZE = 32768;
+    static constexpr size_t NT61522_SPI_SAFE_DMA_TX_CHUNK = 4092;
 
     uint8_t nt61522_chip_id_[3] = {0};
   

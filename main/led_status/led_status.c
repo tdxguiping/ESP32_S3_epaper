@@ -317,9 +317,12 @@ void UserLedStatus_PreparePowerOff(void)
 
     // Always send the physical stop/off commands before every POWER_OFF attempt.
     (void)ch583_wifi_uart_send_led_blink_stop("RED");
+    vTaskDelay(pdMS_TO_TICKS(100));
     set_red(false);
+    vTaskDelay(pdMS_TO_TICKS(100));
     s_red_runtime = (user_led_runtime_t){.mode = USER_LED_MODE_OFF};
     (void)ch583_wifi_uart_send_led_blink_stop("GREEN");
+    vTaskDelay(pdMS_TO_TICKS(100));
     set_green(false);
     s_green_runtime = (user_led_runtime_t){.mode = USER_LED_MODE_OFF};
     xSemaphoreGive(s_led_control_mutex);
