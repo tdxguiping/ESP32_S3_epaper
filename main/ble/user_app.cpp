@@ -1,4 +1,5 @@
 #include "user_app.h"
+#include "debug_output.h"
 #include "tdx_cfg.h"
 
 #include <stdio.h>
@@ -249,12 +250,12 @@ static void print_ble_received_data(const uint8_t *data, uint16_t len)
         return;
     }
 
-    printf("BLE RX len=%u: ", (unsigned int)len);
+    UserDebugOutput_Printf("BLE RX len=%u: ", (unsigned int)len);
     for (uint16_t i = 0; i < len; i++) {
-        printf("%02X ", data[i]);
+        UserDebugOutput_Printf("%02X ", data[i]);
     }
-    printf("\r\n");
-    printf("BLE RX text: %.*s\r\n", len, (const char *)data);
+    UserDebugOutput_Printf("\r\n");
+    UserDebugOutput_Printf("BLE RX text: %.*s\r\n", len, (const char *)data);
 }
 
 static void dump_handle_table(void)

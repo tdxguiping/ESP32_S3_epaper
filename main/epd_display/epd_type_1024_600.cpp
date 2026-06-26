@@ -1,5 +1,6 @@
 #include "epd_type_1024_600.h"
 #include "display_bsp.h"
+#include "debug_output.h"
 #include "esp_timer.h"
 
 void ePaperPort::EPD_Check_Busy_600(uint16_t loop_counter)
@@ -14,12 +15,12 @@ void ePaperPort::EPD_Check_Busy_600(uint16_t loop_counter)
     while (1) {
         int level = Get_BusyIOLevel();
         if (level) {
-            printf("Check Busy over\r\n");
+            UserDebugOutput_Printf("Check Busy over\r\n");
             return;
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
         i++;
-        printf("$%d.", i);
+        UserDebugOutput_Printf("$%d.", i);
 
         if (i > loop_counter) {
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
@@ -178,7 +179,7 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
 
             if (chunk <= master_remain) {
                 /* 中文注释：                   当前这一段完全落在 MASTER 区域                */
-               // printf("M1:chunk=%ld,image_countger_=%ld\r\n",chunk,image_countger_);
+               // UserDebugOutput_Printf("M1:chunk=%ld,image_countger_=%ld\r\n",chunk,image_countger_);
                 //setPinCs(TARGET_MASTER, chunk);
                 EPD_Select_Master();
                 //spiTransmitCommand(R10_DTM);
@@ -193,7 +194,7 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
             } else {
                 /* 中文注释：                   当前这一段跨越了 MASTER -> SLAVE 边界                   先发送 MASTER 剩余部分                */
                 if (master_remain > 0U) {
-                    // printf("M2:master_remain=%ld,image_countger_=%ld\r\n",master_remain,image_countger_);
+                    // UserDebugOutput_Printf("M2:master_remain=%ld,image_countger_=%ld\r\n",master_remain,image_countger_);
                     //setPinCs(TARGET_MASTER, master_remain);
                     EPD_Select_Master();
                     //spiTransmitCommand(R10_DTM);
@@ -214,7 +215,7 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
                 {
                     uint32_t slave_part = chunk - master_remain;
                     if (slave_part > 0U) {
-                       // printf("S2:slave_part=%ld,image_countger_=%ld\r\n",slave_part,image_countger_);
+                       // UserDebugOutput_Printf("S2:slave_part=%ld,image_countger_=%ld\r\n",slave_part,image_countger_);
                         //setPinCs(TARGET_SLAVE, slave_part);
                         EPD_Select_Slave();
                         if (u8flag_ == 0xAA)
@@ -235,7 +236,7 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
             }
         } else {
             /* 中文注释：               情况2：当前已经在 SLAVE 区域            */
-            //printf("S1:chunk=%ld,image_countger_=%ld\r\n",chunk,image_countger_);
+            //UserDebugOutput_Printf("S1:chunk=%ld,image_countger_=%ld\r\n",chunk,image_countger_);
             //setPinCs(TARGET_SLAVE, chunk);
             EPD_Select_Slave();
             if (u8flag_ == 0xAA)
@@ -275,7 +276,7 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
         return;
     }
 
-   // printf("\r\n L=%ld =%d  =%d \r\n",image_countger_,imageSize,s_net_buf_len+imageSize);
+   // UserDebugOutput_Printf("\r\n L=%ld =%d  =%d \r\n",image_countger_,imageSize,s_net_buf_len+imageSize);
     //image_countger_ += (uint32_t)imageSize;
 
     /* 中文注释：
@@ -314,7 +315,7 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
         {
             if (s_send_to_a)
             {                
-               // printf("M> ");
+               // UserDebugOutput_Printf("M> ");
                // memset(s_net_buf, epd_red,256);
 
                 EPD_Select_Master();  
@@ -325,7 +326,7 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
             }
             else
             {
-                //printf("S> ");
+                //UserDebugOutput_Printf("S> ");
                 //memset(s_net_buf, epd_red,256);
 
                 EPD_Select_Slave();
@@ -343,7 +344,7 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
             }
             // else
             // {
-            //   printf("L=%ld\r\n",image_countger_);                
+            //   UserDebugOutput_Printf("L=%ld\r\n",image_countger_);                
             // }
 
             /* 中文注释：
@@ -359,7 +360,7 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
         }
     }
 
- //   printf("over %d\r\n",s_net_buf_len);                
+ //   UserDebugOutput_Printf("over %d\r\n",s_net_buf_len);                
 
     /* 中文注释：
        如果函数结束时 s_net_buf_len < 256

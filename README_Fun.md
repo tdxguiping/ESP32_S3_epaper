@@ -1,10 +1,14 @@
-# README_Fun.md
+﻿# README_Fun.md
 
-文件名约定：
+注意事项：
 
 ```text
-本文档文件名统一为 README_Fun.md。
-不要在脚本、报告或链接里写成 readme_fun.md；GitHub/Linux 路径大小写敏感，小写文件名不等价。
+1.本文档文件名统一为 README_Fun.md。不要在脚本、报告或链接里写成 readme_fun.md；GitHub/Linux 路径大小写敏感，小写文件名不等价。
+2.本文件"README_Fun.md"是代码修改依据。任何代码的增删改等都要以本文件为依据。
+3.如果修改了代码，如果需要的话，则需要同步文件"README_Fun.md"。
+4.README_Result_Code.md = 正式规范
+4.本项目使用芯片:ESP32-C5,其SDK等资料在 "C:\esp\v5.5.3\esp-idf"
+5.本文件在 visual Studio Code中打开，并按 Shift+Ctrl+V 查看，否则有乱码
 ```
 
 ## 目录 <span id="toc"></span>
@@ -19,12 +23,12 @@
   - [6.1 网络 HTTP 数据入口：dataUP](#sec-06-1)
   - [6.2 网络 HTTP 数据入口：ota](#sec-06-2)
   - [6.3 网络 HTTP 数据入口：small JSON](#sec-06-3)
-  - [7.5 ota：设备在线升级模块](#sec-07-5)
 - [7. 网络HTTP功能汇总](#sec-07)
   - [7.1 cast：投屏业务模块](#sec-07-1)
   - [7.2 cast2pic：投屏转图片缓存 / 显示](#sec-07-2)
   - [7.3 delete：图片 / 缓存文件删除逻辑](#sec-07-3)
   - [7.4 net_data：通用网络数据封装](#sec-07-4)
+  - [7.5 ota：设备在线升级模块](#sec-07-5)
   - [7.6 ping：网络连通检测](#sec-07-6)
   - [7.7 get_saved_images：取出本地存储图片](#sec-07-7)
   - [7.8 slideshow：图片轮播的文件列表，轮播间隔，是否随机](#sec-07-8)
@@ -261,6 +265,20 @@ main/main.c
       └─ 网络、存储、轮播启动后再配置自动 light sleep
 ```
 
+auto light sleep 接收链路注意事项：
+
+```text
+当前默认：
+#define TDX_AUTO_LIGHT_SLEEP_ENABLE 0
+
+原因：
+CH583 UART1、USB Serial/JTAG、WiFi HTTP 都属于外部异步输入链路。
+如果 ESP32-C5 在外部输入到达前进入 auto light sleep，唤醒阶段可能造成首包/首字节/首段数据不稳定。
+CH583 UART1 已验证：短帧低频发送时，开启 auto light sleep 会导致 @# 帧头丢失；关闭 TDX_AUTO_LIGHT_SLEEP_ENABLE 后问题消失。
+USB Serial/JTAG 和 WiFi HTTP 虽然机制不同，但同样可能受 auto light sleep 的唤醒延迟、USB FIFO/主机超时、WiFi PS/HTTP socket 超时影响。
+因此开发阶段和需要可靠收包时，默认保持 TDX_AUTO_LIGHT_SLEEP_ENABLE=0。
+```
+
 ---
 
 
@@ -315,6 +333,7 @@ partitions/v2/16m.csv
 tdx_cfg.h
 ├─ WiFi/HTTP/USB/OTA/body size 配置
 ├─ CH583 UART C5 引脚配置
+├─ 运行期调试日志输出配置
 ├─ EPD C5 SPI/GPIO 配置
 ├─ SD SDSPI C5 引脚配置
 ├─ CH583 LED 控制配置
@@ -339,9 +358,38 @@ tdx_cfg.h
    ├─ mount.c 读取 USER_SD_SPI_*
    ├─ display_bsp.cpp / epd_display_app.cpp 读取 USER_EPD_*
    ├─ ch583_uart_app.c 读取 USER_CH583_UART_*
+   ├─ debug_output.c 读取 USER_DEBUG_OUTPUT_* / USER_DEBUG_UART_*
    ├─ led_status.c 读取 USER_LED_CH583_*
    ├─ network_ota_upload.c 读取 SERVER_NETWORK_STA_OTA_*
    └─ server_network_sta.c 读取 USER_MDNS_*
+```
+
+串口和调试输出约定：
+
+```text
+CH583 通信串口：
+UART1
+TX = GPIO24
+RX = GPIO23
+baud = 115200
+
+运行期调试日志：
+默认仍使用 USB Serial/JTAG
+可在 tdx_cfg.h 中选择 UART0 或 USB+UART0
+UART0 TX = GPIO11
+UART0 RX = GPIO12
+UART0 baud = 921600
+```
+
+说明：
+
+```text
+sdkconfig / sdkconfig.defaults 控制 bootloader、ESP-IDF 早期 console 和系统默认 console。
+tdx_cfg.h 中的 USER_DEBUG_OUTPUT_TARGET 只控制 app_main() 调用 UserDebugOutput_Init() 之后的应用层日志输出。
+应用层 `ESP_LOGx` 和已接入 `UserDebugOutput_Printf()` 的直接 `printf` 调试输出，都按 USER_DEBUG_OUTPUT_TARGET 路由。
+如果要把 bootloader/早期 ESP-IDF console 也切到 UART0，必须修改 SDK configuration；只改 tdx_cfg.h 不会生效。
+当前默认不修改 SDK configuration，继续保留 USB Serial/JTAG console。
+UART0 调试启用时，GPIO11/GPIO12 不再作为 gpio_test 输出脚使用。
 ```
 
 ---
@@ -539,7 +587,7 @@ Result 定义建议：
 | WiFi 连接事件通知 | `1308` | WiFi 认证失败 |
 | WiFi 连接事件通知 | `1309` | WiFi 获取 IP 失败 |
 
-BLE / CH583 的普通 `wifi` 配网请求先同步确认“配置已保存并已提交 worker”，随后由后台任务通过 `wifi_result` 通知 `1307`（连接超时）、`1308`（认证失败）或 `1309`（已关联但未取得 IP）；`wifi_wakeup` 使用相同分类并通过 `wifi_wakeup_result` 通知。USB `/wifi` 仍只同步返回保存和 worker 提交结果。
+BLE / CH583 的普通 `wifi` 配网请求先同步确认“配置已保存并已提交 worker”，随后由后台任务通过 `wifi_result` 通知 `1307`（连接超时）、`1308`（认证失败）或 `1309`（已关联但未取得 IP）；`wifi_wakeup` 使用相同分类并通过 `wifi_wakeup_result` 通知。若 STA 已关联但主等待窗口内还没收到 `IP_EVENT_STA_GOT_IP`，会再等待一个短 `GOT_IP` 宽限窗口，避免 DHCP 稍慢时误报 `1309`。USB `/wifi` 仍只同步返回保存和 worker 提交结果。
 
 Mermaid 时序图：
 
@@ -652,6 +700,16 @@ HTTP server 内存与生命周期说明：
 file_server.c 中 server_data 为静态指针，example_start_file_server() 启动成功后持续使用。
 在当前不 stop/restart HTTP server 的流程下，这不是运行期泄漏。
 如果后续支持 WiFi 断开后 stop server、重连后 restart server，需要补充 httpd_stop(server)、free(server_data)、server_data=NULL 的释放路径。
+```
+
+auto light sleep / HTTP 接收注意事项：
+
+```text
+当前默认 TDX_AUTO_LIGHT_SLEEP_ENABLE=0，HTTP 接收可靠性优先。
+如果开启 auto light sleep，WiFi 省电、CPU 唤醒延迟、HTTP socket 超时可能叠加影响网络请求。
+表现可能是 /ping 偶发慢响应、POST /dataUP body 接收失败、httpd_req_recv() 返回错误、客户端认为连接超时或断开。
+尤其是 App/PC 发送小 JSON 后立即等待响应，或者发送大 body/multipart/OTA 时，不建议启用 auto light sleep。
+若后续必须开启，需要单独验证 WiFi PS、HTTP timeout、客户端重试策略和大包上传稳定性。
 ```
 
 ---
@@ -1172,8 +1230,9 @@ sequenceDiagram
         CORE->>EPD: ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
     end
     CORE->>SAVE: submit save task and wait result
+    CAST-->>APP: {func:cast_received,result:0,fileName}
     SAVE->>SAVE: write bin/jpg and record last_cast
-    CAST-->>APP: {func:cast_result,result:<code>}
+    CAST-->>APP: {func:cast_result,result:<code>,message}
 ```
 
 相关文件：
@@ -1227,7 +1286,7 @@ cast_core.c
 └─ record_last_cast()
 ```
 
-说明：network cast 与 USB cast 共享 `cast_core`。EPD 显示使用已有的 `ServerNetworkStaEpdDisplay` task，保存使用统一的 `CastSaveTask`。`show=true && save=true` 时先通过 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 等待 EPD 显示任务完成，再提交保存任务；`cast_result result=0` 表示 EPD 显示任务已完成、bin/jpg 保存成功、last_cast 写入成功。
+说明：network cast 与 USB cast 共享 `cast_core`。EPD 显示使用已有的 `ServerNetworkStaEpdDisplay` task，保存使用统一的 `CastSaveTask`。network cast 正常成功时使用 `application/x-ndjson` 两阶段返回：multipart 解析和字段校验通过后先返回 `cast_received`；EPD 显示、bin/jpg 保存和 last_cast 记录完成后再返回 `cast_result`。`show=true && save=true` 时先通过 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 等待 EPD 显示任务完成，再提交保存任务；`cast_result result=0` 表示 EPD 显示任务已完成、bin/jpg 保存成功、last_cast 写入成功。
 
 V2 协议资料拆分：
 
@@ -1260,11 +1319,9 @@ image      缩略图 jpg 文件
 
 成功返回：
 
-```json
-{
-  "func": "cast_result",
-  "result": 0
-}
+```text
+{"func":"cast_received","result":0,"fileName":"26422"}
+{"func":"cast_result","result":0,"message":"saved"}
 ```
 
 V2 说明：`cast` 成功后应记录最后一次投图，设备重启或 OTA 后优先显示该图片。
@@ -2969,6 +3026,17 @@ HTTP-like 响应发送：
 └─ UsbConsoleHttp_SetJson() or UsbConsoleCommon_SetJsonf()
    └─ UsbConsoleHttp_SendResponse()
       └─ UsbConsoleTransport_WriteAll()
+```
+
+auto light sleep / USB Serial/JTAG 接收注意事项：
+
+```text
+当前默认 TDX_AUTO_LIGHT_SLEEP_ENABLE=0，USB Serial/JTAG HTTP-like 接收可靠性优先。
+USB Serial/JTAG 与普通 UART 不完全相同，但同样是外部主机异步输入。
+如果 ESP32-C5 处于 auto light sleep，PC 端开始发送 HTTP-like 请求时，固件侧可能存在唤醒延迟、USB FIFO 读出延迟或主机侧等待超时。
+表现可能是 PC 显示 TX complete，但固件没有 `USB RX first chunk`；或者请求头/Content-Length/body 没有被完整解析。
+因此 USB 调试、USB 投图、USB OTA/大 body 传输阶段，不建议开启 auto light sleep。
+若后续必须开启，需要 PC 端增加发送前唤醒/握手、发送后重试，以及固件侧单独验证 USB RX 稳定性。
 ```
 
 ---
@@ -6334,6 +6402,35 @@ User_HandleWifiJsonTextFromCh583()
 - ch583_wifi_uart_get_ble_mac() 从 RAM/NVS 读取 BLE MAC。
 ```
 
+CH583 UART1 小包接收与 light sleep 注意事项：
+
+```text
+当前工程中，CH583 -> ESP32-C5 的 UART1 小包可能只有几十字节，并且可能 5 秒左右才发送一次。
+如果启用 ESP-IDF 自动 light sleep，ESP32-C5 可能在 CH583 发包前处于 light sleep。
+UART RX 唤醒 ESP32-C5 时，用于唤醒的前几个字节/边沿可能不会完整进入 UART RX buffer。
+对于 @#V1...^& 这种短帧，一旦帧头 @# 丢失，协议解析器就无法识别该帧，表现为“CH583 串口数据丢失”。
+```
+
+当前验证结论：
+
+```text
+将 tdx_cfg.h 中 TDX_AUTO_LIGHT_SLEEP_ENABLE 设置为 0 后，CH583 UART1 小包丢失问题消失。
+因此该问题优先按 auto light sleep / UART wakeup 丢首字节处理，不按 UART buffer 不足处理。
+```
+
+要求：
+
+```text
+默认保持：
+#define TDX_AUTO_LIGHT_SLEEP_ENABLE 0
+
+如果后续重新开启 TDX_AUTO_LIGHT_SLEEP_ENABLE=1，则 CH583 固件必须配合：
+1. 正式 @#V1...^& 帧之前先发送足够的唤醒前导字节，或
+2. 先发送唤醒空包，延时后再发送正式协议帧。
+
+否则短帧可能因为帧头丢失而被 ESP32-C5 协议解析器丢弃。
+```
+
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-10)
 
 ---
@@ -6640,7 +6737,7 @@ Result 定义建议：
 | `wifi_result` | `1306` | 提交 WiFi 连接任务失败 |
 | `wifi_result` | `1307` | 后台 WiFi 连接超时 |
 | `wifi_result` | `1308` | 后台 WiFi 认证失败 |
-| `wifi_result` | `1309` | WiFi 已关联但未取得 IP |
+| `wifi_result` | `1309` | WiFi 已关联，且经过 `GOT_IP` 宽限等待后仍未取得 IP |
 | `wifi_info_result` | `0` | WiFi 信息通知，例如 IP / 版本 / running 信息 |
 
 Mermaid 时序图：

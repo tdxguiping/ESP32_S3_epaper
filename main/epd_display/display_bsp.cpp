@@ -1,4 +1,4 @@
-﻿#include <stdio.h>
+#include <stdio.h>
 #include <string.h>
 #include <assert.h>
 #include <stdlib.h>
@@ -10,6 +10,7 @@
 #include <esp_timer.h>
 #include <esp_rom_sys.h>
 #include <freertos/event_groups.h>
+#include "debug_output.h"
 #include "display_bsp.h"
 
 
@@ -354,12 +355,12 @@ void ePaperPort::EPD_LoopBusy(uint16_t loop_counter) {
     count=0;
     while (1) {
         if (Get_BusyIOLevel()) {
-            printf("Check Busy over\r\n");
+            UserDebugOutput_Printf("Check Busy over\r\n");
             return;
         }
         vTaskDelay(pdMS_TO_TICKS(1000)); //  1000ms = 1s
         count++;
-        printf(".%d.",count);
+        UserDebugOutput_Printf(".%d.",count);
         if (count > loop_counter)
         {
             ESP_LOGE(TAG, "EPD busy timeout");
@@ -377,12 +378,12 @@ void ePaperPort::EPD_Check_Busy(uint16_t loop_counter) { // If BUSYN=0 then wait
     while (1) {
         int level = Get_BusyIOLevel();
         if (level) {
-            printf("Check Busy over\r\n");
+            UserDebugOutput_Printf("Check Busy over\r\n");
             return;
         }
         vTaskDelay(pdMS_TO_TICKS(1000)); // 1000ms    
         i++;
-        printf(".%d.",i);
+        UserDebugOutput_Printf(".%d.",i);
 
         if (i > loop_counter) {
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);

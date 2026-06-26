@@ -36,8 +36,9 @@ extern "C" {
 // Enable Auto Light-sleep and WiFi modem-sleep after STA gets IP.
 // Set to 0 to keep CPU at 240 MHz and WiFi PS disabled without changing sdkconfig.
 #ifndef TDX_AUTO_LIGHT_SLEEP_ENABLE
-#define TDX_AUTO_LIGHT_SLEEP_ENABLE 1
+#define TDX_AUTO_LIGHT_SLEEP_ENABLE 0
 #endif
+
 
 /* -------------------------------------------------------------------------- */
 /* 02. Common JSON Result Codes                                                */
@@ -424,6 +425,42 @@ extern "C" {
 #define CH583_WIFI_UART_BAD_CRC_RETRY_MAX 5
 
 /* -------------------------------------------------------------------------- */
+/* 13.1 Runtime Debug Output                                                   */
+/* -------------------------------------------------------------------------- */
+
+// SDK console / bootloader logs are still controlled by sdkconfig. These macros
+// only route application logs after UserDebugOutput_Init() is called.
+#define USER_DEBUG_OUTPUT_USB_SERIAL_JTAG 1
+#define USER_DEBUG_OUTPUT_UART0 2
+#define USER_DEBUG_OUTPUT_BOTH 3
+
+#ifndef USER_DEBUG_OUTPUT_TARGET
+#define USER_DEBUG_OUTPUT_TARGET USER_DEBUG_OUTPUT_BOTH
+#endif
+
+
+// 1. USB Serial/JTAG
+// 2. UART0
+//    TX = GPIO11
+//    RX = GPIO12
+//    baud = 921600
+
+#define USER_DEBUG_UART_PORT UART_NUM_0
+#define USER_DEBUG_UART_TX_PIN GPIO_NUM_11
+#define USER_DEBUG_UART_RX_PIN GPIO_NUM_12
+#define USER_DEBUG_UART_BAUD_RATE 921600
+#define USER_DEBUG_UART_RX_BUF_SIZE 256
+#define USER_DEBUG_UART_TX_BUF_SIZE 4096
+#define USER_DEBUG_UART_LOG_LINE_MAX 512
+
+#if (USER_DEBUG_OUTPUT_TARGET == USER_DEBUG_OUTPUT_UART0) || \
+    (USER_DEBUG_OUTPUT_TARGET == USER_DEBUG_OUTPUT_BOTH)
+#define USER_DEBUG_UART0_ENABLED 1
+#else
+#define USER_DEBUG_UART0_ENABLED 0
+#endif
+
+/* -------------------------------------------------------------------------- */
 /* 14. EPD Display / Panel Geometry / SPI Pins                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -520,7 +557,11 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 
 // Enable local ESP32-C5 GPIO test output. GPIO11 toggles at 50% duty; GPIO12 is fixed output.
+#if USER_DEBUG_UART0_ENABLED
+#define USER_GPIO_TEST_OUTPUT_ENABLE 0
+#else
 #define USER_GPIO_TEST_OUTPUT_ENABLE 1
+#endif
 #define USER_GPIO_TEST_PIN_11 GPIO_NUM_11
 #define USER_GPIO_TEST_PIN_12 GPIO_NUM_12
 #define USER_GPIO_TEST_PIN_12_LEVEL 0

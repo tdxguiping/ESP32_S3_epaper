@@ -25,6 +25,7 @@
 #include "nvs_flash.h"
 #include "ch583_uart_app.h"
 #include "cast_core.h"
+#include "debug_output.h"
 #include "epd_display_app.h"
 #include "file_serving_example_common.h"
 #include "gpio_test.h"
@@ -41,7 +42,6 @@
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
 
 static const char *TAG = "example";
 int g_app_reset_reason = ESP_RST_low_power_No_Disp;
@@ -83,12 +83,12 @@ static void usb_console_ansi_color_test(void)
 #if USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE
     // Print ANSI color samples so the PC USB console can verify xterm_256color rendering.
     // 打印 ANSI 颜色样例，用于 PC 端 USB 串口窗口验证 xterm_256color 渲染。
-    printf("\033[0mANSI color test begin\r\n");
-    printf("\033[30mblack\033[0m \033[31mred\033[0m \033[32mgreen\033[0m \033[33myellow\033[0m\r\n");
-    printf("\033[34mblue\033[0m \033[35mmagenta\033[0m \033[36mcyan\033[0m \033[37mwhite\033[0m\r\n");
-    printf("\033[90mbright black\033[0m \033[91mbright red\033[0m \033[92mbright green\033[0m \033[94mbright blue\033[0m\r\n");
-    printf("\033[1m\033[38;5;202m256 orange bold fg\033[0m \033[38;5;45m256 cyan fg\033[0m \033[48;5;24m256 blue bg\033[0m\r\n");
-    printf("\033[0mANSI color test end\r\n");
+    UserDebugOutput_Printf("\033[0mANSI color test begin\r\n");
+    UserDebugOutput_Printf("\033[30mblack\033[0m \033[31mred\033[0m \033[32mgreen\033[0m \033[33myellow\033[0m\r\n");
+    UserDebugOutput_Printf("\033[34mblue\033[0m \033[35mmagenta\033[0m \033[36mcyan\033[0m \033[37mwhite\033[0m\r\n");
+    UserDebugOutput_Printf("\033[90mbright black\033[0m \033[91mbright red\033[0m \033[92mbright green\033[0m \033[94mbright blue\033[0m\r\n");
+    UserDebugOutput_Printf("\033[1m\033[38;5;202m256 orange bold fg\033[0m \033[38;5;45m256 cyan fg\033[0m \033[48;5;24m256 blue bg\033[0m\r\n");
+    UserDebugOutput_Printf("\033[0mANSI color test end\r\n");
     fflush(stdout);
 #endif
 }
@@ -261,6 +261,8 @@ void print_base_info(void)
 
 void app_main(void)
 {
+    ESP_ERROR_CHECK(UserDebugOutput_Init());
+
     /* Hide ESP-IDF WiFi internal INFO logs, keep warnings and errors. */
     /* 关闭 ESP-IDF WiFi 内部 INFO 日志，只保留警告和错误。 */
     // esp_log_level_set("wifi_init", ESP_LOG_WARN);

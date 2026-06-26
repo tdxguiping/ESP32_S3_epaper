@@ -10,6 +10,7 @@
 
 #include "cJSON.h"
 #include "ch583_wifi_uart_protocol.h"
+#include "debug_output.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -186,14 +187,14 @@ void send_base_info_to_mobile(void)
                      running != NULL ? running->label : "");
             #if(USER_BLE_ENABLE == 1)
              (void)s_active_send_json(json_str);
-             printf("JSON:\n%s\n", json_str);
+             UserDebugOutput_Printf("JSON:\n%s\n", json_str);
             #else
              (void)s_active_send_json(json_str);
             #endif
 
-            //printf("  ETHIP: " IPSTR "\r\n", IP2STR(&ip.ip));
-            //printf("  ETHMASK: " IPSTR "\r\n", IP2STR(&ip.netmask));
-            //printf("  ETHGW: " IPSTR "\r\n", IP2STR(&ip.gw));
+            //UserDebugOutput_Printf("  ETHIP: " IPSTR "\r\n", IP2STR(&ip.ip));
+            //UserDebugOutput_Printf("  ETHMASK: " IPSTR "\r\n", IP2STR(&ip.netmask));
+            //UserDebugOutput_Printf("  ETHGW: " IPSTR "\r\n", IP2STR(&ip.gw));
 
         }
 }
@@ -473,12 +474,12 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
             #if(USER_BLE_ENABLE == 1)
              (void)reply_json;
             // 杈撳嚭缁撴灉
-             printf("JSON:\n%s\n", reply_json);
+             UserDebugOutput_Printf("JSON:\n%s\n", reply_json);
             #else
              (void)reply_json;
             #endif
 
-            printf("The Wifi info parsed ok, save to NVS\n\r");
+            UserDebugOutput_Printf("The Wifi info parsed ok, save to NVS\n\r");
             SsidManager::GetInstance().Clear();
             esp_err_t save_ret = wifi_ap.Save(wifi_ssid, wifi_password);
             if (save_ret != ESP_OK) {
@@ -545,11 +546,11 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
 
     snprintf(out->func, sizeof(out->func), "%s", item_func->valuestring);
     if (strcmp(out->func, "wifi_wakeup") == 0) {
-        printf("wakeup-ok\r\n");
+        UserDebugOutput_Printf("wakeup-ok\r\n");
     }
     else
     {
-        printf("wakeup-fail\r\n");
+        UserDebugOutput_Printf("wakeup-fail\r\n");
         return -1;
     }
     cJSON_Delete(root);
@@ -577,7 +578,7 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
             #if(USER_BLE_ENABLE == 1)
              (void)s_active_send_json(reply_json);
                 // 杈撳嚭缁撴灉
-                printf("JSON:\n%s\n", reply_json);
+                UserDebugOutput_Printf("JSON:\n%s\n", reply_json);
             #else
              (void)s_active_send_json(reply_json);
             #endif
@@ -656,7 +657,7 @@ int parse_wifi_work_time_json(const char *json_str, wifi_work_time_json_t *out)
                  TDX_JSON_RESULT_WIFI_WORK_TIME_MISSING);
             #if(USER_BLE_ENABLE == 1)
              (void)s_active_send_json(reply_json);
-             printf("JSON:\n%s\n", reply_json);
+             UserDebugOutput_Printf("JSON:\n%s\n", reply_json);
             #else
              (void)s_active_send_json(reply_json);
             #endif
@@ -672,7 +673,7 @@ int parse_wifi_work_time_json(const char *json_str, wifi_work_time_json_t *out)
                  TDX_JSON_RESULT_WIFI_WORK_TIME_RANGE);
             #if(USER_BLE_ENABLE == 1)
              (void)s_active_send_json(reply_json);
-             printf("JSON:\n%s\n", reply_json);
+             UserDebugOutput_Printf("JSON:\n%s\n", reply_json);
             #else
              (void)s_active_send_json(reply_json);
             #endif
@@ -697,7 +698,7 @@ int parse_wifi_work_time_json(const char *json_str, wifi_work_time_json_t *out)
 
             #if(USER_BLE_ENABLE == 1)
              (void)s_active_send_json(reply_json);
-             printf("JSON:\n%s\n", reply_json);
+             UserDebugOutput_Printf("JSON:\n%s\n", reply_json);
             #else
              (void)s_active_send_json(reply_json);
             #endif
@@ -774,7 +775,7 @@ static void handle_wifi_json_text_with_sender(const char *json_text,
         WiFi_config_from_ble = true;
     }
     if (strcmp(func, "wifi") == 0 && parse_wifi_config_json(json_text, &wifi_cfg) == 0) {
-        printf("ssid=%s\n", wifi_cfg.ssid);
+        UserDebugOutput_Printf("ssid=%s\n", wifi_cfg.ssid);
         return;
     }
     if (reply_to_ch583) {
@@ -783,13 +784,13 @@ static void handle_wifi_json_text_with_sender(const char *json_text,
         WiFi_config_from_ble = false;
     }
     if (strcmp(func, "wifi_wakeup") == 0 && parse_wifi_wakeup_json(json_text, &wifi_cfg) == 0) {
-        printf("wakeup ok\r\n");
+        UserDebugOutput_Printf("wakeup ok\r\n");
         return;
     }
     if ((strcmp(func, "set_wifi_work_time") == 0 || strcmp(func, "wifi_standby") == 0) &&
         parse_wifi_work_time_json(json_text, &wifi_work_time_cfg) == 0) {
-        printf("func=%s\n", wifi_work_time_cfg.func);
-        printf("seconds=%d\n", wifi_work_time_cfg.seconds);
+        UserDebugOutput_Printf("func=%s\n", wifi_work_time_cfg.func);
+        UserDebugOutput_Printf("seconds=%d\n", wifi_work_time_cfg.seconds);
         return;
     }
 

@@ -1,5 +1,6 @@
 #include "epd_type_1600_1200_79.h"
 #include "display_bsp.h"
+#include "debug_output.h"
 #include "epd_type_1600_1200_common.h"
 #include "esp_timer.h"
 
@@ -41,12 +42,12 @@ void ePaperPort::EPD_Check_Busy_79(uint16_t loop_counter)
     while (1) {
         int level = Get_BusyIOLevel();
         if (level) {
-            printf("Check Busy over\r\n");
+            UserDebugOutput_Printf("Check Busy over\r\n");
             return;
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
         i++;
-        printf("~%d.", i);
+        UserDebugOutput_Printf("~%d.", i);
 
         if (i > loop_counter) {
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
@@ -324,7 +325,7 @@ void ePaperPort::EpdType16001200_79_NT61522_Display()
 	setPinCsAll(GPIO_LOW);
 	spiTransmitCommand(PON);
 	delayms(30);
-    printf("---1---\r\n");
+    UserDebugOutput_Printf("---1---\r\n");
 	EPD_Check_Busy_79(2);
 	setPinCsAll(GPIO_HIGH);
 
@@ -332,14 +333,14 @@ void ePaperPort::EpdType16001200_79_NT61522_Display()
 	delayms(30);
 	spiTransmit(DRF, DRF_V_79, sizeof(DRF_V_79));
 	delayms(30);
-    printf("---2---\r\n");
+    UserDebugOutput_Printf("---2---\r\n");
 	EPD_Check_Busy_79(31);
 	setPinCsAll(GPIO_HIGH);
 
 	setPinCsAll(GPIO_LOW);
 	spiTransmit(POF, POF_V_79, sizeof(POF_V_79));
 	delayms(30);
-    printf("---3---\r\n");
+    UserDebugOutput_Printf("---3---\r\n");
 	EPD_Check_Busy_79(2);
 	setPinCsAll(GPIO_HIGH);
     ESP_LOGI(TAG, "EPD 1600x1200 7.9 refresh done");
@@ -483,7 +484,7 @@ void ePaperPort::EpdType16001200_79_NT61522_DisplayNet(const uint8_t *imageData,
 
             if (chunk <= master_remain) {
                 /* 中文注释：                   当前这一段完全落在 MASTER 区域                */
-               // printf("M1:chunk=%ld,image_countger_=%ld\r\n",chunk,image_countger_);
+               // UserDebugOutput_Printf("M1:chunk=%ld,image_countger_=%ld\r\n",chunk,image_countger_);
                 //setPinCs(TARGET_MASTER, chunk);
                 EPD_Select_Master();
                 //spiTransmitCommand(R10_DTM);
@@ -498,7 +499,7 @@ void ePaperPort::EpdType16001200_79_NT61522_DisplayNet(const uint8_t *imageData,
             } else {
                 /* 中文注释：                   当前这一段跨越了 MASTER -> SLAVE 边界                   先发送 MASTER 剩余部分                */
                 if (master_remain > 0U) {
-                    // printf("M2:master_remain=%ld,image_countger_=%ld\r\n",master_remain,image_countger_);
+                    // UserDebugOutput_Printf("M2:master_remain=%ld,image_countger_=%ld\r\n",master_remain,image_countger_);
                     //setPinCs(TARGET_MASTER, master_remain);
                     EPD_Select_Master();
                     //spiTransmitCommand(R10_DTM);
@@ -519,7 +520,7 @@ void ePaperPort::EpdType16001200_79_NT61522_DisplayNet(const uint8_t *imageData,
                 {
                     uint32_t slave_part = chunk - master_remain;
                     if (slave_part > 0U) {
-                       // printf("S2:slave_part=%ld,image_countger_=%ld\r\n",slave_part,image_countger_);
+                       // UserDebugOutput_Printf("S2:slave_part=%ld,image_countger_=%ld\r\n",slave_part,image_countger_);
                         //setPinCs(TARGET_SLAVE, slave_part);
                         EPD_Select_Slave();
                         if (u8flag_ == 0xAA)
@@ -540,7 +541,7 @@ void ePaperPort::EpdType16001200_79_NT61522_DisplayNet(const uint8_t *imageData,
             }
         } else {
             /* 中文注释：               情况2：当前已经在 SLAVE 区域            */
-            //printf("S1:chunk=%ld,image_countger_=%ld\r\n",chunk,image_countger_);
+            //UserDebugOutput_Printf("S1:chunk=%ld,image_countger_=%ld\r\n",chunk,image_countger_);
             //setPinCs(TARGET_SLAVE, chunk);
             EPD_Select_Slave();
             if (u8flag_ == 0xAA)

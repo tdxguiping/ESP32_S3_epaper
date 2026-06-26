@@ -1,5 +1,6 @@
 #include "epd_type_1600_1200_133.h"
 #include "display_bsp.h"
+#include "debug_output.h"
 #include "epd_type_1600_1200_common.h"
 #include "esp_timer.h"
 
@@ -15,27 +16,24 @@ void ePaperPort::EPD_Check_Busy_133(uint16_t loop_counter)
     while (1) {
         int level = Get_BusyIOLevel();
         if (level) {
-            printf("Check Busy over %d-%d \r\n",i,loop_counter);
+            UserDebugOutput_Printf("Check Busy over %d-%d \r\n",i,loop_counter);
             return;
         }
 
         vTaskDelay(pdMS_TO_TICKS(500));
-        gpio_set_level(USER_GPIO_TEST_PIN_12, 0);
 
         if (level) {
-            printf("Check Busy over %d-%d \r\n",i,loop_counter);
-            gpio_set_level(USER_GPIO_TEST_PIN_12, 1);
+            UserDebugOutput_Printf("Check Busy over %d-%d \r\n",i,loop_counter);
             return;
         }
 
         vTaskDelay(pdMS_TO_TICKS(500));
-        gpio_set_level(USER_GPIO_TEST_PIN_12, 1);
 
         i++;
-        printf(".%d-%d.", i,loop_counter);
+        UserDebugOutput_Printf(".%d-%d.", i,loop_counter);
 
         if (level) {
-            printf("Check Busy over %d-%d \r\n",i,loop_counter);
+            UserDebugOutput_Printf("Check Busy over %d-%d \r\n",i,loop_counter);
             return;
         }
 
@@ -188,7 +186,7 @@ void ePaperPort::EpdType16001200_133_NT61522_Display()
 	spiTransmitCommand(R04_PON);
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-    printf("---1---\r\n");
+    UserDebugOutput_Printf("---1---\r\n");
 	EPD_Check_Busy_133(1);
 	delayms(30);
 
@@ -196,14 +194,14 @@ void ePaperPort::EpdType16001200_133_NT61522_Display()
 	spiTransmit(R12_DRF,DRF_V,sizeof(DRF_V));
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-    printf("---2---\r\n");
+    UserDebugOutput_Printf("---2---\r\n");
 	EPD_Check_Busy_133(31);
 	delayms(30);
 	setPinCsAll(GPIO_LOW);
 	spiTransmit(R02_POF,POF_V,sizeof(POF_V));
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-    printf("---3---\r\n");
+    UserDebugOutput_Printf("---3---\r\n");
 	EPD_Check_Busy_133(1);
 	delayms(30);
 
@@ -328,7 +326,7 @@ void ePaperPort::EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData
 
             if (chunk <= master_remain) {
                 /* 中文注释：                   当前这一段完全落在 MASTER 区域                */
-               // printf("M1:chunk=%ld,image_countger_=%ld\r\n",chunk,image_countger_);
+               // UserDebugOutput_Printf("M1:chunk=%ld,image_countger_=%ld\r\n",chunk,image_countger_);
                 //setPinCs(TARGET_MASTER, chunk);
                 EPD_Select_Master();
                 //spiTransmitCommand(R10_DTM);
@@ -343,7 +341,7 @@ void ePaperPort::EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData
             } else {
                 /* 中文注释：                   当前这一段跨越了 MASTER -> SLAVE 边界                   先发送 MASTER 剩余部分                */
                 if (master_remain > 0U) {
-                    // printf("M2:master_remain=%ld,image_countger_=%ld\r\n",master_remain,image_countger_);
+                    // UserDebugOutput_Printf("M2:master_remain=%ld,image_countger_=%ld\r\n",master_remain,image_countger_);
                     //setPinCs(TARGET_MASTER, master_remain);
                     EPD_Select_Master();
                     //spiTransmitCommand(R10_DTM);
@@ -364,7 +362,7 @@ void ePaperPort::EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData
                 {
                     uint32_t slave_part = chunk - master_remain;
                     if (slave_part > 0U) {
-                       // printf("S2:slave_part=%ld,image_countger_=%ld\r\n",slave_part,image_countger_);
+                       // UserDebugOutput_Printf("S2:slave_part=%ld,image_countger_=%ld\r\n",slave_part,image_countger_);
                         //setPinCs(TARGET_SLAVE, slave_part);
                         EPD_Select_Slave();
                         if (u8flag_ == 0xAA)
@@ -385,7 +383,7 @@ void ePaperPort::EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData
             }
         } else {
             /* 中文注释：               情况2：当前已经在 SLAVE 区域            */
-            //printf("S1:chunk=%ld,image_countger_=%ld\r\n",chunk,image_countger_);
+            //UserDebugOutput_Printf("S1:chunk=%ld,image_countger_=%ld\r\n",chunk,image_countger_);
             //setPinCs(TARGET_SLAVE, chunk);
             EPD_Select_Slave();
             if (u8flag_ == 0xAA)

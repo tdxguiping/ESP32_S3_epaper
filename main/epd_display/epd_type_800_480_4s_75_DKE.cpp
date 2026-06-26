@@ -1,6 +1,7 @@
 #include "epd_type_800_480_4s_75_DKE.h"
 
 #include "display_bsp.h"
+#include "debug_output.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -183,12 +184,12 @@ void ePaperPort::EPD_Check_Busy_75_2(uint16_t loop_counter)
     while (1) {
         int level = Get_BusyIOLevel();
         if (level) {
-            printf("Check Busy over\r\n");
+            UserDebugOutput_Printf("Check Busy over\r\n");
             return;
         }
         vTaskDelay(pdMS_TO_TICKS(1000)); //  1000ms = 1s
         i++;
-        printf("<%d.", i);
+        UserDebugOutput_Printf("<%d.", i);
 
         if (i > loop_counter) {
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);

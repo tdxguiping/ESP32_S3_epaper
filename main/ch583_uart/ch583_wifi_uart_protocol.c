@@ -3,6 +3,7 @@
 
 
 #include "ch583_wifi_uart_protocol.h"
+#include "debug_output.h"
 #include "led_status.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
@@ -47,13 +48,13 @@
 #define CH583_WIFI_TX_PENDING_MAX 8
 
 #if CH583_WIFI_UART_DEBUG_PRINT_ENABLE
-#define CH583_WIFI_DEBUG_PRINTF(...) printf(__VA_ARGS__)
+#define CH583_WIFI_DEBUG_PRINTF(...) UserDebugOutput_Printf(__VA_ARGS__)
 #else
 #define CH583_WIFI_DEBUG_PRINTF(...) do { } while (0)
 #endif
 
 #if CH583_WIFI_UART_DIRECTION_PRINT_ENABLE
-#define CH583_WIFI_DIRECTION_PRINTF(...) printf(__VA_ARGS__)
+#define CH583_WIFI_DIRECTION_PRINTF(...) UserDebugOutput_Printf(__VA_ARGS__)
 #else
 #define CH583_WIFI_DIRECTION_PRINTF(...) do { } while (0)
 #endif
@@ -133,7 +134,7 @@ static void ch583_wifi_load_ble_mac_from_nvs(void)
         ch583_wifi_is_upper_hex_string(saved_mac, CH583_WIFI_BLE_MAC_LEN)) {
         memcpy(s_ble_mac, saved_mac, CH583_WIFI_BLE_MAC_LEN);
         s_ble_mac[CH583_WIFI_BLE_MAC_LEN] = '\0';
-        printf("CH583_PROTO BLE_MAC load nvs=%s\r\n", s_ble_mac);
+        UserDebugOutput_Printf("CH583_PROTO BLE_MAC load nvs=%s\r\n", s_ble_mac);
     }
 }
 
@@ -195,7 +196,7 @@ static ch583_wifi_pending_tx_t *ch583_wifi_alloc_pending_tx_locked(void)
             oldest = &s_pending_tx[i];
         }
     }
-    printf("CH583_PROTO pending evict seq=%u\r\n", (unsigned int)oldest->seq);
+    UserDebugOutput_Printf("CH583_PROTO pending evict seq=%u\r\n", (unsigned int)oldest->seq);
     return oldest;
 }
 
@@ -206,7 +207,7 @@ static int ch583_wifi_retry_pending_frame_locked(ch583_wifi_pending_tx_t *pendin
     }
 
     if (pending->bad_crc_retry_count >= CH583_WIFI_UART_BAD_CRC_RETRY_MAX) {
-        printf("CH583_PROTO retry stop seq=%u count=%u\r\n",
+        UserDebugOutput_Printf("CH583_PROTO retry stop seq=%u count=%u\r\n",
                (unsigned int)pending->seq,
                (unsigned int)pending->bad_crc_retry_count);
         pending->valid = false;
@@ -214,7 +215,7 @@ static int ch583_wifi_retry_pending_frame_locked(ch583_wifi_pending_tx_t *pendin
     }
 
     pending->bad_crc_retry_count++;
-    printf("CH583_PROTO retry BAD_CRC seq=%u count=%u\r\n",
+    UserDebugOutput_Printf("CH583_PROTO retry BAD_CRC seq=%u count=%u\r\n",
            (unsigned int)pending->seq,
            (unsigned int)pending->bad_crc_retry_count);
     return ch583_wifi_write_frame_text(pending->frame, pending->frame_len);
@@ -228,12 +229,12 @@ static int ch583_wifi_send_frame(const char *cmd, const char *arg, uint8_t need_
     int ret = -1;
 
     if (cmd == NULL || arg_len > CH583_WIFI_MAX_ARG_LEN) {
-        printf("CH583_PROTO tx reject cmd=%s arg_len=%u\r\n",
+        UserDebugOutput_Printf("CH583_PROTO tx reject cmd=%s arg_len=%u\r\n",
                cmd ? cmd : "NULL", (unsigned int)arg_len);
         return -1;
     }
     if (s_tx_mutex == NULL || xSemaphoreTake(s_tx_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
-        printf("CH583_PROTO tx mutex unavailable/timeout\r\n");
+        UserDebugOutput_Printf("CH583_PROTO tx mutex unavailable/timeout\r\n");
         return -1;
     }
 
@@ -246,14 +247,14 @@ static int ch583_wifi_send_frame(const char *cmd, const char *arg, uint8_t need_
                             (unsigned int)arg_len,
                             arg ? arg : "");
     if (body_len <= 0 || body_len >= (int)sizeof(body)) {
-        printf("CH583_PROTO tx body overflow cmd=%s\r\n", cmd);
+        UserDebugOutput_Printf("CH583_PROTO tx body overflow cmd=%s\r\n", cmd);
         goto done;
     }
 
     uint16_t crc = ch583_wifi_crc16_ccitt_false(body, (size_t)body_len);
     int frame_len = snprintf(frame_text, sizeof(frame_text), "@#%s|CRC=%04X^&\n\r", body, crc);
     if (frame_len <= 0 || frame_len >= (int)sizeof(frame_text)) {
-        printf("CH583_PROTO tx frame overflow cmd=%s\r\n", cmd);
+        UserDebugOutput_Printf("CH583_PROTO tx frame overflow cmd=%s\r\n", cmd);
         goto done;
     }
 
@@ -665,7 +666,7 @@ static void ch583_wifi_handle_ble_mac(const ch583_wifi_frame_t *frame)
     s_ble_mac[CH583_WIFI_BLE_MAC_LEN] = '\0';
     s_ble_mac_loaded = true;
     (void)app_nvs_write_str(CH583_BLE_MAC_NVS_KEY, s_ble_mac);
-    printf("CH583_PROTO BLE_MAC saved=%s\r\n", s_ble_mac);
+    UserDebugOutput_Printf("CH583_PROTO BLE_MAC saved=%s\r\n", s_ble_mac);
     ch583_wifi_send_ack(frame->seq);
 }
 
@@ -692,7 +693,7 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
            crc_received,
            frame.arg);
 
-    // WiFi -> CH583: seq=9 cmd=PING arg=24  //  除了心跳， 其他都打印
+    // WiFi -> CH583: seq=9 cmd=PING arg=24  // 除了心跳，其他都打印
     if (!ch583_wifi_validate_len_and_part(&frame)) {
         return;
     }
@@ -700,10 +701,10 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
     if (strcmp(frame.cmd, "PING") == 0) {
         char arg[8];
         snprintf(arg, sizeof(arg), "%u", (unsigned int)frame.seq);
-        ch583_wifi_send_frame("PONG", arg,0);
+        ch583_wifi_send_frame("PONG", arg,1);
 
-      //CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
-      //     (unsigned int)frame.seq,frame.cmd,frame.arg);
+        CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
+             (unsigned int)frame.seq,frame.cmd,frame.arg);
 
 
     } else if (strcmp(frame.cmd, "BLE_MAC") == 0) {
@@ -728,7 +729,7 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
         ch583_wifi_handle_reply_status(&frame);
         CH583_WIFI_DEBUG_PRINTF("CH583_PROTO status cmd=%s arg=%s\r\n", frame.cmd, frame.arg);
     } else {
-        printf("CH583_PROTO unsupported cmd=%s seq=%u\r\n", frame.cmd, (unsigned int)frame.seq);
+        UserDebugOutput_Printf("CH583_PROTO unsupported cmd=%s seq=%u\r\n", frame.cmd, (unsigned int)frame.seq);
         ch583_wifi_send_err(frame.seq, "BAD_CMD");
     }
 }
@@ -789,7 +790,7 @@ int ch583_wifi_uart_send_wifi_data(const char *message)
 
     len = strlen(message);
     if (len > CH583_WIFI_MAX_WIFI_DATA_LEN) {
-        printf("CH583_PROTO WIFI_DATA too long len=%u max=%u\r\n",
+        UserDebugOutput_Printf("CH583_PROTO WIFI_DATA too long len=%u max=%u\r\n",
                (unsigned int)len,
                (unsigned int)CH583_WIFI_MAX_WIFI_DATA_LEN);
         return -1;
@@ -844,7 +845,7 @@ int ch583_wifi_uart_send_gpio(const char *port, int pin, const char *mode, const
     }
 
     snprintf(arg, sizeof(arg), "%s,%d,%s,%s", port, pin, mode, level);
-    return ch583_wifi_send_frame("GPIO", arg,0);
+    return ch583_wifi_send_frame("GPIO", arg,1);
 }
 
 int ch583_wifi_uart_send_gpio_read(const char *port, int pin)
@@ -888,7 +889,7 @@ int ch583_wifi_uart_send_led_blink_stop(const char *led)
 
 int ch583_wifi_uart_test_gpio_pa1_high(void)
 {    // Send the fixed GPIO test command through the same V1 frame builder used by real protocol replies.
-    // 闁俺绻冮惇鐔风杽閸楀繗顔呴崶鐐差槻閸忚京鏁ら惃?V1 缂佸嫬鎶氶崙鑺ユ殶閸欐垿鈧礁娴愮€?GPIO 濞村鐦崨鎴掓姢閿涘本鏌熸笟璺ㄢ€樼拋?CH583 閺勵垰鎯侀幍褑顢戦妴?
+    // 通过 V1 帧构造器发送固定 GPIO 测试命令，避免测试口绕过 CH583 协议输出。
     static uint8_t u8dat=0;
 
     u8dat++;

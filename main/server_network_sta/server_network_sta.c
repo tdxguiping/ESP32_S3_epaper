@@ -49,6 +49,7 @@ static StaticSemaphore_t s_wifi_operation_mutex_buffer;
 #define SERVER_NETWORK_STA_CONNECT_RETRY_BASE_DELAY_MS 100  // 500
 #define SERVER_NETWORK_STA_CONNECT_RETRY_MAX_DELAY_MS 100  // 2000
 #define SERVER_NETWORK_STA_CONNECT_START_DELAY_MS 5   // 500
+#define SERVER_NETWORK_STA_GOT_IP_GRACE_MS 5000
 #define SERVER_NETWORK_STA_SCAN_BEFORE_CONNECT 0
 #define SERVER_NETWORK_STA_INIT_RETRY_ROUNDS 1
 #define SERVER_NETWORK_STA_INIT_RETRY_DELAY_MS 100  // 2000
@@ -685,6 +686,18 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
                                            pdTRUE,
                                            pdFALSE,
                                            pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS));
+    if ((bits & SERVER_NETWORK_STA_CONNECTED_BIT) == 0 &&
+        (bits & SERVER_NETWORK_STA_FAIL_BIT) == 0 &&
+        s_wifi_sta_connected_seen &&
+        !s_wifi_provisioning_requested) {
+        ESP_LOGI(TAG, "WiFi associated, wait got_ip grace_ms=%u",
+                 (unsigned int)SERVER_NETWORK_STA_GOT_IP_GRACE_MS);
+        bits = xEventGroupWaitBits(s_sta_event_group,
+                                   SERVER_NETWORK_STA_CONNECTED_BIT | SERVER_NETWORK_STA_FAIL_BIT,
+                                   pdTRUE,
+                                   pdFALSE,
+                                   pdMS_TO_TICKS(SERVER_NETWORK_STA_GOT_IP_GRACE_MS));
+    }
     if (bits & SERVER_NETWORK_STA_CONNECTED_BIT) {
         s_wifi_connect_active = false;
         server_network_sta_stop_retry_timer();
