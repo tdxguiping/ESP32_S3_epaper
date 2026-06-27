@@ -89,6 +89,8 @@ static bool s_in_frame;
 static bool s_wait_frame_start_hash;
 static char s_frame_body[CH583_WIFI_MAX_FRAME_BODY_LEN + 1];
 static size_t s_frame_body_len;
+static bool s_rx_seq_seen;
+static uint16_t s_last_rx_seq;
 
 // Keep only one BLE_DATA split message because V1 does not allow interleaved transfers.
 static bool s_ble_join_active;
@@ -101,6 +103,38 @@ static char s_ble_mac[CH583_WIFI_BLE_MAC_LEN + 1];
 static bool s_ble_mac_loaded;
 
 static bool ch583_wifi_is_upper_hex_string(const char *text, size_t len);
+
+static int ch583_wifi_base64url_encode(const uint8_t *in, size_t in_len, char *out, size_t out_size)
+{
+    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    size_t out_len = 0;
+
+    if (in == NULL || out == NULL || out_size == 0) {
+        return -1;
+    }
+
+    for (size_t i = 0; i < in_len; i += 3) {
+        uint32_t value = ((uint32_t)in[i]) << 16;
+        size_t remain = in_len - i;
+        if (remain > 1) {
+            value |= ((uint32_t)in[i + 1]) << 8;
+        }
+        if (remain > 2) {
+            value |= in[i + 2];
+        }
+
+        size_t emit = remain >= 3 ? 4 : remain + 1;
+        for (size_t j = 0; j < emit; j++) {
+            if (out_len + 1 >= out_size) {
+                return -1;
+            }
+            out[out_len++] = table[(value >> (18 - (6 * j))) & 0x3FU];
+        }
+    }
+
+    out[out_len] = '\0';
+    return (int)out_len;
+}
 
 static uint16_t ch583_wifi_crc16_ccitt_false(const char *data, size_t len)
 {
@@ -172,7 +206,8 @@ static bool ch583_wifi_cmd_expects_reply(const char *cmd)
            strcmp(cmd, "ACK") != 0 &&
            strcmp(cmd, "ERR") != 0 &&
            strcmp(cmd, "PONG") != 0 &&
-           strcmp(cmd, "POWER_OFF") != 0;
+           strcmp(cmd, "POWER_OFF") != 0 &&
+           strcmp(cmd, "NFC_STATUS") != 0;
 }
 
 static ch583_wifi_pending_tx_t *ch583_wifi_find_pending_tx_locked(uint16_t seq)
@@ -427,6 +462,29 @@ static void ch583_wifi_handle_reply_status(const ch583_wifi_frame_t *frame)
     // Any non-BAD_CRC reply completes the matching pending frame only.
     pending->valid = false;
     xSemaphoreGive(s_tx_mutex);
+}
+
+static void ch583_wifi_check_rx_seq_gap(const ch583_wifi_frame_t *frame)
+{
+    if (frame == NULL) {
+        return;
+    }
+
+    if (s_rx_seq_seen) {
+        uint16_t expected_seq = (uint16_t)(s_last_rx_seq + 1U);
+        if (frame->seq != expected_seq) {
+            uint16_t lost_count = (uint16_t)(frame->seq - expected_seq);
+            UserDebugOutput_Printf("E ch583_proto: CH583 RX seq gap last=%u expected=%u now=%u lost=%u cmd=%s\r\n",
+                                   (unsigned int)s_last_rx_seq,
+                                   (unsigned int)expected_seq,
+                                   (unsigned int)frame->seq,
+                                   (unsigned int)lost_count,
+                                   frame->cmd);
+        }
+    }
+
+    s_last_rx_seq = frame->seq;
+    s_rx_seq_seen = true;
 }
 
 static bool ch583_wifi_parse_frame(char *body, ch583_wifi_frame_t *frame, uint16_t *crc_received, const char **error_reason)
@@ -697,14 +755,15 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
     if (!ch583_wifi_validate_len_and_part(&frame)) {
         return;
     }
+    ch583_wifi_check_rx_seq_gap(&frame);
 
     if (strcmp(frame.cmd, "PING") == 0) {
         char arg[8];
         snprintf(arg, sizeof(arg), "%u", (unsigned int)frame.seq);
-        ch583_wifi_send_frame("PONG", arg,1);
+        ch583_wifi_send_frame("PONG", arg,0);
 
-        CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
-             (unsigned int)frame.seq,frame.cmd,frame.arg);
+       // CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
+       //      (unsigned int)frame.seq,frame.cmd,frame.arg);
 
 
     } else if (strcmp(frame.cmd, "BLE_MAC") == 0) {
@@ -721,7 +780,8 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
     } else if (strcmp(frame.cmd, "ACK") == 0 ||
                strcmp(frame.cmd, "ERR") == 0 ||
                strcmp(frame.cmd, "PONG") == 0 ||
-               strcmp(frame.cmd, "GPIO_VALUE") == 0) {
+               strcmp(frame.cmd, "GPIO_VALUE") == 0 ||
+               strcmp(frame.cmd, "NFC_STATUS") == 0) {
 
       CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
            (unsigned int)frame.seq,frame.cmd,frame.arg);
@@ -829,6 +889,85 @@ int ch583_wifi_uart_send_wake_timer_on(uint32_t seconds)
 int ch583_wifi_uart_send_wake_timer_off(void)
 {
     return ch583_wifi_send_frame("WAKE_TIMER", "OFF,0", 1);
+}
+
+int ch583_wifi_uart_send_nfc_set_json(const char *json)
+{
+    char encoded[CH583_WIFI_NFC_BASE64URL_MAX_LEN + 1];
+    size_t json_len;
+    int encoded_len;
+
+    if (json == NULL) {
+        return -1;
+    }
+
+    json_len = strlen(json);
+    if (json_len == 0 || json_len > CH583_WIFI_NFC_JSON_MAX_LEN) {
+        UserDebugOutput_Printf("CH583_PROTO NFC_SET reject json_len=%u max=%u\r\n",
+                               (unsigned int)json_len,
+                               (unsigned int)CH583_WIFI_NFC_JSON_MAX_LEN);
+        return -1;
+    }
+
+    encoded_len = ch583_wifi_base64url_encode((const uint8_t *)json,
+                                              json_len,
+                                              encoded,
+                                              sizeof(encoded));
+    if (encoded_len <= 0 || encoded_len > CH583_WIFI_MAX_ARG_LEN) {
+        UserDebugOutput_Printf("CH583_PROTO NFC_SET encode failed json_len=%u encoded_len=%d max_arg=%u\r\n",
+                               (unsigned int)json_len,
+                               encoded_len,
+                               (unsigned int)CH583_WIFI_MAX_ARG_LEN);
+        return -1;
+    }
+
+    return ch583_wifi_send_frame("NFC_SET", encoded, 1);
+}
+
+int ch583_wifi_uart_send_nfc_clear(void)
+{
+    return ch583_wifi_send_frame("NFC_CLEAR", "", 1);
+}
+
+int ch583_wifi_uart_send_nfc_status(void)
+{
+    return ch583_wifi_send_frame("NFC_STATUS", "", 1);
+}
+
+bool ch583_wifi_uart_test_nfc_step(void)
+{
+#if CH583_WIFI_NFC_TEST_ENABLE
+    static uint8_t step = 0;
+    static const char test_json[] =
+        "{\"daa\":\"asdasefasdfe\",\"ddfe\":\"elkdj\",\"nfc\":\"lkkdy\",\"iuy\":\"kdkdd\"}";
+
+    switch (step) {
+    case 0:
+        step++;
+        UserDebugOutput_Printf("CH583_PROTO NFC test step=1 NFC_SET\r\n");
+        (void)ch583_wifi_uart_send_nfc_set_json(test_json);
+        return false;
+    case 1:
+        step++;
+        UserDebugOutput_Printf("CH583_PROTO NFC test step=2 NFC_STATUS\r\n");
+        (void)ch583_wifi_uart_send_nfc_status();
+        return false;
+    case 2:
+        step++;
+        //UserDebugOutput_Printf("CH583_PROTO NFC test step=3 NFC_CLEAR\r\n");
+        //(void)ch583_wifi_uart_send_nfc_clear();
+        return false;
+    case 3:
+        step++;
+        UserDebugOutput_Printf("CH583_PROTO NFC test step=4 NFC_STATUS\r\n");
+        (void)ch583_wifi_uart_send_nfc_status();
+        return true;
+    default:
+        return true;
+    }
+#else
+    return true;
+#endif
 }
 
 int ch583_wifi_uart_send_power_off(void)

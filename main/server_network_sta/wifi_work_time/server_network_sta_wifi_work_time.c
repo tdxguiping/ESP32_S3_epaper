@@ -278,6 +278,9 @@ static void configure_ch583_wake_timer_before_power_off(void)
 static void work_state_task(void *arg)
 {
     uint8_t counter = 0;
+#if CH583_WIFI_NFC_TEST_ENABLE
+    bool nfc_test_done = false;
+#endif
     (void)arg;
 
     while (true) {
@@ -293,6 +296,11 @@ static void work_state_task(void *arg)
                              server_required_continue_work_time - elapsed :
                              0;
 
+#if CH583_WIFI_NFC_TEST_ENABLE
+        if (!nfc_test_done && elapsed >= CH583_WIFI_NFC_TEST_START_DELAY_SECONDS) {
+            nfc_test_done = ch583_wifi_uart_test_nfc_step();
+        }
+#endif
 
 
         counter++;

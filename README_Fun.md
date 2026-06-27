@@ -9,6 +9,7 @@
 4.README_Result_Code.md = 正式规范
 4.本项目使用芯片:ESP32-C5,其SDK等资料在 "C:\esp\v5.5.3\esp-idf"
 5.本文件在 visual Studio Code中打开，并按 Shift+Ctrl+V 查看，否则有乱码
+6.当前处于开发价段。
 ```
 
 ## 目录 <span id="toc"></span>
@@ -70,6 +71,7 @@
   - [10.10 当前工程源码对应关系](#sec-10-10)
   - [10.11 LED 闪烁控制](#sec-10-11)
   - [10.12 WAKE_TIMER：WiFi 定时唤醒配置](#sec-10-12)
+  - [10.13 NFC 内容管理](#sec-10-13)
 - [11. CH583 BLE JSON 配网与唤醒](#sec-11)
   - [11.1 蓝牙配网协议：wifi](#sec-11-1)
   - [11.2 蓝牙唤醒 WiFi：wifi_wakeup](#sec-11-2)
@@ -2949,6 +2951,23 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 - load_work_state_from_nvs() 读取工作状态 blob。
 - load_work_time_vars_from_app_nvs() 读取兼容字符串 key。
 - work_state_task() 读取 RAM 中计时值，超时后发送 CH583 POWER_OFF。
+```
+
+work_state 栈大小要求：
+
+```text
+USER_WORK_STATE_TASK_STACK_SIZE 默认使用 8 * 1024。
+不要改回 3 * 1024。
+
+原因：
+work_state_task() 不是只做简单计时。工作时间超时后，它会执行关机前完整链路：
+1. 读取 slideshow control，决定 WAKE_TIMER ON/OFF。
+2. 发送 CH583 WAKE_TIMER。
+3. 调用 UserLedStatus_PreparePowerOff()，发送 RED/GREEN LED 停止闪烁和关闭指令。
+4. 发送 CH583 POWER_OFF。
+
+这些调用会进入 CH583 V1 组帧、UART 写入、调试输出等函数，栈上存在多个局部 buffer。
+如果栈只有 3 * 1024，可能在超时关机流程中触发 Stack protection fault。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -6277,6 +6296,9 @@ ch583_wifi_send_ack()
 ```text
 任何命令必须先通过 CRC、LEN、PART/TOTAL 校验，再执行实际动作。
 WiFi 必须等 CH583 的 BLE_MAC 被 ACK 确认后，再执行后续业务。
+WiFi 会记录上一条合法 CH583 -> WiFi 帧的 SEQ；如果下一条合法帧的 SEQ 不是 last+1，则打印错误日志提示可能丢帧。
+SEQ 按 uint16_t 处理，65535 -> 0 属于正常连续递增。
+SEQ gap 只用于诊断打印，不触发补包、重发或业务状态修正。
 ```
 
 
@@ -6618,6 +6640,199 @@ work_state_task() 工作时间到期且 OTA 不忙时：
 `WAKE_TIMER` 配置失败只打印 warning，不阻止后续 `POWER_OFF`；这样 CH583/CH585 固件暂未支持新命令时，也不会破坏原有关机链路。超时后关机流程按 20 秒节流重发，避免每秒重复写 CH583/CH585 配置，同时确保 CH583/CH585 最终收到关机请求。
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-12)
+
+---
+
+### 10.13 NFC 内容管理 <span id="sec-10-13"></span>
+
+该功能用于 WiFi（ESP32-C5）在被唤醒后，把需要给手机 NFC 读取的设备信息写入 CH583/CH585。CH583/CH585 保存该内容，并在手机靠近触发 NFC-only 会话时，以普通 NDEF Text JSON 形式提供给手机读取。
+
+重要原则：
+
+```text
+真实 NFC 展示数据只允许 WiFi 通过 UART 协议修改。
+手机端普通 NDEF 写入只作为授权唤醒命令，不作为真实展示数据保存。
+NFC 展示数据由 CH583/CH585 保存到 DataFlash，软复位/断电重启后仍可恢复。
+手机读取 NFC 时读取的是 CH583/CH585 RAM 中模拟的 Type2 Tag/NDEF 缓存，不是每次直接读 Flash。
+```
+
+ESP32-C5 侧实现文件：
+
+```text
+main/ch583_uart/ch583_wifi_uart_protocol.c
+main/ch583_uart/ch583_wifi_uart_protocol.h
+main/server_network_sta/wifi_work_time/server_network_sta_wifi_work_time.c
+main/tdx_cfg.h
+```
+
+#### 10.13.1 写入 NFC 展示 JSON
+
+WiFi 发送：
+
+```text
+@#V1|SEQ=<seq>|CMD=NFC_SET|LEN=<len>|PART=1|TOTAL=1|ARG=<base64url_json>|CRC=<crc>^&
+```
+
+参数：
+
+```text
+ARG 为 UTF-8 JSON 的 base64url 编码结果。
+base64url 使用 URL 安全字符：A-Z a-z 0-9 - _
+省略尾部 = padding。
+JSON 解码后最大长度：220 字节。
+```
+
+ESP32-C5 侧接口：
+
+```c
+int ch583_wifi_uart_send_nfc_set_json(const char *json);
+```
+
+限制：
+
+```text
+CH583_WIFI_NFC_JSON_MAX_LEN = 220
+CH583_WIFI_NFC_BASE64URL_MAX_LEN = 300
+NFC_SET 不做 UART 分包，PART/TOTAL 固定为 1/1。
+base64url 后的 ARG 必须小于等于 CH583_WIFI_MAX_ARG_LEN。
+```
+
+示例 JSON：
+
+```json
+{"mac":"D00C5E140647","wifi":"sleep","nfc":"ready","msg":"hello"}
+```
+
+成功回复：
+
+```text
+ACK,<received_seq>
+```
+
+失败回复：
+
+```text
+base64url 解码失败：ERR,<received_seq>,BAD_ARG
+JSON 长度为 0 或超过 220 字节：ERR,<received_seq>,BAD_LEN
+NFC 正在被手机读写或处于忙状态：ERR,<received_seq>,NFC_BUSY
+PART/TOTAL 错误：ERR,<received_seq>,BAD_PART
+LEN 错误：ERR,<received_seq>,BAD_LEN
+CRC 错误：ERR,<received_seq>,BAD_CRC
+```
+
+#### 10.13.2 清空 NFC 展示内容
+
+WiFi 发送：
+
+```text
+@#V1|SEQ=<seq>|CMD=NFC_CLEAR|LEN=0|PART=1|TOTAL=1|ARG=|CRC=<crc>^&
+```
+
+ESP32-C5 侧接口：
+
+```c
+int ch583_wifi_uart_send_nfc_clear(void);
+```
+
+CH583/CH585 行为：
+
+```text
+清除 DataFlash 中保存的 NFC 展示 JSON。
+恢复默认 NFC 展示 JSON。
+更新 RAM 中的 NDEF 缓存。
+回复 ACK。
+```
+
+#### 10.13.3 查询 NFC 状态
+
+WiFi 发送：
+
+```text
+@#V1|SEQ=<seq>|CMD=NFC_STATUS|LEN=0|PART=1|TOTAL=1|ARG=|CRC=<crc>^&
+```
+
+ESP32-C5 侧接口：
+
+```c
+int ch583_wifi_uart_send_nfc_status(void);
+```
+
+CH583/CH585 回复：
+
+```text
+@#V1|SEQ=<seq>|CMD=NFC_STATUS|LEN=<len>|PART=1|TOTAL=1|ARG=<state>,<payload_len>,<last_auth_result>|CRC=<crc>^&
+```
+
+字段：
+
+```text
+state             IDLE / READY，当前 NFC/PICC 状态
+payload_len       当前 NFC 展示 JSON 的 UTF-8 字节长度
+last_auth_result  NONE / OK / BAD_FORMAT / BAD_TOKEN
+```
+
+当前 ESP32-C5 第一版只把 `NFC_STATUS` 当作已知状态帧打印，不保存缓存；后续如需 HTTP/USB 查询，再增加 RAM 状态缓存。
+
+#### 10.13.4 开机一次性 NFC 测试
+
+测试开关：
+
+```c
+#define CH583_WIFI_NFC_TEST_ENABLE 1
+#define CH583_WIFI_NFC_TEST_START_DELAY_SECONDS 5
+```
+
+测试函数：
+
+```c
+bool ch583_wifi_uart_test_nfc_step(void);
+```
+
+测试方式：
+
+```text
+复用现有 work_state_task，不新增 task。
+work_state_task 的循环间隔为 USER_WORK_STATE_TASK_INTERVAL_MS，当前为 1 秒。
+work_state_task 启动早于 Ch583UartApp_Init()，因此 NFC 测试默认等待 CH583_WIFI_NFC_TEST_START_DELAY_SECONDS 秒后才开始，避免 UART 尚未初始化时抢跑。
+CH583_WIFI_NFC_TEST_ENABLE=1 时，开机后每次循环只执行一步：
+1. ch583_wifi_uart_send_nfc_set_json(json)
+2. ch583_wifi_uart_send_nfc_status()
+3. ch583_wifi_uart_send_nfc_clear()
+4. ch583_wifi_uart_send_nfc_status()
+
+第 4 步完成后，本次开机不再重复测试。
+```
+
+测试 JSON：
+
+```json
+{"mac":"D00C5E140647","wifi":"sleep","nfc":"ready","msg":"hello"}
+```
+
+预期串口方向打印：
+
+```text
+WiFi -> CH583: cmd=NFC_SET ...
+CH583 -> WiFi: cmd=ACK ...
+WiFi -> CH583: cmd=NFC_STATUS ...
+CH583 -> WiFi: cmd=NFC_STATUS arg=IDLE,51,NONE
+WiFi -> CH583: cmd=NFC_CLEAR ...
+CH583 -> WiFi: cmd=ACK ...
+WiFi -> CH583: cmd=NFC_STATUS ...
+CH583 -> WiFi: cmd=NFC_STATUS arg=READY,<len>,<last_auth_result>
+```
+
+#### 10.13.5 与手机 NFC 授权写入的关系
+
+手机端授权唤醒 WiFi 使用普通 NDEF 写入，推荐写入 NDEF Text JSON：
+
+```json
+{"cmd":"NWK1","token":"<TOKEN16>"}
+```
+
+`TOKEN16` 是按设备 MAC 派生的固定授权口令。手机写入的授权 NDEF 只作为一次性命令；CH583/CH585 校验 token 后立即从 RAM 备份恢复原 NFC 展示 JSON。手机写入内容不保存到 DataFlash，不会长期覆盖 WiFi 通过 `NFC_SET` 写入的真实展示数据。
+
+[⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-13)
 
 ---
 
