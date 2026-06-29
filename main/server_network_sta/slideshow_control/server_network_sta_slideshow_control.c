@@ -12,6 +12,7 @@
 #include "file_serving_example_common.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 
 static const char *TAG = "server_sta_slide_ctl";
 
@@ -186,14 +187,19 @@ static esp_err_t send_set_slideshow_result(httpd_req_t *req, int result, const c
 
 static bool read_existing_bool(const char *path, const char *key, bool default_value)
 {
+    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        return default_value;
+    }
     FILE *fp = fopen(path, "rb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         return default_value;
     }
 
     char buf[192] = {0};
     size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
     fclose(fp);
+    TdxSharedSpi_Unlock();
     buf[len] = '\0';
 
     bool value = default_value;
@@ -206,14 +212,19 @@ static bool read_existing_bool(const char *path, const char *key, bool default_v
 
 static uint32_t read_existing_interval(const char *path, uint32_t default_value)
 {
+    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        return default_value;
+    }
     FILE *fp = fopen(path, "rb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         return default_value;
     }
 
     char buf[192] = {0};
     size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
     fclose(fp);
+    TdxSharedSpi_Unlock();
     buf[len] = '\0';
 
     uint32_t interval = default_value;
@@ -238,17 +249,27 @@ static esp_err_t ensure_paths(const char *base_path, char *bin_dir, size_t bin_d
         return ESP_OK;
     }
 
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
     if (stat(bin_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "set_slideshow bin dir missing: %s", bin_dir);
         return ESP_ERR_NOT_FOUND;
     }
+    TdxSharedSpi_Unlock();
     return ESP_OK;
 }
 
 static bool slideshow_config_has_files(const char *config_path)
 {
+    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        return false;
+    }
     FILE *fp = fopen(config_path, "rb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "set_slideshow config missing: %s", config_path);
         return false;
     }
@@ -256,6 +277,7 @@ static bool slideshow_config_has_files(const char *config_path)
     char buf[256] = {0};
     size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
     fclose(fp);
+    TdxSharedSpi_Unlock();
     buf[len] = '\0';
 
     const char *array = strstr(buf, "\"fileNames\"");
@@ -278,8 +300,14 @@ static esp_err_t write_control_file(const char *control_path, const slideshow_co
              control->random ? "true" : "false",
              TDX_SLIDESHOW_RUN_MODE);
 
-    FILE *fp = fopen(control_path, "wb");
+    FILE *fp = NULL;
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
+    fp = fopen(control_path, "wb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "set_slideshow open failed path=%s errno=%d", control_path, errno);
         return ESP_FAIL;
     }
@@ -287,6 +315,7 @@ static esp_err_t write_control_file(const char *control_path, const slideshow_co
     size_t len = strlen(json);
     size_t written = fwrite(json, 1, len, fp);
     fclose(fp);
+    TdxSharedSpi_Unlock();
     ESP_LOGI(TAG, "set_slideshow write control path=%s len=%u written=%u json=%s",
              control_path, (unsigned int)len, (unsigned int)written, json);
     return written == len ? ESP_OK : ESP_FAIL;

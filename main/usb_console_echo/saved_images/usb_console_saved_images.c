@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 #include "usb_console_common.h"
 #include "usb_console_transport.h"
 
@@ -36,7 +37,12 @@ static esp_err_t send_thumb_file(const char *uri, usb_console_http_response_t *r
     }
 
     snprintf(path, sizeof(path), "%s/jpg_img/%s", USB_CONSOLE_BASE_PATH, name);
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
     if (stat(path, &st) != 0 || st.st_size <= 0) {
+        TdxSharedSpi_Unlock();
         return UsbConsoleCommon_SetJsonf(response,
                                          404,
                                          "Not Found",
@@ -46,6 +52,7 @@ static esp_err_t send_thumb_file(const char *uri, usb_console_http_response_t *r
 
     FILE *fp = fopen(path, "rb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         return UsbConsoleCommon_SetJsonf(response,
                                          404,
                                          "Not Found",
@@ -63,30 +70,41 @@ static esp_err_t send_thumb_file(const char *uri, usb_console_http_response_t *r
                               (unsigned long)st.st_size);
     if (header_len <= 0 || header_len >= (int)sizeof(header)) {
         fclose(fp);
+        TdxSharedSpi_Unlock();
         return ESP_ERR_INVALID_SIZE;
     }
 
     // Send thumbnail bytes directly so USB saved_images can fetch SD card images like the HTTP side.
     // Chinese note: thumbnail uses direct USB chunks, matching the network side SD-card image fetch behavior.
-    ESP_RETURN_ON_ERROR(UsbConsoleTransport_WriteAll(USB_CONSOLE_FRAME_HEAD,
-                                                     strlen(USB_CONSOLE_FRAME_HEAD),
-                                                     pdMS_TO_TICKS(USB_CONSOLE_WRITE_TIMEOUT_MS)),
-                        TAG, "write thumbnail frame head failed");
-    ESP_RETURN_ON_ERROR(UsbConsoleTransport_WriteAll(header,
-                                                     (size_t)header_len,
-                                                     pdMS_TO_TICKS(USB_CONSOLE_WRITE_TIMEOUT_MS)),
-                        TAG, "write thumbnail header failed");
+    esp_err_t write_ret = UsbConsoleTransport_WriteAll(USB_CONSOLE_FRAME_HEAD,
+                                                       strlen(USB_CONSOLE_FRAME_HEAD),
+                                                       pdMS_TO_TICKS(USB_CONSOLE_WRITE_TIMEOUT_MS));
+    if (write_ret != ESP_OK) {
+        fclose(fp);
+        TdxSharedSpi_Unlock();
+        return write_ret;
+    }
+    write_ret = UsbConsoleTransport_WriteAll(header,
+                                             (size_t)header_len,
+                                             pdMS_TO_TICKS(USB_CONSOLE_WRITE_TIMEOUT_MS));
+    if (write_ret != ESP_OK) {
+        fclose(fp);
+        TdxSharedSpi_Unlock();
+        return write_ret;
+    }
     size_t read_len = 0;
     while ((read_len = fread(scratch, 1, sizeof(scratch), fp)) > 0) {
-        esp_err_t write_ret = UsbConsoleTransport_WriteAll(scratch,
-                                                           read_len,
-                                                           pdMS_TO_TICKS(USB_CONSOLE_WRITE_TIMEOUT_MS));
+        write_ret = UsbConsoleTransport_WriteAll(scratch,
+                                                 read_len,
+                                                 pdMS_TO_TICKS(USB_CONSOLE_WRITE_TIMEOUT_MS));
         if (write_ret != ESP_OK) {
             fclose(fp);
+            TdxSharedSpi_Unlock();
             return write_ret;
         }
     }
     fclose(fp);
+    TdxSharedSpi_Unlock();
     ESP_RETURN_ON_ERROR(UsbConsoleTransport_WriteAll(USB_CONSOLE_FRAME_TAIL,
                                                      strlen(USB_CONSOLE_FRAME_TAIL),
                                                      pdMS_TO_TICKS(USB_CONSOLE_WRITE_TIMEOUT_MS)),

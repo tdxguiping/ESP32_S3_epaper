@@ -16,6 +16,7 @@
 #include "file_serving_example_common.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 
 static const char *TAG = "usb_console_common";
 
@@ -246,13 +247,18 @@ esp_err_t UsbConsoleCommon_ListSavedImages(char *json, size_t json_size, size_t 
     char jpg_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
     snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", USB_CONSOLE_BASE_PATH);
     const char *scan_dir = example_storage_supports_directories() ? jpg_dir : USB_CONSOLE_BASE_PATH;
+    ESP_RETURN_ON_ERROR(append_text(json, json_size, used, "\"images\":["), TAG, "append image list failed");
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
     DIR *dir = opendir(scan_dir);
     if (dir == NULL) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "image directory open failed path=%s", scan_dir);
         return ESP_ERR_NOT_FOUND;
     }
 
-    ESP_RETURN_ON_ERROR(append_text(json, json_size, used, "\"images\":["), TAG, "append image list failed");
     int count = 0;
     struct dirent *entry = NULL;
     while ((entry = readdir(dir)) != NULL) {
@@ -268,18 +274,23 @@ esp_err_t UsbConsoleCommon_ListSavedImages(char *json, size_t json_size, size_t 
         }
         memcpy(file_name, name, stem_len);
         file_name[stem_len] = '\0';
-        ESP_RETURN_ON_ERROR(append_format(json,
-                                          json_size,
-                                          used,
-                                          "%s{\"fileName\":\"%s\",\"thumbnailUrl\":\"%s%s\"}",
-                                          count > 0 ? "," : "",
-                                          file_name,
-                                          SERVER_NETWORK_STA_THUMB_URI_PREFIX,
-                                          name),
-                            TAG, "append image item failed");
+        esp_err_t append_ret = append_format(json,
+                                             json_size,
+                                             used,
+                                             "%s{\"fileName\":\"%s\",\"thumbnailUrl\":\"%s%s\"}",
+                                             count > 0 ? "," : "",
+                                             file_name,
+                                             SERVER_NETWORK_STA_THUMB_URI_PREFIX,
+                                             name);
+        if (append_ret != ESP_OK) {
+            closedir(dir);
+            TdxSharedSpi_Unlock();
+            return append_ret;
+        }
         count++;
     }
     closedir(dir);
+    TdxSharedSpi_Unlock();
     return append_text(json, json_size, used, "]");
 }
 
@@ -297,6 +308,9 @@ esp_err_t UsbConsoleCommon_AppendSnapshot(char *json, size_t json_size, size_t *
     snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, TDX_SLIDESHOW_CONTROL_FILE);
     snprintf(config_path, sizeof(config_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, TDX_SLIDESHOW_CONFIG_FILE);
 
+    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        return ESP_ERR_TIMEOUT;
+    }
     fp = fopen(control_path, "rb");
     if (fp != NULL) {
         size_t len = fread(control, 1, sizeof(control) - 1, fp);
@@ -306,6 +320,7 @@ esp_err_t UsbConsoleCommon_AppendSnapshot(char *json, size_t json_size, size_t *
         (void)UsbConsoleCommon_JsonU32(control, "interval", &interval);
         (void)UsbConsoleCommon_JsonBool(control, "random", &random);
     }
+    TdxSharedSpi_Unlock();
 
     ESP_RETURN_ON_ERROR(append_format(json,
                                       json_size,
@@ -313,49 +328,53 @@ esp_err_t UsbConsoleCommon_AppendSnapshot(char *json, size_t json_size, size_t *
                                       ",\"slideshow\":{\"sw\":%d,\"fileNames\":[",
                                       sw),
                         TAG, "append snapshot slideshow failed");
+    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        return ESP_ERR_TIMEOUT;
+    }
     fp = fopen(config_path, "rb");
     if (fp != NULL) {
         size_t len = fread(config, 1, sizeof(config) - 1, fp);
         fclose(fp);
         config[len] = '\0';
-        const char *array = find_json_key(config, "fileNames");
-        if (array != NULL && (array = strchr(array, '[')) != NULL) {
+    }
+    TdxSharedSpi_Unlock();
+    const char *array = find_json_key(config, "fileNames");
+    if (array != NULL && (array = strchr(array, '[')) != NULL) {
+        array++;
+        int count = 0;
+        while (*array != '\0' && *array != ']') {
+            while (*array == ' ' || *array == '\t' || *array == '\r' || *array == '\n' || *array == ',') {
+                array++;
+            }
+            if (*array != '"') {
+                break;
+            }
             array++;
-            int count = 0;
-            while (*array != '\0' && *array != ']') {
-                while (*array == ' ' || *array == '\t' || *array == '\r' || *array == '\n' || *array == ',') {
-                    array++;
-                }
-                if (*array != '"') {
-                    break;
-                }
-                array++;
-                char file_name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
-                size_t name_len = 0;
-                while (*array != '\0' && *array != '"' && name_len + 1 < sizeof(file_name)) {
-                    file_name[name_len++] = *array++;
-                }
-                if (*array != '"') {
-                    break;
-                }
-                array++;
-                if (UsbConsoleCommon_FileNameIsSafe(file_name)) {
-                    ESP_RETURN_ON_ERROR(append_format(json,
-                                                      json_size,
-                                                      used,
-                                                      "%s\"%s\"",
-                                                      count > 0 ? "," : "",
-                                                      file_name),
-                                        TAG, "append snapshot file failed");
-                    count++;
-                }
+            char file_name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
+            size_t name_len = 0;
+            while (*array != '\0' && *array != '"' && name_len + 1 < sizeof(file_name)) {
+                file_name[name_len++] = *array++;
+            }
+            if (*array != '"') {
+                break;
+            }
+            array++;
+            if (UsbConsoleCommon_FileNameIsSafe(file_name)) {
+                ESP_RETURN_ON_ERROR(append_format(json,
+                                                  json_size,
+                                                  used,
+                                                  "%s\"%s\"",
+                                                  count > 0 ? "," : "",
+                                                  file_name),
+                                    TAG, "append snapshot file failed");
+                count++;
             }
         }
-        if (interval == 0) {
-            (void)UsbConsoleCommon_JsonU32(config, "interval", &interval);
-        }
-        (void)UsbConsoleCommon_JsonBool(config, "random", &random);
     }
+    if (interval == 0) {
+        (void)UsbConsoleCommon_JsonU32(config, "interval", &interval);
+    }
+    (void)UsbConsoleCommon_JsonBool(config, "random", &random);
     return append_format(json,
                          json_size,
                          used,
@@ -596,11 +615,16 @@ esp_err_t UsbConsoleCommon_SavePartFile(const char *dir,
     if (dir == NULL || !UsbConsoleCommon_FileNameIsSafe(file_name) || ext == NULL || part == NULL || !part->present) {
         return ESP_ERR_INVALID_ARG;
     }
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
     (void)mkdir(dir, 0775);
     snprintf(path, sizeof(path), "%s/%s%s", dir, file_name, ext);
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
     FILE *fp = fopen(tmp_path, "wb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         return ESP_FAIL;
     }
     void *io_buf = NULL;
@@ -617,13 +641,16 @@ esp_err_t UsbConsoleCommon_SavePartFile(const char *dir,
     free(io_buf);
     if (written != part->len) {
         unlink(tmp_path);
+        TdxSharedSpi_Unlock();
         return ESP_FAIL;
     }
     unlink(path);
     if (rename(tmp_path, path) != 0) {
         unlink(tmp_path);
+        TdxSharedSpi_Unlock();
         return ESP_FAIL;
     }
+    TdxSharedSpi_Unlock();
     ESP_LOGI(TAG, "save file path=%s size=%u elapsed_ms=%lu",
              path,
              (unsigned int)part->len,
@@ -643,12 +670,18 @@ esp_err_t UsbConsoleCommon_RecordLastCast(const char *file_name)
     int len = snprintf(json, sizeof(json),
                        "{\"fileName\":\"%s\",\"bin\":\"%s/bin_img/%s.bin\",\"image\":\"%s/jpg_img/%s.jpg\"}",
                        file_name, USB_CONSOLE_BASE_PATH, file_name, USB_CONSOLE_BASE_PATH, file_name);
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
     FILE *fp = fopen(record_path, "wb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         return ESP_FAIL;
     }
     size_t written = fwrite(json, 1, (size_t)len, fp);
     fclose(fp);
+    TdxSharedSpi_Unlock();
     ESP_LOGI(TAG, "record last cast file=%s elapsed_ms=%lu",
              file_name,
              (unsigned long)elapsed_ms_since(start_us));
@@ -768,9 +801,9 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
         esp_err_t display_ret = ESP_OK;
         if (strcmp(expected_func, "cast2pic") == 0) {
             uint8_t screen_number = (strcmp(screen, "b") == 0) ? 2 : 1;
-            display_ret = ServerNetworkStaEpdDisplay_QueueToScreen((const uint8_t *)bin_part->data, bin_part->len, screen_number);
+            display_ret = ServerNetworkStaEpdDisplay_QueueToScreenAndWait((const uint8_t *)bin_part->data, bin_part->len, screen_number);
         } else {
-            display_ret = ServerNetworkStaEpdDisplay_Queue((const uint8_t *)bin_part->data, bin_part->len);
+            display_ret = ServerNetworkStaEpdDisplay_QueueToScreenAndWait((const uint8_t *)bin_part->data, bin_part->len, 1);
         }
         ESP_LOGI(TAG, "%s display queue ret=%s elapsed_ms=%lu total_ms=%lu",
                  expected_func,

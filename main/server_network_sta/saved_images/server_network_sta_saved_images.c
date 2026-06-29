@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "file_serving_example_common.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 
 static const char *TAG = "server_sta_saved";
 
@@ -105,17 +106,24 @@ esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
     const char *scan_dir = example_storage_supports_directories() ? jpg_dir : base_path;
 
     struct stat st = {0};
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return send_saved_images_error(req);
+    }
     if (example_storage_supports_directories() && (stat(base_path, &st) != 0 || !S_ISDIR(st.st_mode))) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "get_saved_images base path missing: %s", base_path);
         return send_saved_images_error(req);
     }
     if (example_storage_supports_directories() && (stat(jpg_dir, &st) != 0 || !S_ISDIR(st.st_mode))) {
+        TdxSharedSpi_Unlock();
         ESP_LOGI(TAG, "get_saved_images jpg dir missing, return empty: %s", jpg_dir);
         return send_saved_images_empty(req);
     }
 
     DIR *dir = opendir(scan_dir);
     if (dir == NULL) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "get_saved_images opendir failed: %s", scan_dir);
         return send_saved_images_error(req);
     }
@@ -123,6 +131,7 @@ esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
     char *json = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
     if (json == NULL) {
         closedir(dir);
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "get_saved_images json alloc failed");
         return send_saved_images_error(req);
     }
@@ -134,6 +143,7 @@ esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
     if (written < 0 || (size_t)written >= SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX) {
         free(json);
         closedir(dir);
+        TdxSharedSpi_Unlock();
         return send_saved_images_error(req);
     }
     used = (size_t)written;
@@ -175,6 +185,7 @@ esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
     }
 
     closedir(dir);
+    TdxSharedSpi_Unlock();
     snprintf(json + used, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX - used, "]}");
 
     ESP_LOGI(TAG, "get_saved_images result count=%d", count);
@@ -217,8 +228,14 @@ esp_err_t ServerNetworkStaSavedImages_SendThumbnail(httpd_req_t *req,
     char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX + 24];
     snprintf(path, sizeof(path), "%s/jpg_img/%s", base_path, name);
 
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return send_thumbnail_error(req, HTTPD_500, TDX_JSON_RESULT_TIMEOUT,
+                                    "storage busy");
+    }
     FILE *fp = fopen(path, "rb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "thumb open failed path=%s", path);
         return send_thumbnail_error(req, HTTPD_404, TDX_JSON_RESULT_THUMB_NOT_FOUND,
                                     "thumbnail not found");
@@ -231,6 +248,7 @@ esp_err_t ServerNetworkStaSavedImages_SendThumbnail(httpd_req_t *req,
     while ((read_len = fread(scratch, 1, scratch_size, fp)) > 0) {
         if (httpd_resp_send_chunk(req, scratch, read_len) != ESP_OK) {
             fclose(fp);
+            TdxSharedSpi_Unlock();
             ESP_LOGE(TAG, "thumb send chunk failed path=%s", path);
             httpd_resp_sendstr_chunk(req, NULL);
             return ESP_FAIL;
@@ -238,5 +256,6 @@ esp_err_t ServerNetworkStaSavedImages_SendThumbnail(httpd_req_t *req,
     }
 
     fclose(fp);
+    TdxSharedSpi_Unlock();
     return httpd_resp_send_chunk(req, NULL, 0);
 }

@@ -5,6 +5,7 @@
 
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 #include "usb_console_common.h"
 
 esp_err_t UsbConsoleSlideshowControl_Handle(const usb_console_http_request_t *request,
@@ -46,8 +47,15 @@ esp_err_t UsbConsoleSlideshowControl_Process(const usb_console_http_request_t *r
     }
 
     snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, TDX_SLIDESHOW_CONTROL_FILE);
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return UsbConsoleCommon_SetJsonf(response, 200, "OK",
+                                         "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"set slideshow failed\"}",
+                                         TDX_JSON_RESULT_TIMEOUT);
+    }
     FILE *fp = fopen(control_path, "wb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",
                                          "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"set slideshow failed\"}",
                                          TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED);
@@ -55,10 +63,12 @@ esp_err_t UsbConsoleSlideshowControl_Process(const usb_console_http_request_t *r
     int written = fprintf(fp, "{\"sw\":%d,\"interval\":%lu,\"random\":%s,\"run_mode\":%d}",
                           sw, (unsigned long)interval, random ? "true" : "false", TDX_SLIDESHOW_RUN_MODE);
     if (fclose(fp) != 0 || written < 0) {
+        TdxSharedSpi_Unlock();
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",
                                          "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"set slideshow failed\"}",
                                          TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED);
     }
+    TdxSharedSpi_Unlock();
 
     if (app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY, random ? "true" : "false") != ESP_OK) {
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",

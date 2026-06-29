@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 #include "usb_console_common.h"
 
 static const char *TAG = "usb_console_upload";
@@ -147,11 +148,21 @@ static esp_err_t save_raw_body_to_path(const char *path, const char *body, size_
         return ESP_ERR_INVALID_ARG;
     }
 
-    ESP_RETURN_ON_ERROR(ensure_parent_dirs(path), TAG, "make raw upload parent dirs failed");
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
+    esp_err_t dir_ret = ensure_parent_dirs(path);
+    if (dir_ret != ESP_OK) {
+        TdxSharedSpi_Unlock();
+        ESP_LOGE(TAG, "make raw upload parent dirs failed");
+        return dir_ret;
+    }
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
 
     fp = fopen(tmp_path, "wb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "raw upload open failed path=%s errno=%d", tmp_path, errno);
         return ESP_FAIL;
     }
@@ -170,6 +181,7 @@ static esp_err_t save_raw_body_to_path(const char *path, const char *body, size_
 
     if (written != body_len) {
         unlink(tmp_path);
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "raw upload write mismatch path=%s written=%u expected=%u",
                  tmp_path,
                  (unsigned int)written,
@@ -180,9 +192,11 @@ static esp_err_t save_raw_body_to_path(const char *path, const char *body, size_
     unlink(path);
     if (rename(tmp_path, path) != 0) {
         unlink(tmp_path);
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "raw upload rename failed path=%s errno=%d", path, errno);
         return ESP_FAIL;
     }
+    TdxSharedSpi_Unlock();
 
     ESP_LOGI(TAG,
              "raw upload saved path=%s size=%u elapsed_ms=%lu",

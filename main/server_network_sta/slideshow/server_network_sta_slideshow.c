@@ -18,6 +18,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 
 static const char *TAG = "server_sta_slide";
 #define SLIDESHOW_TASK_STACK_SIZE (12 * 1024)
@@ -279,20 +280,31 @@ static esp_err_t ensure_bin_dir(const char *base_path, char *bin_dir, size_t bin
     if (!example_storage_supports_directories()) {
         return ESP_OK;
     }
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
     if (stat(bin_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "slideshow bin dir missing: %s", bin_dir);
         return ESP_ERR_NOT_FOUND;
     }
+    TdxSharedSpi_Unlock();
     return ESP_OK;
 }
 
 static esp_err_t check_slideshow_files_exist(const char *bin_dir, const slideshow_request_t *request)
 {
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
     for (size_t i = 0; i < request->file_count; i++) {
         char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
         struct stat st = {0};
         snprintf(path, sizeof(path), "%s/%s.bin", bin_dir, request->file_names[i]);
         if (stat(path, &st) != 0 || st.st_size <= 0) {
+            TdxSharedSpi_Unlock();
             ESP_LOGE(TAG, "slideshow file missing index=%u path=%s",
                      (unsigned int)i, path);
             return ESP_ERR_NOT_FOUND;
@@ -300,13 +312,19 @@ static esp_err_t check_slideshow_files_exist(const char *bin_dir, const slidesho
         ESP_LOGI(TAG, "slideshow file ok index=%u path=%s size=%u",
                  (unsigned int)i, path, (unsigned int)st.st_size);
     }
+    TdxSharedSpi_Unlock();
     return ESP_OK;
 }
 
 static esp_err_t write_text_file(const char *path, const char *data)
 {
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
     FILE *fp = fopen(path, "wb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "slideshow open failed path=%s errno=%d", path, errno);
         return ESP_FAIL;
     }
@@ -314,6 +332,7 @@ static esp_err_t write_text_file(const char *path, const char *data)
     size_t len = strlen(data);
     size_t written = fwrite(data, 1, len, fp);
     fclose(fp);
+    TdxSharedSpi_Unlock();
     ESP_LOGI(TAG, "slideshow write path=%s len=%u written=%u",
              path, (unsigned int)len, (unsigned int)written);
     return written == len ? ESP_OK : ESP_FAIL;
@@ -329,10 +348,16 @@ static esp_err_t display_slideshow_file_and_wait(const char *base_path, const ch
     }
 
     snprintf(path, sizeof(path), "%s/bin_img/%s.bin", base_path, file_name);
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
     if (stat(path, &st) != 0 || st.st_size <= 0) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "slideshow file missing path=%s", path);
         return ESP_ERR_NOT_FOUND;
     }
+    TdxSharedSpi_Unlock();
 
     uint8_t *buf = (uint8_t *)heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (buf == NULL) {
@@ -344,8 +369,14 @@ static esp_err_t display_slideshow_file_and_wait(const char *base_path, const ch
         return ESP_ERR_NO_MEM;
     }
 
+    lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        heap_caps_free(buf);
+        return lock_ret;
+    }
     FILE *fp = fopen(path, "rb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         heap_caps_free(buf);
         ESP_LOGE(TAG, "slideshow file open failed path=%s errno=%d", path, errno);
         return ESP_FAIL;
@@ -353,6 +384,7 @@ static esp_err_t display_slideshow_file_and_wait(const char *base_path, const ch
 
     size_t read_len = fread(buf, 1, (size_t)st.st_size, fp);
     fclose(fp);
+    TdxSharedSpi_Unlock();
     if (read_len != (size_t)st.st_size) {
         heap_caps_free(buf);
         ESP_LOGE(TAG, "slideshow file read failed path=%s expect=%u actual=%u",
@@ -614,10 +646,16 @@ static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_req
     memset(request, 0, sizeof(*request));
 
     snprintf(config_path, sizeof(config_path), "%s/bin_img/%s", base_path, TDX_SLIDESHOW_CONFIG_FILE);
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
     if (stat(config_path, &st) != 0 || st.st_size <= 0) {
+        TdxSharedSpi_Unlock();
         ESP_LOGI(TAG, "slideshow config missing path=%s", config_path);
         return ESP_ERR_NOT_FOUND;
     }
+    TdxSharedSpi_Unlock();
 
     char *json = (char *)malloc((size_t)st.st_size + 1);
     if (json == NULL) {
@@ -625,8 +663,14 @@ static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_req
         return ESP_ERR_NO_MEM;
     }
 
+    lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        free(json);
+        return lock_ret;
+    }
     FILE *fp = fopen(config_path, "rb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         free(json);
         ESP_LOGE(TAG, "slideshow config open failed path=%s errno=%d", config_path, errno);
         return ESP_FAIL;
@@ -634,6 +678,7 @@ static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_req
 
     size_t read_len = fread(json, 1, (size_t)st.st_size, fp);
     fclose(fp);
+    TdxSharedSpi_Unlock();
     json[read_len] = '\0';
     if (read_len != (size_t)st.st_size || !parse_file_names(json, request)) {
         free(json);
@@ -661,14 +706,19 @@ static bool read_slideshow_control_on(const char *base_path, uint32_t *interval,
     }
 
     snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", base_path, TDX_SLIDESHOW_CONTROL_FILE);
+    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        return false;
+    }
     FILE *fp = fopen(control_path, "rb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         ESP_LOGI(TAG, "slideshow control missing path=%s", control_path);
         return false;
     }
 
     size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
     fclose(fp);
+    TdxSharedSpi_Unlock();
     buf[len] = '\0';
 
     if (!parse_json_int(buf, "sw", &sw)) {

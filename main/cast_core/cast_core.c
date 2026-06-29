@@ -17,6 +17,7 @@
 #include "freertos/task.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 
 typedef struct {
     char file_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX];
@@ -223,7 +224,10 @@ static void CastSaveTask(void *arg)
         ESP_LOGI(TAG, "save task start file=%s bin=%u image=%u",
                  job.file_name, (unsigned int)job.bin_len, (unsigned int)job.image_len);
 
-        if (ensure_dir(bin_dir) != ESP_OK || ensure_dir(jpg_dir) != ESP_OK) {
+        esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+        if (lock_ret != ESP_OK) {
+            save_task_set_error(&job, lock_ret, TDX_JSON_RESULT_TIMEOUT, "shared_spi_lock_failed");
+        } else if (ensure_dir(bin_dir) != ESP_OK || ensure_dir(jpg_dir) != ESP_OK) {
             save_task_set_error(&job, ESP_ERR_NOT_FOUND, TDX_JSON_RESULT_STORAGE_NOT_READY, "sd_not_ready");
         } else if (check_save_space(job.base_path, job.bin_len, job.image_len) != ESP_OK) {
             save_task_set_error(&job, ESP_ERR_NO_MEM, TDX_JSON_RESULT_STORAGE_NO_SPACE, "storage_not_enough");
@@ -235,6 +239,9 @@ static void CastSaveTask(void *arg)
             save_task_set_error(&job, ESP_FAIL, TDX_JSON_RESULT_LAST_CAST_SAVE_FAILED, "last_cast_failed");
         } else {
             save_task_set_error(&job, ESP_OK, TDX_JSON_RESULT_OK, "");
+        }
+        if (lock_ret == ESP_OK) {
+            TdxSharedSpi_Unlock();
         }
 
         ESP_LOGI(TAG, "save task done file=%s ret=%s total_ms=%lu",
@@ -497,6 +504,10 @@ static esp_err_t stop_slideshow_for_cast(const char *base_path)
     bool random = false;
 
     snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", base_path, TDX_SLIDESHOW_CONTROL_FILE);
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
     read_slideshow_control_values(control_path, &interval, &random);
     int json_len = snprintf(json, sizeof(json),
                             "{\"sw\":0,\"interval\":%lu,\"random\":%s,\"run_mode\":%d}",
@@ -504,9 +515,11 @@ static esp_err_t stop_slideshow_for_cast(const char *base_path)
                             random ? "true" : "false",
                             TDX_SLIDESHOW_RUN_MODE);
     if (json_len < 0 || (size_t)json_len >= sizeof(json)) {
+        TdxSharedSpi_Unlock();
         return ESP_ERR_INVALID_SIZE;
     }
     esp_err_t ret = write_file_exact(control_path, json, strlen(json));
+    TdxSharedSpi_Unlock();
     if (ret == ESP_OK) {
         ServerNetworkStaSlideshow_Stop();
     }

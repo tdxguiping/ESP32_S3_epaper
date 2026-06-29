@@ -31,6 +31,7 @@
 #include "server_network_sta_ping.h"
 #include "server_network_sta_saved_images.h"
 #include "server_network_sta_wifi_work_time.h"
+#include "tdx_shared_spi.h"
 
 /* Max length a file path can have on storage */
 #define FILE_PATH_MAX (ESP_VFS_PATH_MAX + CONFIG_SPIFFS_OBJ_NAME_LEN)
@@ -91,6 +92,12 @@ static esp_err_t http_resp_dir_html(httpd_req_t *req, const char *dirpath)
     struct dirent *entry;
     struct stat entry_stat;
 
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Storage busy");
+        return ESP_FAIL;
+    }
+
     DIR *dir = opendir(dirpath);
     const size_t dirpath_len = strlen(dirpath);
 
@@ -98,6 +105,7 @@ static esp_err_t http_resp_dir_html(httpd_req_t *req, const char *dirpath)
     strlcpy(entrypath, dirpath, sizeof(entrypath));
 
     if (!dir) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "Failed to stat dir : %s", dirpath);
         /* Respond with 404 Not Found */
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Directory does not exist");
@@ -155,6 +163,7 @@ static esp_err_t http_resp_dir_html(httpd_req_t *req, const char *dirpath)
         httpd_resp_sendstr_chunk(req, "</td></tr>\n");
     }
     closedir(dir);
+    TdxSharedSpi_Unlock();
 
     /* Finish the file list table */
     httpd_resp_sendstr_chunk(req, "</tbody></table>");
@@ -252,14 +261,23 @@ static esp_err_t download_get_handler(httpd_req_t *req)
         return http_resp_dir_html(req, filepath);
     }
 
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Storage busy");
+        return ESP_FAIL;
+    }
+
     if (stat(filepath, &file_stat) == -1) {
         /* If file not present on SPIFFS check if URI
          * corresponds to one of the hardcoded paths */
         if (strcmp(filename, "/index.html") == 0) {
+            TdxSharedSpi_Unlock();
             return index_html_get_handler(req);
         } else if (strcmp(filename, "/favicon.ico") == 0) {
+            TdxSharedSpi_Unlock();
             return favicon_get_handler(req);
         }
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "Failed to stat file : %s", filepath);
         /* Respond with 404 Not Found */
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File does not exist");
@@ -268,6 +286,7 @@ static esp_err_t download_get_handler(httpd_req_t *req)
 
     fd = fopen(filepath, "r");
     if (!fd) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "Failed to read existing file : %s", filepath);
         /* Respond with 500 Internal Server Error */
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to read existing file");
@@ -288,6 +307,7 @@ static esp_err_t download_get_handler(httpd_req_t *req)
             /* Send the buffer contents as HTTP response chunk */
             if (httpd_resp_send_chunk(req, chunk, chunksize) != ESP_OK) {
                 fclose(fd);
+                TdxSharedSpi_Unlock();
                 ESP_LOGE(TAG, "File sending failed!");
                 /* Abort sending file */
                 httpd_resp_sendstr_chunk(req, NULL);
@@ -302,6 +322,7 @@ static esp_err_t download_get_handler(httpd_req_t *req)
 
     /* Close file after sending complete */
     fclose(fd);
+    TdxSharedSpi_Unlock();
     ESP_LOGI(TAG, "File sending complete");
 
     /* Respond with an empty chunk to signal HTTP response completion */
@@ -337,13 +358,6 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    if (stat(filepath, &file_stat) == 0) {
-        ESP_LOGE(TAG, "File already exists : %s", filepath);
-        /* Respond with 400 Bad Request */
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "File already exists");
-        return ESP_FAIL;
-    }
-
     /* File cannot be larger than a limit */
     if (req->content_len > MAX_FILE_SIZE) {
         ESP_LOGE(TAG, "File too large : %d bytes", req->content_len);
@@ -356,8 +370,22 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Storage busy");
+        return ESP_FAIL;
+    }
+
+    if (stat(filepath, &file_stat) == 0) {
+        TdxSharedSpi_Unlock();
+        ESP_LOGE(TAG, "File already exists : %s", filepath);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "File already exists");
+        return ESP_FAIL;
+    }
+
     fd = fopen(filepath, "w");
     if (!fd) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "Failed to create file : %s", filepath);
         /* Respond with 500 Internal Server Error */
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to create file");
@@ -388,6 +416,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
              * close and delete the unfinished file*/
             fclose(fd);
             unlink(filepath);
+            TdxSharedSpi_Unlock();
 
             ESP_LOGE(TAG, "File reception failed!");
             /* Respond with 500 Internal Server Error */
@@ -401,6 +430,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
              * Storage may be full? */
             fclose(fd);
             unlink(filepath);
+            TdxSharedSpi_Unlock();
 
             ESP_LOGE(TAG, "File write failed!");
             /* Respond with 500 Internal Server Error */
@@ -415,6 +445,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
 
     /* Close file upon upload completion */
     fclose(fd);
+    TdxSharedSpi_Unlock();
     ESP_LOGI(TAG, "File reception complete");
 
     /* Redirect onto root to see the updated file list */
@@ -451,7 +482,14 @@ static esp_err_t delete_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Storage busy");
+        return ESP_FAIL;
+    }
+
     if (stat(filepath, &file_stat) == -1) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "File does not exist : %s", filename);
         /* Respond with 400 Bad Request */
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "File does not exist");
@@ -461,6 +499,7 @@ static esp_err_t delete_post_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "Deleting file : %s", filename);
     /* Delete file */
     unlink(filepath);
+    TdxSharedSpi_Unlock();
 
     /* Redirect onto root to see the updated file list */
     httpd_resp_set_status(req, "303 See Other");

@@ -26,6 +26,7 @@
 #include "server_network_sta_upload.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 
 static const char *TAG = "server_sta_data";
 static char s_base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX] = {0};
@@ -320,6 +321,11 @@ static esp_err_t save_upload_part(const char *field_name, const char *file_name,
         return ESP_OK;
     }
 
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
+
     if (ensure_dir(dir_path) == ESP_OK) {
         snprintf(path, sizeof(path), "%s/%s", dir_path, file_name && file_name[0] ? file_name : field_name);
     } else if (file_name != NULL && file_name[0] != '\0') {
@@ -330,12 +336,14 @@ static esp_err_t save_upload_part(const char *field_name, const char *file_name,
 
     FILE *fp = fopen(path, "wb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "process_multipart_upload_request: open upload output failed path=%s", path);
         return ESP_FAIL;
     }
 
     size_t written = fwrite(data, 1, data_len, fp);
     fclose(fp);
+    TdxSharedSpi_Unlock();
     ESP_LOGI(TAG, "process_multipart_upload_request: saved path=%s len=%u written=%u",
              path, (unsigned int)data_len, (unsigned int)written);
     return written == data_len ? ESP_OK : ESP_FAIL;

@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "file_serving_example_common.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 
 static const char *TAG = "server_sta_snap";
 
@@ -196,13 +197,18 @@ static bool read_text_file(const char *path, char *buf, size_t buf_size)
     if (path == NULL || buf == NULL || buf_size == 0) {
         return false;
     }
+    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        return false;
+    }
     FILE *fp = fopen(path, "rb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         return false;
     }
 
     size_t len = fread(buf, 1, buf_size - 1, fp);
     fclose(fp);
+    TdxSharedSpi_Unlock();
     buf[len] = '\0';
     return true;
 }
@@ -321,13 +327,23 @@ static esp_err_t append_images_json(char *json, size_t json_size, size_t *used, 
     snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", base_path);
     const char *scan_dir = example_storage_supports_directories() ? jpg_dir : base_path;
 
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
     DIR *dir = opendir(scan_dir);
     if (dir == NULL) {
+        TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "snapshot image directory open failed path=%s", scan_dir);
         return ESP_ERR_NOT_FOUND;
     }
 
-    ESP_RETURN_ON_ERROR(append_text(json, json_size, used, "\"images\":["), TAG, "append images begin failed");
+    esp_err_t append_ret = append_text(json, json_size, used, "\"images\":[");
+    if (append_ret != ESP_OK) {
+        closedir(dir);
+        TdxSharedSpi_Unlock();
+        return append_ret;
+    }
 
     int count = 0;
     struct dirent *entry = NULL;
@@ -356,11 +372,13 @@ static esp_err_t append_images_json(char *json, size_t json_size, size_t *used, 
                                       name);
         if (ret != ESP_OK) {
             closedir(dir);
+            TdxSharedSpi_Unlock();
             return ret;
         }
         count++;
     }
     closedir(dir);
+    TdxSharedSpi_Unlock();
 
     return append_text(json, json_size, used, "]");
 }

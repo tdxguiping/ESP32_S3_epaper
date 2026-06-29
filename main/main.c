@@ -34,6 +34,7 @@
 #include "server_network_sta_slideshow.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 #include "usb_console_echo.h"
 #include "user_app.h"
 
@@ -289,6 +290,7 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ESP_ERROR_CHECK(TdxSharedSpi_Init());
     ESP_ERROR_CHECK(TdxCastCore_Init());
     ESP_ERROR_CHECK(UsbConsoleEcho_Init());
     ESP_ERROR_CHECK(ServerNetworkStaWifiWorkTime_Init());

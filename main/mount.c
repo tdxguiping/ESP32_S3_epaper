@@ -35,6 +35,7 @@
 #include "sdmmc_cmd.h"
 #include "file_serving_example_common.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 
 static const char *TAG = "example_mount";
 #define STORAGE_INFO_MAX_FILES 50
@@ -54,22 +55,31 @@ static esp_err_t ensure_storage_dir(const char *path)
         return ESP_ERR_INVALID_ARG;
     }
 
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
+
     if (stat(path, &st) == 0) {
+        TdxSharedSpi_Unlock();
         return S_ISDIR(st.st_mode) ? ESP_OK : ESP_FAIL;
     }
 
     if (mkdir(path, 0775) == 0 || errno == EEXIST) {
         ESP_LOGI(TAG, "Storage dir create: %s", path);
+        TdxSharedSpi_Unlock();
         return ESP_OK;
     }
 
     int err = errno;
     if (err == ENOTSUP || err == EOPNOTSUPP) {
         ESP_LOGW(TAG, "Storage mkdir not supported, skip path=%s errno=%d", path, err);
+        TdxSharedSpi_Unlock();
         return ESP_OK;
     }
 
     ESP_LOGE(TAG, "Storage mkdir failed path=%s errno=%d", path, err);
+    TdxSharedSpi_Unlock();
     return ESP_FAIL;
 }
 
@@ -172,7 +182,13 @@ esp_err_t example_storage_get_free_bytes(const char *base_path, uint64_t *free_b
 
     if (s_storage_type == EXAMPLE_STORAGE_TYPE_SD_CARD) {
         uint64_t total_bytes = 0;
-        return esp_vfs_fat_info(base_path, &total_bytes, free_bytes);
+        esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+        if (lock_ret != ESP_OK) {
+            return lock_ret;
+        }
+        esp_err_t ret = esp_vfs_fat_info(base_path, &total_bytes, free_bytes);
+        TdxSharedSpi_Unlock();
+        return ret;
     }
 
     if (s_storage_type == EXAMPLE_STORAGE_TYPE_SPIFFS) {
@@ -202,14 +218,19 @@ static bool path_has_suffix(const char *path, const char *suffix)
 static void print_text_file_content(const char *path)
 {
     char buf[513];
+    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        return;
+    }
     FILE *fp = fopen(path, "rb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         ESP_LOGW(TAG, "Storage txt : %s open failed", path);
         return;
     }
 
     size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
     fclose(fp);
+    TdxSharedSpi_Unlock();
     buf[len] = '\0';
 
     ESP_LOGI(TAG, "Storage txt : %s content=%s", path, buf);
@@ -224,8 +245,12 @@ static void __attribute__((unused)) list_storage_tree(const char *path, int dept
         return;
     }
 
+    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        return;
+    }
     DIR *dir = opendir(path);
     if (dir == NULL) {
+        TdxSharedSpi_Unlock();
         ESP_LOGW(TAG, "Storage list: open dir failed path=%s", path);
         return;
     }
@@ -269,6 +294,7 @@ static void __attribute__((unused)) list_storage_tree(const char *path, int dept
     }
 
     closedir(dir);
+    TdxSharedSpi_Unlock();
 }
 
 void example_print_storage_info(const char *base_path)
@@ -286,12 +312,17 @@ void example_print_storage_info(const char *base_path)
         return;
     }
 
+    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        ESP_LOGE(TAG, "Storage shared SPI lock failed path=%s", base_path);
+        return;
+    }
     path_stat_ok = (stat(base_path, &st) == 0);
     DIR *root_dir = opendir(base_path);
     path_open_ok = (root_dir != NULL);
     if (root_dir != NULL) {
         closedir(root_dir);
     }
+    TdxSharedSpi_Unlock();
 
     if (s_storage_type == EXAMPLE_STORAGE_TYPE_SPIFFS) {
         bool spiffs_mounted = esp_spiffs_mounted(STORAGE_SPIFFS_PARTITION_LABEL);
@@ -320,7 +351,12 @@ void example_print_storage_info(const char *base_path)
     if (s_storage_type == EXAMPLE_STORAGE_TYPE_SD_CARD) {
         uint64_t total_bytes = 0;
         uint64_t free_bytes = 0;
+        if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+            ESP_LOGE(TAG, "SD status: shared SPI lock failed");
+            return;
+        }
         esp_err_t fs_ret = esp_vfs_fat_info(base_path, &total_bytes, &free_bytes);
+        TdxSharedSpi_Unlock();
         if (fs_ret == ESP_OK) {
             ESP_LOGI(TAG, "SD status: normal total=%llu free=%llu used=%llu",
                      (unsigned long long)total_bytes,
@@ -472,6 +508,12 @@ esp_err_t example_mount_storage(const char* base_path)
              USER_SD_SPI_CLK_PIN,
              USER_SD_SPI_CS_PIN);
 
+    esp_err_t shared_spi_lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (shared_spi_lock_ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to lock shared SPI bus.");
+        return shared_spi_lock_ret;
+    }
+
     ret = spi_bus_initialize(host.slot, &bus_cfg, SDSPI_DEFAULT_DMA);
     if (ret == ESP_ERR_INVALID_STATE) {
         // Reuse the SPI bus initialized by the EPD driver because C5 shares SD and EPD SPI pins.
@@ -480,6 +522,7 @@ esp_err_t example_mount_storage(const char* base_path)
         ret = ESP_OK;
     } else if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize bus.");
+        TdxSharedSpi_Unlock();
         return ret;
     }
 
@@ -505,6 +548,7 @@ esp_err_t example_mount_storage(const char* base_path)
             vTaskDelay(pdMS_TO_TICKS(STORAGE_MOUNT_RETRY_DELAY_MS));
         }
     }
+    TdxSharedSpi_Unlock();
 
 #endif // !CONFIG_EXAMPLE_USE_SDMMC_HOST
 

@@ -6,6 +6,7 @@
 
 #include "esp_log.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 #include "usb_console_common.h"
 
 static const char *TAG = "usb_console_delete";
@@ -21,10 +22,14 @@ static bool delete_file_pair(const char *file_name)
     char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
     bool removed = false;
 
+    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        return false;
+    }
     snprintf(path, sizeof(path), "%s/bin_img/%s.bin", USB_CONSOLE_BASE_PATH, file_name);
     removed = (unlink(path) == 0) || removed;
     snprintf(path, sizeof(path), "%s/jpg_img/%s.jpg", USB_CONSOLE_BASE_PATH, file_name);
     removed = (unlink(path) == 0) || removed;
+    TdxSharedSpi_Unlock();
     return removed;
 }
 

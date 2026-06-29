@@ -13,6 +13,7 @@
 #include "led_status.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 #include "epd_type.h"
 #include "epd_test_1360_480_1085_3color_const.h"
 
@@ -147,8 +148,12 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
         if (job.data == NULL || job.size == 0) {
             ESP_LOGW(TAG, "EPD display task skip empty job");
         } else {
-            ePaperDisplay.Set_EPD_which_one(job.epd_which_one);
-            display_ret = EpdType_DisplayCurrent(ePaperDisplay, (const uint8_t *)job.data, job.size);
+            display_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+            if (display_ret == ESP_OK) {
+                ePaperDisplay.Set_EPD_which_one(job.epd_which_one);
+                display_ret = EpdType_DisplayCurrent(ePaperDisplay, (const uint8_t *)job.data, job.size);
+                TdxSharedSpi_Unlock();
+            }
         }
         UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_EPD);
 

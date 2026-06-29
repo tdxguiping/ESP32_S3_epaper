@@ -6,6 +6,7 @@
 
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
 #include "usb_console_common.h"
 
 static int validate_file_names(const char *body)
@@ -38,9 +39,14 @@ static int validate_file_names(const char *body)
         char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
         struct stat st = {0};
         snprintf(path, sizeof(path), "%s/bin_img/%s.bin", USB_CONSOLE_BASE_PATH, name);
+        if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+            return TDX_JSON_RESULT_TIMEOUT;
+        }
         if (stat(path, &st) != 0 || st.st_size <= 0) {
+            TdxSharedSpi_Unlock();
             return TDX_JSON_RESULT_SLIDESHOW_FILE_NOT_FOUND;
         }
+        TdxSharedSpi_Unlock();
     }
     return TDX_JSON_RESULT_JSON_INVALID;
 }
@@ -49,13 +55,19 @@ static bool write_slideshow_config(const char *body)
 {
     char config_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
     snprintf(config_path, sizeof(config_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, TDX_SLIDESHOW_CONFIG_FILE);
+    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        return false;
+    }
     FILE *fp = fopen(config_path, "wb");
     if (fp == NULL) {
+        TdxSharedSpi_Unlock();
         return false;
     }
     size_t len = strlen(body);
     size_t written = fwrite(body, 1, len, fp);
-    return fclose(fp) == 0 && written == len;
+    bool ok = fclose(fp) == 0 && written == len;
+    TdxSharedSpi_Unlock();
+    return ok;
 }
 
 esp_err_t UsbConsoleSlideshow_Handle(const usb_console_http_request_t *request,
