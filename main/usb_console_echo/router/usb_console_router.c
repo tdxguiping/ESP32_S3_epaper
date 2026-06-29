@@ -7,6 +7,7 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "file_serving_example_common.h"
 #include "tdx_cfg.h"
 #include "usb_console_cast.h"
 #include "usb_console_cast2pic.h"
@@ -45,6 +46,24 @@ static bool usb_request_is_set_epd_type(const usb_console_http_request_t *reques
            strstr(request->body, "\"set_epd_type\"") != NULL;
 }
 
+static bool usb_request_requires_storage(const usb_console_http_request_t *request)
+{
+    if (request == NULL) {
+        return false;
+    }
+    return path_is(request->path, "/dataUP") ||
+           path_is(request->path, "/net_data") ||
+           path_is(request->path, "/cast") ||
+           path_is(request->path, "/cast2pic") ||
+           path_is(request->path, "/delete") ||
+           path_is(request->path, "/saved_images") ||
+           path_is(request->path, "/thumb") ||
+           path_is(request->path, "/slideshow") ||
+           path_is(request->path, "/slideshow_control") ||
+           path_is(request->path, "/snapshot") ||
+           path_is(request->path, "/upload");
+}
+
 esp_err_t UsbConsoleRouter_Handle(const usb_console_http_request_t *request)
 {
     usb_console_http_response_t *response = NULL;
@@ -66,7 +85,14 @@ esp_err_t UsbConsoleRouter_Handle(const usb_console_http_request_t *request)
              (unsigned int)request->body_len,
              request->content_type);
 
-    if (path_is(request->path, "/ping")) {
+    if (usb_request_requires_storage(request) &&
+        example_storage_get_type() == EXAMPLE_STORAGE_TYPE_UNKNOWN) {
+        ESP_LOGW(TAG, "USB storage route rejected before storage ready path=%s", request->path);
+        UsbConsoleHttp_SetJson(response,
+                               200,
+                               "OK",
+                               "{\"func\":\"usb_route_result\",\"result\":" TDX_STRINGIFY(TDX_JSON_RESULT_STORAGE_NOT_READY) ",\"message\":\"storage not ready\",\"error\":\"storage_not_ready\"}");
+    } else if (path_is(request->path, "/ping")) {
         ret = UsbConsolePing_Handle(request, response);
     } else if (path_is(request->path, "/restart")) {
         ret = UsbConsoleRestart_Handle(request, response);

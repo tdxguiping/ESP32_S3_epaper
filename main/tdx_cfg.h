@@ -425,7 +425,7 @@ extern "C" {
 #define CH583_WIFI_UART_BAD_CRC_RETRY_MAX 5
 #define CH583_WIFI_NFC_JSON_MAX_LEN 220
 #define CH583_WIFI_NFC_BASE64URL_MAX_LEN 300
-#define CH583_WIFI_NFC_TEST_ENABLE 1
+#define CH583_WIFI_NFC_TEST_ENABLE 0
 #define CH583_WIFI_NFC_TEST_START_DELAY_SECONDS 5
 
 /* -------------------------------------------------------------------------- */
