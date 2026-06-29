@@ -877,8 +877,8 @@ int ch583_wifi_uart_send_wake_timer_on(uint32_t seconds)
 {
     char arg[24];
 
-    if (seconds < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS ||
-        seconds > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
+    if (seconds < CH583_WAKE_TIMER_MIN_SECONDS ||
+        seconds > CH583_WAKE_TIMER_MAX_SECONDS) {
         return -1;
     }
 

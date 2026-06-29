@@ -261,10 +261,31 @@ static void configure_ch583_wake_timer_before_power_off(void)
             interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
             interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
         }
-        ESP_LOGI(TAG, "slideshow enabled before power off, wake timer on interval=%lu random=%d",
+
+        uint32_t runtime_interval = 0;
+        uint32_t runtime_elapsed = 0;
+        bool runtime_running = false;
+        uint32_t wake_interval = interval;
+        if (ServerNetworkStaSlideshow_GetRuntimeTiming(&runtime_interval,
+                                                       &runtime_elapsed,
+                                                       &runtime_running) &&
+            runtime_running &&
+            runtime_interval > 0) {
+            wake_interval = runtime_interval > runtime_elapsed ?
+                            runtime_interval - runtime_elapsed :
+                            1U;
+            if (wake_interval == 0) {
+                wake_interval = 1U;
+            }
+        }
+
+        ESP_LOGI(TAG,
+                 "slideshow enabled before power off, wake timer on interval=%lu saved_interval=%lu elapsed=%lu random=%d",
+                 (unsigned long)wake_interval,
                  (unsigned long)interval,
+                 (unsigned long)runtime_elapsed,
                  random ? 1 : 0);
-        wake_ret = ch583_wifi_uart_send_wake_timer_on(interval);
+        wake_ret = ch583_wifi_uart_send_wake_timer_on(wake_interval);
     } else {
         ESP_LOGI(TAG, "slideshow disabled before power off, wake timer off");
         wake_ret = ch583_wifi_uart_send_wake_timer_off();

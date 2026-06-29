@@ -20,6 +20,9 @@ esp_err_t ServerNetworkStaSlideshow_StartSaved(const char *base_path);
 bool ServerNetworkStaSlideshow_IsSavedEnabled(const char *base_path,
                                               uint32_t *interval,
                                               bool *random);
+bool ServerNetworkStaSlideshow_GetRuntimeTiming(uint32_t *interval,
+                                                uint32_t *elapsed,
+                                                bool *running);
 void ServerNetworkStaSlideshow_Stop(void);
 
 #ifdef __cplusplus

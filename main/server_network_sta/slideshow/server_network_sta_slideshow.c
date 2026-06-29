@@ -16,6 +16,7 @@
 #include "file_serving_example_common.h"
 #include "epd_display_app.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 #include "freertos/task.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
@@ -50,10 +51,18 @@ typedef struct {
     char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
     slideshow_request_t request;
     slideshow_progress_t progress;
+    uint32_t initial_delay_seconds;
 } slideshow_runtime_t;
 
 static TaskHandle_t s_slideshow_task = NULL;
 static volatile bool s_slideshow_stop = false;
+static portMUX_TYPE s_slideshow_timing_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_slideshow_interval_active = false;
+static uint32_t s_slideshow_runtime_interval = 0;
+static TickType_t s_slideshow_interval_start_tick = 0;
+static bool s_slideshow_last_display_done_valid = false;
+static uint32_t s_slideshow_last_display_interval = 0;
+static TickType_t s_slideshow_last_display_done_tick = 0;
 
 static bool json_func_equals(const char *body, const char *func)
 {
@@ -622,17 +631,36 @@ static void prepare_next_slideshow_progress(const slideshow_request_t *request,
             sizeof(next->pending_file));
 }
 
+static void wait_slideshow_seconds(uint32_t seconds)
+{
+    if (seconds == 0) {
+        return;
+    }
+
+    TickType_t last_wake_tick = xTaskGetTickCount();
+    const TickType_t one_second_ticks = pdMS_TO_TICKS(1000);
+    portENTER_CRITICAL(&s_slideshow_timing_mux);
+    s_slideshow_interval_active = true;
+    s_slideshow_runtime_interval = seconds;
+    s_slideshow_interval_start_tick = last_wake_tick;
+    portEXIT_CRITICAL(&s_slideshow_timing_mux);
+
+    for (uint32_t elapsed_s = 0; elapsed_s < seconds && !s_slideshow_stop; elapsed_s++) {
+        vTaskDelayUntil(&last_wake_tick, one_second_ticks);
+    }
+
+    portENTER_CRITICAL(&s_slideshow_timing_mux);
+    s_slideshow_interval_active = false;
+    portEXIT_CRITICAL(&s_slideshow_timing_mux);
+}
+
 static void wait_slideshow_interval_seconds(uint32_t interval)
 {
     if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
         interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
     }
 
-    TickType_t last_wake_tick = xTaskGetTickCount();
-    const TickType_t one_second_ticks = pdMS_TO_TICKS(1000);
-    for (uint32_t elapsed_s = 0; elapsed_s < interval && !s_slideshow_stop; elapsed_s++) {
-        vTaskDelayUntil(&last_wake_tick, one_second_ticks);
-    }
+    wait_slideshow_seconds(interval);
 }
 
 static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_request_t *request)
@@ -746,6 +774,80 @@ bool ServerNetworkStaSlideshow_IsSavedEnabled(const char *base_path,
     return read_slideshow_control_on(base_path, interval, random);
 }
 
+bool ServerNetworkStaSlideshow_GetRuntimeTiming(uint32_t *interval,
+                                                uint32_t *elapsed,
+                                                bool *running)
+{
+    bool active = false;
+    uint32_t current_interval = 0;
+    TickType_t start_tick = 0;
+
+    portENTER_CRITICAL(&s_slideshow_timing_mux);
+    active = s_slideshow_interval_active;
+    current_interval = s_slideshow_runtime_interval;
+    start_tick = s_slideshow_interval_start_tick;
+    portEXIT_CRITICAL(&s_slideshow_timing_mux);
+
+    uint32_t current_elapsed = 0;
+    if (active && start_tick != 0) {
+        TickType_t now = xTaskGetTickCount();
+        current_elapsed = (uint32_t)(((now - start_tick) * portTICK_PERIOD_MS) / 1000U);
+    }
+
+    if (interval != NULL) {
+        *interval = current_interval;
+    }
+    if (elapsed != NULL) {
+        *elapsed = current_elapsed;
+    }
+    if (running != NULL) {
+        *running = active;
+    }
+    return active && current_interval > 0;
+}
+
+static void slideshow_record_display_done(uint32_t interval)
+{
+    if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
+        interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
+    }
+
+    TickType_t done_tick = xTaskGetTickCount();
+    portENTER_CRITICAL(&s_slideshow_timing_mux);
+    s_slideshow_last_display_done_valid = true;
+    s_slideshow_last_display_interval = interval;
+    s_slideshow_last_display_done_tick = done_tick;
+    portEXIT_CRITICAL(&s_slideshow_timing_mux);
+}
+
+static uint32_t slideshow_get_initial_delay_seconds(uint32_t interval)
+{
+    bool valid = false;
+    uint32_t last_interval = 0;
+    TickType_t done_tick = 0;
+
+    if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
+        interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
+    }
+
+    portENTER_CRITICAL(&s_slideshow_timing_mux);
+    valid = s_slideshow_last_display_done_valid;
+    last_interval = s_slideshow_last_display_interval;
+    done_tick = s_slideshow_last_display_done_tick;
+    portEXIT_CRITICAL(&s_slideshow_timing_mux);
+
+    if (!valid || done_tick == 0 || last_interval == 0) {
+        return 0;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    uint32_t elapsed = (uint32_t)(((now - done_tick) * portTICK_PERIOD_MS) / 1000U);
+    if (elapsed >= interval) {
+        return 0;
+    }
+    return interval - elapsed;
+}
+
 static void slideshow_task(void *arg)
 {
     slideshow_runtime_t *runtime = (slideshow_runtime_t *)arg;
@@ -761,8 +863,18 @@ static void slideshow_task(void *arg)
              runtime->request.random ? 1 : 0,
              (unsigned int)runtime->progress.order[runtime->progress.position]);
 
+    if (runtime->initial_delay_seconds > 0) {
+        ESP_LOGI(TAG, "slideshow initial delay seconds=%lu",
+                 (unsigned long)runtime->initial_delay_seconds);
+        wait_slideshow_seconds(runtime->initial_delay_seconds);
+    }
+
     while (!s_slideshow_stop && runtime->request.file_count > 0) {
         const char *file_name = runtime->progress.pending_file;
+        portENTER_CRITICAL(&s_slideshow_timing_mux);
+        s_slideshow_interval_active = false;
+        portEXIT_CRITICAL(&s_slideshow_timing_mux);
+
         esp_err_t display_ret = display_slideshow_file_and_wait(runtime->base_path, file_name);
         if (display_ret == ESP_OK) {
             slideshow_progress_t next;
@@ -770,6 +882,7 @@ static void slideshow_task(void *arg)
             esp_err_t save_ret = save_slideshow_progress(&next);
             if (save_ret == ESP_OK) {
                 memcpy(&runtime->progress, &next, sizeof(runtime->progress));
+                slideshow_record_display_done(runtime->request.interval);
             } else {
                 ESP_LOGE(TAG, "slideshow progress unchanged after display file=%s ret=%s",
                          file_name, esp_err_to_name(save_ret));
@@ -780,6 +893,11 @@ static void slideshow_task(void *arg)
     }
 
     ESP_LOGI(TAG, "slideshow task stop");
+    portENTER_CRITICAL(&s_slideshow_timing_mux);
+    s_slideshow_interval_active = false;
+    s_slideshow_runtime_interval = 0;
+    s_slideshow_interval_start_tick = 0;
+    portEXIT_CRITICAL(&s_slideshow_timing_mux);
     free(runtime);
     s_slideshow_task = NULL;
     vTaskDelete(NULL);
@@ -819,6 +937,7 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
     strlcpy(runtime->base_path, base_path, sizeof(runtime->base_path));
     memcpy(&runtime->request, request, sizeof(runtime->request));
     memcpy(&runtime->progress, progress, sizeof(runtime->progress));
+    runtime->initial_delay_seconds = slideshow_get_initial_delay_seconds(request->interval);
     s_slideshow_stop = false;
 
     BaseType_t task_ret = xTaskCreate(slideshow_task,
