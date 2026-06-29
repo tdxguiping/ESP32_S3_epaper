@@ -10,9 +10,18 @@
 
 static const char *TAG = "server_sta_ping";
 
+static bool ping_uri_matches(const char *uri)
+{
+    const size_t ping_len = strlen(SERVER_NETWORK_STA_PING_URI);
+    if (uri == NULL || strncmp(uri, SERVER_NETWORK_STA_PING_URI, ping_len) != 0) {
+        return false;
+    }
+    return uri[ping_len] == '\0' || uri[ping_len] == '?' || uri[ping_len] == '#';
+}
+
 esp_err_t ServerNetworkStaPing_ProcessGet(httpd_req_t *req)
 {
-    if (req == NULL || strcmp(req->uri, SERVER_NETWORK_STA_PING_URI) != 0) {
+    if (req == NULL || !ping_uri_matches(req->uri)) {
         return ESP_ERR_NOT_SUPPORTED;
     }
 

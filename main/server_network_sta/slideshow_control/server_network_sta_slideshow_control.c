@@ -23,14 +23,29 @@ typedef struct {
 
 static bool json_func_equals(const char *body, const char *func)
 {
-    char pattern[96] = {0};
-    snprintf(pattern, sizeof(pattern), "\"func\":\"%s\"", func);
-    if (strstr(body, pattern) != NULL) {
-        return true;
+    const char *pos = body != NULL ? strstr(body, "\"func\"") : NULL;
+    if (pos == NULL || func == NULL) {
+        return false;
     }
 
-    snprintf(pattern, sizeof(pattern), "\"func\" : \"%s\"", func);
-    return strstr(body, pattern) != NULL;
+    pos += strlen("\"func\"");
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != ':') {
+        return false;
+    }
+    pos++;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != '"') {
+        return false;
+    }
+    pos++;
+
+    size_t func_len = strlen(func);
+    return strncmp(pos, func, func_len) == 0 && pos[func_len] == '"';
 }
 
 static const char *find_json_key(const char *body, const char *key)

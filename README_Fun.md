@@ -129,7 +129,7 @@ The full result-code table is in `README_Result_Code.md`; this file keeps featur
 | `cast` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg`，`/data/bin_img/last_cast.txt` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存并记录 last cast；重启恢复或快照等流程可读取 last cast 和 `/data/bin_img`、`/data/jpg_img` |
 | `cast2pic` 图片保存 | `screen=a` 保存 `/data/bin_img/screen_b.bin`、`/data/jpg_img/screen_b.jpg`；`screen=b` 保存 `/data/bin_img/screen_a.bin`、`/data/jpg_img/screen_a.jpg` | 当前源码 `screen` 只接受 `a` 或 `b`，`ab` 明确返回 `1617`；`screen=a -> EPD2 -> screen_b`，`screen=b -> EPD1 -> screen_a`；每组 `fileName/bin_size/image_size/bin/image` 必须完整，并兼容 `fileNameA/bin_sizeA/image_sizeA/binA/imageA`、`fileNameB/bin_sizeB/image_sizeB/binB/imageB`；大小必须匹配；`save=true` 才保存；写入使用 `.tmp`，大小校验通过后 rename；空间不足返回失败 | `show=true && save=true` 时按 screen 转成 EPD number，等待 EPD 显示任务完成后再保存；保存后从固定 screen 文件名读取；核心处理 result 原值透传到响应 |
 | `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | 字段、文件名安全、大小匹配、目录和剩余空间条件与 cast 类似；主要用于保存，`show=true` 时也可显示 | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存；图片列表、轮播、快照从 jpg/bin 目录取数据 |
-| `delete` 删除 | 删除 `/data/bin_img/*.bin`、`/data/jpg_img/*.jpg`，并清理关联状态 | 单次删除数量受 `SERVER_NETWORK_STA_DELETE_MAX_FILES=50` 限制；文件名必须安全；只删除匹配的 bin/jpg；如删除 last cast 或轮播中的文件，要同步清理关联状态 | 从 JSON `fileNames` 取删除列表；删除前按文件名拼路径 |
+| `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `SERVER_NETWORK_STA_DELETE_MAX_FILES=50` 限制；文件名必须安全；只删除匹配的 bin/jpg；不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度 | 从 JSON `fileNames` 取删除列表；删除前按文件名拼路径 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从轮播配置/control 文件读取轮播状态 |
 | `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 待显示状态 | `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=50` 限制；单个名称长度受 `TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48` 限制；`interval` 限制在 `60..604800` 秒；配置前应检查文件存在；只有 EPD 实际显示完成且下一进度提交成功后才推进 | 开机 `StartSaved` 读取配置、控制文件和待显示进度；显示失败或中途断电继续当前图片；随机模式保存整轮排列，保证一轮内不重复、不遗漏 |
 | `wifi_work_time` | `work_state` namespace blob；`PhotoPainter:work_continue/wifi_standby` 字符串兼容键 | HTTP JSON `seconds` 必须在 `60..3600`；内部 `SetAndSave()` 还会 clamp 到最小/最大值；保存 blob 后会读回验证；`seconds=0` 拒绝 | 启动时读取 blob；blob size 不匹配则回退默认值；兼容读取字符串键并解析为 u32 |
@@ -1208,6 +1208,9 @@ Result 定义建议：
 | `cast_result` | `1609` | EPD 显示队列提交失败 |
 | `cast_result` | `1008` | EPD 同步显示等待或驱动 BUSY 超时 |
 | `cast_result` | `1011` | EPD 显示 buffer / completion 内存不足 |
+| `cast_result` | `1012` | 存储未就绪 |
+| `cast_result` | `1013` | 存储空间不足 |
+| `cast_result` | `1016` | 保存队列创建或提交失败 |
 | `cast_result` | `1804` | EPD 驱动尺寸校验、SPI 写入或其他执行失败 |
 | `cast_result` | `1610` | `last_cast.txt` 保存失败 |
 | `cast_result` | `1611` | 当前 network cast 要求 `save=true`，否则不能记录 last cast |
@@ -1228,12 +1231,15 @@ sequenceDiagram
     APP->>DATAUP: multipart func=cast
     DATAUP->>CAST: receive_data_redirect_handler route
     CAST->>CORE: parse multipart and validate fields
+    CAST-->>APP: {func:cast_received,result:0,fileName}
     alt show=true
         CORE->>EPD: ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
     end
     CORE->>SAVE: submit save task and wait result
-    CAST-->>APP: {func:cast_received,result:0,fileName}
     SAVE->>SAVE: write bin/jpg and record last_cast
+    alt show=true and cast_result=0
+        CORE->>CORE: stop_slideshow_for_cast()
+    end
     CAST-->>APP: {func:cast_result,result:<code>,message}
 ```
 
@@ -1261,14 +1267,14 @@ HTTP multipart /dataUP
       ├─ send cast_received chunk
       ├─ TdxCastCore_ProcessValidated()
       │  ├─ show=true
-      │  │  ├─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
-      │  │  └─ stop_slideshow_for_cast()
+      │  │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
       │  └─ save=true
       │     └─ CastSaveTask
       │        ├─ check_save_space()
       │        ├─ save /data/bin_img/<fileName>.bin
       │        ├─ save /data/jpg_img/<fileName>.jpg
       │        └─ record /data/bin_img/last_cast.txt
+      ├─ show=true 且 cast_result=0 时 stop_slideshow_for_cast()
       └─ send cast_result chunk
 ```
 
@@ -1288,7 +1294,7 @@ cast_core.c
 └─ record_last_cast()
 ```
 
-说明：network cast 与 USB cast 共享 `cast_core`。EPD 显示使用已有的 `ServerNetworkStaEpdDisplay` task，保存使用统一的 `CastSaveTask`。network cast 正常成功时使用 `application/x-ndjson` 两阶段返回：multipart 解析和字段校验通过后先返回 `cast_received`；EPD 显示、bin/jpg 保存和 last_cast 记录完成后再返回 `cast_result`。`show=true && save=true` 时先通过 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 等待 EPD 显示任务完成，再提交保存任务；`cast_result result=0` 表示 EPD 显示任务已完成、bin/jpg 保存成功、last_cast 写入成功。
+说明：network cast 与 USB cast 共享 `cast_core`。EPD 显示使用已有的 `ServerNetworkStaEpdDisplay` task，保存使用统一的 `CastSaveTask`。network cast 正常成功时使用 `application/x-ndjson` 两阶段返回：multipart 解析和字段校验通过后先返回 `cast_received`；EPD 显示、bin/jpg 保存和 last_cast 记录完成后再返回 `cast_result`。`show=true && save=true` 时先通过 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 等待 EPD 显示任务完成，再提交保存任务；如果整体成功且 `show=true`，最后调用 `stop_slideshow_for_cast()` 停止轮播。`cast_result result=0` 表示 EPD 显示任务已完成、bin/jpg 保存成功、last_cast 写入成功。
 
 V2 协议资料拆分：
 
@@ -1406,6 +1412,7 @@ Result 定义建议：
 | `cast2pic_result` | `1609` | EPD 显示队列提交失败 |
 | `cast2pic_result` | `1008` | EPD 同步显示等待或驱动 BUSY 超时 |
 | `cast2pic_result` | `1011` | EPD 显示 buffer / completion 内存不足 |
+| `cast2pic_result` | `1016` | 保存队列创建或提交失败 |
 | `cast2pic_result` | `1804` | EPD 驱动执行失败 |
 | `cast2pic_result` | `1612` | 文件名非法 |
 | `cast2pic_result` | `1616` | `screen` 不是 `a` / `b` |
@@ -1432,8 +1439,10 @@ sequenceDiagram
     alt show=true
         CORE->>EPD: ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
     end
-    CORE->>SAVE: submit save task and wait result
-    SAVE->>SAVE: save screen_a/screen_b bin and jpg
+    alt save=true
+        CORE->>SAVE: submit save task and wait result
+        SAVE->>SAVE: save screen_a/screen_b bin and jpg
+    end
     C2P-->>APP: {func:cast2pic_result,result:<code>}
 ```
 
@@ -1453,7 +1462,7 @@ HTTP multipart /dataUP
 └─ receive_data_redirect_handler()
    └─ ServerNetworkStaCast2Pic_Process()
       ├─ extract_boundary()
-      ├─ extract_multipart_parts()
+      ├─ parse_cast2pic_multipart()
       ├─ assign_text_part()
       ├─ assign_image_part()
       ├─ validate_cast2pic_meta()
@@ -1473,11 +1482,14 @@ HTTP multipart /dataUP
 
 ```text
 server_network_sta_cast2pic.c
+├─ extract_boundary()
+├─ parse_cast2pic_multipart()
 ├─ assign_text_part()
 ├─ assign_image_part()
 ├─ validate_cast2pic_meta()
 ├─ screen_to_epd_number()
 ├─ process_cast2pic_items()
+├─ send_cast2pic_core_result()
 └─ ServerNetworkStaCast2Pic_Process()
 
 cast_core.c
@@ -1485,7 +1497,7 @@ cast_core.c
 └─ CastSaveTask()
 ```
 
-说明：network cast2pic 与 USB cast2pic 共享 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。`show=true && save=true` 时先等待 EPD 显示任务完成，`save=true` 时再提交保存任务；`cast2pic_result=0` 表示需要显示的 EPD 任务已完成、需要保存的文件已保存完成。
+说明：network cast2pic 与 USB cast2pic 共享 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。`show` 和 `save` 是独立动作：`show=true` 时先等待 EPD 显示任务完成；`save=true` 时再提交保存任务；`show=false` 不显示，`save=false` 不保存。`cast2pic_result=0` 表示需要显示的 EPD 任务已完成、需要保存的文件已保存完成。
 
 当前源码协议资料拆分（以 `server_network_sta_cast2pic.c` 为准）：
 
@@ -1593,9 +1605,9 @@ Result 定义建议：
 | `delete_result` | `1003` | 缺少必要字段 |
 | `delete_result` | `1501` | `fileNames` 缺失或为空 |
 | `delete_result` | `1502` | 文件名非法 |
-| `delete_result` | `1503` | 删除文件或清理关联状态失败 |
+| `delete_result` | `1503` | 删除指定 bin/jpg 文件失败，或指定文件均不存在/未删除 |
 
-功能说明：删除 SD 卡内保存的图片、缩略图，并清理 last cast / slideshow 中引用到的已删除文件。
+功能说明：只删除 JSON `fileNames` 指定的图片和缩略图文件。delete 不清理、不修改 `last_cast.txt`、`slideshow_config.txt`、`show_control.txt`，也不清理 NVS 中的轮播进度。
 
 Mermaid 时序图：
 
@@ -1605,12 +1617,10 @@ sequenceDiagram
     participant DATAUP as POST /dataUP JSON
     participant DEL as ServerNetworkStaDelete_ProcessJson
     participant SD as SD Storage
-    participant STATE as last_cast/slideshow
     APP->>DATAUP: {func:delete,fileNames:[...]}
     DATAUP->>DEL: process_small_json_request()
-    DEL->>SD: delete /data/bin_img/*.bin
-    DEL->>SD: delete /data/jpg_img/*.jpg
-    DEL->>STATE: cleanup deleted references
+    DEL->>SD: delete /data/bin_img/<fileName>.bin
+    DEL->>SD: delete /data/jpg_img/<fileName>.jpg
     DEL-->>APP: delete_result
 ```
 
@@ -1631,8 +1641,6 @@ HTTP small JSON delete
          ├─ parse_file_names()
          ├─ delete_one_path(/data/bin_img/*.bin)
          ├─ delete_one_path(/data/jpg_img/*.jpg)
-         ├─ cleanup_last_cast_if_deleted()
-         ├─ cleanup_slideshow_if_deleted()
          └─ send_delete_result()
 ```
 
@@ -1642,8 +1650,6 @@ HTTP small JSON delete
 server_network_sta_delete.c
 ├─ parse_file_names()
 ├─ delete_one_path()
-├─ cleanup_last_cast_if_deleted()
-├─ cleanup_slideshow_if_deleted()
 └─ ServerNetworkStaDelete_ProcessJson()
 ```
 
@@ -1681,18 +1687,21 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
   -Body $body
 ```
 
-预期：设备返回 `delete_result`；删除成功后会同时清理对应 `.bin`、`.jpg`，并按源码逻辑同步清理 last cast / slideshow 配置。
+预期：设备返回 `delete_result`；删除成功后只删除对应 `.bin`、`.jpg`，不会修改 last cast / slideshow 相关配置。
 
 存 / 取信息（含条件限制）：
 
 ```text
 存：
 - 删除动作会修改持久化文件系统：unlink /data/bin_img/<file>.bin 与 /data/jpg_img/<file>.jpg。
-- 如果删除文件被 last_cast 或 slideshow 引用，会同步清理相关状态文件。
+- 不修改 /data/bin_img/last_cast.txt。
+- 不修改 /data/bin_img/slideshow_config.txt。
+- 不修改 /data/bin_img/show_control.txt。
+- 不修改 NVS 中的 slideshow progress / last slideshow 状态。
 
 取：
 - 读取 JSON fileNames 数组。
-- 读取 last_cast / slideshow 配置，判断是否引用被删除文件。
+- 不读取 last_cast / slideshow 配置。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -1999,7 +2008,7 @@ Result 定义建议：
 | `ping_result` | `0` | 连通性检查成功 |
 | `ping_result` | `1405` | `Ble_MAC` 为空；是否作为失败需按前端匹配逻辑决定 |
 
-功能说明：用于 App/PC 判断设备 HTTP 服务是否可用，并通过 `Ble_MAC` 防止缓存 IP 指向错误设备。
+功能说明：用于 App/PC 判断设备 HTTP 服务是否可用，并通过 `Ble_MAC` 防止缓存 IP 指向错误设备。网络 ping 匹配 `/ping` 路径，并允许携带 query/hash 后缀，例如 `/ping?t=123`。
 
 Mermaid 时序图：
 
@@ -2046,6 +2055,13 @@ V2 协议资料拆分：
 GET /ping HTTP/1.1
 ```
 
+也允许：
+
+```http
+GET /ping?t=123 HTTP/1.1
+GET /ping#check HTTP/1.1
+```
+
 返回：
 
 ```json
@@ -2067,6 +2083,7 @@ Powershell 测试用例：
 # ping：GET /ping 检查 HTTP 服务和设备身份。
 $esp = "http://192.168.1.104"
 Invoke-RestMethod -Uri "$esp/ping" -Method Get
+Invoke-RestMethod -Uri "$esp/ping?t=123" -Method Get
 ```
 
 预期：BLE MAC 已获取时返回 `result=0`；尚未获取时返回 `result=1405` 和空 `Ble_MAC`。
@@ -2100,7 +2117,7 @@ Result 定义建议：
 
 网络 `/thumb/<name>.jpg` 成功时直接返回 `HTTP 200 image/jpeg` 二进制；名称非法或文件不存在时返回 JSON `thumb_result`，HTTP 状态分别为 400、404。USB thumb 同样在失败时返回 `1402/1403`。
 
-功能说明：扫描本地已保存缩略图，返回前端可展示的图片列表和缩略图地址。
+功能说明：扫描本地已保存缩略图，返回前端可展示的图片列表和缩略图地址。JSON `func` 解析允许冒号前后有空格或换行，支持 PowerShell `ConvertTo-Json` 输出格式。
 
 Mermaid 时序图：
 
@@ -2139,7 +2156,12 @@ HTTP small JSON get_saved_images
 
 ```text
 server_network_sta_saved_images.c
+├─ json_func_equals()
+├─ saved_image_entry_name()
+├─ has_jpg_extension()
 ├─ saved_image_name_is_safe()
+├─ send_saved_images_empty()
+├─ ServerNetworkStaSavedImages_SendThumbnail()
 └─ ServerNetworkStaSavedImages_ProcessJson()
 ```
 
@@ -2189,7 +2211,7 @@ $thumb = "/thumb/26422.jpg"
 Invoke-WebRequest -Uri "$esp$thumb" -OutFile "H:\AI2\test\thumb_26422.jpg"
 ```
 
-预期：返回 `get_saved_images_result`；`images` 中包含 `fileName` 和 `thumbnailUrl`。
+预期：返回 `get_saved_images_result`；`images` 中包含 `fileName` 和 `thumbnailUrl`。如果 `/data/jpg_img` 目录不存在，当前网络实现返回成功空列表：`{"func":"get_saved_images_result","result":0,"images":[]}`。
 
 存 / 取信息（含条件限制）：
 
@@ -2198,9 +2220,10 @@ Invoke-WebRequest -Uri "$esp$thumb" -OutFile "H:\AI2\test\thumb_26422.jpg"
 - get_saved_images 不写文件。
 
 取：
-- 扫描 /data/jpg_img 目录下的 .jpg 文件。
+- 扫描 /data/jpg_img 目录下的 .jpg / .JPG 文件。
 - 生成 fileName 与 thumbnailUrl。
 - /thumb/<name>.jpg 请求会 fopen 对应 jpg 并 fread 分块返回。
+- 如果 /data/jpg_img 不存在，返回空 images[]，不作为错误。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -2214,6 +2237,7 @@ Result 定义建议：
 | 返回 | result | 说明 |
 |---|---|---|
 | `start_slideshow_result` | `0` | 轮播启动成功 |
+| `start_slideshow_result` | `1012` | SD 卡 / 存储未就绪 |
 | `start_slideshow_result` | `1501` | `fileNames` 缺失 |
 | `start_slideshow_result` | `1502` | 文件名非法 |
 | `start_slideshow_result` | `1504` | 轮播配置保存失败 |
@@ -2311,7 +2335,7 @@ V2 协议资料拆分：
 
 ```text
 fileNames 图片轮播顺序；random=true 时随机轮播
-interval  前端会归一为大于等于 1 的整数
+interval  轮播间隔，单位秒，允许范围 60..604800
 ```
 
 
@@ -2341,6 +2365,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 ```text
 slideshow 已区分 fileNames 缺失/非法、interval 非法、文件不存在、配置保存失败和运行时启动失败。
 网络与 USB 入口均在保存配置前校验 fileNames 和 interval；runtime 启动失败返回 1506。
+网络 JSON 的 `func` 判断支持空格、CRLF 和 PowerShell `ConvertTo-Json` 输出格式。
 ```
 
 存 / 取信息（含条件限制）：
@@ -2374,7 +2399,9 @@ Result 定义建议：
 | 返回 | result | 说明 |
 |---|---|---|
 | `set_slideshow_result` | `0` | 轮播控制设置成功 |
+| `set_slideshow_result` | `1012` | SD 卡 / 存储未就绪 |
 | `set_slideshow_result` | `1004` | `sw` / `random` / `interval` 参数非法 |
+| `set_slideshow_result` | `1501` | 开启轮播时还没有保存过轮播列表 |
 | `set_slideshow_result` | `1506` | 开启轮播时运行时启动失败 |
 | `set_slideshow_result` | `1507` | `interval` 非法 |
 | `set_slideshow_result` | `1509` | 控制状态保存失败 |
@@ -2417,10 +2444,12 @@ HTTP small JSON set_slideshow
       └─ ServerNetworkStaSlideshowControl_ProcessJson()
          ├─ parse_json_bool_optional("random")
          ├─ parse_json_u32("interval")
-         ├─ parse sw/on field
+         ├─ parse sw field
          ├─ write_control_file()
-         └─ sw=0
-            └─ ServerNetworkStaSlideshow_Stop()
+         ├─ sw=0
+         │  └─ ServerNetworkStaSlideshow_Stop()
+         └─ sw=1
+            └─ ServerNetworkStaSlideshow_StartSaved()
 ```
 
 关键辅助函数：
@@ -2450,6 +2479,7 @@ V2 协议资料拆分：
 sw=1 开启轮播
 sw=0 关闭轮播
 interval 轮播间隔
+interval 允许范围 60..604800；sw=0 时可省略，省略时沿用已有控制文件或默认最小值
 random=true 随机轮播
 random=false 按列表顺序轮播
 ```
@@ -2495,7 +2525,8 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 ```text
 set_slideshow 的 sw=1 会更新控制文件并尝试启动轮播。
-参数非法、interval 非法、控制文件/NVS 保存失败和轮播 runtime 启动失败已分别返回 1004、1507、1509、1506。
+存储未就绪、未保存轮播列表、参数非法、interval 非法、控制文件/NVS 保存失败和轮播 runtime 启动失败已分别返回 1012、1501、1004、1507、1509、1506。
+网络 JSON 的 `func` 判断支持空格、CRLF 和 PowerShell `ConvertTo-Json` 输出格式。
 ```
 
 存 / 取信息（含条件限制）：
@@ -2539,8 +2570,8 @@ sequenceDiagram
     participant SS as slideshow state
     APP->>DATAUP: {func:get_snapshot}
     DATAUP->>SNAP: process_small_json_request()
-    SNAP->>SD: append_images_json()
     SNAP->>SS: read_slideshow_state()
+    SNAP->>SD: append_images_json()
     SNAP-->>APP: get_snapshot_result images + slideshow
 ```
 
@@ -2558,8 +2589,8 @@ HTTP small JSON get_snapshot
 └─ receive_data_redirect_handler()
    └─ process_small_json_request()
       └─ ServerNetworkStaSnapshot_ProcessJson()
-         ├─ append_images_json()
          ├─ read_slideshow_state()
+         ├─ append_images_json()
          ├─ append_slideshow_json()
          └─ httpd_resp_sendstr(json)
 ```
@@ -2632,6 +2663,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 - append_images_json() 扫描 /data/jpg_img 下保存的缩略图。
 - read_slideshow_state() 读取 slideshow_config 和 control 文件。
 - 返回 images[] 与 slideshow 状态。
+- 网络 JSON 的 `func` 判断支持空格、CRLF 和 PowerShell `ConvertTo-Json` 输出格式。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -2645,6 +2677,10 @@ Result 定义建议：
 | 返回 | result | 说明 |
 |---|---|---|
 | `upload_result` | `0` | upload 成功 |
+| `upload_result` | `1010` | 返回 JSON 过长 |
+| `upload_result` | `1012` | SD 卡 / 存储未就绪 |
+| `upload_result` | `1013` | 存储空间不足 |
+| `upload_result` | `1016` | 保存队列创建、提交或排队失败 |
 | `upload_result` | `1601` | multipart boundary 缺失 |
 | `upload_result` | `1602` | multipart `func` 缺失 |
 | `upload_result` | `1603` | 上传内容格式非法 |
@@ -2677,8 +2713,10 @@ sequenceDiagram
     alt show=true
         CORE->>EPD: ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
     end
-    CORE->>SAVE: submit save task and wait result
-    SAVE->>SAVE: save bin and jpg
+    alt save=true
+        CORE->>SAVE: submit save task and wait result
+        SAVE->>SAVE: save bin and jpg
+    end
     UP-->>APP: upload result
 ```
 
@@ -2726,6 +2764,8 @@ cast_core.c
 
 说明：network upload 与 USB upload 共享 `TdxImageTransfer_ParseSingle()`、`TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。`show=true && save=true` 时先等待 EPD 显示任务完成，`save=true` 时再提交保存任务；`upload_result=0` 表示需要保存的文件已保存完成、需要显示的 EPD 任务已完成。
 
+成功或失败返回 JSON 会包含 `fileName`、`bin_file`、`image_file`、`save`、`show`、`error` 字段；成功时 `message="upload success"` 且 `error="no error"`。
+
 V2 协议资料拆分：
 
 ```http
@@ -2742,7 +2782,7 @@ bin=@26422.bin
 image=@26422.jpg
 ```
 
-V2 说明：`upload` 与 `cast` 字段一致，用于保存图片上传。多张图片上传时按 `cast2pic` 一样重复追加多组同名字段。
+V2 说明：`upload` 与 `cast` 字段基本一致，用于保存图片上传。当前 network upload 使用 `TdxImageTransfer_ParseSingle("upload")`，一次请求只处理一组 `fileName/bin/image`；多图批量应使用 `cast2pic` 或由前端拆成多次 upload 请求。
 
 V2 预留 `update`：
 
@@ -2917,7 +2957,8 @@ V2 协议资料拆分：
 字段说明：
 
 ```text
-seconds WiFi 工作时长，前端会归一为大于等于 1 的整数。
+seconds WiFi 工作时长，单位秒，允许范围 60..3600；兼容字段 `time`，二选一。
+网络 JSON 的 `func` 判断支持空格、CRLF 和 PowerShell `ConvertTo-Json` 输出格式。
 ```
 
 
@@ -3704,7 +3745,7 @@ Result 定义建议：
 功能说明：
 
 ```text
-USB delete 接收 JSON fileNames 数组，删除对应 bin/jpg 文件，并清理 last_cast、slideshow 等关联状态。
+USB delete 接收 JSON fileNames 数组，只删除对应 bin/jpg 文件，不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度。
 ```
 
 Mermaid 时序图：
@@ -3715,14 +3756,12 @@ sequenceDiagram
     participant Router as Router
     participant Delete as UsbConsoleDelete
     participant FS as SD / FATFS
-    participant State as last_cast / slideshow
 
     PC->>Router: POST /delete JSON
     Router->>Delete: UsbConsoleDelete_Handle()
     Delete->>Delete: UsbConsoleDelete_Process()
     Delete->>FS: 删除 /data/bin_img/*.bin
     Delete->>FS: 删除 /data/jpg_img/*.jpg
-    Delete->>State: 清理关联状态
     Delete-->>PC: delete_result JSON
 ```
 
@@ -3744,8 +3783,6 @@ UsbConsoleRouter_Handle()
          ├─ parse fileNames[]
          ├─ delete /data/bin_img/<file>.bin
          ├─ delete /data/jpg_img/<file>.jpg
-         ├─ cleanup last_cast if deleted
-         ├─ cleanup slideshow if deleted
          └─ response delete_result
 ```
 
@@ -3780,11 +3817,14 @@ Content-Length: 50
 ```text
 存：
 - 删除动作会修改持久化文件系统：unlink /data/bin_img/<file>.bin 与 /data/jpg_img/<file>.jpg。
-- 如果删除文件被 last_cast 或 slideshow 引用，会同步清理相关状态文件。
+- 不修改 /data/bin_img/last_cast.txt。
+- 不修改 /data/bin_img/slideshow_config.txt。
+- 不修改 /data/bin_img/show_control.txt。
+- 不修改 NVS 中的 slideshow progress / last slideshow 状态。
 
 取：
 - 读取 JSON fileNames 数组。
-- 读取 last_cast / slideshow 配置，判断是否引用被删除文件。
+- 不读取 last_cast / slideshow 配置。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-09)
@@ -4613,7 +4653,7 @@ UsbConsoleRouter_Handle()
 └─ /slideshow_control
    └─ UsbConsoleSlideshowControl_Handle()
       └─ UsbConsoleSlideshowControl_Process()
-         ├─ parse sw/on
+         ├─ parse sw
          ├─ parse interval
          ├─ parse random
          ├─ write control file

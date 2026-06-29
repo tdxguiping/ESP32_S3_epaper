@@ -15,14 +15,28 @@ static const char *TAG = "server_sta_saved";
 
 static bool json_func_equals(const char *body, const char *func)
 {
-    char pattern[96] = {0};
-    snprintf(pattern, sizeof(pattern), "\"func\":\"%s\"", func);
-    if (strstr(body, pattern) != NULL) {
-        return true;
+    const char *pos = strstr(body, "\"func\"");
+    if (pos == NULL || func == NULL) {
+        return false;
     }
+    pos += strlen("\"func\"");
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != ':') {
+        return false;
+    }
+    pos++;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != '"') {
+        return false;
+    }
+    pos++;
 
-    snprintf(pattern, sizeof(pattern), "\"func\" : \"%s\"", func);
-    return strstr(body, pattern) != NULL;
+    size_t func_len = strlen(func);
+    return strncmp(pos, func, func_len) == 0 && pos[func_len] == '"';
 }
 
 static bool has_jpg_extension(const char *name)
