@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <strings.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/unistd.h>
@@ -12,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_random.h"
+#include "mbedtls/sha256.h"
 #include "nvs.h"
 #include "file_serving_example_common.h"
 #include "epd_display_app.h"
@@ -199,6 +201,70 @@ static bool file_name_is_safe(const char *file_name)
         return false;
     }
     return strlen(file_name) < TDX_SLIDESHOW_FILE_NAME_MAX_LEN;
+}
+
+static bool slideshow_base_name_is_sha_tail(const char *file_name)
+{
+    if (file_name == NULL || strlen(file_name) != 16) {
+        return false;
+    }
+    for (size_t i = 0; i < 16; ++i) {
+        char c = file_name[i];
+        if (!((c >= '0' && c <= '9') ||
+              (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void slideshow_log_bin_sha256_tail(const char *file_name,
+                                          const uint8_t *data,
+                                          size_t len)
+{
+    uint8_t digest[32] = {0};
+    char tail[17] = {0};
+    int ret;
+
+    if (!slideshow_base_name_is_sha_tail(file_name)) {
+        ESP_LOGW(TAG, "slideshow bin sha256 skip invalid basename file=%s size=%u",
+                 file_name != NULL ? file_name : "(null)",
+                 (unsigned int)len);
+        return;
+    }
+    if (data == NULL || len == 0) {
+        ESP_LOGE(TAG, "slideshow bin sha256 failed file=%s size=%u ret=%d",
+                 file_name,
+                 (unsigned int)len,
+                 ESP_ERR_INVALID_ARG);
+        return;
+    }
+
+    ret = mbedtls_sha256(data, len, digest, 0);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "slideshow bin sha256 failed file=%s size=%u ret=%d",
+                 file_name,
+                 (unsigned int)len,
+                 ret);
+        return;
+    }
+
+    for (size_t i = 24; i < 32; ++i) {
+        snprintf(tail + ((i - 24) * 2), 3, "%02x", digest[i]);
+    }
+
+    if (strcasecmp(file_name, tail) == 0) {
+        ESP_LOGI(TAG, "slideshow bin sha256 ok file=%s calc=%s size=%u",
+                 file_name,
+                 tail,
+                 (unsigned int)len);
+    } else {
+        ESP_LOGE(TAG, "slideshow bin sha256 mismatch file=%s calc=%s size=%u",
+                 file_name,
+                 tail,
+                 (unsigned int)len);
+    }
 }
 
 static bool parse_file_names(const char *body, slideshow_request_t *request)
@@ -403,6 +469,7 @@ static esp_err_t display_slideshow_file_and_wait(const char *base_path, const ch
 
     ESP_LOGI(TAG, "slideshow display start file=%s size=%u",
              file_name, (unsigned int)read_len);
+    slideshow_log_bin_sha256_tail(file_name, buf, read_len);
     esp_err_t ret = ServerNetworkStaEpdDisplay_QueueToScreenAndWait(buf, read_len, 1);
     heap_caps_free(buf);
     if (ret == ESP_OK) {
@@ -910,13 +977,15 @@ void ServerNetworkStaSlideshow_Stop(void)
 
 static esp_err_t start_slideshow_runtime(const char *base_path,
                                          const slideshow_request_t *request,
-                                         const slideshow_progress_t *progress)
+                                         const slideshow_progress_t *progress,
+                                         bool reset_interval_if_running)
 {
     if (base_path == NULL || request == NULL || progress == NULL ||
         request->file_count == 0 || !slideshow_progress_valid(request, progress)) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    bool was_running = s_slideshow_task != NULL;
     ServerNetworkStaSlideshow_Stop();
     TickType_t stop_start = xTaskGetTickCount();
     TickType_t stop_timeout = pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS + 5000U);
@@ -937,7 +1006,14 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
     strlcpy(runtime->base_path, base_path, sizeof(runtime->base_path));
     memcpy(&runtime->request, request, sizeof(runtime->request));
     memcpy(&runtime->progress, progress, sizeof(runtime->progress));
-    runtime->initial_delay_seconds = slideshow_get_initial_delay_seconds(request->interval);
+    if (reset_interval_if_running && was_running) {
+        runtime->initial_delay_seconds = request->interval;
+        ESP_LOGI(TAG, "slideshow interval reset new=%lu initial_delay=%lu",
+                 (unsigned long)request->interval,
+                 (unsigned long)runtime->initial_delay_seconds);
+    } else {
+        runtime->initial_delay_seconds = slideshow_get_initial_delay_seconds(request->interval);
+    }
     s_slideshow_stop = false;
 
     BaseType_t task_ret = xTaskCreate(slideshow_task,
@@ -971,7 +1047,8 @@ esp_err_t ServerNetworkStaSlideshow_ShowFirst(const char *base_path)
     return ret;
 }
 
-esp_err_t ServerNetworkStaSlideshow_StartSaved(const char *base_path)
+static esp_err_t start_saved_slideshow_with_mode(const char *base_path,
+                                                 bool reset_interval_if_running)
 {
     slideshow_request_t *request = (slideshow_request_t *)calloc(1, sizeof(*request));
     if (request == NULL) {
@@ -999,10 +1076,20 @@ esp_err_t ServerNetworkStaSlideshow_StartSaved(const char *base_path)
     slideshow_progress_t progress;
     ret = load_or_create_slideshow_progress(request, false, &progress);
     if (ret == ESP_OK) {
-        ret = start_slideshow_runtime(base_path, request, &progress);
+        ret = start_slideshow_runtime(base_path, request, &progress, reset_interval_if_running);
     }
     free(request);
     return ret;
+}
+
+esp_err_t ServerNetworkStaSlideshow_StartSaved(const char *base_path)
+{
+    return start_saved_slideshow_with_mode(base_path, false);
+}
+
+esp_err_t ServerNetworkStaSlideshow_StartSavedResetInterval(const char *base_path)
+{
+    return start_saved_slideshow_with_mode(base_path, true);
 }
 
 static esp_err_t save_slideshow_config(const char *bin_dir, const slideshow_request_t *request)
@@ -1133,7 +1220,7 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
     slideshow_progress_t progress;
     esp_err_t start_ret = load_or_create_slideshow_progress(&request, true, &progress);
     if (start_ret == ESP_OK) {
-        start_ret = start_slideshow_runtime(base_path, &request, &progress);
+        start_ret = start_slideshow_runtime(base_path, &request, &progress, true);
     }
     if (start_ret != ESP_OK) {
         ESP_LOGW(TAG, "start_slideshow runtime start failed ret=%s", esp_err_to_name(start_ret));

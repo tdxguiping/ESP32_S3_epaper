@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "file_server",
-    "project_version":    "6a4b12d-dirty",
+    "project_version":    "6658668-dirty",
     "project_path":       "H:/AI2/file_serving",
     "idf_path":           "C:/esp/v5.5.3/esp-idf",
     "build_dir":          "H:/AI2/file_serving/build",
@@ -996,7 +996,7 @@
             "type": "LIBRARY",
             "lib": "__idf_main",
             "reqs": [],
-            "priv_reqs": [ "fatfs", "esp_event", "vfs", "esp_netif", "nvs_flash", "spiffs", "esp_http_server", "bt", "esp_wifi", "esp_pm", "espressif__mdns", "app_update", "esp_driver_uart", "esp_driver_usb_serial_jtag", "esp_driver_gpio", "esp_driver_spi", "esp_timer", "spi_flash", "json", "protocol_examples_common" ],
+            "priv_reqs": [ "fatfs", "esp_event", "vfs", "esp_netif", "nvs_flash", "spiffs", "esp_http_server", "bt", "esp_wifi", "esp_pm", "espressif__mdns", "app_update", "esp_driver_uart", "esp_driver_usb_serial_jtag", "esp_driver_gpio", "esp_driver_spi", "esp_timer", "spi_flash", "json", "mbedtls", "protocol_examples_common" ],
             "managed_reqs": [],
             "managed_priv_reqs": [ "espressif__mdns", "protocol_examples_common" ],
             "file": "H:/AI2/file_serving/build/esp-idf/main/libmain.a",
@@ -2545,7 +2545,7 @@
             "dir": "H:/AI2/file_serving/main",
             "lib": "__idf_main",
             "reqs": [],
-            "priv_reqs": [ "fatfs", "esp_event", "vfs", "esp_netif", "nvs_flash", "spiffs", "esp_http_server", "bt", "esp_wifi", "esp_pm", "espressif__mdns", "app_update", "esp_driver_uart", "esp_driver_usb_serial_jtag", "esp_driver_gpio", "esp_driver_spi", "esp_timer", "spi_flash", "json", "protocol_examples_common" ],
+            "priv_reqs": [ "fatfs", "esp_event", "vfs", "esp_netif", "nvs_flash", "spiffs", "esp_http_server", "bt", "esp_wifi", "esp_pm", "espressif__mdns", "app_update", "esp_driver_uart", "esp_driver_usb_serial_jtag", "esp_driver_gpio", "esp_driver_spi", "esp_timer", "spi_flash", "json", "mbedtls", "protocol_examples_common" ],
             "managed_reqs": [],
             "managed_priv_reqs": [ "espressif__mdns", "protocol_examples_common" ],
             "include_dirs": [ ".", "ble", "cast_core", "server_network_sta", "server_network_sta/net_data", "server_network_sta/ota", "server_network_sta/upload", "server_network_sta/cast", "server_network_sta/cast2pic", "server_network_sta/snapshot", "server_network_sta/saved_images", "server_network_sta/slideshow", "server_network_sta/slideshow_control", "server_network_sta/delete", "server_network_sta/wifi_work_time", "server_network_sta/ping", "ch583_uart", "debug_output", "usb_console_echo", "usb_console_echo/common", "usb_console_echo/transport", "usb_console_echo/http_text", "usb_console_echo/router", "usb_console_echo/worker", "usb_console_echo/ping", "usb_console_echo/restart", "usb_console_echo/wifi", "usb_console_echo/epd_type", "usb_console_echo/net_data", "usb_console_echo/cast", "usb_console_echo/cast2pic", "usb_console_echo/delete", "usb_console_echo/saved_images", "usb_console_echo/slideshow", "usb_console_echo/slideshow_control", "usb_console_echo/snapshot", "usb_console_echo/upload", "usb_console_echo/wifi_work_time", "epd_display", "gpio_test", "led_status" ]

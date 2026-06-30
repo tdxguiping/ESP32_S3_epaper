@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_system.h"
 #include "esp_vfs_fat.h"
 #include "esp_spiffs.h"
 #include "freertos/FreeRTOS.h"
@@ -39,10 +40,12 @@
 
 static const char *TAG = "example_mount";
 #define STORAGE_INFO_MAX_FILES 50
-#define STORAGE_MOUNT_RETRY_COUNT 1
-#define STORAGE_MOUNT_RETRY_DELAY_MS 0
-#define STORAGE_MOUNT_POWER_READY_DELAY_MS 300
+#define STORAGE_MOUNT_RETRY_COUNT 3
+#define STORAGE_MOUNT_RETRY_DELAY_MS 300
+#define STORAGE_MOUNT_POWER_READY_DELAY_MS 1000
 #define STORAGE_SPIFFS_PARTITION_LABEL "assets"
+#define STORAGE_SD_FAIL_COUNT_NVS_KEY "sd_fail_count"
+#define STORAGE_SD_FAIL_RESTART_LIMIT 3
 
 static example_storage_type_t s_storage_type = EXAMPLE_STORAGE_TYPE_UNKNOWN;
 
@@ -156,6 +159,53 @@ static esp_err_t mount_spiffs_storage(const char *base_path)
     ensure_default_storage_dirs(base_path);
     example_print_storage_info(base_path);
     return ESP_OK;
+}
+
+static uint8_t storage_read_sd_fail_count(void)
+{
+    uint8_t fail_count = 0;
+    esp_err_t ret = app_nvs_read_u8(STORAGE_SD_FAIL_COUNT_NVS_KEY, &fail_count, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "SD fail count read failed ret=%s, use 0", esp_err_to_name(ret));
+        fail_count = 0;
+    }
+    return fail_count;
+}
+
+static void storage_write_sd_fail_count(uint8_t fail_count)
+{
+    esp_err_t ret = app_nvs_write_u8(STORAGE_SD_FAIL_COUNT_NVS_KEY, fail_count);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "SD fail count write failed value=%u ret=%s",
+                 (unsigned int)fail_count,
+                 esp_err_to_name(ret));
+    }
+}
+
+static esp_err_t handle_sd_mount_failure(const char *base_path, esp_err_t mount_ret)
+{
+    uint8_t fail_count = storage_read_sd_fail_count();
+    if (fail_count < UINT8_MAX) {
+        fail_count++;
+    }
+    storage_write_sd_fail_count(fail_count);
+
+    if (fail_count <= STORAGE_SD_FAIL_RESTART_LIMIT) {
+        ESP_LOGE(TAG,
+                 "SD mount failed ret=%s fail_count=%u action=restart",
+                 esp_err_to_name(mount_ret),
+                 (unsigned int)fail_count);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
+        return mount_ret;
+    }
+
+    ESP_LOGE(TAG,
+             "SD mount failed ret=%s fail_count=%u action=spiffs_fallback_reset_counter",
+             esp_err_to_name(mount_ret),
+             (unsigned int)fail_count);
+    storage_write_sd_fail_count(0);
+    return mount_spiffs_storage(base_path);
 }
 
 example_storage_type_t example_storage_get_type(void)
@@ -555,15 +605,19 @@ esp_err_t example_mount_storage(const char* base_path)
     if (ret != ESP_OK){
         storage_release_sdmmc_pins();
         if (ret == ESP_FAIL) {
-            ESP_LOGE(TAG, "Failed to mount SD filesystem, fallback to SPIFFS.");
+            ESP_LOGE(TAG, "Failed to mount SD filesystem.");
         } else {
-            ESP_LOGE(TAG, "Failed to initialize SD card (%s), fallback to SPIFFS.",
+            ESP_LOGE(TAG, "Failed to initialize SD card (%s).",
                      esp_err_to_name(ret));
         }
-        return mount_spiffs_storage(base_path);
+        return handle_sd_mount_failure(base_path, ret);
     }
 
     sdmmc_card_print_info(stdout, card);
+    if (storage_read_sd_fail_count() != 0) {
+        ESP_LOGI(TAG, "SD mount ok reset fail_count=0");
+        storage_write_sd_fail_count(0);
+    }
     s_storage_type = EXAMPLE_STORAGE_TYPE_SD_CARD;
     ensure_default_storage_dirs(base_path);
     example_print_storage_info(base_path);

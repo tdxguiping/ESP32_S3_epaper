@@ -48,7 +48,9 @@ void EpdType800480_4S_75_Display(ePaperPort &epd, const uint8_t *display_buf, si
     }
 
     epd.EPD_Init();
-    epd.NT61522_Display_net(display_buf, display_size);
+    if (epd.NT61522_Display_net(display_buf, display_size) != ESP_OK) {
+        return;
+    }
     epd.Epaper_Update_and_Deepsleep();
 }
 
@@ -108,7 +110,11 @@ void ePaperPort::EpdType800480_4S_75_NT61522_DisplayNet(const uint8_t *imageData
     EPD_WriteCMD(0x10);
 
     // Way -1 
-    EPD_WriteMultiData_Target(TARGET_MASTER, const_cast<uint8_t *>(imageData), (unsigned int)imageSize);
+    esp_err_t ret = EPD_WriteMultiData_Target(TARGET_MASTER, const_cast<uint8_t *>(imageData), (unsigned int)imageSize);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "EPD 800x480 4color data load failed ret=%s", esp_err_to_name(ret));
+        return;
+    }
 
     // Way -2
     // for (size_t i = 0; i < imageSize; ++i) {

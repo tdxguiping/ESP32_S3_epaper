@@ -61,7 +61,9 @@ void EpdType800480_Display(ePaperPort &epd, const uint8_t *display_buf, size_t d
 
     epd.EPD_Init();
     epd.NT61522_Init_display();
-    epd.NT61522_Display_net(display_buf, display_size);
+    if (epd.NT61522_Display_net(display_buf, display_size) != ESP_OK) {
+        return;
+    }
     epd.Epaper_Update();
 }
 

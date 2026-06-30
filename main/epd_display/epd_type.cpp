@@ -159,6 +159,11 @@ void EpdType_ReportDisplayFailure(esp_err_t error)
     }
 }
 
+esp_err_t EpdType_GetDisplayResult(void)
+{
+    return s_display_result;
+}
+
 esp_err_t EpdType_DisplayCurrent(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)
 {
     const epd_type_config_t *config = EpdType_GetCurrentConfig();

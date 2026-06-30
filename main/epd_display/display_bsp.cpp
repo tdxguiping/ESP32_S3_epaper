@@ -100,9 +100,9 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
     memset(&devcfg, 0, sizeof(devcfg));
     devcfg.spics_io_num = -1;    
     // devcfg.clock_speed_hz = 40 * 1000 * 1000;   // 40MHz is ok
-    //devcfg.clock_speed_hz = 5 * 1000 * 1000;
+    devcfg.clock_speed_hz = 5 * 1000 * 1000;
     //devcfg.clock_speed_hz = 10 * 1000 * 1000;
-    devcfg.clock_speed_hz = 20 * 1000 * 1000;
+    //devcfg.clock_speed_hz = 20 * 1000 * 1000;
 
 
     devcfg.mode = 0;
@@ -575,12 +575,16 @@ void ePaperPort::EPD_WriteDATA_ToSlave(uint8_t data) {
     EPD_Select_None();
 }
 
-void ePaperPort::EPD_WriteMultiData_ToMaster(uint8_t *data, unsigned int len) {
-    if (len == 0 || data == nullptr) return;
+esp_err_t ePaperPort::EPD_WriteMultiData_ToMaster(uint8_t *data, unsigned int len) {
+    if (len == 0 || data == nullptr) {
+        EpdType_ReportDisplayFailure(ESP_ERR_INVALID_ARG);
+        return ESP_ERR_INVALID_ARG;
+    }
     EPD_Select_Master();
     Set_DCIOLevel(1);
     delay_us(1);
 
+    esp_err_t result = ESP_OK;
     uint8_t *ptr = data;
     unsigned int remaining = len;
     while (remaining > 0) {
@@ -601,20 +605,27 @@ void ePaperPort::EPD_WriteMultiData_ToMaster(uint8_t *data, unsigned int len) {
                      (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
                      (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
                      (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+            EpdType_ReportDisplayFailure(ret);
+            result = ret;
             break;
         }
         ptr += chunk;
         remaining -= chunk;
     }
     EPD_Select_None();
+    return result;
 }
 
-void ePaperPort::EPD_WriteMultiData_ToSlave(uint8_t *data, unsigned int len) {
-    if (len == 0 || data == nullptr) return;
+esp_err_t ePaperPort::EPD_WriteMultiData_ToSlave(uint8_t *data, unsigned int len) {
+    if (len == 0 || data == nullptr) {
+        EpdType_ReportDisplayFailure(ESP_ERR_INVALID_ARG);
+        return ESP_ERR_INVALID_ARG;
+    }
     EPD_Select_Slave();
     Set_DCIOLevel(1);
     delay_us(1);
 
+    esp_err_t result = ESP_OK;
     uint8_t *ptr = data;
     unsigned int remaining = len;
     while (remaining > 0) {
@@ -635,12 +646,15 @@ void ePaperPort::EPD_WriteMultiData_ToSlave(uint8_t *data, unsigned int len) {
                      (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
                      (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
                      (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+            EpdType_ReportDisplayFailure(ret);
+            result = ret;
             break;
         }
         ptr += chunk;
         remaining -= chunk;
     }
     EPD_Select_None();
+    return result;
 }
 
 void ePaperPort::EPD_WriteCMD_ToBoth(uint8_t command) {
@@ -655,12 +669,16 @@ void ePaperPort::EPD_WriteDATA_ToBoth(uint8_t data) {
     EPD_Select_None();
 }
 
-void ePaperPort::EPD_WriteMultiData_ToBoth(uint8_t *data, unsigned int len) {
-    if (len == 0 || data == nullptr) return;
+esp_err_t ePaperPort::EPD_WriteMultiData_ToBoth(uint8_t *data, unsigned int len) {
+    if (len == 0 || data == nullptr) {
+        EpdType_ReportDisplayFailure(ESP_ERR_INVALID_ARG);
+        return ESP_ERR_INVALID_ARG;
+    }
     EPD_Select_Both();
     Set_DCIOLevel(1);
     delay_us(1);
 
+    esp_err_t result = ESP_OK;
     uint8_t *ptr = data;
     unsigned int remaining = len;
     while (remaining > 0) {
@@ -681,12 +699,15 @@ void ePaperPort::EPD_WriteMultiData_ToBoth(uint8_t *data, unsigned int len) {
                      (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
                      (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
                      (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+            EpdType_ReportDisplayFailure(ret);
+            result = ret;
             break;
         }
         ptr += chunk;
         remaining -= chunk;
     }
     EPD_Select_None();
+    return result;
 }
 
 void ePaperPort::EPD_WriteCMD_Target(EP_Target_t target, uint8_t command) {
@@ -707,13 +728,18 @@ void ePaperPort::EPD_WriteDATA_Target(EP_Target_t target, uint8_t data) {
     }
 }
 
-void ePaperPort::EPD_WriteMultiData_Target(EP_Target_t target, uint8_t *data, unsigned int len) {
-    if (len == 0 || data == nullptr) return;
+esp_err_t ePaperPort::EPD_WriteMultiData_Target(EP_Target_t target, uint8_t *data, unsigned int len) {
+    if (len == 0 || data == nullptr) {
+        EpdType_ReportDisplayFailure(ESP_ERR_INVALID_ARG);
+        return ESP_ERR_INVALID_ARG;
+    }
     switch (target) {
-        case TARGET_MASTER: EPD_WriteMultiData_ToMaster(data, len); break;
-        case TARGET_SLAVE:  EPD_WriteMultiData_ToSlave(data, len); break;
-        case TARGET_BOTH:   EPD_WriteMultiData_ToBoth(data, len); break;
-        default: break;
+        case TARGET_MASTER: return EPD_WriteMultiData_ToMaster(data, len);
+        case TARGET_SLAVE:  return EPD_WriteMultiData_ToSlave(data, len);
+        case TARGET_BOTH:   return EPD_WriteMultiData_ToBoth(data, len);
+        default:
+            EpdType_ReportDisplayFailure(ESP_ERR_INVALID_ARG);
+            return ESP_ERR_INVALID_ARG;
     }
 }
 
@@ -1280,14 +1306,18 @@ void ePaperPort::NT61522_Init_display()
 */
 [[maybe_unused]] static bool s_send_to_a = true;
 
-void ePaperPort::NT61522_Display_net(const uint8_t *imageData, size_t imageSize)
+esp_err_t ePaperPort::NT61522_Display_net(const uint8_t *imageData, size_t imageSize)
 {   
     int64_t start_us = esp_timer_get_time();
     ESP_LOGI(TAG, "EPD step NT61522_Display_net start size=%u", (unsigned int)imageSize);
 
     EpdType_DispatchNT61522DisplayNet(*this, imageData, imageSize);
 
-    ESP_LOGI(TAG, "EPD step NT61522_Display_net done size=%u elapsed_ms=%lld, target=%d",
+    esp_err_t ret = EpdType_GetDisplayResult();
+    ESP_LOGI(TAG, "EPD step NT61522_Display_net done size=%u elapsed_ms=%lld target=%d ret=%s",
              (unsigned int)imageSize,
-             (long long)((esp_timer_get_time() - start_us) / 1000),EPD_which_one_);
+             (long long)((esp_timer_get_time() - start_us) / 1000),
+             EPD_which_one_,
+             esp_err_to_name(ret));
+    return ret;
 }

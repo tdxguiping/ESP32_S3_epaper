@@ -407,7 +407,7 @@ esp_err_t ServerNetworkStaSlideshowControl_ProcessJson(httpd_req_t *req,
     }
 
     if (control.sw == 1) {
-        esp_err_t start_ret = ServerNetworkStaSlideshow_StartSaved(base_path);
+        esp_err_t start_ret = ServerNetworkStaSlideshow_StartSavedResetInterval(base_path);
         if (start_ret != ESP_OK) {
             ESP_LOGW(TAG, "set_slideshow runtime start failed ret=%s", esp_err_to_name(start_ret));
             return send_set_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED,

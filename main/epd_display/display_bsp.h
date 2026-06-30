@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <driver/gpio.h>
 #include <driver/spi_master.h>
+#include <esp_err.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_rom_sys.h>
@@ -359,7 +360,7 @@ class ePaperPort {
     uint8_t NT61522_ReadTemperature();
     void NT61522_Init();
     void NT61522_Init_display();
-    void NT61522_Display_net(const uint8_t *imageData, size_t imageSize);
+    esp_err_t NT61522_Display_net(const uint8_t *imageData, size_t imageSize);
     void NT61522_Display();
     void NT61522_DisplayImage(const uint8_t *imageData, size_t imageSize);
     ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int busy,
@@ -382,14 +383,14 @@ class ePaperPort {
     void EPD_WriteCMD_ToSlave(uint8_t command);
     void EPD_WriteDATA_ToMaster(uint8_t data);
     void EPD_WriteDATA_ToSlave(uint8_t data);
-    void EPD_WriteMultiData_ToMaster(uint8_t *data, unsigned int len);
-    void EPD_WriteMultiData_ToSlave(uint8_t *data, unsigned int len);
+    esp_err_t EPD_WriteMultiData_ToMaster(uint8_t *data, unsigned int len);
+    esp_err_t EPD_WriteMultiData_ToSlave(uint8_t *data, unsigned int len);
     void EPD_WriteCMD_ToBoth(uint8_t command);
     void EPD_WriteDATA_ToBoth(uint8_t data);
-    void EPD_WriteMultiData_ToBoth(uint8_t *data, unsigned int len);
+    esp_err_t EPD_WriteMultiData_ToBoth(uint8_t *data, unsigned int len);
     void EPD_WriteCMD_Target(EP_Target_t target, uint8_t command);
     void EPD_WriteDATA_Target(EP_Target_t target, uint8_t data);
-    void EPD_WriteMultiData_Target(EP_Target_t target, uint8_t *data, unsigned int len);
+    esp_err_t EPD_WriteMultiData_Target(EP_Target_t target, uint8_t *data, unsigned int len);
     void EPD_Read_reg_FromMaster(uint8_t reg, uint8_t *pbuf, unsigned int len);
     void EPD_Read_reg_FromSlave(uint8_t reg, uint8_t *pbuf, unsigned int len);
     uint8_t EPD_ReadByte_FromMaster(uint8_t reg);

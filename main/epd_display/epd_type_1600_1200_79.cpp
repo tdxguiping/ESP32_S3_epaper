@@ -71,7 +71,9 @@ void EpdType16001200_79_Display(ePaperPort &epd, const uint8_t *display_buf, siz
 
     epd.EPD_Init();
     epd.NT61522_Init_display();
-    epd.NT61522_Display_net(display_buf, display_size);
+    if (epd.NT61522_Display_net(display_buf, display_size) != ESP_OK) {
+        return;
+    }
     epd.NT61522_Display();
 }
 
@@ -401,6 +403,8 @@ void ePaperPort::EpdType16001200_79_NT61522_InitDisplay()
     temptr_fill = Temptr[0]+5;
     temptr_fill = Temptr[0];
     temptr_fill = temptr_fill<<1;
+
+    ESP_LOGI(TAG, "Temptr[0]: %d, temptr_fill: %d", Temptr[0], temptr_fill);
 
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmit(RE5_TSSET, &temptr_fill, 1);

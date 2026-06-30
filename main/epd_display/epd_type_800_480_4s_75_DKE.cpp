@@ -23,6 +23,9 @@ void EpdType800480_4S_75_DKE_Display(ePaperPort &epd,
 
     epd.EpdType800480_4S_75_DKE_Init();
     epd.EpdType800480_4S_75_DKE_NT61522_DisplayNet(display_buf, display_size);
+    if (EpdType_GetDisplayResult() != ESP_OK) {
+        return;
+    }
     epd.EpdType800480_4S_75_DKE_UpdateAndSleep();
 }
 
@@ -119,7 +122,11 @@ void ePaperPort::EpdType800480_4S_75_DKE_NT61522_DisplayNet(const uint8_t *image
     }
 
     EpdType800480_4S_75_DKE_WriteCommand(0x10);
-    EPD_WriteMultiData_Target(TARGET_MASTER, const_cast<uint8_t *>(imageData), (unsigned int)imageSize);
+    esp_err_t ret = EPD_WriteMultiData_Target(TARGET_MASTER, const_cast<uint8_t *>(imageData), (unsigned int)imageSize);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "EPD 800x480 4color DKE data load failed ret=%s", esp_err_to_name(ret));
+        return;
+    }
     // for (size_t i = 0; i < imageSize; ++i) {
     //     EpdType800480_4S_75_DKE_WriteData(imageData[i]);
     //     // if ((i + 1U) % kDkeYieldInterval == 0U) {
