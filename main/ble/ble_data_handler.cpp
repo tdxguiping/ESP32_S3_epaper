@@ -156,6 +156,61 @@ static void send_simple_result_with_sender(json_sender_t send_json,
 
 void send_base_info_to_mobile(void)
 {
+    char ip_str[sizeof("255.255.255.255")];
+    char json_str[384];
+    char ssid_str[33] = {0};
+
+    const esp_app_desc_t *app = esp_app_get_description();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+
+    esp_netif_ip_info_t ip = {};
+    esp_netif_t *esp_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    wifi_ap_record_t ap_info = {};
+
+    if (esp_netif != NULL &&
+        esp_netif_get_ip_info(esp_netif, &ip) == ESP_OK &&
+        ip.ip.addr != 0) {
+
+        net_connect_OK = 1;
+        working_time = 0;
+
+        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip.ip));
+
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            snprintf(ssid_str, sizeof(ssid_str), "%s", (const char *)ap_info.ssid);
+        }
+
+        snprintf(json_str, sizeof(json_str),
+                 "{\"func\":\"wifi_info_result\","
+                 "\"result\":%d,"
+                 "\"message\":\"wifi info\","
+                 "\"stage\":\"%s\","
+                 "\"WiFi\":\"%s\","
+                 "\"version\":\"%s\","
+                 "\"date\":\"%s\","
+                 "\"time\":\"%s\","
+                 "\"idf\":\"%s\","
+                 "\"running\":\"%s\"}",
+                 TDX_JSON_RESULT_OK,
+                 ip_str,
+                 ssid_str,
+                 app != NULL ? app->version : "",
+                 app != NULL ? app->date : "",
+                 app != NULL ? app->time : "",
+                 app != NULL ? app->idf_ver : "",
+                 running != NULL ? running->label : "");
+
+#if (USER_BLE_ENABLE == 1)
+        (void)s_active_send_json(json_str);
+        UserDebugOutput_Printf("JSON:\n%s\n", json_str);
+#else
+        (void)s_active_send_json(json_str);
+#endif
+    }
+}
+
+void send_base_info_to_mobile_old(void)
+{
         char ip_str[sizeof("255.255.255.255")];
         char json_str[384];
         const esp_app_desc_t *app = esp_app_get_description();

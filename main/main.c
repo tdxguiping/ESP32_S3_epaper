@@ -44,6 +44,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "esp_app_desc.h"
+
 static const char *TAG = "example";
 int g_app_reset_reason = ESP_RST_low_power_No_Disp;
 
@@ -372,7 +374,10 @@ void app_main(void)
 
 
     usb_console_ansi_color_test();
-    ESP_LOGI(TAG, "Server Version=2.2.5");
+    //  ESP_LOGI(TAG, "Server Version=2.2.5");    
+    const esp_app_desc_t *app = esp_app_get_description();    
+    ESP_LOGI(TAG, "ver=%s", app != NULL ? app->version : "");
+
     char ble_mac[13] = {0};
     get_ble_mac_no_colon(ble_mac, sizeof(ble_mac));
 #if USER_BLE_ENABLE
