@@ -356,10 +356,20 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
     bool any_show = false;
     for (size_t i = 0; i < item_count; i++) {
         const tdx_image_transfer_item_t *item = &items[i];
+        if (item->show) {
+            any_show = true;
+            break;
+        }
+    }
+    if (any_show) {
+        (void)stop_slideshow_for_cast(base_path);
+    }
+
+    for (size_t i = 0; i < item_count; i++) {
+        const tdx_image_transfer_item_t *item = &items[i];
         if (!item->show) {
             continue;
         }
-        any_show = true;
         int64_t stage_start_us = esp_timer_get_time();
         uint8_t epd_target = item->epd_target == 0 ? 1 : item->epd_target;
         esp_err_t display_ret = ServerNetworkStaEpdDisplay_QueueToScreenAndWait((const uint8_t *)item->bin_part.data,
@@ -406,9 +416,6 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
     }
 
     TdxCastCore_ResultOk(result, items[0].save_name, "ok");
-    if (any_show) {
-        (void)stop_slideshow_for_cast(base_path);
-    }
     return ESP_OK;
 }
 

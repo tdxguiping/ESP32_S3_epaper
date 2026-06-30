@@ -426,6 +426,10 @@ static esp_err_t display_slideshow_file_and_wait(const char *base_path, const ch
     if (base_path == NULL || !file_name_is_safe(file_name)) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (s_slideshow_stop) {
+        ESP_LOGI(TAG, "slideshow display skipped because stop requested file=%s", file_name);
+        return ESP_ERR_INVALID_STATE;
+    }
 
     snprintf(path, sizeof(path), "%s/bin_img/%s.bin", base_path, file_name);
     esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
@@ -438,6 +442,10 @@ static esp_err_t display_slideshow_file_and_wait(const char *base_path, const ch
         return ESP_ERR_NOT_FOUND;
     }
     TdxSharedSpi_Unlock();
+    if (s_slideshow_stop) {
+        ESP_LOGI(TAG, "slideshow display skipped after stat because stop requested file=%s", file_name);
+        return ESP_ERR_INVALID_STATE;
+    }
 
     uint8_t *buf = (uint8_t *)heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (buf == NULL) {
@@ -465,6 +473,11 @@ static esp_err_t display_slideshow_file_and_wait(const char *base_path, const ch
     size_t read_len = fread(buf, 1, (size_t)st.st_size, fp);
     fclose(fp);
     TdxSharedSpi_Unlock();
+    if (s_slideshow_stop) {
+        heap_caps_free(buf);
+        ESP_LOGI(TAG, "slideshow display skipped after read because stop requested file=%s", file_name);
+        return ESP_ERR_INVALID_STATE;
+    }
     if (read_len != (size_t)st.st_size) {
         heap_caps_free(buf);
         ESP_LOGE(TAG, "slideshow file read failed path=%s expect=%u actual=%u",
@@ -475,6 +488,11 @@ static esp_err_t display_slideshow_file_and_wait(const char *base_path, const ch
     ESP_LOGI(TAG, "slideshow display start file=%s size=%u",
              file_name, (unsigned int)read_len);
     slideshow_log_bin_sha256_tail(file_name, buf, read_len);
+    if (s_slideshow_stop) {
+        heap_caps_free(buf);
+        ESP_LOGI(TAG, "slideshow display skipped before queue because stop requested file=%s", file_name);
+        return ESP_ERR_INVALID_STATE;
+    }
     esp_err_t ret = ServerNetworkStaEpdDisplay_QueueToScreenAndWait(buf, read_len, 1);
     heap_caps_free(buf);
     if (ret == ESP_OK) {
@@ -1110,19 +1128,30 @@ static void slideshow_startup_delay_task(void *arg)
              (unsigned int)TDX_SLIDESHOW_STARTUP_DELAY_MS);
     vTaskDelay(pdMS_TO_TICKS(TDX_SLIDESHOW_STARTUP_DELAY_MS));
 
-    uint32_t interval = 0;
-    bool random = false;
-    bool enabled = ServerNetworkStaSlideshow_IsSavedEnabled(delay->base_path, &interval, &random);
-    if (!enabled) {
-        ESP_LOGI(TAG, "slideshow startup skipped because control sw=0");
-    } else if (s_slideshow_task != NULL) {
-        ESP_LOGI(TAG, "slideshow startup skipped because slideshow already running");
-    } else {
+    while (true) {
+        uint32_t interval = 0;
+        bool random = false;
+        bool enabled = ServerNetworkStaSlideshow_IsSavedEnabled(delay->base_path, &interval, &random);
+        if (!enabled) {
+            ESP_LOGI(TAG, "slideshow startup skipped because control sw=0");
+            break;
+        }
+        if (s_slideshow_task != NULL) {
+            ESP_LOGI(TAG, "slideshow startup skipped because slideshow already running");
+            break;
+        }
+        if (ServerNetworkStaEpdDisplay_IsBusy()) {
+            ESP_LOGI(TAG, "slideshow startup postponed because EPD busy");
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+
         ESP_LOGI(TAG, "slideshow startup delay done, start saved slideshow interval=%lu random=%d",
                  (unsigned long)interval,
                  random ? 1 : 0);
         esp_err_t ret = ServerNetworkStaSlideshow_StartSaved(delay->base_path);
         ESP_LOGI(TAG, "slideshow startup delayed start ret=%s", esp_err_to_name(ret));
+        break;
     }
 
     free(delay);

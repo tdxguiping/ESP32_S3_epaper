@@ -12,6 +12,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "ch583_wifi_uart_protocol.h"
+#include "epd_display_app.h"
 #include "led_status.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
@@ -357,6 +358,17 @@ static void work_state_task(void *arg)
             } else {
                 TickType_t now = xTaskGetTickCount();
                 TickType_t retry_interval_ticks = pdMS_TO_TICKS(20000);
+                if (ServerNetworkStaEpdDisplay_IsBusy()) {
+                    if (counter == 0) {
+                        ESP_LOGI(TAG,
+                                 "working_time timeout postponed because EPD busy elapsed=%lu target=%lu standby=%lu",
+                                 (unsigned long)elapsed,
+                                 (unsigned long)server_required_continue_work_time,
+                                 (unsigned long)wifi_standby_time_s);
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
                 if (s_last_power_off_send_tick != 0 &&
                     (now - s_last_power_off_send_tick) < retry_interval_ticks) {
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));

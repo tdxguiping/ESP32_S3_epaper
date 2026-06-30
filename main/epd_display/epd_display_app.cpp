@@ -30,6 +30,7 @@ typedef struct {
     size_t size;
     uint8_t epd_which_one;
     epd_display_completion_t *completion;
+    bool pending_counted;
 } epd_display_job_t;
 
 uint16_t sleep_time = 0;
@@ -37,6 +38,8 @@ EventGroupHandle_t sleep_group = NULL;
 
 static QueueHandle_t s_epd_display_queue = NULL;
 static TaskHandle_t s_epd_display_task = NULL;
+static volatile uint32_t s_epd_display_pending_jobs = 0;
+static volatile bool s_epd_display_active = false;
 
 static epd_display_completion_t *create_completion(void)
 {
@@ -124,6 +127,10 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
         if (xQueueReceive(s_epd_display_queue, &job, portMAX_DELAY) != pdTRUE) {
             continue;
         }
+        if (job.pending_counted) {
+            __atomic_sub_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
+        }
+        __atomic_store_n(&s_epd_display_active, true, __ATOMIC_RELEASE);
 
         ServerNetworkStaWifiWorkTime_OnNetworkData();
         int64_t display_start_us = esp_timer_get_time();
@@ -170,6 +177,7 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
             xSemaphoreGive(completion->done);
             release_completion(completion);
         }
+        __atomic_store_n(&s_epd_display_active, false, __ATOMIC_RELEASE);
     }
 }
 
@@ -229,8 +237,11 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, s
         return ret;
     }
     job.epd_which_one = (epd_which_one == 2) ? 2 : 1;
+    job.pending_counted = true;
 
+    __atomic_add_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
     if (xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+        __atomic_sub_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
         ESP_LOGE(TAG, "display queue full, keep old jobs and reject new ptr=%p size=%u",
                  job.data, (unsigned int)job.size);
         release_epd_job(&job);
@@ -272,8 +283,11 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreenAndWait(const uint8_t *display
     }
     job.epd_which_one = (epd_which_one == 2) ? 2 : 1;
     job.completion = completion;
+    job.pending_counted = true;
 
+    __atomic_add_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
     if (xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+        __atomic_sub_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
         ESP_LOGE(TAG, "display queue full, reject sync job ptr=%p size=%u",
                  job.data, (unsigned int)job.size);
         release_epd_job(&job);
@@ -298,6 +312,18 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreenAndWait(const uint8_t *display
     (void)epd_which_one;
     ESP_LOGW(TAG, "EPD display wait ignored because USER_EPD_ENABLE=0");
     return ESP_OK;
+#endif
+}
+
+bool ServerNetworkStaEpdDisplay_IsBusy(void)
+{
+#if USER_EPD_ENABLE
+    UBaseType_t queued = s_epd_display_queue != NULL ? uxQueueMessagesWaiting(s_epd_display_queue) : 0U;
+    return __atomic_load_n(&s_epd_display_active, __ATOMIC_ACQUIRE) ||
+           __atomic_load_n(&s_epd_display_pending_jobs, __ATOMIC_ACQUIRE) > 0U ||
+           queued > 0U;
+#else
+    return false;
 #endif
 }
 
