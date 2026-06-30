@@ -104,7 +104,7 @@ esp_err_t UsbConsoleSlideshow_Process(const usb_console_http_request_t *request,
                                          "{\"func\":\"start_slideshow_result\",\"result\":%d,\"message\":\"start slideshow failed\"}",
                                          TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED);
     }
-    esp_err_t ret = ServerNetworkStaSlideshow_StartSaved(USB_CONSOLE_BASE_PATH);
+    esp_err_t ret = ServerNetworkStaSlideshow_StartSavedResetInterval(USB_CONSOLE_BASE_PATH);
     if (ret != ESP_OK) {
         return UsbConsoleCommon_SetJsonf(response,
                                          200,

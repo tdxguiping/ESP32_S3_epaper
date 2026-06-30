@@ -357,8 +357,8 @@ void app_main(void)
     }
 
     if (storage_ret == ESP_OK) {
-        esp_err_t slideshow_ret = ServerNetworkStaSlideshow_StartSaved(base_path);
-        ESP_LOGI(TAG, "startup slideshow start ret=%s", esp_err_to_name(slideshow_ret));
+        esp_err_t slideshow_ret = ServerNetworkStaSlideshow_StartSavedDelayed(base_path);
+        ESP_LOGI(TAG, "startup slideshow delayed start ret=%s", esp_err_to_name(slideshow_ret));
     }
 
     app_auto_light_sleep_init();

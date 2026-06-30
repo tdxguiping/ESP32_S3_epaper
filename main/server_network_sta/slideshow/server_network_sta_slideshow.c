@@ -56,7 +56,12 @@ typedef struct {
     uint32_t initial_delay_seconds;
 } slideshow_runtime_t;
 
+typedef struct {
+    char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
+} slideshow_startup_delay_t;
+
 static TaskHandle_t s_slideshow_task = NULL;
+static TaskHandle_t s_slideshow_startup_delay_task = NULL;
 static volatile bool s_slideshow_stop = false;
 static portMUX_TYPE s_slideshow_timing_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_slideshow_interval_active = false;
@@ -1090,6 +1095,69 @@ esp_err_t ServerNetworkStaSlideshow_StartSaved(const char *base_path)
 esp_err_t ServerNetworkStaSlideshow_StartSavedResetInterval(const char *base_path)
 {
     return start_saved_slideshow_with_mode(base_path, true);
+}
+
+static void slideshow_startup_delay_task(void *arg)
+{
+    slideshow_startup_delay_t *delay = (slideshow_startup_delay_t *)arg;
+    if (delay == NULL) {
+        s_slideshow_startup_delay_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "slideshow startup delay %u ms",
+             (unsigned int)TDX_SLIDESHOW_STARTUP_DELAY_MS);
+    vTaskDelay(pdMS_TO_TICKS(TDX_SLIDESHOW_STARTUP_DELAY_MS));
+
+    uint32_t interval = 0;
+    bool random = false;
+    bool enabled = ServerNetworkStaSlideshow_IsSavedEnabled(delay->base_path, &interval, &random);
+    if (!enabled) {
+        ESP_LOGI(TAG, "slideshow startup skipped because control sw=0");
+    } else if (s_slideshow_task != NULL) {
+        ESP_LOGI(TAG, "slideshow startup skipped because slideshow already running");
+    } else {
+        ESP_LOGI(TAG, "slideshow startup delay done, start saved slideshow interval=%lu random=%d",
+                 (unsigned long)interval,
+                 random ? 1 : 0);
+        esp_err_t ret = ServerNetworkStaSlideshow_StartSaved(delay->base_path);
+        ESP_LOGI(TAG, "slideshow startup delayed start ret=%s", esp_err_to_name(ret));
+    }
+
+    free(delay);
+    s_slideshow_startup_delay_task = NULL;
+    vTaskDelete(NULL);
+}
+
+esp_err_t ServerNetworkStaSlideshow_StartSavedDelayed(const char *base_path)
+{
+    if (base_path == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_slideshow_startup_delay_task != NULL) {
+        ESP_LOGW(TAG, "slideshow startup delay already scheduled");
+        return ESP_OK;
+    }
+
+    slideshow_startup_delay_t *delay = (slideshow_startup_delay_t *)calloc(1, sizeof(*delay));
+    if (delay == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    strlcpy(delay->base_path, base_path, sizeof(delay->base_path));
+
+    BaseType_t task_ret = xTaskCreate(slideshow_startup_delay_task,
+                                      "slide_start_delay",
+                                      SLIDESHOW_TASK_STACK_SIZE / 2,
+                                      delay,
+                                      SLIDESHOW_TASK_PRIORITY,
+                                      &s_slideshow_startup_delay_task);
+    if (task_ret != pdPASS) {
+        free(delay);
+        s_slideshow_startup_delay_task = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
 }
 
 static esp_err_t save_slideshow_config(const char *bin_dir, const slideshow_request_t *request)

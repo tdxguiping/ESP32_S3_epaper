@@ -249,6 +249,11 @@ static uint32_t update_working_time_seconds(void)
 
 //调用   ServerNetworkStaWifiWorkTime_OnNetworkData  从头计
 // Configure CH583/CH585 wake timer before POWER_OFF so slideshow can resume after power cut.
+static uint32_t slideshow_startup_delay_seconds(void)
+{
+    return (TDX_SLIDESHOW_STARTUP_DELAY_MS + 999U) / 1000U;
+}
+
 static void configure_ch583_wake_timer_before_power_off(void)
 {
     uint32_t interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
@@ -266,6 +271,7 @@ static void configure_ch583_wake_timer_before_power_off(void)
         uint32_t runtime_elapsed = 0;
         bool runtime_running = false;
         uint32_t wake_interval = interval;
+        uint32_t startup_delay = slideshow_startup_delay_seconds();
         if (ServerNetworkStaSlideshow_GetRuntimeTiming(&runtime_interval,
                                                        &runtime_elapsed,
                                                        &runtime_running) &&
@@ -278,12 +284,14 @@ static void configure_ch583_wake_timer_before_power_off(void)
                 wake_interval = 1U;
             }
         }
+        wake_interval = wake_interval > startup_delay ? wake_interval - startup_delay : 1U;
 
         ESP_LOGI(TAG,
-                 "slideshow enabled before power off, wake timer on interval=%lu saved_interval=%lu elapsed=%lu random=%d",
+                 "slideshow enabled before power off, wake timer on interval=%lu saved_interval=%lu elapsed=%lu startup_delay=%lu random=%d",
                  (unsigned long)wake_interval,
                  (unsigned long)interval,
                  (unsigned long)runtime_elapsed,
+                 (unsigned long)startup_delay,
                  random ? 1 : 0);
         wake_ret = ch583_wifi_uart_send_wake_timer_on(wake_interval);
     } else {

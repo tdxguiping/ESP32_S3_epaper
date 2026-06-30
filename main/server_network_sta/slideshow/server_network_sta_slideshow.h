@@ -18,6 +18,7 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
 esp_err_t ServerNetworkStaSlideshow_ShowFirst(const char *base_path);
 esp_err_t ServerNetworkStaSlideshow_StartSaved(const char *base_path);
 esp_err_t ServerNetworkStaSlideshow_StartSavedResetInterval(const char *base_path);
+esp_err_t ServerNetworkStaSlideshow_StartSavedDelayed(const char *base_path);
 bool ServerNetworkStaSlideshow_IsSavedEnabled(const char *base_path,
                                               uint32_t *interval,
                                               bool *random);

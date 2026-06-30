@@ -38,6 +38,8 @@ static const char *TAG = "cast_core";
 static QueueHandle_t s_cast_save_queue;
 static TaskHandle_t s_cast_save_task;
 
+static esp_err_t stop_slideshow_for_cast(const char *base_path);
+
 static uint32_t elapsed_ms_since(int64_t start_us)
 {
     return (uint32_t)((esp_timer_get_time() - start_us) / 1000);
@@ -351,11 +353,13 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
         return ESP_ERR_INVALID_ARG;
     }
 
+    bool any_show = false;
     for (size_t i = 0; i < item_count; i++) {
         const tdx_image_transfer_item_t *item = &items[i];
         if (!item->show) {
             continue;
         }
+        any_show = true;
         int64_t stage_start_us = esp_timer_get_time();
         uint8_t epd_target = item->epd_target == 0 ? 1 : item->epd_target;
         esp_err_t display_ret = ServerNetworkStaEpdDisplay_QueueToScreenAndWait((const uint8_t *)item->bin_part.data,
@@ -402,6 +406,9 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
     }
 
     TdxCastCore_ResultOk(result, items[0].save_name, "ok");
+    if (any_show) {
+        (void)stop_slideshow_for_cast(base_path);
+    }
     return ESP_OK;
 }
 
@@ -496,14 +503,29 @@ static void read_slideshow_control_values(const char *control_path, uint32_t *in
     parse_json_bool(buf, "random", random);
 }
 
+static bool read_slideshow_control_sw(const char *control_path, uint32_t *sw_out)
+{
+    FILE *fp = fopen(control_path, "rb");
+    if (fp == NULL) {
+        return false;
+    }
+    char buf[192] = {0};
+    size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    buf[len] = '\0';
+    return parse_json_u32(buf, "sw", sw_out);
+}
+
 static esp_err_t stop_slideshow_for_cast(const char *base_path)
 {
     char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
     char json[160];
     uint32_t interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
     bool random = false;
+    uint32_t sw = UINT32_MAX;
 
     snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", base_path, TDX_SLIDESHOW_CONTROL_FILE);
+    ESP_LOGI(TAG, "show=true stop slideshow requested path=%s", control_path);
     esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
     if (lock_ret != ESP_OK) {
         return lock_ret;
@@ -522,6 +544,21 @@ static esp_err_t stop_slideshow_for_cast(const char *base_path)
     TdxSharedSpi_Unlock();
     if (ret == ESP_OK) {
         ServerNetworkStaSlideshow_Stop();
+        lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+        if (lock_ret == ESP_OK) {
+            bool read_ok = read_slideshow_control_sw(control_path, &sw);
+            TdxSharedSpi_Unlock();
+            if (read_ok && sw == 0) {
+                ESP_LOGI(TAG, "show=true slideshow stop confirmed sw=0");
+            } else {
+                ESP_LOGW(TAG, "show=true slideshow stop check failed read_ok=%d sw=%lu",
+                         read_ok ? 1 : 0,
+                         (unsigned long)sw);
+            }
+        } else {
+            ESP_LOGW(TAG, "show=true slideshow stop check lock failed ret=%s",
+                     esp_err_to_name(lock_ret));
+        }
     }
     ESP_LOGI(TAG, "stop slideshow ret=%s", esp_err_to_name(ret));
     return ret;
@@ -678,9 +715,6 @@ esp_err_t TdxCastCore_ProcessValidated(const tdx_cast_core_request_t *cast,
     snprintf(item.save_name, sizeof(item.save_name), "%s", cast->file_name);
 
     esp_err_t ret = TdxImageTransfer_ProcessItems(&item, 1, base_path, log_prefix, result);
-    if (cast->show && ret == ESP_OK) {
-        (void)stop_slideshow_for_cast(base_path);
-    }
     if (ret != ESP_OK) {
         return ret;
     }

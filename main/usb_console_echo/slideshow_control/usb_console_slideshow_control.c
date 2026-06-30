@@ -77,7 +77,7 @@ esp_err_t UsbConsoleSlideshowControl_Process(const usb_console_http_request_t *r
     }
     g_slideshow_random_enable = random ? 1 : 0;
     if (sw == 1) {
-        esp_err_t start_ret = ServerNetworkStaSlideshow_StartSaved(USB_CONSOLE_BASE_PATH);
+        esp_err_t start_ret = ServerNetworkStaSlideshow_StartSavedResetInterval(USB_CONSOLE_BASE_PATH);
         if (start_ret != ESP_OK) {
             return UsbConsoleCommon_SetJsonf(response,
                                              200,
