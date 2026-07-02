@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "epd_display_mode.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
@@ -70,6 +71,36 @@ static bool write_slideshow_config(const char *body)
     return ok;
 }
 
+static bool write_slideshow_control(uint32_t interval, bool random)
+{
+    char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
+    char json[160];
+
+    snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, TDX_SLIDESHOW_CONTROL_FILE);
+    int len = snprintf(json,
+                       sizeof(json),
+                       "{\"sw\":1,\"interval\":%lu,\"random\":%s,\"run_mode\":%d}",
+                       (unsigned long)interval,
+                       random ? "true" : "false",
+                       TDX_SLIDESHOW_RUN_MODE);
+    if (len < 0 || (size_t)len >= sizeof(json)) {
+        return false;
+    }
+
+    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        return false;
+    }
+    FILE *fp = fopen(control_path, "wb");
+    if (fp == NULL) {
+        TdxSharedSpi_Unlock();
+        return false;
+    }
+    size_t written = fwrite(json, 1, (size_t)len, fp);
+    bool ok = fclose(fp) == 0 && written == (size_t)len;
+    TdxSharedSpi_Unlock();
+    return ok;
+}
+
 esp_err_t UsbConsoleSlideshow_Handle(const usb_console_http_request_t *request,
                                      usb_console_http_response_t *response)
 {
@@ -97,11 +128,33 @@ esp_err_t UsbConsoleSlideshow_Process(const usb_console_http_request_t *request,
                                          "{\"func\":\"start_slideshow_result\",\"result\":%d,\"message\":\"invalid interval\"}",
                                          TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID);
     }
+    bool random = false;
+    if (strstr(request->body, "\"random\"") != NULL &&
+        !UsbConsoleCommon_JsonBool(request->body, "random", &random)) {
+        return UsbConsoleCommon_SetJsonf(response, 200, "OK",
+                                         "{\"func\":\"start_slideshow_result\",\"result\":%d,\"message\":\"invalid random\"}",
+                                         TDX_JSON_RESULT_PARAM_INVALID);
+    }
     if (!write_slideshow_config(request->body)) {
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
                                          "{\"func\":\"start_slideshow_result\",\"result\":%d,\"message\":\"start slideshow failed\"}",
+                                         TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED);
+    }
+    if (!write_slideshow_control(interval, random)) {
+        return UsbConsoleCommon_SetJsonf(response,
+                                         200,
+                                         "OK",
+                                         "{\"func\":\"start_slideshow_result\",\"result\":%d,\"message\":\"start slideshow failed\"}",
+                                         TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED);
+    }
+    esp_err_t mode_ret = EpdDisplayMode_SetBySlideshowSwitch(true);
+    if (mode_ret != ESP_OK) {
+        return UsbConsoleCommon_SetJsonf(response,
+                                         200,
+                                         "OK",
+                                         "{\"func\":\"start_slideshow_result\",\"result\":%d,\"message\":\"save display mode failed\"}",
                                          TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED);
     }
     esp_err_t ret = ServerNetworkStaSlideshow_StartSavedResetInterval(USB_CONSOLE_BASE_PATH);

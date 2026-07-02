@@ -14,6 +14,8 @@ extern "C" {
 void ch583_wifi_uart_process_bytes(const uint8_t *data, size_t len, ch583_wifi_ble_data_callback_t ble_data_callback);
 int ch583_wifi_uart_protocol_init(void);
 int ch583_wifi_uart_send_wifi_data(const char *message);
+int ch583_wifi_uart_send_wifi_provision_status(uint8_t status);
+int ch583_wifi_uart_send_current_wifi_provision_status(void);
 const char *ch583_wifi_uart_get_ble_mac(void);
 int ch583_wifi_uart_send_wake_timer_on(uint32_t seconds);
 int ch583_wifi_uart_send_wake_timer_off(void);

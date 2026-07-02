@@ -72,6 +72,7 @@
   - [10.11 LED 闪烁控制](#sec-10-11)
   - [10.12 WAKE_TIMER：WiFi 定时唤醒配置](#sec-10-12)
   - [10.13 NFC 内容管理](#sec-10-13)
+  - [10.14 WIFI_PROVISION：WiFi 配网状态上报](#sec-10-14)
 - [11. CH583 BLE JSON 配网与唤醒](#sec-11)
   - [11.1 蓝牙配网协议：wifi](#sec-11-1)
   - [11.2 蓝牙唤醒 WiFi：wifi_wakeup](#sec-11-2)
@@ -131,7 +132,7 @@ The full result-code table is in `README_Result_Code.md`; this file keeps featur
 | `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | 字段、文件名安全、大小匹配、目录和剩余空间条件与 cast 类似；主要用于保存，`show=true` 时也可显示 | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存；图片列表、轮播、快照从 jpg/bin 目录取数据 |
 | `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `SERVER_NETWORK_STA_DELETE_MAX_FILES=50` 限制；文件名必须安全；只删除匹配的 bin/jpg；不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度 | 从 JSON `fileNames` 取删除列表；删除前按文件名拼路径 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从轮播配置/control 文件读取轮播状态 |
-| `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 待显示状态 | `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=50` 限制；单个名称长度受 `TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48` 限制；`interval` 限制在 `60..604800` 秒；配置前应检查文件存在；只有 EPD 实际显示完成且下一进度提交成功后才推进 | 开机自动恢复轮播先延迟 `TDX_SLIDESHOW_STARTUP_DELAY_MS=10000` 毫秒，让 `show=true` 请求优先；延迟结束后若 EPD task 未完成则继续推迟，直到 EPD 空闲后重新读取配置、控制文件和待显示进度；显示失败或中途断电继续当前图片；随机模式保存整轮排列，保证一轮内不重复、不遗漏 |
+| `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 待显示状态 | `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=50` 限制；单个名称缓冲区受 `TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48` 限制，实际文件名内容需小于 48 bytes；`interval` 限制在 `60..604800` 秒；配置前应检查文件存在；只有 EPD 实际显示完成且下一进度提交成功后才推进 | 开机自动恢复轮播先延迟 `TDX_SLIDESHOW_STARTUP_DELAY_MS=10000` 毫秒，让 `show=true` 请求优先；延迟结束后若 EPD task 未完成则继续推迟，直到 EPD 空闲后重新读取配置、控制文件和待显示进度；显示失败或中途断电继续当前图片；随机模式保存整轮排列，保证一轮内不重复、不遗漏 |
 | `wifi_work_time` | `work_state` namespace blob；`PhotoPainter:work_continue/wifi_standby` 字符串兼容键 | HTTP JSON `seconds` 必须在 `60..3600`；内部 `SetAndSave()` 还会 clamp 到最小/最大值；保存 blob 后会读回验证；`seconds=0` 拒绝 | 启动时读取 blob；blob size 不匹配则回退默认值；兼容读取字符串键并解析为 u32 |
 | OTA | OTA update partition；boot partition 选择 | 请求必须被识别为 `/ota` 或 `/ota_upload`；body 不超过 `SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE=6MB`；meta/firmware 字段可解析；固件 magic、app_desc、版本、长度和目标分区大小检查通过；写入成功后才设置 boot partition | 读取 meta JSON、firmware/bin 字段、running partition、next update partition、app desc 和 OTA 状态 |
 | EPD 类型 | `PhotoPainter:epd_type` | 只允许保存 `EpdType_GetConfig(type)` 能找到的合法 type；未变化时跳过写入；非法 type 返回 `ESP_ERR_INVALID_ARG` | 启动读取 `epd_type`；不存在或无效时回退 `USER_EPD_TYPE_DEFAULT`；显示时按当前 type 分发到具体驱动 |
@@ -187,14 +188,18 @@ Mermaid 时序图：
 sequenceDiagram
     participant APP as app_main
     participant SYS as ESP-IDF system
+    participant DBG as Debug Output
     participant USB as USB Console
     participant WORK as WiFi work time
     participant CH583 as CH583 UART
     participant LED as LED Status
+    participant BLE as ESP32 BLE
     participant EPD as EPD Display
     participant SD as SD/SPIFFS
     participant STA as WiFi STA/HTTP
     participant PM as Power Management
+    APP->>DBG: UserDebugOutput_Init()
+    APP->>SYS: esp_log_level_set()
     APP->>SYS: nvs_flash_init()
     APP->>SYS: esp_netif_init()
     APP->>SYS: esp_event_loop_create_default()
@@ -202,9 +207,15 @@ sequenceDiagram
     APP->>SYS: TdxCastCore_Init()
     APP->>USB: UsbConsoleEcho_Init()
     APP->>WORK: ServerNetworkStaWifiWorkTime_Init()
+    APP->>SYS: read/write slideshow random NVS
+    APP->>SYS: print_base_info()
+    APP->>SYS: GpioTest_Init()
     APP->>STA: ServerNetworkSta_Init()
     APP->>CH583: Ch583UartApp_Init()
     APP->>LED: UserLedStatus_Init()
+    opt USER_BLE_ENABLE
+        APP->>BLE: Init_Bl()
+    end
     APP->>EPD: ServerNetworkStaEpdDisplay_Init()
     APP->>SD: example_mount_storage("/data")
     APP->>STA: User_Network_mode_app_init("/data")
@@ -212,6 +223,7 @@ sequenceDiagram
         APP->>STA: ServerNetworkStaSlideshow_StartSavedDelayed("/data")
     end
     APP->>PM: app_auto_light_sleep_init()
+    APP->>SYS: app version / BLE MAC log
 ```
 
 
@@ -231,6 +243,8 @@ main/usb_console_echo/
 ```text
 main/main.c
 └─ app_main()
+   ├─ UserDebugOutput_Init()
+   ├─ esp_log_level_set()
    ├─ nvs_flash_init()
    ├─ esp_netif_init()
    ├─ esp_event_loop_create_default()
@@ -248,6 +262,8 @@ main/main.c
    ├─ app_nvs_read_str(TDX_SLIDESHOW_RANDOM_NVS_KEY)
    ├─ app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY)
    ├─ print_base_info()
+   │  └─ 打印短 boot 摘要：reset / flash / RAM / PSRAM / NVS / work state
+   ├─ GpioTest_Init()
    ├─ ServerNetworkSta_Init()
    │  └─ 创建全局 WiFi operation mutex
    ├─ Ch583UartApp_Init()
@@ -270,8 +286,23 @@ main/main.c
    ├─ storage_ret == ESP_OK
    │  └─ ServerNetworkStaSlideshow_StartSavedDelayed("/data")
    │     └─ server_network_sta/slideshow/server_network_sta_slideshow.c
-   └─ app_auto_light_sleep_init()
-      └─ 网络、存储、轮播启动后再配置自动 light sleep
+   ├─ app_auto_light_sleep_init()
+   │  └─ 网络、存储、轮播启动后再配置自动 light sleep
+   ├─ usb_console_ansi_color_test()
+   │  └─ 仅 USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE=1 时打印
+   ├─ esp_app_get_description()
+   │  └─ 打印 app version
+   └─ get_ble_mac_no_colon()
+      └─ 打印 BLE MAC 来源和值
+```
+
+启动日志原则：
+
+```text
+错误或有问题使用 ESP_LOGE。
+需要注意但可继续运行使用 ESP_LOGW。
+普通关键节点使用 ESP_LOGI，日志内容保持短句。
+可有可无的启动打印默认删除或用宏关闭，例如目录逐项列表、上传循环进度、演示色彩输出。
 ```
 
 auto light sleep 接收链路注意事项：
@@ -401,6 +432,28 @@ tdx_cfg.h 中的 USER_DEBUG_OUTPUT_TARGET 只控制 app_main() 调用 UserDebugO
 UART0 调试启用时，GPIO11/GPIO12 不再作为 gpio_test 输出脚使用。
 ```
 
+日志相关宏：
+
+```text
+SERVER_NETWORK_STA_DEBUG_LOG_ENABLE=0
+默认关闭 WiFi STA 连接细节日志；需要排查 STA_START、BSSID、RSSI、esp_wifi_start/connect 返回值时再打开。
+
+USER_NVS_VERBOSE_LOG_ENABLE=0
+默认关闭 app_nvs 成功读写日志；NVS 打开、读取、写入失败仍按 ESP_LOGW / ESP_LOGE 输出。
+
+USER_STORAGE_LIST_ON_STARTUP_ENABLE=0
+默认不在启动时逐项扫描打印 /data 文件树。
+
+USER_HTTP_FILE_LIST_LOG_ENABLE=0
+默认不逐项打印 HTTP 目录列表文件；以后排查文件浏览输出时可打开。
+
+USER_HTTP_MULTIPART_DETAIL_LOG_ENABLE=0
+默认关闭 legacy multipart fallback 的 field、boundary、slot 等细节日志；关键保存和错误日志保留。
+
+SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE=0
+默认关闭 OTA multipart boundary、field、firmware header 等底层细节日志；OTA 关键阶段、进度和错误日志保留。
+```
+
 ---
 
 
@@ -443,6 +496,8 @@ sequenceDiagram
 ```text
 main/app_nvs.c
 main/tdx_cfg.h
+main/epd_display/epd_display_mode.c
+main/epd_display/epd_display_mode.h
 ```
 
 树状时序：
@@ -458,6 +513,10 @@ main/tdx_cfg.h
 ├─ epd_display/epd_type.cpp
 │  ├─ EpdType_LoadSavedOrDefault()
 │  └─ EpdType_SetAndSave()
+├─ epd_display/epd_display_mode.c
+│  ├─ EpdDisplayMode_Init()
+│  ├─ EpdDisplayMode_Set()
+│  └─ EpdDisplayMode_SetBySlideshowSwitch()
 ├─ server_network_sta/wifi_work_time/server_network_sta_wifi_work_time.c
 │  ├─ load_work_time_vars_from_app_nvs()
 │  └─ save_work_time_vars_to_app_nvs()
@@ -490,8 +549,15 @@ main/tdx_cfg.h
 
 主要调用：
 - EPD 类型保存 / 读取。
+- EPD 显示模式保存 / 读取：PhotoPainter:epd_mode，u8，0=NORMAL，1=SLIDESHOW，2=DAILY 预留。
 - CH583 BLE MAC 保存 / 读取。
 - WiFi 工作时间字符串兼容保存 / 读取。
+- 凡是 show_control.txt 的 sw 写入成功，epd_mode 必须同步写入；sw=1 写 1，sw=0 写 0。
+
+日志：
+- 成功读写默认不打印，避免启动和轮播状态读写刷屏。
+- `USER_NVS_VERBOSE_LOG_ENABLE=1` 时打印成功 read/write 的 key、value/size、ret。
+- `nvs_open`、读取异常、写入/commit 失败保留日志；可继续使用默认值的读取问题用 `ESP_LOGW`，写入失败用 `ESP_LOGE`。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-03)
@@ -591,6 +657,12 @@ mount.c
 - example_print_storage_info() 读取挂载状态、容量、目录树、txt 文件内容。
 - list_storage_tree() 扫描并打印 /data 下文件。
 - SD 挂载参数：上电等待 1000ms；单次启动内最多重试 3 次；重试间隔 300ms。失败计数未超过阈值时不进入 SPIFFS，而是软件复位后重试 SD。
+
+日志：
+- 保留关键节点：SD mount start、SDSPI pins、bus reuse、SD ready、SPIFFS fallback、storage ready、mount failed。
+- 失败或不可恢复问题使用 `ESP_LOGE`；可继续 fallback 或复用 bus 的情况使用 `ESP_LOGW`；普通挂载成功节点使用 `ESP_LOGI`。
+- 启动目录逐项列表由 `USER_STORAGE_LIST_ON_STARTUP_ENABLE` 控制，默认关闭。
+- HTTP 目录列表逐项文件日志由 `USER_HTTP_FILE_LIST_LOG_ENABLE` 控制，默认关闭。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-04)
@@ -772,6 +844,11 @@ GET /ping HTTP/1.1
 - server_network_sta_read_saved_wifi() 优先读取 namespace="wifi" 的 ssid/password。
 - 读取失败后读取 namespace="nvs.net80211" 的 sta.ssid / sta.pswd blob。
 - IP_EVENT_STA_GOT_IP 后读取当前 IP、AP 信息，并启动 HTTP/mDNS。
+
+日志：
+- 当前处于开发阶段，WiFi credential 读取成功时允许明文打印 ssid/password，便于确认配网和 NVS 内容。
+- 保留关键节点：saved WiFi 读取结果、WiFi IP、断开原因、mDNS ready、HTTP server ready、网络初始化失败。
+- `SERVER_NETWORK_STA_DEBUG_LOG_ENABLE=0` 时关闭 STA_START、BSSID/RSSI、WiFi PS、esp_wifi_start/connect 返回值等细节日志；需要排查连接过程时再打开。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-05)
@@ -865,6 +942,11 @@ read_request_body_to_buffer() 会把完整 body 读入内存后再分发，不�
 取：
 - 从 HTTP request 读取 header、body、multipart boundary、JSON func。
 - 根据 URI、Content-Type、func 分发到对应模块。
+
+日志：
+- 保留入口关键节点：HTTP data header、enter、dispatch=ota/json/multipart、upload busy、body too large、recv failed。
+- `small JSON` 内容较小，收到后打印完整 JSON body。
+- legacy multipart fallback 的 boundary、part field、upload slot 等细节由 `USER_HTTP_MULTIPART_DETAIL_LOG_ENABLE` 控制，默认关闭。
 ```
 
 
@@ -940,6 +1022,11 @@ HTTP POST /dataUP
 - 读取 HTTP body 到内存缓冲区。
 - multipart 请求读取 boundary 和各 part。
 - JSON 请求读取 func 后转入 small JSON 分发。
+
+日志：
+- `/dataUP` 入口保留短日志：header、uri、len、content-type、分发类型、异常原因。
+- multipart 图片业务的保存/显示结果由 cast、cast2pic、upload 下游模块打印。
+- legacy multipart fallback 只保留保存成功/打开失败等关键日志；解析细节默认关闭。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-06)
@@ -985,6 +1072,11 @@ HTTP POST /ota or /ota_upload
 取：
 - 读取 multipart meta 与 firmware/bin 字段。
 - 读取当前 running partition、固件 app_desc、目标 OTA partition 信息。
+
+日志：
+- 保留关键节点：detect ota request、max body size、meta raw/parsed、ota write start、版本/分区检查、写入进度、verify、set boot、reboot。
+- firmware 指针、boundary 内容、multipart field、firmware header 等底层细节由 `SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE` 控制，默认关闭。
+- OTA 失败阶段使用 `ESP_LOGE`，可继续返回错误响应的异常使用 `ESP_LOGW` 或 OTA result JSON 表达。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-06)
@@ -1047,6 +1139,11 @@ HTTP GET /ping
 取：
 - 读取 JSON func 字段。
 - 根据源码顺序依次尝试 snapshot、saved_images、slideshow、slideshow_control、delete、wifi_work_time。
+
+日志：
+- small JSON body 小，入口打印完整 body：`small JSON len=... body=...`。
+- 每个已识别 func 打印短结果：`small JSON func=... ret=...`。
+- 非 JSON body、未知 func 使用 `ESP_LOGW`。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-06)
@@ -1312,7 +1409,7 @@ cast_core.c
 └─ record_last_cast()
 ```
 
-说明：network cast 与 USB cast 共享 `cast_core`。EPD 显示使用已有的 `ServerNetworkStaEpdDisplay` task，保存使用统一的 `CastSaveTask`。network cast 正常成功时使用 `application/x-ndjson` 两阶段返回：multipart 解析和字段校验通过后先返回 `cast_received`；EPD 显示、bin/jpg 保存和 last_cast 记录完成后再返回 `cast_result`。`show=true && save=true` 时先调用 `stop_slideshow_for_cast()` 停止轮播、写 `show_control.txt sw=0` 并读回确认，再通过 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 等待 EPD 显示任务完成，最后提交保存任务。`cast_result result=0` 表示 EPD 显示任务已完成、bin/jpg 保存成功、last_cast 写入成功。
+说明：network cast 与 USB cast 共享 `cast_core`。EPD 显示使用已有的 `ServerNetworkStaEpdDisplay` task，保存使用统一的 `CastSaveTask`。network cast 正常成功时使用 `application/x-ndjson` 两阶段返回：multipart 解析和字段校验通过后先返回 `cast_received`；EPD 显示、bin/jpg 保存和 last_cast 记录完成后再返回 `cast_result`。`show=true && save=true` 时先调用 `stop_slideshow_for_cast()` 停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再通过 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 等待 EPD 显示任务完成，最后提交保存任务。`cast_result result=0` 表示 EPD 显示任务已完成、bin/jpg 保存成功、last_cast 写入成功。
 
 V2 协议资料拆分：
 
@@ -1395,6 +1492,7 @@ curl.exe -X POST "$esp/dataUP" `
 ```text
 存：
 - TdxCastCore_ProcessValidated() 先等待 EPD 显示任务完成，再提交 CastSaveTask。
+- show=true 停止轮播并写入 show_control.txt sw=0 后，同步写 PhotoPainter:epd_mode=0。
 - CastSaveTask 写入：/data/bin_img/<fileName>.bin。
 - CastSaveTask 写入：/data/jpg_img/<fileName>.jpg。
 - CastSaveTask 使用 <fileName>.<ext>.tmp 临时文件，写完校验大小后 rename 成正式文件。
@@ -1515,7 +1613,7 @@ cast_core.c
 └─ CastSaveTask()
 ```
 
-说明：network cast2pic 与 USB cast2pic 共享 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。`show` 和 `save` 是独立动作：存在 `show=true` 时先停止轮播、写 `show_control.txt sw=0` 并读回确认，再等待 EPD 显示任务完成；`save=true` 时再提交保存任务；`show=false` 不显示，`save=false` 不保存。`cast2pic_result=0` 表示需要显示的 EPD 任务已完成、需要保存的文件已保存完成。
+说明：network cast2pic 与 USB cast2pic 共享 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。`show` 和 `save` 是独立动作：存在 `show=true` 时先停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再等待 EPD 显示任务完成；`save=true` 时再提交保存任务；`show=false` 不显示，`save=false` 不保存。`cast2pic_result=0` 表示需要显示的 EPD 任务已完成、需要保存的文件已保存完成。
 
 当前源码协议资料拆分（以 `server_network_sta_cast2pic.c` 为准）：
 
@@ -2026,7 +2124,7 @@ Result 定义建议：
 | `ping_result` | `0` | 连通性检查成功 |
 | `ping_result` | `1405` | `Ble_MAC` 为空；是否作为失败需按前端匹配逻辑决定 |
 
-功能说明：用于 App/PC 判断设备 HTTP 服务是否可用，并通过 `Ble_MAC` 防止缓存 IP 指向错误设备。网络 ping 匹配 `/ping` 路径，并允许携带 query/hash 后缀，例如 `/ping?t=123`。
+功能说明：用于 App/PC 判断设备 HTTP 服务是否可用，通过 `Ble_MAC` 防止缓存 IP 指向错误设备，并通过 `EPD` 字段告知当前 EPD display task 是忙碌还是空闲。网络 ping 匹配 `/ping` 路径，并允许携带 query/hash 后缀，例如 `/ping?t=123`。
 
 Mermaid 时序图：
 
@@ -2040,7 +2138,8 @@ sequenceDiagram
     HTTP->>PING: route ping request
     PING->>PING: ServerNetworkStaWifiWorkTime_OnNetworkData()
     PING->>MAC: get_ble_mac_no_colon()
-    PING-->>APP: ping_result + Ble_MAC
+    PING->>PING: ServerNetworkStaEpdDisplay_IsBusy()
+    PING-->>APP: ping_result + EPD + Ble_MAC
 ```
 
 相关文件：
@@ -2048,6 +2147,8 @@ sequenceDiagram
 ```text
 main/server_network_sta/ping/server_network_sta_ping.c
 main/server_network_sta/ping/server_network_sta_ping.h
+main/epd_display/epd_display_app.cpp
+main/epd_display/epd_display_app.h
 ```
 
 树状时序：
@@ -2057,6 +2158,7 @@ HTTP GET /ping
 └─ ServerNetworkStaPing_ProcessGet()
    ├─ ServerNetworkStaWifiWorkTime_OnNetworkData()
    ├─ get_ble_mac_no_colon()
+   ├─ ServerNetworkStaEpdDisplay_IsBusy()
    └─ httpd_resp_sendstr()
 ```
 
@@ -2065,6 +2167,8 @@ HTTP GET /ping
 ```text
 server_network_sta_ping.c
 └─ ServerNetworkStaPing_ProcessGet()
+epd_display_app.cpp
+└─ ServerNetworkStaEpdDisplay_IsBusy()
 ```
 
 V2 协议资料拆分：
@@ -2087,8 +2191,16 @@ GET /ping#check HTTP/1.1
   "func": "ping_result",
   "result": 0,
   "message": "ok",
+  "EPD": "BUSY",
   "Ble_MAC": "AABBCCDDEEFF"
 }
+```
+
+`EPD` 字段取值：
+
+```text
+BUSY  EPD display task 正在执行、已有 pending job 或队列仍有任务
+IDLE  EPD display task 空闲
 ```
 
 V2 说明：前端写操作前会优先访问缓存端点的 `/ping`；如果响应包含 `Ble_MAC` 或 `ble_mac`，必须与目标设备 MAC 一致。
@@ -2104,7 +2216,7 @@ Invoke-RestMethod -Uri "$esp/ping" -Method Get
 Invoke-RestMethod -Uri "$esp/ping?t=123" -Method Get
 ```
 
-预期：BLE MAC 已获取时返回 `result=0`；尚未获取时返回 `result=1405` 和空 `Ble_MAC`。
+预期：BLE MAC 已获取时返回 `result=0`；尚未获取时返回 `result=1405` 和空 `Ble_MAC`。两种情况下都返回 `EPD` 字段。
 
 存 / 取信息（含条件限制）：
 
@@ -2116,6 +2228,7 @@ Invoke-RestMethod -Uri "$esp/ping?t=123" -Method Get
 取：
 - 读取 CH583 BLE MAC 字符串，用于返回 Ble_MAC。
 - BLE MAC 来源可能是 CH583 模块上报后保存在 PhotoPainter NVS 的值。
+- 读取 EPD display task 状态，用于返回 `EPD=BUSY/IDLE`。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -2362,7 +2475,11 @@ V2 协议资料拆分：
 字段说明：
 
 ```text
-fileNames 图片轮播顺序；random=true 时随机轮播
+fileNames 图片轮播顺序；最多 50 个，对应 TDX_SLIDESHOW_MAX_FILES=50
+单个 fileName 缓冲区为 48 bytes，对应 TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48
+当前代码用 C 字符串保存 fileName，因此实际文件名内容长度必须小于 48 bytes，最多 47 bytes，不含结尾 '\0'
+超过 50 个文件名时，当前解析只保存前 50 个，后续条目忽略
+random=true 时随机轮播
 interval  轮播间隔，单位秒，允许范围 60..604800
 ```
 
@@ -2402,6 +2519,7 @@ slideshow 已区分 fileNames 缺失/非法、interval 非法、文件不存在�
 存：
 - save_slideshow_config() 保存轮播列表、interval、random 等配置文件。
 - save_slideshow_control() 保存轮播开关/控制状态。
+- save_slideshow_control() 写入 sw=1 成功后，同步写 PhotoPainter:epd_mode=1。
 - NVS `slide_progress` 保存版本、配置 hash、待显示文件、随机种子、整轮顺序和当前位置。
 - `pending_file` 表示下一次必须完成显示的图片，不表示已经显示成功的图片。
 - EPD 实际返回成功后才计算并提交下一张；NVS 写入并读回校验成功后运行索引才推进。
@@ -2561,7 +2679,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 当前实现：
 
 ```text
-set_slideshow 的 sw=1 会更新控制文件并尝试启动轮播。
+set_slideshow 的 sw=1 会更新控制文件、同步写 `epd_mode=1(SLIDESHOW)`，并尝试启动轮播。
 若旧轮播正在运行，`set_slideshow sw=1` 写入新的 interval 后会清零当前等待计时，按最新 interval 从 0 开始等待；如果 EPD 正在显示，不打断本次显示，显示完成后再按最新 interval 从头等待。
 若轮播未运行且上一张轮播图片刚刚显示完成、interval 还没走完，sw=1 只启动/恢复轮播 task；task 会先等待剩余 interval，到时间后再显示下一张，不保证立即刷新。
 存储未就绪、未保存轮播列表、参数非法、interval 非法、控制文件/NVS 保存失败和轮播 runtime 启动失败已分别返回 1012、1501、1004、1507、1509、1506。
@@ -2573,6 +2691,7 @@ set_slideshow 的 sw=1 会更新控制文件并尝试启动轮播。
 ```text
 存：
 - set_slideshow 写入轮播控制文件，保存 sw / interval / random；sw=1 时通过 ServerNetworkStaSlideshow_StartSavedResetInterval() 启动，旧轮播运行中会按最新 interval 重新计时。
+- sw 写入成功后同步写 PhotoPainter:epd_mode；sw=1 写 1，sw=0 写 0。
 - 关闭轮播时更新控制状态并请求停止轮播任务；若 EPD 正在刷新，等待本次真实结果，成功时先提交下一待显示进度再退出。
 - 修改随机模式会改变配置 hash；再次开启时旧排列失效，从当前配置第一张建立新一轮进度。
 
@@ -3362,6 +3481,7 @@ sequenceDiagram
     Worker->>Core: UsbConsoleCast_Process()
     Core->>Core: 解析 multipart / 校验 bin jpg
     alt show=true
+        Core->>Core: stop slideshow, sw=0, epd_mode=0
         Core->>EPD: ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
     end
     Core->>Save: submit save task and wait result
@@ -3579,7 +3699,7 @@ CastSaveTask()
 ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
 ```
 
-说明：USB cast2pic 与 network cast2pic 共享 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。`screen=ab` 会先解析成 A/B 两个 image transfer item；存在 `show=true` 时会先停止轮播、写 `show_control.txt sw=0` 并读回确认，然后逐个等待需要显示的 EPD 任务完成，再保存所有需要保存的文件；`cast2pic_result=0` 表示 EPD 显示任务和保存任务已完成。
+说明：USB cast2pic 与 network cast2pic 共享 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。`screen=ab` 会先解析成 A/B 两个 image transfer item；存在 `show=true` 时会先停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，然后逐个等待需要显示的 EPD 任务完成，再保存所有需要保存的文件；`cast2pic_result=0` 表示 EPD 显示任务和保存任务已完成。
 
 串口发送数据：
 
@@ -4244,7 +4364,7 @@ Result 定义建议：
 功能说明：
 
 ```text
-USB ping 用于验证 USB 命令通道可用，并返回设备基础信息；网络 ping 的 BLE_MAC 校验逻辑在 server_network_sta/ping 中处理。
+USB ping 用于验证 USB 命令通道可用，并返回设备基础信息；网络 ping 的 BLE_MAC 校验逻辑在 server_network_sta/ping 中处理。USB 与网络 ping 都返回 EPD=BUSY/IDLE。
 ```
 
 Mermaid 时序图：
@@ -4259,6 +4379,7 @@ sequenceDiagram
     PC->>Router: GET /ping
     Router->>Ping: UsbConsolePing_Handle()
     Ping->>Ping: UsbConsolePing_Process()
+    Ping->>Ping: ServerNetworkStaEpdDisplay_IsBusy()
     Ping-->>Resp: ping_result JSON
     Resp-->>PC: HTTP-like response
 ```
@@ -4269,6 +4390,7 @@ sequenceDiagram
 main/usb_console_echo/ping/usb_console_ping.c
 main/usb_console_echo/ping/usb_console_ping.h
 main/server_network_sta/ping/server_network_sta_ping.c
+main/epd_display/epd_display_app.h
 ```
 
 树状时序：
@@ -4278,6 +4400,7 @@ UsbConsoleRouter_Handle()
 └─ /ping
    └─ UsbConsolePing_Handle()
       └─ UsbConsolePing_Process()
+         ├─ ServerNetworkStaEpdDisplay_IsBusy()
          └─ response ping_result
 ```
 
@@ -4286,6 +4409,7 @@ UsbConsoleRouter_Handle()
 ```text
 UsbConsolePing_Handle()
 UsbConsolePing_Process()
+ServerNetworkStaEpdDisplay_IsBusy()
 UsbConsoleHttp_SetJson()
 ```
 
@@ -4299,7 +4423,7 @@ Host: usb
 %^&
 ```
 
-预期：返回 `ping_result`，`result=0` 表示 USB 命令通道可用。
+预期：返回 `ping_result`，`result=0` 表示 USB 命令通道可用；响应中包含 `EPD=BUSY/IDLE`。
 
 
 存 / 取信息（含条件限制）：
@@ -4310,6 +4434,7 @@ Host: usb
 
 取：
 - 读取当前设备状态、可能读取 CH583 BLE MAC 或网络状态后返回 JSON。
+- 读取 EPD display task 状态，用于返回 `EPD=BUSY/IDLE`。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-09)
@@ -4587,7 +4712,8 @@ sequenceDiagram
     PC->>Router: POST /slideshow JSON
     Router->>Slide: UsbConsoleSlideshow_Handle()
     Slide->>Slide: UsbConsoleSlideshow_Process()
-    Slide->>ServerSlide: 写 slideshow_config
+    Slide->>ServerSlide: 写 slideshow_config + show_control sw=1
+    Slide->>Slide: epd_mode=1
     ServerSlide->>EPD: queue first/next image
     Slide-->>PC: start_slideshow_result JSON
 ```
@@ -4611,6 +4737,8 @@ UsbConsoleRouter_Handle()
          ├─ parse interval
          ├─ parse random
          ├─ write slideshow_config
+         ├─ write show_control sw=1
+         ├─ EpdDisplayMode_SetBySlideshowSwitch(true)
          └─ response start_slideshow_result
 ```
 
@@ -4619,6 +4747,7 @@ UsbConsoleRouter_Handle()
 ```text
 UsbConsoleSlideshow_Handle()
 UsbConsoleSlideshow_Process()
+EpdDisplayMode_SetBySlideshowSwitch()
 ServerNetworkStaSlideshow_StartSaved()
 ServerNetworkStaSlideshow_StartSavedResetInterval()
 ServerNetworkStaSlideshow_Stop()
@@ -4648,6 +4777,7 @@ Content-Length: 88
 存：
 - save_slideshow_config() 保存轮播列表、interval、random 等配置文件。
 - save_slideshow_control() 保存轮播开关/控制状态。
+- USB slideshow 写入 show_control.txt sw=1 成功后，同步写 PhotoPainter:epd_mode=1。
 - 网络与 USB 共用 NVS `slide_progress` 待显示进度；仅在 EPD 实际完成且进度提交成功后推进。
 - 随机轮播保存完整的本轮排列，一轮内每张图片显示一次。
 
@@ -4761,6 +4891,7 @@ Content-Length: 60
 ```text
 存：
 - set_slideshow 写入轮播控制文件，保存 sw / interval / random。
+- sw 写入成功后同步写 PhotoPainter:epd_mode；sw=1 写 1，sw=0 写 0。
 - 关闭轮播时更新控制状态并停止轮播任务。
 
 取：
@@ -5551,6 +5682,7 @@ main/ch583_uart/ch583_uart_app.h
 main/ch583_uart/ch583_wifi_uart_protocol.c
 main/ch583_uart/ch583_wifi_uart_protocol.h
 main/ble/ble_data_handler.cpp
+main/server_network_sta/server_network_sta.c
 main/server_network_sta/wifi_work_time/server_network_sta_wifi_work_time.c
 main/led_status/led_status.c
 ```
@@ -5567,6 +5699,7 @@ CH583 串口通信协议汇总
 │  ├─ ACK / ERR
 │  ├─ PONG
 │  ├─ WIFI_DATA
+│  ├─ WIFI_PROVISION
 │  ├─ WAKE_TIMER
 │  ├─ POWER_OFF
 │  └─ GPIO / GPIO_READ
@@ -5589,6 +5722,7 @@ ch583_wifi_send_frame()
 ch583_wifi_send_ack()
 ch583_wifi_send_err()
 ch583_wifi_uart_send_wifi_data()
+ch583_wifi_uart_send_wifi_provision_status()
 ch583_wifi_uart_send_wake_timer_on()
 ch583_wifi_uart_send_wake_timer_off()
 ch583_wifi_uart_send_power_off()
@@ -5604,7 +5738,7 @@ ch583_wifi_uart_send_gpio()
 ```text
 存：
 - BLE_MAC 命令收到合法 MAC 后，保存到 PhotoPainter NVS 的 CH583_BLE_MAC_NVS_KEY。
-- GPIO / POWER_OFF / WIFI_DATA / WAKE_TIMER 等串口命令本身不在 ESP32-C5 侧保存持久化数据；WAKE_TIMER 由 CH583/CH585 侧校验并保存。
+- GPIO / POWER_OFF / WIFI_DATA / WIFI_PROVISION / WAKE_TIMER 等串口命令本身不在 ESP32-C5 侧保存持久化数据；WIFI_PROVISION 和 WAKE_TIMER 由 CH583/CH585 侧校验并保存。
 
 取：
 - ch583_wifi_load_ble_mac_from_nvs() 读取已保存 BLE MAC。
@@ -6933,6 +7067,165 @@ CH583 -> WiFi: cmd=NFC_STATUS arg=READY,<len>,<last_auth_result>
 
 ---
 
+### 10.14 WIFI_PROVISION：WiFi 配网状态上报 <span id="sec-10-14"></span>
+
+该命令用于 WiFi（ESP32-C5）在启动 STA 流程或 EPD 工作模式变化后，向 CH583/CH585 上报当前复合状态。当前实现保持原有 `WIFI_PROVISION` 调用点，只把原来的单一配网状态扩展为 2 位十六进制文本：第 1 位表示 WiFi 是否已配网，第 2 位表示 EPD 相框工作模式。
+
+ESP32-C5 侧实现文件：
+
+```text
+main/ch583_uart/ch583_wifi_uart_protocol.c
+main/ch583_uart/ch583_wifi_uart_protocol.h
+main/epd_display/epd_display_mode.c
+main/server_network_sta/server_network_sta.c
+```
+
+WiFi 发送：
+
+```text
+@#V1|SEQ=<seq>|CMD=WIFI_PROVISION|LEN=2|PART=1|TOTAL=1|ARG=<status_hex>|CRC=<crc>^&
+```
+
+参数：
+
+```text
+LEN=2
+ARG=<status_hex>
+status_hex 为 2 位十六进制文本，表示 1 个复合状态 byte。
+第 1 位十六进制字符 = 高 4bit，表示 WiFi 配网状态。
+第 2 位十六进制字符 = 低 4bit，表示相框工作模式。
+CRC 计算包含这 2 个文本字符，例如 ARG=50 时按字符 '5' 和 '0' 计算。
+```
+
+ARG bit 定义：
+
+```text
+高 4bit 表示 WiFi 配网状态：
+0100 = 未配网，NVS 没有有效 WiFi 信息，可见 ASCII 范围 0x40~0x4F
+0101 = 已配网，NVS 有有效 WiFi 信息，可见 ASCII 范围 0x50~0x5F
+
+低 4bit 表示相框工作模式：
+0000 = 普通模式
+0001 = 轮播模式
+0010 = 每日更新模式
+0011..1111 = 保留
+```
+
+组合规则：
+
+```text
+ARG = (provision_status_nibble << 4) | epd_display_mode
+provision_status_nibble: 未配网=0x4，已配网=0x5
+```
+
+示例：
+
+```text
+@#V1|SEQ=230|CMD=WIFI_PROVISION|LEN=2|PART=1|TOTAL=1|ARG=50|CRC=XXXX^&
+@#V1|SEQ=231|CMD=WIFI_PROVISION|LEN=2|PART=1|TOTAL=1|ARG=51|CRC=XXXX^&
+@#V1|SEQ=232|CMD=WIFI_PROVISION|LEN=2|PART=1|TOTAL=1|ARG=52|CRC=XXXX^&
+
+0x40 = 未配网 + 普通模式，ASCII '@'
+0x50 = 已配网 + 普通模式，ASCII 'P'
+0x51 = 已配网 + 轮播模式，ASCII 'Q'
+0x52 = 已配网 + 每日更新模式，ASCII 'R'
+0x42 = 未配网 + 每日更新模式，ASCII 'B'
+```
+
+扩展示例：
+
+```text
+40~4F = 未配网 + 16 种工作模式
+50~5F = 已配网 + 16 种工作模式
+
+0x53 = 已配网 + 第 4 种工作模式，ASCII 'S'
+0x54 = 已配网 + 第 5 种工作模式，ASCII 'T'
+0x5F = 已配网 + 第 16 种工作模式，ASCII '_'
+0x43 = 未配网 + 第 4 种工作模式，ASCII 'C'
+0x4F = 未配网 + 第 16 种工作模式，ASCII 'O'
+```
+
+说明：低 4bit 取值范围为 `0x0~0xF`，因此工作模式最多 16 种；`0x5F` 表示“已配网 + 第 16 种工作模式”。当前 ESP32-C5 业务只主动发送工作模式 `0/1/2`。
+
+CH583/CH585 行为：
+
+```text
+校验 CRC/LEN/PART/TOTAL
+只接受 2 位十六进制 ARG
+高 4bit 当前只接受 4 或 5
+低 4bit 当前只接受 0、1、2
+合法配网状态保存到 DataFlash
+合法工作模式保存到 DataFlash
+WIFI_PROVISION 会同时更新复合状态 byte 的高 4bit 和低 4bit
+保存并刷新成功后回复 ACK
+```
+
+广播名第 21 位复合状态规则：
+
+```text
+只修改 TDX 广播名
+BOE 广播名不修改
+第 21 位对应 CH583/CH585 代码中的 scanRspData[22]
+scanRspData[22] 是原始 byte，当前编码落在可见 ASCII 范围 0x40~0x5F
+scanRspData[22] = (provision_status_nibble << 4) | frame_work_mode
+provision_status_nibble: 未配网=0x4，已配网=0x5
+scanRspData[20] 保持原有逻辑，不因该复合状态规则改变
+```
+
+刷新与恢复规则：
+
+```text
+每次收到合法 WIFI_PROVISION 后立即刷新 scanRspData[22]
+工作模式变化后立即刷新 scanRspData[22]
+复位后恢复 DataFlash 中最后一次保存的配网状态和工作模式
+未保存过、读到 0xFF 或非法保存值时，配网默认 0，工作模式默认 0
+```
+
+CH583/CH585 回复：
+
+```text
+保存并刷新成功：ACK
+ARG 不是 2 位十六进制，或 bit 值超出当前定义范围：ERR,BAD_ARG
+LEN 不是 2：ERR,BAD_LEN
+PART/TOTAL 不是 1/1：ERR,BAD_PART
+CRC 错误：ERR,BAD_CRC
+```
+
+ESP32-C5 侧调用点：
+
+```text
+user_network_mode_app_init_internal()
+└─ server_network_sta_read_saved_wifi()
+   ├─ credential.is_valid == false：ch583_wifi_uart_send_wifi_provision_status(0)
+   └─ credential.is_valid == true： ch583_wifi_uart_send_wifi_provision_status(1)
+
+EpdDisplayMode_Set()
+└─ epd_mode 写入成功后：ch583_wifi_uart_send_current_wifi_provision_status()
+```
+
+`ch583_wifi_uart_send_wifi_provision_status()` 内部保存最近一次 WiFi 配网状态；当 `epd_display_mode` 变化时，使用这个缓存的配网状态重新组合 ARG 并再次上报 CH583/CH585。若还没有读取到 WiFi 配网状态，则按未配网 `0` 处理。
+
+调试信息：
+
+```text
+WiFi -> CH583: seq=<seq> cmd=WIFI_PROVISION arg=<status_hex>
+CH583_PROTO WIFI_PROVISION provision=<0|1> mode=<0|1|2> combined=0x<xx> arg=<status_hex> send_ret=<ret>
+server_network_sta: CH583 WIFI_PROVISION status=<0|1> ret=<ret>
+```
+
+注意事项：
+
+```text
+该命令不新增 JSON result 编码。
+ESP32-C5 不处理 CH583/CH585 的 scanRspData 字节，广播名刷新由 CH583/CH585 负责。
+当前协议使用公共 ch583_wifi_send_frame() 发送 2 位十六进制文本 ARG。
+代码中保留的单字节二进制 ARG 专用发送函数仅作为以后可能恢复二进制协议时使用，当前不调用。
+```
+
+[⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-14)
+
+---
+
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10)
 
 ---
@@ -7349,7 +7642,7 @@ Init_Bl()
 - [12.15 epd_test_1360_480_1085_3color_const：1360x480 三色测试图](#sec-12-15)
 
 
-本章把 `main/epd_display/` 目录拆成二级目录。当前 `main/CMakeLists.txt` 编译的 EPD 相关源码包括显示队列、BSP、屏幕类型管理、各具体屏幕驱动和测试图文件。
+本章把 `main/epd_display/` 目录拆成二级目录。当前 `main/CMakeLists.txt` 编译的 EPD 相关源码包括显示队列、显示模式、BSP、屏幕类型管理、各具体屏幕驱动和测试图文件。
 
 Mermaid 总览图：
 
@@ -7363,6 +7656,26 @@ flowchart TD
     D --> F[EPD Panel]
     G[USB /epd_type] --> C
     C --> H[NVS epd_type]
+    A --> I[epd_display_mode.c]
+    I --> J[NVS epd_mode]
+```
+
+EPD 显示模式：
+
+```text
+PhotoPainter:epd_mode，u8
+0 NORMAL     普通模式
+1 SLIDESHOW  轮播模式
+2 DAILY      每日更新模式预留，当前业务不主动设置
+```
+
+启动时 `EpdDisplayMode_Init()` 读取 `epd_mode`，不存在时写入默认 `0`。如果读到非法值，恢复为 `0`。`app_main()` 会打印当前模式，例如 `EPD display mode=0(NORMAL)`。
+
+同步规则：
+
+```text
+show_control.txt sw=1 写入成功 -> EpdDisplayMode_SetBySlideshowSwitch(true)  -> epd_mode=1
+show_control.txt sw=0 写入成功 -> EpdDisplayMode_SetBySlideshowSwitch(false) -> epd_mode=0
 ```
 
 存 / 取信息（含条件限制）：
@@ -7370,12 +7683,14 @@ flowchart TD
 ```text
 存：
 - EpdType_SetAndSave() 只保存合法屏幕类型；合法条件是 EpdType_GetConfig(type) 能找到配置。
+- EpdDisplayMode_Set() 只保存 0/1/2；当前业务只通过 sw 设置 0/1，2 作为每日更新模式预留。
 - 如果当前 EPD_type 已经等于目标 type，则 changed=false，不重复写 NVS。
 - 显示队列只保存 RAM buffer，不写 SD；队列长度由 USER_EPD_DISPLAY_QUEUE_LENGTH 限制。
 - 入队需要 malloc/copy display buffer 成功；队列满或内存不足时失败。
 
 取：
 - EpdType_LoadSavedOrDefault() 从 PhotoPainter NVS 的 USER_EPD_TYPE_NVS_KEY 读取屏幕类型。
+- EpdDisplayMode_Init() 从 PhotoPainter NVS 的 USER_EPD_DISPLAY_MODE_NVS_KEY 读取显示模式。
 - 如果保存值非法，则回退 USER_EPD_TYPE_DEFAULT，并尝试把默认值写回 NVS。
 - 显示任务从 RAM 队列取 buffer；按 EPD_type 分发到具体 EPD 驱动。
 - 具体驱动读取当前 display buffer，不直接读取 SD/NVS。

@@ -55,7 +55,7 @@ static char *alloc_request_body_buffer(size_t size)
     /* Do not allocate large upload bodies from internal RAM when PSRAM allocation fails. */
     /* PSRAM 鐢宠澶辫触鏃讹紝澶т笂浼犲寘涓嶅啀閫€鍥炲唴閮?RAM锛岄伩鍏嶆尋鐖?WiFi/httpd 鎵€闇€鍐呭瓨銆?*/
     if (size > USER_INTERNAL_RAM_FALLBACK_MAX_SIZE) {
-        ESP_LOGE(TAG, "receive_data_redirect_handler: PSRAM alloc failed and body too large for internal RAM size=%u",
+        ESP_LOGE(TAG, "body alloc PSRAM failed len=%u",
                 (unsigned int)size);
         return NULL;
     }
@@ -108,7 +108,7 @@ static void log_request_headers(httpd_req_t *req)
     get_request_header_value(req, "Content-Type", content_type, sizeof(content_type));
     get_request_header_value(req, "Content-Length", content_length, sizeof(content_length));
 
-    ESP_LOGI(TAG, "dataUP header len=%s type=%s",
+    ESP_LOGI(TAG, "HTTP data header len=%s type=%s",
              content_length[0] ? content_length : "<none>",
              content_type[0] ? content_type : "<none>");
 }
@@ -123,7 +123,7 @@ static bool read_request_body_to_buffer(httpd_req_t *req, char *body, size_t bod
     while (received_total < body_len) {
         int received = httpd_req_recv(req, body + received_total, body_len - received_total);
         if (received <= 0) {
-            ESP_LOGE(TAG, "receive_data_redirect_handler: recv failed ret=%d received=%u remaining=%u",
+            ESP_LOGE(TAG, "HTTP data recv failed ret=%d got=%u remain=%u",
                      received, (unsigned int)received_total, (unsigned int)(body_len - received_total));
             return false;
         }
@@ -185,7 +185,6 @@ static bool body_looks_like_json(const char *body, size_t body_len)
 static esp_err_t send_unsupported_func_response(httpd_req_t *req)
 {
     char json[128];
-    ESP_LOGI(TAG, "send_unsupported_func_response");
     snprintf(json, sizeof(json),
              "{\"func\":\"unknown_result\",\"result\":%d,\"message\":\"unsupported func\"}",
              TDX_JSON_RESULT_FUNC_UNSUPPORTED);
@@ -194,51 +193,51 @@ static esp_err_t send_unsupported_func_response(httpd_req_t *req)
 
 static esp_err_t process_small_json_request(httpd_req_t *req, const char *body, size_t body_len)
 {
-    ESP_LOGI(TAG, "process_small_json_request: body_len=%u body=%s",
+    ESP_LOGI(TAG, "small JSON len=%u body=%s",
              (unsigned int)body_len, body != NULL ? body : "<null>");
 
     if (!body_looks_like_json(body, body_len)) {
-        ESP_LOGW(TAG, "process_small_json_request: invalid non-json body");
+        ESP_LOGW(TAG, "small JSON invalid body");
         return send_invalid_json_response(req, "get_saved_images");
     }
 
     esp_err_t snapshot_ret = ServerNetworkStaSnapshot_ProcessJson(req, body, body_len, s_base_path);
     if (snapshot_ret != ESP_ERR_NOT_SUPPORTED) {
-        ESP_LOGI(TAG, "process_small_json_request: get_snapshot ret=%s", esp_err_to_name(snapshot_ret));
+        ESP_LOGI(TAG, "small JSON func=get_snapshot ret=%s", esp_err_to_name(snapshot_ret));
         return snapshot_ret;
     }
 
     esp_err_t saved_ret = ServerNetworkStaSavedImages_ProcessJson(req, body, body_len, s_base_path);
     if (saved_ret != ESP_ERR_NOT_SUPPORTED) {
-        ESP_LOGI(TAG, "process_small_json_request: get_saved_images ret=%s", esp_err_to_name(saved_ret));
+        ESP_LOGI(TAG, "small JSON func=get_saved_images ret=%s", esp_err_to_name(saved_ret));
         return saved_ret;
     }
 
     esp_err_t slideshow_ret = ServerNetworkStaSlideshow_ProcessJson(req, body, body_len, s_base_path);
     if (slideshow_ret != ESP_ERR_NOT_SUPPORTED) {
-        ESP_LOGI(TAG, "process_small_json_request: start_slideshow ret=%s", esp_err_to_name(slideshow_ret));
+        ESP_LOGI(TAG, "small JSON func=start_slideshow ret=%s", esp_err_to_name(slideshow_ret));
         return slideshow_ret;
     }
 
     esp_err_t slideshow_control_ret = ServerNetworkStaSlideshowControl_ProcessJson(req, body, body_len, s_base_path);
     if (slideshow_control_ret != ESP_ERR_NOT_SUPPORTED) {
-        ESP_LOGI(TAG, "process_small_json_request: set_slideshow ret=%s", esp_err_to_name(slideshow_control_ret));
+        ESP_LOGI(TAG, "small JSON func=set_slideshow ret=%s", esp_err_to_name(slideshow_control_ret));
         return slideshow_control_ret;
     }
 
     esp_err_t delete_ret = ServerNetworkStaDelete_ProcessJson(req, body, body_len, s_base_path);
     if (delete_ret != ESP_ERR_NOT_SUPPORTED) {
-        ESP_LOGI(TAG, "process_small_json_request: delete ret=%s", esp_err_to_name(delete_ret));
+        ESP_LOGI(TAG, "small JSON func=delete ret=%s", esp_err_to_name(delete_ret));
         return delete_ret;
     }
 
     esp_err_t wifi_work_time_ret = ServerNetworkStaWifiWorkTime_ProcessJson(req, body, body_len);
     if (wifi_work_time_ret != ESP_ERR_NOT_SUPPORTED) {
-        ESP_LOGI(TAG, "process_small_json_request: set_wifi_work_time ret=%s", esp_err_to_name(wifi_work_time_ret));
+        ESP_LOGI(TAG, "small JSON func=set_wifi_work_time ret=%s", esp_err_to_name(wifi_work_time_ret));
         return wifi_work_time_ret;
     }
 
-    ESP_LOGW(TAG, "process_small_json_request: unsupported json command");
+    ESP_LOGW(TAG, "small JSON unsupported command");
     return send_unsupported_func_response(req);
 }
 
@@ -316,8 +315,10 @@ static esp_err_t save_upload_part(const char *field_name, const char *file_name,
         ext = ".jpg";
         snprintf(dir_path, sizeof(dir_path), "%s/jpg_img", s_base_path);
     } else {
-        ESP_LOGI(TAG, "process_multipart_upload_request: skip field=%s len=%u",
+#if USER_HTTP_MULTIPART_DETAIL_LOG_ENABLE
+        ESP_LOGI(TAG, "multipart skip field=%s len=%u",
                  field_name != NULL ? field_name : "<null>", (unsigned int)data_len);
+#endif
         return ESP_OK;
     }
 
@@ -337,14 +338,14 @@ static esp_err_t save_upload_part(const char *field_name, const char *file_name,
     FILE *fp = fopen(path, "wb");
     if (fp == NULL) {
         TdxSharedSpi_Unlock();
-        ESP_LOGE(TAG, "process_multipart_upload_request: open upload output failed path=%s", path);
+        ESP_LOGE(TAG, "multipart open failed path=%s", path);
         return ESP_FAIL;
     }
 
     size_t written = fwrite(data, 1, data_len, fp);
     fclose(fp);
     TdxSharedSpi_Unlock();
-    ESP_LOGI(TAG, "process_multipart_upload_request: saved path=%s len=%u written=%u",
+    ESP_LOGI(TAG, "multipart saved path=%s len=%u written=%u",
              path, (unsigned int)data_len, (unsigned int)written);
     return written == data_len ? ESP_OK : ESP_FAIL;
 }
@@ -355,7 +356,7 @@ static esp_err_t process_multipart_upload_request(httpd_req_t *req, const char *
     (void)req;
     char *boundary = strstr(content_type, "boundary=");
     if (boundary == NULL) {
-        ESP_LOGW(TAG, "process_multipart_upload_request: missing boundary content_type=%s",
+        ESP_LOGW(TAG, "multipart missing boundary type=%s",
                  content_type != NULL ? content_type : "<null>");
         return ESP_FAIL;
     }
@@ -366,8 +367,10 @@ static esp_err_t process_multipart_upload_request(httpd_req_t *req, const char *
     const char *cursor = body;
     const char *end = body + body_len;
 
-    ESP_LOGI(TAG, "process_multipart_upload_request: body_len=%u boundary=%s",
+#if USER_HTTP_MULTIPART_DETAIL_LOG_ENABLE
+    ESP_LOGI(TAG, "multipart fallback len=%u boundary=%s",
              (unsigned int)body_len, boundary);
+#endif
 
     while (cursor < end) {
         const char *part = memmem_local(cursor, end - cursor, marker, (size_t)marker_len);
@@ -404,8 +407,10 @@ static esp_err_t process_multipart_upload_request(httpd_req_t *req, const char *
         if (header_value_contains(part, headers_len, "Content-Disposition", "form-data") &&
             get_disposition_value(part, headers_len, "name", field_name, sizeof(field_name))) {
             (void)get_disposition_value(part, headers_len, "filename", file_name, sizeof(file_name));
-            ESP_LOGI(TAG, "process_multipart_upload_request: part field=%s file=%s len=%u",
+#if USER_HTTP_MULTIPART_DETAIL_LOG_ENABLE
+            ESP_LOGI(TAG, "multipart part field=%s file=%s len=%u",
                      field_name, file_name[0] ? file_name : "<none>", (unsigned int)(data_end - data_start));
+#endif
             ESP_RETURN_ON_ERROR(save_upload_part(field_name, file_name, data_start, data_end - data_start),
                                 TAG, "save multipart field failed");
         }
@@ -426,14 +431,14 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
     get_request_header_value(req, "Content-Type", content_type, sizeof(content_type));
     ServerNetworkStaWifiWorkTime_OnNetworkData();
     log_request_headers(req);
-    ESP_LOGI(TAG, "receive_data_redirect_handler: enter uri=%s len=%u content_type=%s",
+    ESP_LOGI(TAG, "HTTP data enter uri=%s len=%u type=%s",
              uri != NULL ? uri : "<null>", (unsigned int)remaining,
              content_type[0] ? content_type : "<none>");
 
     bool is_network_ota = NetworkOtaUpload_IsOtaRequest(req, content_type);
     if (strstr(content_type, "multipart/form-data") != NULL && s_upload_mutex != NULL) {
         if (xSemaphoreTake(s_upload_mutex, 0) != pdTRUE) {
-            ESP_LOGW(TAG, "receive_data_redirect_handler: reject extra upload uri=%s len=%u",
+            ESP_LOGW(TAG, "HTTP upload busy uri=%s len=%u",
                      uri != NULL ? uri : "<null>", (unsigned int)remaining);
             if (is_network_ota) {
                 return NetworkOtaUpload_SendErrorAndFinish(req, "upload_busy", "upload_busy", ESP_ERR_TIMEOUT);
@@ -442,15 +447,17 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
                                       "{\"func\":\"dataup_result\",\"result\":1007,\"message\":\"upload_busy\",\"error\":\"upload_busy\"}");
         }
         upload_mutex_locked = true;
-        ESP_LOGI(TAG, "receive_data_redirect_handler: upload slot acquired uri=%s",
+#if USER_HTTP_MULTIPART_DETAIL_LOG_ENABLE
+        ESP_LOGI(TAG, "HTTP upload slot uri=%s",
                  uri != NULL ? uri : "<null>");
+#endif
     }
 
     if (remaining == 0) {
         if (upload_mutex_locked) {
             xSemaphoreGive(s_upload_mutex);
         }
-        ESP_LOGW(TAG, "receive_data_redirect_handler: empty body uri=%s", uri != NULL ? uri : "<null>");
+        ESP_LOGW(TAG, "HTTP data empty uri=%s", uri != NULL ? uri : "<null>");
         if (is_network_ota) {
             return NetworkOtaUpload_SendErrorAndFinish(req, "empty_body", "empty_body", ESP_ERR_INVALID_SIZE);
         }
@@ -462,7 +469,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         if (upload_mutex_locked) {
             xSemaphoreGive(s_upload_mutex);
         }
-        ESP_LOGW(TAG, "receive_data_redirect_handler: body too large uri=%s len=%u max=%u",
+        ESP_LOGW(TAG, "HTTP data too large uri=%s len=%u max=%u",
                  uri != NULL ? uri : "<null>", (unsigned int)remaining,
                  (unsigned int)request_body_max);
         if (is_network_ota) {
@@ -517,15 +524,15 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
 
     esp_err_t resp_ret = ESP_FAIL;
     if (is_network_ota) {
-        ESP_LOGI(TAG, "receive_data_redirect_handler: dispatch ota uri=%s len=%u",
+        ESP_LOGI(TAG, "HTTP data dispatch=ota uri=%s len=%u",
                  uri != NULL ? uri : "<null>", (unsigned int)remaining);
         resp_ret = NetworkOtaUpload_ProcessReceivedBody(req, body, remaining, content_type);
     } else if (is_small_json) {
-        ESP_LOGI(TAG, "receive_data_redirect_handler: dispatch small json uri=%s len=%u",
+        ESP_LOGI(TAG, "HTTP data dispatch=json uri=%s len=%u",
                  uri != NULL ? uri : "<null>", (unsigned int)remaining);
         resp_ret = process_small_json_request(req, body, remaining);
     } else if (is_multipart) {
-        ESP_LOGI(TAG, "dataUP multipart body=%u", (unsigned int)remaining);
+        ESP_LOGI(TAG, "HTTP data dispatch=multipart len=%u", (unsigned int)remaining);
         resp_ret = ServerNetworkStaCast2Pic_Process(req, body, remaining, content_type, s_base_path);
         if (resp_ret == ESP_ERR_NOT_SUPPORTED) {
             resp_ret = ServerNetworkStaCast_Process(req, body, remaining, content_type, s_base_path);
@@ -534,7 +541,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
             resp_ret = ServerNetworkStaUpload_Process(req, body, remaining, content_type, s_base_path);
         }
         if (resp_ret == ESP_ERR_NOT_SUPPORTED) {
-            ESP_LOGI(TAG, "receive_data_redirect_handler: fallback legacy multipart save uri=%s",
+            ESP_LOGI(TAG, "HTTP data multipart fallback uri=%s",
                      uri != NULL ? uri : "<null>");
             resp_ret = process_multipart_upload_request(req, body, remaining, content_type);
             if (resp_ret == ESP_OK) {
@@ -545,7 +552,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
             }
         }
     } else {
-        ESP_LOGW(TAG, "receive_data_redirect_handler: invalid non-multipart large body uri=%s len=%u",
+        ESP_LOGW(TAG, "HTTP data invalid body uri=%s len=%u",
                  uri != NULL ? uri : "<null>", (unsigned int)remaining);
         resp_ret = send_invalid_json_response(req, "get_saved_images");
     }
@@ -621,6 +628,6 @@ esp_err_t server_network_sta_net_data_register_handlers(httpd_handle_t server, c
         return ret;
     }
 
-    ESP_LOGI(TAG, "POST handlers ready: /dataUP /ota /ota_upload base=%s", s_base_path);
+    ESP_LOGI(TAG, "HTTP POST ready /dataUP /ota /ota_upload");
     return ESP_OK;
 }

@@ -37,7 +37,12 @@ esp_err_t app_nvs_read_u8(const char *key, uint8_t *out_value, uint8_t default_v
     }
 
     nvs_close(handle);
+#if USER_NVS_VERBOSE_LOG_ENABLE
     ESP_LOGI(TAG, "read_u8 key=%s value=%u ret=%s", key, (unsigned int)*out_value, esp_err_to_name(ret));
+#endif
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "read_u8 failed key=%s ret=%s", key, esp_err_to_name(ret));
+    }
 
     return ret;
 }
@@ -63,7 +68,12 @@ esp_err_t app_nvs_write_u8(const char *key, uint8_t value)
     }
 
     nvs_close(handle);
+#if USER_NVS_VERBOSE_LOG_ENABLE
     ESP_LOGI(TAG, "write_u8 key=%s value=%u ret=%s", key, (unsigned int)value, esp_err_to_name(ret));
+#endif
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "write_u8 failed key=%s ret=%s", key, esp_err_to_name(ret));
+    }
 
     return ret;
 }
@@ -89,7 +99,12 @@ esp_err_t app_nvs_write_str(const char *key, const char *value)
     }
 
     nvs_close(handle);
+#if USER_NVS_VERBOSE_LOG_ENABLE
     ESP_LOGI(TAG, "write_str key=%s value=%s ret=%s", key, value, esp_err_to_name(ret));
+#endif
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "write_str failed key=%s ret=%s", key, esp_err_to_name(ret));
+    }
 
     return ret;
 }
@@ -123,7 +138,12 @@ esp_err_t app_nvs_read_str(const char *key, char *value, size_t value_size, cons
         snprintf(value, value_size, "%s", default_value);
     }
 
+#if USER_NVS_VERBOSE_LOG_ENABLE
     ESP_LOGI(TAG, "read_str key=%s value=%s ret=%s", key, value, esp_err_to_name(ret));
+#endif
+    if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "read_str failed key=%s ret=%s", key, esp_err_to_name(ret));
+    }
 
     return ret;
 }
@@ -149,8 +169,13 @@ esp_err_t app_nvs_write_blob(const char *key, const void *value, size_t value_si
     }
     nvs_close(handle);
 
+#if USER_NVS_VERBOSE_LOG_ENABLE
     ESP_LOGI(TAG, "write_blob key=%s size=%u ret=%s",
              key, (unsigned int)value_size, esp_err_to_name(ret));
+#endif
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "write_blob failed key=%s ret=%s", key, esp_err_to_name(ret));
+    }
     return ret;
 }
 
@@ -180,7 +205,12 @@ esp_err_t app_nvs_read_blob(const char *key, void *value, size_t value_size)
     }
     nvs_close(handle);
 
+#if USER_NVS_VERBOSE_LOG_ENABLE
     ESP_LOGI(TAG, "read_blob key=%s size=%u ret=%s",
              key, (unsigned int)value_size, esp_err_to_name(ret));
+#endif
+    if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "read_blob failed key=%s ret=%s", key, esp_err_to_name(ret));
+    }
     return ret;
 }

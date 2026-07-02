@@ -69,7 +69,6 @@ static esp_err_t ensure_storage_dir(const char *path)
     }
 
     if (mkdir(path, 0775) == 0 || errno == EEXIST) {
-        ESP_LOGI(TAG, "Storage dir create: %s", path);
         TdxSharedSpi_Unlock();
         return ESP_OK;
     }
@@ -105,7 +104,6 @@ static void ensure_default_storage_dirs(const char *base_path)
     }
 
     if (s_storage_type == EXAMPLE_STORAGE_TYPE_SPIFFS) {
-        ESP_LOGI(TAG, "SPIFFS uses flat paths, skip directory creation");
         return;
     }
 
@@ -122,7 +120,7 @@ static void ensure_default_storage_dirs(const char *base_path)
 
 static esp_err_t mount_spiffs_storage(const char *base_path)
 {
-    ESP_LOGI(TAG, "Initializing SPIFFS fallback label=%s", STORAGE_SPIFFS_PARTITION_LABEL);
+    ESP_LOGW(TAG, "mount SPIFFS fallback label=%s", STORAGE_SPIFFS_PARTITION_LABEL);
 
     esp_vfs_spiffs_conf_t conf = {
         .base_path = base_path,
@@ -151,7 +149,7 @@ static esp_err_t mount_spiffs_storage(const char *base_path)
         return ret;
     }
 
-    ESP_LOGI(TAG, "SPIFFS fallback mounted: total=%u used=%u free=%u",
+    ESP_LOGI(TAG, "SPIFFS ready total=%u used=%u free=%u",
              (unsigned int)total,
              (unsigned int)used,
              (unsigned int)(total >= used ? total - used : 0));
@@ -353,10 +351,6 @@ void example_print_storage_info(const char *base_path)
     bool path_stat_ok = false;
     bool path_open_ok = false;
 
-    ESP_LOGI(TAG, "Storage type: %s",
-             s_storage_type == EXAMPLE_STORAGE_TYPE_SD_CARD ? "SD card" :
-             s_storage_type == EXAMPLE_STORAGE_TYPE_SPIFFS ? "SPIFFS" : "unknown");
-
     if (base_path == NULL || base_path[0] == '\0') {
         ESP_LOGE(TAG, "Storage base path invalid");
         return;
@@ -376,68 +370,60 @@ void example_print_storage_info(const char *base_path)
 
     if (s_storage_type == EXAMPLE_STORAGE_TYPE_SPIFFS) {
         bool spiffs_mounted = esp_spiffs_mounted(STORAGE_SPIFFS_PARTITION_LABEL);
-        ESP_LOGI(TAG, "Storage mount check path=%s mounted=%s stat=%s opendir=%s",
-                 base_path,
-                 spiffs_mounted ? "yes" : "no",
-                 path_stat_ok ? "ok" : "fail",
-                 path_open_ok ? "ok" : "fail");
         if (!spiffs_mounted || !path_open_ok) {
             ESP_LOGE(TAG, "Storage missing or not mounted path=%s", base_path);
             return;
         }
     } else {
-        ESP_LOGI(TAG, "Storage mount check path=%s stat=%s opendir=%s",
-                 base_path,
-                 path_stat_ok ? "ok" : "fail",
-                 path_open_ok ? "ok" : "fail");
         if (!path_stat_ok && !path_open_ok) {
             ESP_LOGE(TAG, "Storage missing or not mounted path=%s", base_path);
             return;
         }
     }
 
-    ESP_LOGI(TAG, "Storage mounted: yes path=%s", base_path);
+    ESP_LOGI(TAG, "storage ready type=%s path=%s",
+             s_storage_type == EXAMPLE_STORAGE_TYPE_SD_CARD ? "SD" :
+             s_storage_type == EXAMPLE_STORAGE_TYPE_SPIFFS ? "SPIFFS" : "unknown",
+             base_path);
 
     if (s_storage_type == EXAMPLE_STORAGE_TYPE_SD_CARD) {
         uint64_t total_bytes = 0;
         uint64_t free_bytes = 0;
         if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
-            ESP_LOGE(TAG, "SD status: shared SPI lock failed");
+            ESP_LOGE(TAG, "SD info lock failed");
             return;
         }
         esp_err_t fs_ret = esp_vfs_fat_info(base_path, &total_bytes, &free_bytes);
         TdxSharedSpi_Unlock();
         if (fs_ret == ESP_OK) {
-            ESP_LOGI(TAG, "SD status: normal total=%llu free=%llu used=%llu",
+            ESP_LOGI(TAG, "SD info total=%llu free=%llu used=%llu",
                      (unsigned long long)total_bytes,
                      (unsigned long long)free_bytes,
                      (unsigned long long)(total_bytes - free_bytes));
         } else {
-            ESP_LOGE(TAG, "SD status: abnormal info_ret=%s", esp_err_to_name(fs_ret));
+            ESP_LOGE(TAG, "SD info failed ret=%s", esp_err_to_name(fs_ret));
         }
     } else if (s_storage_type == EXAMPLE_STORAGE_TYPE_SPIFFS) {
         size_t total = 0;
         size_t used = 0;
         esp_err_t info_ret = esp_spiffs_info(STORAGE_SPIFFS_PARTITION_LABEL, &total, &used);
         if (info_ret == ESP_OK) {
-            ESP_LOGI(TAG, "SPIFFS status: normal total=%u used=%u free=%u",
+            ESP_LOGI(TAG, "SPIFFS info total=%u used=%u free=%u",
                      (unsigned int)total,
                      (unsigned int)used,
                      (unsigned int)(total >= used ? total - used : 0));
         } else {
-            ESP_LOGE(TAG, "SPIFFS status: abnormal info_ret=%s", esp_err_to_name(info_ret));
+            ESP_LOGE(TAG, "SPIFFS info failed ret=%s", esp_err_to_name(info_ret));
         }
     }
 
 #if USER_STORAGE_LIST_ON_STARTUP_ENABLE
     size_t file_count = 0;
-    ESP_LOGI(TAG, "Storage list begin max_files=%d", STORAGE_INFO_MAX_FILES);
+    ESP_LOGI(TAG, "storage list begin max=%d", STORAGE_INFO_MAX_FILES);
     list_storage_tree(base_path, 0, &file_count);
-    ESP_LOGI(TAG, "Storage list end files=%u%s",
+    ESP_LOGI(TAG, "storage list end files=%u%s",
              (unsigned int)file_count,
              file_count >= STORAGE_INFO_MAX_FILES ? " limit_reached" : "");
-#else
-    ESP_LOGI(TAG, "Storage list skipped");
 #endif
 }
 
@@ -469,9 +455,7 @@ esp_err_t example_mount_storage(const char* base_path)
     ESP_LOGI(TAG, "SD card disabled by config, mount SPIFFS");
     return mount_spiffs_storage(base_path);
 #else
-    ESP_LOGI(TAG, "Initializing SD card");
-    ESP_LOGI(TAG, "SD mount config: format_if_mount_failed=false");
-    ESP_LOGI(TAG, "SD wait power ready %d ms", STORAGE_MOUNT_POWER_READY_DELAY_MS);
+    ESP_LOGI(TAG, "SD mount start wait_ms=%d", STORAGE_MOUNT_POWER_READY_DELAY_MS);
     vTaskDelay(pdMS_TO_TICKS(STORAGE_MOUNT_POWER_READY_DELAY_MS));
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
@@ -536,7 +520,7 @@ esp_err_t example_mount_storage(const char* base_path)
 
 #else // CONFIG_EXAMPLE_USE_SDMMC_HOST
 
-    ESP_LOGI(TAG, "Using SPI peripheral");
+    ESP_LOGI(TAG, "SD mode=SDSPI");
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = USER_SD_SPI_HOST;
@@ -551,7 +535,7 @@ esp_err_t example_mount_storage(const char* base_path)
 
     // Print the C5 SDSPI wiring before mounting so board bring-up can verify the shared SPI bus.
     // 挂载前打印 C5 SDSPI 接线，方便板级调试时确认共用 SPI 总线配置。
-    ESP_LOGI(TAG, "SDSPI pins: host=%d mosi=%d miso=%d clk=%d cs=%d",
+    ESP_LOGI(TAG, "SDSPI pins host=%d mosi=%d miso=%d clk=%d cs=%d",
              (int)host.slot,
              USER_SD_SPI_MOSI_PIN,
              USER_SD_SPI_MISO_PIN,
@@ -560,7 +544,7 @@ esp_err_t example_mount_storage(const char* base_path)
 
     esp_err_t shared_spi_lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
     if (shared_spi_lock_ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to lock shared SPI bus.");
+        ESP_LOGE(TAG, "SD shared SPI lock failed");
         return shared_spi_lock_ret;
     }
 
@@ -568,10 +552,10 @@ esp_err_t example_mount_storage(const char* base_path)
     if (ret == ESP_ERR_INVALID_STATE) {
         // Reuse the SPI bus initialized by the EPD driver because C5 shares SD and EPD SPI pins.
         // 复用墨水屏驱动已经初始化的 SPI 总线，因为 C5 的 SD 和墨水屏共用 SPI 引脚。
-        ESP_LOGW(TAG, "SDSPI bus already initialized, reuse host=%d", (int)host.slot);
+        ESP_LOGW(TAG, "SDSPI bus reused host=%d", (int)host.slot);
         ret = ESP_OK;
     } else if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize bus.");
+        ESP_LOGE(TAG, "SDSPI bus init failed ret=%s", esp_err_to_name(ret));
         TdxSharedSpi_Unlock();
         return ret;
     }
@@ -585,7 +569,7 @@ esp_err_t example_mount_storage(const char* base_path)
         ret = esp_vfs_fat_sdspi_mount(base_path, &host, &slot_config, &mount_config, &card);
         if (ret == ESP_OK) {
             if (attempt > 1) {
-                ESP_LOGI(TAG, "SDSPI mount ok after retry attempt=%d", attempt);
+                ESP_LOGI(TAG, "SDSPI mount ok attempt=%d", attempt);
             }
             break;
         }
@@ -605,15 +589,14 @@ esp_err_t example_mount_storage(const char* base_path)
     if (ret != ESP_OK){
         storage_release_sdmmc_pins();
         if (ret == ESP_FAIL) {
-            ESP_LOGE(TAG, "Failed to mount SD filesystem.");
+            ESP_LOGE(TAG, "SD mount filesystem failed");
         } else {
-            ESP_LOGE(TAG, "Failed to initialize SD card (%s).",
+            ESP_LOGE(TAG, "SD init failed ret=%s",
                      esp_err_to_name(ret));
         }
         return handle_sd_mount_failure(base_path, ret);
     }
 
-    sdmmc_card_print_info(stdout, card);
     if (storage_read_sd_fail_count() != 0) {
         ESP_LOGI(TAG, "SD mount ok reset fail_count=0");
         storage_write_sd_fail_count(0);

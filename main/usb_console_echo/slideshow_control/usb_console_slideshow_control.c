@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "epd_display_mode.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
@@ -70,6 +71,14 @@ esp_err_t UsbConsoleSlideshowControl_Process(const usb_console_http_request_t *r
     }
     TdxSharedSpi_Unlock();
 
+    esp_err_t mode_ret = EpdDisplayMode_SetBySlideshowSwitch(sw == 1);
+    if (mode_ret != ESP_OK) {
+        return UsbConsoleCommon_SetJsonf(response,
+                                         200,
+                                         "OK",
+                                         "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"save display mode failed\"}",
+                                         TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED);
+    }
     if (app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY, random ? "true" : "false") != ESP_OK) {
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",
                                          "{\"func\":\"set_slideshow_result\",\"result\":%d,\"message\":\"set slideshow failed\"}",

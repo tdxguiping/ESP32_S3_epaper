@@ -4,6 +4,7 @@
 
 #include "ch583_wifi_uart_protocol.h"
 #include "debug_output.h"
+#include "epd_display_mode.h"
 #include "led_status.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
@@ -101,6 +102,8 @@ static char s_ble_buf[CH583_WIFI_MAX_BLE_MESSAGE_LEN + 1];
 static bool s_ble_activity_active;
 static char s_ble_mac[CH583_WIFI_BLE_MAC_LEN + 1];
 static bool s_ble_mac_loaded;
+static uint8_t s_wifi_provision_status;
+static bool s_wifi_provision_status_valid;
 
 static bool ch583_wifi_is_upper_hex_string(const char *text, size_t len);
 
@@ -312,6 +315,67 @@ static int ch583_wifi_send_frame(const char *cmd, const char *arg, uint8_t need_
 
     ret = ch583_wifi_write_frame_text(frame_text, (size_t)frame_len);
     if (ret != 0 && pending != NULL) {
+        pending->valid = false;
+    }
+    s_tx_seq++;
+
+done:
+    xSemaphoreGive(s_tx_mutex);
+    return ret;
+}
+
+static int __attribute__((unused)) ch583_wifi_send_wifi_provision_frame(uint8_t combined_status)
+{
+    char body[CH583_WIFI_MAX_FRAME_BODY_LEN + 1];
+    char frame_text[CH583_WIFI_MAX_FRAME_BODY_LEN + 24];
+    const char cmd[] = "WIFI_PROVISION";
+    int ret = -1;
+
+    // Reserved for a possible future binary-ARG WIFI_PROVISION protocol.
+    // The active protocol uses a two-character hex text ARG and ch583_wifi_send_frame().
+    if (s_tx_mutex == NULL || xSemaphoreTake(s_tx_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+        UserDebugOutput_Printf("CH583_PROTO WIFI_PROVISION tx mutex unavailable/timeout\r\n");
+        return -1;
+    }
+
+    uint16_t current_seq = s_tx_seq;
+    int prefix_len = snprintf(body,
+                              sizeof(body),
+                              "V1|SEQ=%u|CMD=%s|LEN=1|PART=1|TOTAL=1|ARG=",
+                              (unsigned int)current_seq,
+                              cmd);
+    if (prefix_len <= 0 || prefix_len + 1 >= (int)sizeof(body)) {
+        UserDebugOutput_Printf("CH583_PROTO WIFI_PROVISION tx body overflow\r\n");
+        goto done;
+    }
+    body[prefix_len] = (char)combined_status;
+    size_t body_len = (size_t)prefix_len + 1U;
+
+    uint16_t crc = ch583_wifi_crc16_ccitt_false(body, body_len);
+    memcpy(frame_text, "@#", 2);
+    memcpy(frame_text + 2, body, body_len);
+    int suffix_len = snprintf(frame_text + 2 + body_len,
+                              sizeof(frame_text) - 2 - body_len,
+                              "|CRC=%04X^&\n\r",
+                              crc);
+    if (suffix_len <= 0 || 2U + body_len + (size_t)suffix_len >= sizeof(frame_text)) {
+        UserDebugOutput_Printf("CH583_PROTO WIFI_PROVISION tx frame overflow\r\n");
+        goto done;
+    }
+    size_t frame_len = 2U + body_len + (size_t)suffix_len;
+
+    ch583_wifi_pending_tx_t *pending = ch583_wifi_alloc_pending_tx_locked();
+    *pending = (ch583_wifi_pending_tx_t){
+        .valid = true,
+        .seq = current_seq,
+        .order = ++s_pending_tx_order,
+        .frame_len = frame_len,
+    };
+    memcpy(pending->frame, frame_text, frame_len);
+    pending->frame[frame_len] = '\0';
+
+    ret = ch583_wifi_write_frame_text(frame_text, frame_len);
+    if (ret != 0) {
         pending->valid = false;
     }
     s_tx_seq++;
@@ -865,6 +929,45 @@ int ch583_wifi_uart_send_wifi_data(const char *message)
         UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_UART_TX);
     }
     return ret;
+}
+
+int ch583_wifi_uart_send_wifi_provision_status(uint8_t status)
+{
+    if (status != 0U && status != 1U) {
+        UserDebugOutput_Printf("CH583_PROTO WIFI_PROVISION reject bad status=%u\r\n",
+                               (unsigned int)status);
+        return -1;
+    }
+
+    s_wifi_provision_status = status;
+    s_wifi_provision_status_valid = true;
+
+    uint8_t mode = EpdDisplayMode_Get();
+    if (mode > USER_EPD_DISPLAY_MODE_DAILY) {
+        mode = USER_EPD_DISPLAY_MODE_NORMAL;
+    }
+    uint8_t provision_nibble = (status == 1U) ? 0x5U : 0x4U;
+    uint8_t combined_status = (uint8_t)((provision_nibble << 4) | (mode & 0x0FU));
+    char status_hex[3];
+    snprintf(status_hex, sizeof(status_hex), "%02X", (unsigned int)combined_status);
+
+    int ret = ch583_wifi_send_frame("WIFI_PROVISION", status_hex, 1);
+    UserDebugOutput_Printf("CH583_PROTO WIFI_PROVISION provision=%u mode=%u combined=0x%02X arg=%s send_ret=%d\r\n",
+                           (unsigned int)status,
+                           (unsigned int)mode,
+                           (unsigned int)combined_status,
+                           status_hex,
+                           ret);
+    return ret;
+}
+
+int ch583_wifi_uart_send_current_wifi_provision_status(void)
+{
+    if (!s_wifi_provision_status_valid) {
+        s_wifi_provision_status = 0U;
+        s_wifi_provision_status_valid = true;
+    }
+    return ch583_wifi_uart_send_wifi_provision_status(s_wifi_provision_status);
 }
 
 const char *ch583_wifi_uart_get_ble_mac(void)

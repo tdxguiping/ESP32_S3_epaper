@@ -3,4 +3,5 @@ idf_component_register(SRCS "tdx_shared_spi.c" "main.c" "app_nvs.c" "file_server
                     PRIV_REQUIRES fatfs esp_event vfs esp_netif nvs_flash spiffs esp_http_server bt esp_wifi esp_pm mdns app_update esp_driver_uart esp_driver_usb_serial_jtag esp_driver_gpio esp_driver_spi esp_timer spi_flash json mbedtls
                     EMBED_FILES "favicon.ico" "upload_script.html")
 
+target_sources(${COMPONENT_LIB} PRIVATE "epd_display/epd_display_mode.c")
 target_sources(${COMPONENT_LIB} PRIVATE "epd_display/epd_type_1600_1200_133_DKE.cpp")

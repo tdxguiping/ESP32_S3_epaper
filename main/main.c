@@ -27,6 +27,7 @@
 #include "cast_core.h"
 #include "debug_output.h"
 #include "epd_display_app.h"
+#include "epd_display_mode.h"
 #include "file_serving_example_common.h"
 #include "gpio_test.h"
 #include "led_status.h"
@@ -186,109 +187,64 @@ void print_base_info(void)
         g_app_reset_reason = ESP_RST_low_power_No_Disp;
     }
 
-    size_t ram_total = heap_caps_get_total_size(MALLOC_CAP_8BIT);
     size_t ram_free = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    size_t internal_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
-    size_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
     size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    size_t heap_8bit_free = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    size_t heap_8bit_min = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
     size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    size_t internal_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
-    size_t dma_free = heap_caps_get_free_size(MALLOC_CAP_DMA);
-    size_t dma_largest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
-    size_t iram_free = heap_caps_get_free_size(MALLOC_CAP_IRAM_8BIT);
-    size_t iram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_IRAM_8BIT);
-    size_t internal_8bit_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    size_t internal_8bit_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
     if (esp_flash_get_size(NULL, &flash_size) != ESP_OK) {
         flash_size = 0;
     }
 
-    LOG_Purple("-----Reset----------- %d (%s) app=%d", reason, reset_reason_to_str(reason), g_app_reset_reason);
-    LOG_Purple("Flash total         : %u bytes (%u MB)",
-               (unsigned int)flash_size,
-               (unsigned int)(flash_size / 1024 / 1024));
-    LOG_Purple("RAM total           : total=%u free=%u", (unsigned int)ram_total, (unsigned int)ram_free);
-    LOG_Purple("Internal RAM total  : total=%u free=%u min=%u",
-               (unsigned int)internal_total,
-               (unsigned int)internal_free,
-               (unsigned int)internal_min);
-    LOG_Purple("Internal heap       : free=%u min=%u", (unsigned int)internal_free, (unsigned int)internal_min);
-    LOG_Purple("PSRAM               : total=%u free=%u", (unsigned int)psram_total, (unsigned int)psram_free);
-    LOG_Purple("Default 8-bit heap  : free=%u min=%u", (unsigned int)heap_8bit_free, (unsigned int)heap_8bit_min);
-    LOG_Purple("DMA heap            : free=%u largest=%u", (unsigned int)dma_free, (unsigned int)dma_largest);
-    LOG_Purple("IRAM 8-bit heap     : free=%u largest=%u", (unsigned int)iram_free, (unsigned int)iram_largest);
-    LOG_Purple("Internal 8-bit heap : free=%u largest=%u",
-               (unsigned int)internal_8bit_free,
-               (unsigned int)internal_8bit_largest);
+    ESP_LOGI(TAG, "boot reset=%d(%s) app=%d flash=%u ram_free=%u internal_free=%u psram_free=%u",
+             (int)reason,
+             reset_reason_to_str(reason),
+             g_app_reset_reason,
+             (unsigned int)flash_size,
+             (unsigned int)ram_free,
+             (unsigned int)internal_free,
+             (unsigned int)psram_free);
 
-    const esp_partition_t *nvs_part = esp_partition_find_first(
-        ESP_PARTITION_TYPE_DATA,
-        ESP_PARTITION_SUBTYPE_DATA_NVS,
-        "nvs");
-    if (nvs_part != NULL) {
-        LOG_Purple("NVS partition       : label=%s offset=0x%06x size=%u bytes (0x%x)",
-                   nvs_part->label,
-                   (unsigned int)nvs_part->address,
-                   (unsigned int)nvs_part->size,
-                   (unsigned int)nvs_part->size);
+    nvs_stats_t short_nvs_stats = {0};
+    esp_err_t short_nvs_ret = nvs_get_stats(NULL, &short_nvs_stats);
+    if (short_nvs_ret == ESP_OK) {
+        ESP_LOGI(TAG, "nvs entries used=%u free=%u available=%u total=%u namespace=%u",
+                 (unsigned int)short_nvs_stats.used_entries,
+                 (unsigned int)short_nvs_stats.free_entries,
+                 (unsigned int)short_nvs_stats.available_entries,
+                 (unsigned int)short_nvs_stats.total_entries,
+                 (unsigned int)short_nvs_stats.namespace_count);
     } else {
-        LOG_Purple("NVS partition       : not found");
+        ESP_LOGW(TAG, "nvs stats failed ret=%s", esp_err_to_name(short_nvs_ret));
     }
 
-    nvs_stats_t nvs_stats = {0};
-    esp_err_t nvs_ret = nvs_get_stats(NULL, &nvs_stats);
-    if (nvs_ret == ESP_OK) {
-        LOG_Purple("NVS entries         : used=%u free=%u available=%u total=%u namespace=%u",
-                   (unsigned int)nvs_stats.used_entries,
-                   (unsigned int)nvs_stats.free_entries,
-                   (unsigned int)nvs_stats.available_entries,
-                   (unsigned int)nvs_stats.total_entries,
-                   (unsigned int)nvs_stats.namespace_count);
-    } else {
-        LOG_Purple("NVS entries         : nvs_get_stats failed ret=%d(%s)",
-                   nvs_ret,
-                   esp_err_to_name(nvs_ret));
-    }
-
-    // English: Print the restored work-state globals here because this project does not keep User_PrintWorkStateNvs().
+    ESP_LOGI(TAG, "work state sleep=%u working=%lu continue=%lu standby=%lu",
+             (unsigned int)sleep_time,
+             (unsigned long)working_time,
+             (unsigned long)server_required_continue_work_time,
+             (unsigned long)wifi_standby_time_s);
     // 中文：当前项目没有保留 User_PrintWorkStateNvs()，这里直接打印已恢复的工作状态全局变量。
-    LOG_Purple("Work state          : sleep=%u working=%lu continue=%lu standby=%lu",
-               (unsigned int)sleep_time,
-               (unsigned long)working_time,
-               (unsigned long)server_required_continue_work_time,
-               (unsigned long)wifi_standby_time_s);
 }
 
 void app_main(void)
 {
     ESP_ERROR_CHECK(UserDebugOutput_Init());
 
-    /* Hide ESP-IDF WiFi internal INFO logs, keep warnings and errors. */
     /* 关闭 ESP-IDF WiFi 内部 INFO 日志，只保留警告和错误。 */
-    // esp_log_level_set("wifi_init", ESP_LOG_WARN);
 
-    // /* Hide net80211 ROM/version INFO logs. */
     // /* 关闭 net80211 ROM 版本等 INFO 日志。 */
-    // esp_log_level_set("net80211", ESP_LOG_WARN);
 
-    // /* Hide most WiFi driver INFO logs. */
     // /* 关闭大部分 WiFi 驱动 INFO 日志。 */
-     esp_log_level_set("wifi", ESP_LOG_ERROR);
-     esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
-     esp_log_level_set("pp", ESP_LOG_WARN);
-     esp_log_level_set("phy_init", ESP_LOG_WARN);
-     esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
-     esp_log_level_set("mdns_mem", ESP_LOG_WARN);
+    esp_log_level_set("wifi_init", ESP_LOG_WARN);
+    esp_log_level_set("net80211", ESP_LOG_WARN);
+    esp_log_level_set("wifi", ESP_LOG_ERROR);
+    esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
+    esp_log_level_set("pp", ESP_LOG_WARN);
+    esp_log_level_set("phy_init", ESP_LOG_WARN);
+    esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
+    esp_log_level_set("mdns_mem", ESP_LOG_WARN);
+    esp_log_level_set("ch583_uart", ESP_LOG_WARN);
 
-     esp_log_level_set("ch583_uart", ESP_LOG_WARN);
-
-
-
-
-    ESP_LOGI(TAG, "Starting example");
+    ESP_LOGI(TAG, "app start");
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -296,6 +252,10 @@ void app_main(void)
     ESP_ERROR_CHECK(TdxCastCore_Init());
     ESP_ERROR_CHECK(UsbConsoleEcho_Init());
     ESP_ERROR_CHECK(ServerNetworkStaWifiWorkTime_Init());
+    ESP_ERROR_CHECK(EpdDisplayMode_Init());
+    ESP_LOGI(TAG, "EPD display mode=%u(%s)",
+             (unsigned int)EpdDisplayMode_Get(),
+             EpdDisplayMode_ToString(EpdDisplayMode_Get()));
     char random_value[8] = {0};
     app_nvs_read_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
                      random_value,
@@ -306,19 +266,6 @@ void app_main(void)
                       g_slideshow_random_enable ? "true" : "false");
     ESP_LOGI(TAG, "slideshow random config=%s enable=%u",
              random_value, (unsigned int)g_slideshow_random_enable);
-
-
-     esp_log_level_set("wifi_init", ESP_LOG_WARN);
-     esp_log_level_set("net80211", ESP_LOG_WARN);
-     esp_log_level_set("wifi", ESP_LOG_ERROR);
-     esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
-     esp_log_level_set("pp", ESP_LOG_WARN);
-     esp_log_level_set("phy_init", ESP_LOG_WARN);
-     esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
-     esp_log_level_set("mdns_mem", ESP_LOG_WARN);
-     esp_log_level_set("ch583_uart", ESP_LOG_WARN);
-
-   // esp_log_level_set("server_sta_wifi_time", ESP_LOG_DEBUG);
 
 
     print_base_info();
@@ -342,25 +289,29 @@ void app_main(void)
     const char* base_path = "/data";
     esp_err_t storage_ret = example_mount_storage(base_path);
     if (storage_ret != ESP_OK) {
-        ESP_LOGE(TAG, "Storage mount failed ret=%s, continue without startup slideshow",
+        ESP_LOGE(TAG, "storage mount failed ret=%s",
                  esp_err_to_name(storage_ret));
     }
     // Force the old read_value=0x02 path here: Server Network STA only, then start the HTTP file server.
     // 中文：在这里固定旧工程 read_value=0x02 路径：只进入 Server Network STA，然后启动 HTTP 文件服务器。
     uint8_t network_ret = User_Network_mode_app_init(base_path);
-    ESP_LOGI(TAG, "Server Network STA init result=0x%02x", network_ret);
     if (network_ret != SERVER_NETWORK_STA_OK) {
         UserLedStatus_Set(USER_LED_STATE_WIFI_FAIL);
-        ESP_LOGE(TAG, "Server Network STA failed, file server not started");
+        ESP_LOGE(TAG, "network init failed ret=0x%02x", network_ret);
         //return;
     }
     else    {
         UserLedStatus_Set(USER_LED_STATE_SERVER_READY);
+        ESP_LOGI(TAG, "network ready ret=0x%02x", network_ret);
     }
 
     if (storage_ret == ESP_OK) {
         esp_err_t slideshow_ret = ServerNetworkStaSlideshow_StartSavedDelayed(base_path);
-        ESP_LOGI(TAG, "startup slideshow delayed start ret=%s", esp_err_to_name(slideshow_ret));
+        if (slideshow_ret == ESP_OK) {
+            ESP_LOGI(TAG, "slideshow delayed start ret=%s", esp_err_to_name(slideshow_ret));
+        } else {
+            ESP_LOGW(TAG, "slideshow delayed start failed ret=%s", esp_err_to_name(slideshow_ret));
+        }
     }
 
     app_auto_light_sleep_init();
@@ -381,17 +332,11 @@ void app_main(void)
     char ble_mac[13] = {0};
     get_ble_mac_no_colon(ble_mac, sizeof(ble_mac));
 #if USER_BLE_ENABLE
-    ESP_LOGI(TAG, "BLE MAC source=ESP32 built-in BLE MAC value=%s",
+    ESP_LOGI(TAG, "ble_mac source=ESP32 value=%s",
              ble_mac[0] != '\0' ? ble_mac : "<empty>");
 #else
-    ESP_LOGI(TAG, "BLE MAC source=CH583 reported BLE MAC value=%s",
+    ESP_LOGI(TAG, "ble_mac source=CH583 value=%s",
              ble_mac[0] != '\0' ? ble_mac : "<empty>");
 #endif
      //  test_epd_display();
 }
-// LOG_ERROR("%d %s %s",__LINE__,__func__,__FILE__);
-// LOG_WARN("%s>%d",__func__,__LINE__);
-// LOG_INFO("%s>%d",__func__,__LINE__);
-// LOG_Purple("%s>%d",__func__,__LINE__);
-// LOG_Blue("%s>%d",__func__,__LINE__);
-// LOG_Cyan("%s>%d",__func__,__LINE__);

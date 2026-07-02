@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "epd_display_app.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "user_app.h"
@@ -30,21 +31,24 @@ esp_err_t ServerNetworkStaPing_ProcessGet(httpd_req_t *req)
     ServerNetworkStaWifiWorkTime_OnNetworkData();
 
     char ble_mac[13] = {0};
-    char json[128] = {0};
+    char json[160] = {0};
 
     get_ble_mac_no_colon(ble_mac, sizeof(ble_mac));
+    const char *epd_state = ServerNetworkStaEpdDisplay_IsBusy() ? "BUSY" : "IDLE";
     if (ble_mac[0] == '\0') {
         ESP_LOGW(TAG, "ping Ble_MAC empty, CH583 BLE_MAC not received yet");
         snprintf(json, sizeof(json),
-                 "{\"func\":\"ping_result\",\"result\":%d,\"message\":\"Ble_MAC not ready\",\"Ble_MAC\":\"\"}",
-                 TDX_JSON_RESULT_BLE_MAC_EMPTY);
+                 "{\"func\":\"ping_result\",\"result\":%d,\"message\":\"Ble_MAC not ready\",\"EPD\":\"%s\",\"Ble_MAC\":\"\"}",
+                 TDX_JSON_RESULT_BLE_MAC_EMPTY,
+                 epd_state);
     } else {
         snprintf(json, sizeof(json),
-                 "{\"func\":\"ping_result\",\"result\":%d,\"message\":\"ok\",\"Ble_MAC\":\"%s\"}",
+                 "{\"func\":\"ping_result\",\"result\":%d,\"message\":\"ok\",\"EPD\":\"%s\",\"Ble_MAC\":\"%s\"}",
                  TDX_JSON_RESULT_OK,
+                 epd_state,
                  ble_mac);
     }
-    ESP_LOGI(TAG, "ping request uri=%s method=GET Ble_MAC=%s", req->uri, ble_mac);
+    ESP_LOGI(TAG, "ping request uri=%s method=GET EPD=%s Ble_MAC=%s", req->uri, epd_state, ble_mac);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, json);
 }

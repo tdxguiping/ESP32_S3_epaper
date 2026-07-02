@@ -8,6 +8,7 @@
 #include <sys/unistd.h>
 
 #include "epd_display_app.h"
+#include "epd_display_mode.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "file_serving_example_common.h"
@@ -551,6 +552,11 @@ static esp_err_t stop_slideshow_for_cast(const char *base_path)
     TdxSharedSpi_Unlock();
     if (ret == ESP_OK) {
         ServerNetworkStaSlideshow_Stop();
+        esp_err_t mode_ret = EpdDisplayMode_SetBySlideshowSwitch(false);
+        if (mode_ret != ESP_OK) {
+            ESP_LOGW(TAG, "show=true slideshow stop epd mode sync failed ret=%s",
+                     esp_err_to_name(mode_ret));
+        }
         lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
         if (lock_ret == ESP_OK) {
             bool read_ok = read_slideshow_control_sw(control_path, &sw);

@@ -205,6 +205,15 @@ extern "C" {
 // Print the /data file tree during startup. Keep enabled by default for bring-up visibility.
 #define USER_STORAGE_LIST_ON_STARTUP_ENABLE 0
 
+// Print one log line per HTTP directory-list entry only when debugging file browser output.
+#define USER_HTTP_FILE_LIST_LOG_ENABLE 0
+
+// Print successful app_nvs read/write logs only when debugging NVS value flow.
+#define USER_NVS_VERBOSE_LOG_ENABLE 1
+
+// Print multipart fallback parser details only when debugging legacy /dataUP uploads.
+#define USER_HTTP_MULTIPART_DETAIL_LOG_ENABLE 0
+
 // Enable SD card probing before SPIFFS. Set to 0 when the board has no SD card to boot faster.
 #define USER_STORAGE_SD_CARD_ENABLE 1
 
@@ -287,6 +296,9 @@ extern "C" {
 #define SERVER_NETWORK_STA_OTA_MULTIPART_OVERHEAD_BYTES (64 * 1024)
 #define SERVER_NETWORK_STA_OTA_BOUNDARY_MAX 96
 #define SERVER_NETWORK_STA_OTA_VERSION_MAX 40
+
+// Print OTA low-level multipart and firmware-header details only during OTA parser bring-up.
+#define SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE 1
 
 /* -------------------------------------------------------------------------- */
 /* 09. Saved Images / Cast / Snapshot / Delete                                 */
@@ -525,6 +537,11 @@ extern "C" {
 
 #define USER_EPD_TYPE_NVS_KEY "epd_type"
 #define USER_EPD_TYPE_DEFAULT 4
+#define USER_EPD_DISPLAY_MODE_NORMAL 0
+#define USER_EPD_DISPLAY_MODE_SLIDESHOW 1
+#define USER_EPD_DISPLAY_MODE_DAILY 2
+#define USER_EPD_DISPLAY_MODE_DEFAULT USER_EPD_DISPLAY_MODE_NORMAL
+#define USER_EPD_DISPLAY_MODE_NVS_KEY "epd_mode"
 #define USB_CONSOLE_EPD_TYPE_DEBUG_LOG_ENABLE 1
 #define USB_CONSOLE_EPD_TYPE_LIST_URI "/epd_type_list"
 #define USB_CONSOLE_EPD_TYPE_URI "/epd_type"

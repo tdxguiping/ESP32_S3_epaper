@@ -120,6 +120,18 @@
 /data/bin_img/last_cast.txt
 ```
 
+`PhotoPainter:epd_mode` 是 u8 内部状态，不属于接口返回 JSON：
+
+```text
+0 NORMAL     普通模式
+1 SLIDESHOW  轮播模式
+2 DAILY      每日更新模式预留，当前业务不主动设置
+```
+
+规则：凡是 `show_control.txt` 的 `sw` 写入成功，`epd_mode` 必须同步写入。`sw=1` 写 `epd_mode=1`，`sw=0` 写 `epd_mode=0`。
+
+`WIFI_PROVISION` 是 ESP32-C5 与 CH583/CH585 的 UART 命令，不属于接口返回 JSON，不新增 result code。该命令固定 `LEN=2`，`ARG` 使用 2 位十六进制文本，表示 1 个复合状态 byte：第 1 位十六进制字符是 WiFi 配网状态，未配网为 `4`，已配网为 `5`；第 2 位十六进制字符是 `epd_mode`。例如 `ARG=50` 表示已配网 + 普通模式，`ARG=51` 表示已配网 + 轮播模式，`ARG=40` 表示未配网 + 普通模式。`epd_mode` 写入成功后，必须使用最近一次 WiFi 配网状态重新组合 `ARG` 并再次上报 CH583/CH585。代码中保留的单字节二进制 ARG 发送函数只作为以后可能恢复二进制协议时使用，当前不调用。
+
 [⬆ 返回目录](#toc)
 
 ---
@@ -138,6 +150,37 @@
 
 ```text
 ping_result
+```
+
+响应示例：
+
+```json
+{
+  "func": "ping_result",
+  "result": 0,
+  "message": "ok",
+  "EPD": "BUSY",
+  "Ble_MAC": "AABBCCDDEEFF"
+}
+```
+
+`EPD` 字段固定返回字符串：
+
+```text
+BUSY  EPD display task 正在执行、已有 pending job 或队列仍有任务
+IDLE  EPD display task 空闲
+```
+
+当 `Ble_MAC` 尚未获取时，仍返回 `EPD` 字段，并使用 `result=1405`：
+
+```json
+{
+  "func": "ping_result",
+  "result": 1405,
+  "message": "Ble_MAC not ready",
+  "EPD": "IDLE",
+  "Ble_MAC": ""
+}
 ```
 
 | result | 名称建议 | 含义 |
@@ -611,6 +654,12 @@ EPD 相关 result 当前主要由 USB 使用。如果以后网络 HTTP 或 CH583
 slideshow_config.txt
 show_control.txt
 last_cast.txt
+```
+
+NVS 内部状态：
+
+```text
+PhotoPainter:epd_mode
 ```
 
 示例：

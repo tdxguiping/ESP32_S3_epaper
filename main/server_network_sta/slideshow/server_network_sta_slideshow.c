@@ -17,6 +17,7 @@
 #include "nvs.h"
 #include "file_serving_example_common.h"
 #include "epd_display_app.h"
+#include "epd_display_mode.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
@@ -1297,6 +1298,11 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
     if (save_slideshow_config(bin_dir, &request) != ESP_OK ||
         save_slideshow_control(bin_dir, &request) != ESP_OK) {
         return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED, "save config failed");
+    }
+    esp_err_t mode_ret = EpdDisplayMode_SetBySlideshowSwitch(true);
+    if (mode_ret != ESP_OK) {
+        return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED,
+                                           "save display mode failed");
     }
     esp_err_t random_save_ret = app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
                                                   request.random ? "true" : "false");

@@ -31,6 +31,7 @@
 #include "server_network_sta_ping.h"
 #include "server_network_sta_saved_images.h"
 #include "server_network_sta_wifi_work_time.h"
+#include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 
 /* Max length a file path can have on storage */
@@ -140,7 +141,9 @@ static esp_err_t http_resp_dir_html(httpd_req_t *req, const char *dirpath)
             continue;
         }
         sprintf(entrysize, "%ld", entry_stat.st_size);
-        ESP_LOGI(TAG, "Found %s : %s (%s bytes)", entrytype, entry->d_name, entrysize);
+#if USER_HTTP_FILE_LIST_LOG_ENABLE
+        ESP_LOGI(TAG, "HTTP list %s name=%s size=%s", entrytype, entry->d_name, entrysize);
+#endif
 
         /* Send chunk of HTML file containing table entries with file name and size */
         httpd_resp_sendstr_chunk(req, "<tr><td><a href=\"");
@@ -293,7 +296,7 @@ static esp_err_t download_get_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Sending file : %s (%ld bytes)...", filename, file_stat.st_size);
+    ESP_LOGI(TAG, "HTTP send file=%s size=%ld", filename, file_stat.st_size);
     set_content_type_from_file(req, filename);
 
     /* Retrieve the pointer to scratch buffer for temporary storage */
@@ -323,7 +326,7 @@ static esp_err_t download_get_handler(httpd_req_t *req)
     /* Close file after sending complete */
     fclose(fd);
     TdxSharedSpi_Unlock();
-    ESP_LOGI(TAG, "File sending complete");
+    ESP_LOGI(TAG, "HTTP send complete file=%s", filename);
 
     /* Respond with an empty chunk to signal HTTP response completion */
 #ifdef CONFIG_EXAMPLE_HTTPD_CONN_CLOSE_HEADER
@@ -392,7 +395,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Receiving file : %s...", filename);
+    ESP_LOGI(TAG, "HTTP upload file=%s len=%d", filename, req->content_len);
 
     /* Retrieve the pointer to scratch buffer for temporary storage */
     char *buf = ((struct file_server_data *)req->user_ctx)->scratch;
@@ -403,8 +406,6 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
     int remaining = req->content_len;
 
     while (remaining > 0) {
-
-        ESP_LOGI(TAG, "Remaining size : %d", remaining);
         /* Receive the file part by part into a buffer */
         if ((received = httpd_req_recv(req, buf, MIN(remaining, SCRATCH_BUFSIZE))) <= 0) {
             if (received == HTTPD_SOCK_ERR_TIMEOUT) {
@@ -446,7 +447,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
     /* Close file upon upload completion */
     fclose(fd);
     TdxSharedSpi_Unlock();
-    ESP_LOGI(TAG, "File reception complete");
+    ESP_LOGI(TAG, "HTTP upload complete file=%s", filename);
 
     /* Redirect onto root to see the updated file list */
     httpd_resp_set_status(req, "303 See Other");
@@ -496,7 +497,7 @@ static esp_err_t delete_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Deleting file : %s", filename);
+    ESP_LOGI(TAG, "HTTP delete file=%s", filename);
     /* Delete file */
     unlink(filepath);
     TdxSharedSpi_Unlock();
@@ -550,7 +551,7 @@ esp_err_t example_start_file_server(const char *base_path)
     * target URIs which match the wildcard scheme */
     config.uri_match_fn = httpd_uri_match_wildcard;
 
-    ESP_LOGI(TAG, "Starting HTTP Server on port: '%d' stack=%u sockets=%u",
+    ESP_LOGI(TAG, "HTTP server start port=%d stack=%u sockets=%u",
             config.server_port,
             (unsigned int)config.stack_size,
             (unsigned int)config.max_open_sockets);

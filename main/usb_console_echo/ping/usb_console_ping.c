@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 
+#include "epd_display_app.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "usb_console_common.h"
@@ -23,11 +24,13 @@ esp_err_t UsbConsolePing_Process(const usb_console_http_request_t *request,
     get_ble_mac_no_colon(ble_mac, sizeof(ble_mac));
 
     int result = ble_mac[0] == '\0' ? TDX_JSON_RESULT_BLE_MAC_EMPTY : TDX_JSON_RESULT_OK;
+    const char *epd_state = ServerNetworkStaEpdDisplay_IsBusy() ? "BUSY" : "IDLE";
     return UsbConsoleCommon_SetJsonf(response,
                                      200,
                                      "OK",
-                                     "{\"func\":\"ping_result\",\"result\":%d,\"message\":\"%s\",\"Ble_MAC\":\"%s\"}",
+                                     "{\"func\":\"ping_result\",\"result\":%d,\"message\":\"%s\",\"EPD\":\"%s\",\"Ble_MAC\":\"%s\"}",
                                      result,
                                      result == TDX_JSON_RESULT_OK ? "ok" : "Ble_MAC not ready",
+                                     epd_state,
                                      ble_mac);
 }

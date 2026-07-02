@@ -18,6 +18,7 @@
 #include "nvs.h"
 
 #include "file_serving_example_common.h"
+#include "ch583_wifi_uart_protocol.h"
 #include "led_status.h"
 
 typedef struct {
@@ -454,19 +455,24 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
     (void)arg;
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+#if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
         ESP_LOGI(TAG, "WiFi event STA_START");
+#endif
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t *)event_data;
         s_wifi_sta_connected_seen = true;
+#if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
         if (event != NULL) {
             ESP_LOGI(TAG, "WiFi connected ch=%u auth=%d bssid=%02x:%02x:%02x:%02x:%02x:%02x",
                      event->channel, event->authmode,
                      event->bssid[0], event->bssid[1], event->bssid[2],
                      event->bssid[3], event->bssid[4], event->bssid[5]);
         }
+#endif
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "WiFi IP=" IPSTR, IP2STR(&event->ip_info.ip));
+#if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
         wifi_ap_record_t ap_info = {0};
         if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
             ESP_LOGI(TAG,
@@ -475,6 +481,7 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
                      ap_info.bssid[3], ap_info.bssid[4], ap_info.bssid[5],
                      ap_info.primary, ap_info.rssi);
         }
+#endif
         s_wifi_connect_active = false;
         s_wifi_state = SERVER_NETWORK_STA_STATE_GOT_IP;
         s_wifi_last_connect_result = TDX_JSON_RESULT_OK;
@@ -493,8 +500,10 @@ static void server_network_sta_event_handler(void *arg, esp_event_base_t event_b
             if (s_wifi_state != SERVER_NETWORK_STA_STATE_CONNECTING) {
                 s_wifi_state = SERVER_NETWORK_STA_STATE_IDLE;
             }
+#if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
             ESP_LOGI(TAG, "ignore inactive WiFi disconnected reason=%d(%s)",
                      reason, wifi_disconnect_reason_name(reason));
+#endif
             return;
         }
         if (reason != 8) {
@@ -553,14 +562,14 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
     // ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MAX_MODEM));
     //  test power only over
 
-    //  test power only
+#if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
     wifi_ps_type_t ps_type = WIFI_PS_NONE;
     esp_err_t ps_ret = esp_wifi_get_ps(&ps_type);
     ESP_LOGI(TAG, "PMDBG wifi_ps ret=%s type=%d, connected_ps=%d",
             esp_err_to_name(ps_ret),
             (int)ps_type,
             (int)SERVER_NETWORK_STA_CONNECTED_PS);
-    //  test power only  over
+#endif
 
 
     if (!s_wifi_handlers_registered) {
@@ -655,7 +664,9 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
     s_wifi_connect_start_tick = xTaskGetTickCount();
     s_wifi_scan_before_connect = SERVER_NETWORK_STA_SCAN_BEFORE_CONNECT != 0;
     ret = esp_wifi_start();
+#if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
     ESP_LOGI(TAG, "esp_wifi_start ret=%s", esp_err_to_name(ret));
+#endif
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(ret));
         s_wifi_connect_active = false;
@@ -672,7 +683,9 @@ static uint8_t ServerPort_NetworkSTAInit(wifi_credential_t credential)
     // esp_wifi_start() may return ESP_OK for an already-running driver without posting STA_START again.
     // Always submit the actual STA connection explicitly instead of depending on that event.
     ret = esp_wifi_connect();
+#if SERVER_NETWORK_STA_DEBUG_LOG_ENABLE
     ESP_LOGI(TAG, "esp_wifi_connect ret=%s", esp_err_to_name(ret));
+#endif
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_connect failed immediately: %s", esp_err_to_name(ret));
         s_wifi_connect_active = false;
@@ -857,11 +870,16 @@ static uint8_t user_network_mode_app_init_internal(const char *base_path, bool f
     // strcpy(credential.password,"mnbv0123");
 
     if (!credential.is_valid) {
+        int provision_ret = ch583_wifi_uart_send_wifi_provision_status(0);
+        ESP_LOGI(TAG, "CH583 WIFI_PROVISION status=0 ret=%d", provision_ret);
         ESP_LOGW(TAG, "No saved WiFi credential, return 0xA1");
         UserLedStatus_Set(USER_LED_STATE_WIFI_FAIL);
         result = SERVER_NETWORK_STA_NO_SAVED_WIFI;
         goto done;
     }
+
+    int provision_ret = ch583_wifi_uart_send_wifi_provision_status(1);
+    ESP_LOGI(TAG, "CH583 WIFI_PROVISION status=1 ret=%d", provision_ret);
 
     if (!force_reconnect && server_network_sta_skip_same_wifi(&credential)) {
         s_wifi_state = SERVER_NETWORK_STA_STATE_GOT_IP;

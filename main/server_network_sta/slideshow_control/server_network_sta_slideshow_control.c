@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 
+#include "epd_display_mode.h"
 #include "esp_log.h"
 #include "file_serving_example_common.h"
 #include "server_network_sta_slideshow.h"
@@ -395,6 +396,11 @@ esp_err_t ServerNetworkStaSlideshowControl_ProcessJson(httpd_req_t *req,
     if (write_control_file(control_path, &control) != ESP_OK) {
         return send_set_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED,
                                          "save slideshow control failed");
+    }
+    esp_err_t mode_ret = EpdDisplayMode_SetBySlideshowSwitch(control.sw == 1);
+    if (mode_ret != ESP_OK) {
+        return send_set_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED,
+                                         "save display mode failed");
     }
     esp_err_t random_save_ret = app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
                                                   control.random ? "true" : "false");

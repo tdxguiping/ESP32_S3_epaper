@@ -120,8 +120,9 @@ bool NetworkOtaUpload_IsOtaRequest(httpd_req_t *req, const char *content_type)
     bool uri_match = (uri != NULL) &&
                      (strcmp(uri, "/ota") == 0 || strcmp(uri, "/ota_upload") == 0);
     bool multipart = (content_type != NULL) && (strstr(content_type, "multipart/form-data") != NULL);
-    ESP_LOGI(TAG, "detect ota request: uri=%s multipart=%d match=%d",
-             uri != NULL ? uri : "<null>", multipart ? 1 : 0, uri_match ? 1 : 0);
+    if (uri_match) {
+        ESP_LOGI(TAG, "detect ota request uri=%s multipart=%d", uri, multipart ? 1 : 0);
+    }
     return uri_match && multipart;
 }
 
@@ -179,7 +180,9 @@ static bool extract_boundary(const char *content_type, char *boundary, size_t bo
         len++;
     }
     boundary[len] = '\0';
-    ESP_LOGI(TAG, "boundary parsed: len=%u value=%s", (unsigned int)len, boundary);
+#if SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE
+    ESP_LOGI(TAG, "boundary parsed len=%u value=%s", (unsigned int)len, boundary);
+#endif
     return len > 0;
 }
 
@@ -239,15 +242,19 @@ static bool extract_multipart_field(const char *body,
             find_bytes(headers_start, header_end - headers_start, name_token, (size_t)name_token_len) != NULL) {
             field->data = data_start;
             field->len = (size_t)(data_end - data_start);
-            ESP_LOGI(TAG, "multipart field found: name=%s len=%u",
+#if SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE
+            ESP_LOGI(TAG, "multipart field found name=%s len=%u",
                      field_name, (unsigned int)field->len);
+#endif
             return true;
         }
 
         marker = next_boundary;
     }
 
-    ESP_LOGW(TAG, "multipart field missing: name=%s", field_name);
+#if SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE
+    ESP_LOGW(TAG, "multipart field missing name=%s", field_name);
+#endif
     return false;
 }
 
@@ -294,8 +301,6 @@ static bool parse_meta_json(const char *json, size_t json_len, ota_upload_meta_t
              meta->version[0] ? meta->version : "<empty>",
              (unsigned int)meta->firmware_size,
              meta->reboot ? 1 : 0);
-    ESP_LOGI(TAG, "meta validation result: accepted=%u",
-             (strcmp(meta->func, "ota") == 0 || strcmp(meta->func, "network_ota") == 0) ? 1 : 0);
     return strcmp(meta->func, "ota") == 0 || strcmp(meta->func, "network_ota") == 0;
 }
 
@@ -436,13 +441,13 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
                     ",\"firmware_size\":%u,\"meta_size\":%u",
                     (unsigned int)firmware_len,
                     (unsigned int)meta->firmware_size);
-    ESP_LOGI(TAG, "ota write start: firmware_ptr=%p len=%u meta_func=%s meta_version=%s meta_size=%u reboot=%u",
-             firmware,
+    ESP_LOGI(TAG, "ota write start len=%u meta_func=%s meta_version=%s meta_size=%u reboot=%u",
              (unsigned int)firmware_len,
              meta->func[0] ? meta->func : "<empty>",
              meta->version[0] ? meta->version : "<empty>",
              (unsigned int)meta->firmware_size,
              meta->reboot ? 1 : 0);
+#if SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE
     ESP_LOGI(TAG, "ota firmware head: %02X %02X %02X %02X %02X %02X %02X %02X",
              firmware_len > 0 ? (unsigned int)firmware[0] : 0,
              firmware_len > 1 ? (unsigned int)firmware[1] : 0,
@@ -452,6 +457,7 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
              firmware_len > 5 ? (unsigned int)firmware[5] : 0,
              firmware_len > 6 ? (unsigned int)firmware[6] : 0,
              firmware_len > 7 ? (unsigned int)firmware[7] : 0);
+#endif
 
     if (firmware_len < sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t)) {
         ESP_LOGE(TAG, "ota write reject: firmware too small len=%u", (unsigned int)firmware_len);
@@ -463,12 +469,14 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
     }
 
     const esp_image_header_t *image_header = (const esp_image_header_t *)firmware;
-    ESP_LOGI(TAG, "ota image header: magic=0x%02X segment_count=%u flash_mode=%u flash_size_freq=0x%02X entry=0x%08lX",
+#if SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE
+    ESP_LOGI(TAG, "ota image header magic=0x%02X segment_count=%u flash_mode=%u flash_size_freq=0x%02X entry=0x%08lX",
              image_header->magic,
              image_header->segment_count,
              image_header->spi_mode,
              image_header->spi_size,
              (unsigned long)image_header->entry_addr);
+#endif
     if (image_header->magic != ESP_IMAGE_HEADER_MAGIC) {
         ESP_LOGE(TAG, "ota write reject: invalid image magic=0x%02X", image_header->magic);
         s_last_ota_result = TDX_JSON_RESULT_OTA_VERIFY_FAILED;
@@ -562,7 +570,9 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
         send_ota_eventf(req, "ota_begin_failed", s_last_ota_result, esp_err_to_name(err), err, NULL);
         return err;
     }
-    ESP_LOGI(TAG, "esp_ota_begin ok: handle=%lu", (unsigned long)update_handle);
+#if SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE
+    ESP_LOGI(TAG, "esp_ota_begin ok handle=%lu", (unsigned long)update_handle);
+#endif
     send_ota_eventf(req, "ota_begin_ok", TDX_JSON_RESULT_OK, "ota_begin_ok", ESP_OK,
                     ",\"target\":\"%s\"",
                     update_partition->label);
@@ -603,7 +613,6 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
                     (unsigned int)written,
                     (unsigned int)firmware_len);
     err = esp_ota_end(update_handle);
-    ESP_LOGI(TAG, "esp_ota_end returned: %s", esp_err_to_name(err));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
         s_last_ota_result = TDX_JSON_RESULT_OTA_END_FAILED;
@@ -613,7 +622,6 @@ static esp_err_t write_firmware_to_ota_partition(httpd_req_t *req,
     send_ota_eventf(req, "verify_ok", TDX_JSON_RESULT_OK, "verify_ok", ESP_OK, NULL);
 
     err = esp_ota_set_boot_partition(update_partition);
-    ESP_LOGI(TAG, "esp_ota_set_boot_partition returned: %s", esp_err_to_name(err));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
         s_last_ota_result = TDX_JSON_RESULT_OTA_SET_BOOT_FAILED;
@@ -653,7 +661,9 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
     ESP_LOGI(TAG, "process ota body: len=%u content_type=%s",
              (unsigned int)body_len,
              content_type != NULL ? content_type : "<null>");
-    ESP_LOGI(TAG, "process ota body: body_ptr=%p", body);
+#if SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE
+    ESP_LOGI(TAG, "process ota body ptr=%p", body);
+#endif
     send_ota_eventf(req, "parse_begin", TDX_JSON_RESULT_OK, "parse_begin", ESP_OK, NULL);
 
     if (!extract_boundary(content_type, boundary, sizeof(boundary))) {
@@ -663,7 +673,9 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
                          ",\"failed_stage\":\"missing_boundary\"");
         return ota_stream_finish(req);
     }
-    ESP_LOGI(TAG, "process ota body: boundary=%s", boundary);
+#if SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE
+    ESP_LOGI(TAG, "process ota body boundary=%s", boundary);
+#endif
     send_ota_eventf(req, "boundary_ok", TDX_JSON_RESULT_OK, "boundary_ok", ESP_OK,
                     ",\"boundary_len\":%u",
                     (unsigned int)strlen(boundary));
