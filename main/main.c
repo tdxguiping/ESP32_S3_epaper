@@ -105,19 +105,11 @@ static void usb_console_ansi_color_test(void)
 static void app_auto_light_sleep_init(void)
 {
 #if CONFIG_PM_ENABLE
-#if TDX_AUTO_LIGHT_SLEEP_ENABLE
     esp_pm_config_t pm_config = {
-        .max_freq_mhz = 80, // 160
-        .min_freq_mhz = 40,
-        .light_sleep_enable = true,
-    };
-#else
-    esp_pm_config_t pm_config = {
-        .max_freq_mhz = 240,
-        .min_freq_mhz = 240,
+        .max_freq_mhz = 80,
+        .min_freq_mhz = 80,
         .light_sleep_enable = false,
     };
-#endif
 
     ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
 
@@ -126,7 +118,7 @@ static void app_auto_light_sleep_init(void)
     //  test power only over
 
     ESP_LOGI(TAG, "Power policy: low_power=%d max=%uMHz min=%uMHz light_sleep=%d",
-             (int)TDX_AUTO_LIGHT_SLEEP_ENABLE,
+             0,
              (unsigned int)pm_config.max_freq_mhz,
              (unsigned int)pm_config.min_freq_mhz,
              pm_config.light_sleep_enable ? 1 : 0);

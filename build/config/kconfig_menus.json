@@ -28333,10 +28333,7 @@
                                         "help": "FreeRTOS will enter light sleep mode if no tasks need to run for this number of ticks.\nYou can enable PM_PROFILING feature in esp_pm components and dump the sleep status with\nesp_pm_dump_locks, if the proportion of rejected sleeps is too high, please increase\nthis value to improve scheduling efficiency",
                                         "id": "FREERTOS_IDLE_TIME_BEFORE_SLEEP",
                                         "name": "FREERTOS_IDLE_TIME_BEFORE_SLEEP",
-                                        "range": [
-                                            2,
-                                            4294967295
-                                        ],
+                                        "range": null,
                                         "title": "configEXPECTED_IDLE_TIME_BEFORE_SLEEP",
                                         "type": "int"
                                     }

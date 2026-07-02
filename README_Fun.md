@@ -310,6 +310,7 @@ auto light sleep 接收链路注意事项：
 ```text
 当前默认：
 #define TDX_AUTO_LIGHT_SLEEP_ENABLE 0
+CPU 运行策略固定 80 MHz / 80 MHz，light_sleep_enable=false。
 
 原因：
 CH583 UART1、USB Serial/JTAG、WiFi HTTP 都属于外部异步输入链路。
@@ -317,6 +318,7 @@ CH583 UART1、USB Serial/JTAG、WiFi HTTP 都属于外部异步输入链路。
 CH583 UART1 已验证：短帧低频发送时，开启 auto light sleep 会导致 @# 帧头丢失；关闭 TDX_AUTO_LIGHT_SLEEP_ENABLE 后问题消失。
 USB Serial/JTAG 和 WiFi HTTP 虽然机制不同，但同样可能受 auto light sleep 的唤醒延迟、USB FIFO/主机超时、WiFi PS/HTTP socket 超时影响。
 因此开发阶段和需要可靠收包时，默认保持 TDX_AUTO_LIGHT_SLEEP_ENABLE=0。
+EPD 显示期间会临时把 WiFi PS 切到 WIFI_PS_MAX_MODEM，以降低 EPD 刷屏和 WiFi 同时工作时的电流峰值；EPD 完成后恢复显示前的 WiFi PS。
 ```
 
 ---
@@ -800,6 +802,7 @@ auto light sleep / HTTP 接收注意事项：
 
 ```text
 当前默认 TDX_AUTO_LIGHT_SLEEP_ENABLE=0，HTTP 接收可靠性优先。
+运行时 PM 仍可配置为 80 MHz 固定频率，但不进入 Auto Light-sleep。
 如果开启 auto light sleep，WiFi 省电、CPU 唤醒延迟、HTTP socket 超时可能叠加影响网络请求。
 表现可能是 /ping 偶发慢响应、POST /dataUP body 接收失败、httpd_req_recv() 返回错误、客户端认为连接超时或断开。
 尤其是 App/PC 发送小 JSON 后立即等待响应，或者发送大 body/multipart/OTA 时，不建议启用 auto light sleep。

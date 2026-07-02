@@ -6,6 +6,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
@@ -118,6 +119,41 @@ static esp_err_t copy_display_buffer(epd_display_job_t *job, const uint8_t *disp
     return ESP_OK;
 }
 
+static bool epd_display_enter_wifi_power_save(wifi_ps_type_t *saved_ps)
+{
+    if (saved_ps == NULL) {
+        return false;
+    }
+
+    esp_err_t ret = esp_wifi_get_ps(saved_ps);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "EPD WiFi PS get failed ret=%s", esp_err_to_name(ret));
+        return false;
+    }
+
+    ret = esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "EPD WiFi PS enter old=%d set=%d", (int)*saved_ps, (int)WIFI_PS_MAX_MODEM);
+    } else {
+        ESP_LOGW(TAG, "EPD WiFi PS enter failed old=%d ret=%s", (int)*saved_ps, esp_err_to_name(ret));
+    }
+    return true;
+}
+
+static void epd_display_restore_wifi_power_save(bool restore, wifi_ps_type_t saved_ps)
+{
+    if (!restore) {
+        return;
+    }
+
+    esp_err_t ret = esp_wifi_set_ps(saved_ps);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "EPD WiFi PS restore type=%d", (int)saved_ps);
+    } else {
+        ESP_LOGW(TAG, "EPD WiFi PS restore failed type=%d ret=%s", (int)saved_ps, esp_err_to_name(ret));
+    }
+}
+
 static void ServerNetworkStaEpdDisplay_Task(void *arg)
 {
     (void)arg;
@@ -134,6 +170,8 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
 
         ServerNetworkStaWifiWorkTime_OnNetworkData();
         int64_t display_start_us = esp_timer_get_time();
+        wifi_ps_type_t saved_ps = WIFI_PS_NONE;
+        bool restore_wifi_ps = epd_display_enter_wifi_power_save(&saved_ps);
         const epd_type_config_t *config = EpdType_GetCurrentConfig();
         esp_err_t display_ret = ESP_FAIL;
         if (config != NULL) {
@@ -163,6 +201,7 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
             }
         }
         UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_EPD);
+        epd_display_restore_wifi_power_save(restore_wifi_ps, saved_ps);
 
         ESP_LOGI(TAG, "EPD done target=%u type=%u name=%s size=%u total_ms=%lld",
                  (unsigned int)job.epd_which_one,

@@ -33,8 +33,8 @@ extern "C" {
 // Keep large buffer fallback limit here so HTTP and EPD avoid exhausting internal RAM.
 #define USER_INTERNAL_RAM_FALLBACK_MAX_SIZE (128 * 1024)
 
-// Enable Auto Light-sleep and WiFi modem-sleep after STA gets IP.
-// Set to 0 to keep CPU at 240 MHz and WiFi PS disabled without changing sdkconfig.
+// Auto Light-sleep is disabled for reliable CH583 UART, USB, and HTTP receive paths.
+// CPU frequency is controlled by sdkconfig/app_auto_light_sleep_init; keep this at 0.
 #ifndef TDX_AUTO_LIGHT_SLEEP_ENABLE
 #define TDX_AUTO_LIGHT_SLEEP_ENABLE 0
 #endif
