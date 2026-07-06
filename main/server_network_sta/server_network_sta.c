@@ -879,6 +879,7 @@ static uint8_t user_network_mode_app_init_internal(const char *base_path, bool f
     }
 
     int provision_ret = ch583_wifi_uart_send_wifi_provision_status(1);
+    vTaskDelay(pdMS_TO_TICKS(100)); // wait until CH583 get this information
     ESP_LOGI(TAG, "CH583 WIFI_PROVISION status=1 ret=%d", provision_ret);
 
     if (!force_reconnect && server_network_sta_skip_same_wifi(&credential)) {

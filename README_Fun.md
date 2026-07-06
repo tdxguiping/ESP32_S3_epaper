@@ -37,6 +37,7 @@
   - [7.10 snapshot：读取图片列表和轮播状态](#sec-07-10)
   - [7.11 upload：PC或手机传文件到ESP32-C5，并存](#sec-07-11)
   - [7.12 wifi_work_time：WiFi 省电管理](#sec-07-12)
+  - [7.13 time：RTC 默认时间与 SNTP 网络校时](#sec-07-13)
 - [8. USB Serial/JTAG HTTP-like 协议](#sec-08)
 - [9. USB 路由与各功能处理汇总](#sec-09)
   - [9.1 cast：投屏功能模块](#sec-09-1)
@@ -203,6 +204,7 @@ sequenceDiagram
     APP->>SYS: nvs_flash_init()
     APP->>SYS: esp_netif_init()
     APP->>SYS: esp_event_loop_create_default()
+    APP->>SYS: ServerNetworkStaTime_Init()
     APP->>SYS: TdxSharedSpi_Init()
     APP->>SYS: TdxCastCore_Init()
     APP->>USB: UsbConsoleEcho_Init()
@@ -248,6 +250,12 @@ main/main.c
    ├─ nvs_flash_init()
    ├─ esp_netif_init()
    ├─ esp_event_loop_create_default()
+   ├─ ServerNetworkStaTime_Init()
+   │  └─ server_network_sta/time/server_network_sta_time.c
+   │     ├─ setenv("TZ","CST-8") + tzset()
+   │     ├─ 仅当 RTC / 系统时间无效时 settimeofday(default)
+   │     ├─ esp_netif_sntp_init(start=false)
+   │     └─ IP_EVENT_STA_GOT_IP 后 esp_netif_sntp_start()
    ├─ TdxSharedSpi_Init()
    │  └─ tdx_shared_spi.c 创建 SD/EPD 共用 SPI 递归 mutex
    ├─ TdxCastCore_Init()
@@ -888,6 +896,7 @@ main/server_network_sta/slideshow/
 main/server_network_sta/slideshow_control/
 main/server_network_sta/wifi_work_time/
 main/server_network_sta/ping/
+main/server_network_sta/time/
 ```
 
 入口总览：
@@ -1155,8 +1164,8 @@ HTTP GET /ping
 
 ## 7. 网络HTTP功能汇总 <span id="sec-07"></span>
 
-本章把原来的 `cast`、`cast2pic`、`upload`、`ota`、`delete`、`saved_images`、`slideshow`、`slideshow_control`、`snapshot`、`ping`、`wifi_work_time` 等网络 HTTP 功能重新归到一个二级目录下。  
-入口主要来自 `POST /dataUP`、`POST /ota`、`POST /ota_upload`；`GET /ping` 由 `file_server.c` 的 `GET /* -> download_get_handler()` 优先拦截。
+本章把原来的 `cast`、`cast2pic`、`upload`、`ota`、`delete`、`saved_images`、`slideshow`、`slideshow_control`、`snapshot`、`ping`、`time`、`wifi_work_time` 等网络 HTTP 功能重新归到一个二级目录下。
+入口主要来自 `POST /dataUP`、`POST /ota`、`POST /ota_upload`；`GET /ping` 和 `GET /time` 由 `file_server.c` 的 `GET /* -> download_get_handler()` 优先拦截。
 
 Mermaid 总体分发图：
 
@@ -1167,6 +1176,7 @@ flowchart TD
     B -->|POST /dataUP JSON| C
     B -->|POST /ota or /ota_upload| C
     B -->|GET /ping| P[file_server GET /* -> ping module]
+    B -->|GET /time| T[file_server GET /* -> time module]
     C --> D{func / request type}
     D -->|cast| E[cast]
     D -->|cast2pic| F[cast2pic]
@@ -1204,6 +1214,7 @@ main/server_network_sta/saved_images/
 main/server_network_sta/slideshow/
 main/server_network_sta/slideshow_control/
 main/server_network_sta/snapshot/
+main/server_network_sta/time/
 main/server_network_sta/upload/
 main/server_network_sta/wifi_work_time/
 ```
@@ -1214,6 +1225,8 @@ main/server_network_sta/wifi_work_time/
 HTTP request
 ├─ GET /ping
 │  └─ ServerNetworkStaPing_ProcessGet()
+├─ GET /time
+│  └─ ServerNetworkStaTime_ProcessGet()
 └─ POST /dataUP / /ota / /ota_upload
    └─ receive_data_redirect_handler()
       ├─ NetworkOtaUpload_IsOtaRequest()
@@ -1286,8 +1299,10 @@ V2 协议中，HTTP 图片与控制协议主要使用：
 │  ├─ set_slideshow
 │  ├─ delete
 │  └─ set_wifi_work_time
-└─ GET /ping
-   └─ ping_result
+├─ GET /ping
+│  └─ ping_result
+└─ GET /time
+   └─ time_result
 ```
 
 ---
@@ -1305,6 +1320,7 @@ V2 协议中，HTTP 图片与控制协议主要使用：
 - 图片列表从 /data/jpg_img 扫描。
 - snapshot 读取图片列表和轮播配置。
 - ping 读取 CH583 BLE MAC。
+- time 读取 RTC / 系统时间和 SNTP 同步状态。
 - slideshow 启动时读取保存的轮播配置。
 ```
 
@@ -2127,7 +2143,7 @@ Result 定义建议：
 | `ping_result` | `0` | 连通性检查成功 |
 | `ping_result` | `1405` | `Ble_MAC` 为空；是否作为失败需按前端匹配逻辑决定 |
 
-功能说明：用于 App/PC 判断设备 HTTP 服务是否可用，通过 `Ble_MAC` 防止缓存 IP 指向错误设备，并通过 `EPD` 字段告知当前 EPD display task 是忙碌还是空闲。网络 ping 匹配 `/ping` 路径，并允许携带 query/hash 后缀，例如 `/ping?t=123`。
+功能说明：用于 App/PC 判断设备 HTTP 服务是否可用，通过 `Ble_MAC` 防止缓存 IP 指向错误设备，并通过 `EPD` 字段告知当前 EPD display task 是忙碌还是空闲。网络 ping 匹配 `/ping` 路径，并允许携带 query/hash 后缀，例如 `/ping?t=123`。网络 ping 响应会设置 `Connection: close`，避免 App/PC 的 keep-alive 长时间占用 HTTP socket。
 
 Mermaid 时序图：
 
@@ -2162,6 +2178,7 @@ HTTP GET /ping
    ├─ ServerNetworkStaWifiWorkTime_OnNetworkData()
    ├─ get_ble_mac_no_colon()
    ├─ ServerNetworkStaEpdDisplay_IsBusy()
+   ├─ httpd_resp_set_hdr(Connection: close)
    └─ httpd_resp_sendstr()
 ```
 
@@ -2403,7 +2420,7 @@ sequenceDiagram
         EPD-->>TASK: actual display done / failed
         alt display done
             TASK->>FILE: save and verify next pending progress
-            TASK->>TASK: record last display done tick
+            TASK->>TASK: record last display start tick
         else display failed
             TASK->>TASK: keep current pending progress
         end
@@ -2430,8 +2447,8 @@ HTTP small JSON start_slideshow
          ├─ save_slideshow_control()
          ├─ 初始化并保存 pending_file=第一张
          └─ start_slideshow_runtime()
-            ├─ 运行中收到新的 start_slideshow 时，按最新 interval 从头等待
-            ├─ 未运行但刚完成上一张且未到 interval 时，先等待剩余秒数
+            ├─ 运行中收到新的 start_slideshow 时，按最新 interval 重新计时
+            ├─ 未运行但刚开始显示过上一张且未到 interval 时，先等待剩余秒数
             └─ display_slideshow_file_and_wait()
                └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
 
@@ -2483,7 +2500,7 @@ fileNames 图片轮播顺序；最多 50 个，对应 TDX_SLIDESHOW_MAX_FILES=50
 当前代码用 C 字符串保存 fileName，因此实际文件名内容长度必须小于 48 bytes，最多 47 bytes，不含结尾 '\0'
 超过 50 个文件名时，当前解析只保存前 50 个，后续条目忽略
 random=true 时随机轮播
-interval  轮播间隔，单位秒，允许范围 60..604800
+interval  轮播间隔，单位秒，允许范围 60..604800；表示两次轮播图片送入 EPD 显示队列之间的目标间隔，EPD 显示耗时计入该间隔
 ```
 
 
@@ -2526,9 +2543,10 @@ slideshow 已区分 fileNames 缺失/非法、interval 非法、文件不存在�
 - NVS `slide_progress` 保存版本、配置 hash、待显示文件、随机种子、整轮顺序和当前位置。
 - `pending_file` 表示下一次必须完成显示的图片，不表示已经显示成功的图片。
 - EPD 实际返回成功后才计算并提交下一张；NVS 写入并读回校验成功后运行索引才推进。
-- slideshow_task() 在每次进入等待时，把本次等待总秒数和起始 tick 保存为 RAM runtime timing；正常轮播等待总秒数为 `runtime->request.interval`，运行中收到新的 interval 设置时初始等待重置为最新 interval 的完整时间，未运行重启后的初始等待可为剩余秒数。
-- `ServerNetworkStaSlideshow_GetRuntimeTiming()` 可读取当前等待已经走过的秒数。
-- slideshow_task() 在 EPD 显示成功且下一进度保存成功后记录 RAM last display done tick；如果随后在未运行状态重新启动轮播且还没等满 interval，新 task 会先等待剩余秒数，不会立即刷下一张；如果旧轮播正在运行时收到新的 start_slideshow，则清零旧等待计时并按最新 interval 从头等待。
+- slideshow_task() 在每次轮播图片送入 EPD 显示队列前，把本次 interval 总秒数和显示开始 tick 保存为 RAM runtime timing；正常轮播 interval 为 `runtime->request.interval`，EPD 显示耗时计入该 interval，运行中收到新的 interval 设置时按最新 interval 重新计时，未运行重启后的初始等待可为剩余秒数；初始等待也会先用 PSRAM 预加载当前 pending 图片，再等到目标 tick 后显示。
+- `ServerNetworkStaSlideshow_GetRuntimeTiming()` 可读取当前轮播 interval 已经走过的秒数。
+- slideshow_task() 在 EPD 显示成功且下一进度保存成功后记录 RAM last display start tick；如果随后在未运行状态重新启动轮播且距离上次开始显示还没等满 interval，新 task 会先等待剩余秒数，不会立即刷下一张；如果旧轮播正在运行时收到新的 start_slideshow，则按最新 interval 重新计时。
+- slideshow_task() 在上一张 EPD 显示完成并保存下一进度后，会在剩余 interval 时间内用 PSRAM 预加载下一张 bin 并做 SHA-256 文件名校验；目标 tick 到达后直接送入 EPD 显示队列，减少“300 秒后再读文件”造成的额外延迟。若 PSRAM 预加载失败，已保存的下一进度不变，下一轮会重新读取该图片，不长时间占用内部 RAM，不影响停止和失败不推进的规则。
 - 显示失败、等待超时、NVS 保存失败或显示中途断电均不推进；下次继续当前图片。
 - 随机模式按“整轮洗牌”运行，一轮内所有图片各显示一次，不重复、不遗漏。
 
@@ -2540,8 +2558,8 @@ slideshow 已区分 fileNames 缺失/非法、interval 非法、文件不存在�
 - 兼容旧 `slide_last`：首次升级时将旧文件名迁移为新的待显示进度。
 - slideshow_task() 读取 `/data/bin_img/*.bin`，等待 EPD 真正完成后再提交下一进度；如果读文件前、读文件后或送 EPD 前收到停止请求，则放弃本张显示并退出。
 - slideshow_task() 从 SD 读出 bin 后、送 EPD 前，会计算文件内容 SHA-256 的十六进制后 16 位并与 fileName 比对，只打印 `sha256 ok` / `sha256 mismatch` / `sha256 failed` / `skip invalid basename` 诊断日志，不阻止显示、不修改进度；匹配成功用 `ESP_LOGI`，无效 basename 跳过用 `ESP_LOGW`，计算失败或 mismatch 用 `ESP_LOGE`。
-- 轮播 runtime timing 只表示当前 task 正在等待的计时进度；显示 EPD 期间不计入 interval 已走时间。
-- last display done tick 只保存在 RAM 中，断电重启后不保留；它只用于未运行状态下 `start_slideshow` / `set_slideshow sw=1` 重启轮播时避免刚显示完又立即显示下一张。若旧轮播正在运行并收到新的 interval 设置，则不继承已走时间，按最新 interval 从 0 开始计时。
+- 轮播 runtime timing 表示当前轮播 interval 的计时进度；显示 EPD 期间也计入 interval 已走时间。例如 interval=300，EPD 显示耗时 37 秒，则显示完成后只继续等待约 263 秒；下一张会尽量提前预加载，到目标 tick 后立即送入 EPD 显示队列。
+- last display start tick 只保存在 RAM 中，断电重启后不保留；它只用于未运行状态下 `start_slideshow` / `set_slideshow sw=1` 重启轮播时避免未到目标 interval 又立即显示下一张。若旧轮播正在运行并收到新的 interval 设置，则不继承已走时间，按最新 interval 从 0 开始计时。
 - 极端情况下若 EPD 已完成但提交下一进度前断电，当前图片会重复一次，但绝不会跳图。
 ```
 
@@ -2683,8 +2701,8 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 ```text
 set_slideshow 的 sw=1 会更新控制文件、同步写 `epd_mode=1(SLIDESHOW)`，并尝试启动轮播。
-若旧轮播正在运行，`set_slideshow sw=1` 写入新的 interval 后会清零当前等待计时，按最新 interval 从 0 开始等待；如果 EPD 正在显示，不打断本次显示，显示完成后再按最新 interval 从头等待。
-若轮播未运行且上一张轮播图片刚刚显示完成、interval 还没走完，sw=1 只启动/恢复轮播 task；task 会先等待剩余 interval，到时间后再显示下一张，不保证立即刷新。
+若旧轮播正在运行，`set_slideshow sw=1` 写入新的 interval 后会按最新 interval 重新计时；如果 EPD 正在显示，不打断本次显示，显示完成后按最新 interval 的剩余时间等待，等待期间会预加载下一张。
+若轮播未运行且上一张轮播图片刚刚开始显示过、interval 还没走完，sw=1 只启动/恢复轮播 task；task 会先预加载当前 pending 图片并等待剩余 interval，到时间后再显示下一张，不保证立即刷新。
 存储未就绪、未保存轮播列表、参数非法、interval 非法、控制文件/NVS 保存失败和轮播 runtime 启动失败已分别返回 1012、1501、1004、1507、1509、1506。
 网络 JSON 的 `func` 判断支持空格、CRLF 和 PowerShell `ConvertTo-Json` 输出格式。
 ```
@@ -3043,7 +3061,11 @@ sequenceDiagram
         TIMER->>TIMER: read slideshow control sw/interval
         alt slideshow sw=1
             TIMER->>TIMER: read slideshow runtime interval elapsed
-            WT->>CH583: WAKE_TIMER ON,<remaining interval>
+            alt remaining interval >= TDX_SLIDESHOW_INTERVAL_MIN_SECONDS
+                WT->>CH583: WAKE_TIMER ON,<remaining interval>
+            else remaining interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS
+                WT->>WT: reset wifi_work_time counter, skip POWER_OFF
+            end
         else slideshow sw=0
             WT->>CH583: WAKE_TIMER OFF,0
         end
@@ -3089,7 +3111,8 @@ work_state_task()
    ├─ sw=1
    │  ├─ ServerNetworkStaSlideshow_GetRuntimeTiming()
    │  ├─ runtime 正在等待 interval 时，wake_interval = max(runtime_interval - elapsed - startup_delay_seconds, 1)
-   │  └─ ch583_wifi_uart_send_wake_timer_on(wake_interval)
+   │  ├─ wake_interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS 时，重置 wifi_work_time 运行时计时并跳过 POWER_OFF
+   │  └─ wake_interval >= TDX_SLIDESHOW_INTERVAL_MIN_SECONDS 时，ch583_wifi_uart_send_wake_timer_on(wake_interval)
    ├─ sw=0 / control missing / parse failed
    │  └─ ch583_wifi_uart_send_wake_timer_off()
    ├─ 超时后立即发送一次；之后每 20 秒重发一次 WAKE_TIMER / LED 关闭 / POWER_OFF
@@ -3158,7 +3181,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 - load_work_state_from_nvs() 读取工作状态 blob。
 - load_work_time_vars_from_app_nvs() 读取兼容字符串 key。
 - work_state_task() 读取 RAM 中计时值；超时后如果 OTA 忙或 EPD task 忙则推迟，只有 OTA 不忙且 EPD 空闲时才先配置 CH583 WAKE_TIMER，再发送 CH583 POWER_OFF。
-- 轮播开启时，WAKE_TIMER 优先使用轮播 runtime 当前等待的剩余时间，并扣除开机自动恢复轮播延迟：`runtime_wait_seconds - 已走秒数 - startup_delay_seconds`；其中 `startup_delay_seconds = ceil(TDX_SLIDESHOW_STARTUP_DELAY_MS / 1000)`，单位为秒，最小值为 1 秒。若 runtime timing 不可用，则回退使用 control 文件中的 interval 并同样扣除 startup delay。
+- 轮播开启时，WAKE_TIMER 优先使用轮播 runtime 当前 interval 的剩余时间，并扣除开机自动恢复轮播延迟：`runtime_interval - 已走秒数 - startup_delay_seconds`；其中 `startup_delay_seconds = ceil(TDX_SLIDESHOW_STARTUP_DELAY_MS / 1000)`，单位为秒，最小值为 1 秒。若 runtime timing 不可用，则回退使用 control 文件中的 interval 并同样扣除 startup delay。若计算出的 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，ESP32 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，只重置 wifi_work_time 运行时计时，从头等待下一次工作超时。
 ```
 
 work_state 栈大小要求：
@@ -3171,12 +3194,175 @@ USER_WORK_STATE_TASK_STACK_SIZE 默认使用 8 * 1024。
 work_state_task() 不是只做简单计时。工作时间超时后，它会执行关机前完整链路：
 1. 先确认 OTA 不忙且 EPD task 空闲；EPD 正在显示或队列仍有待显示任务时不关机。
 2. 读取 slideshow control，决定 WAKE_TIMER ON/OFF。
-3. slideshow 开启时读取 runtime timing，扣掉当前 interval 已经走过的秒数，并额外扣掉 `TDX_SLIDESHOW_STARTUP_DELAY_MS` 换算后的秒数，向上取整，再发送 CH583 WAKE_TIMER；最小剩余时间为 1 秒。
+3. slideshow 开启时读取 runtime timing，扣掉当前 interval 已经走过的秒数，并额外扣掉 `TDX_SLIDESHOW_STARTUP_DELAY_MS` 换算后的秒数。若剩余 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，不发送 WAKE_TIMER ON/OFF，不发送 POWER_OFF，只重置 wifi_work_time 运行时计时；否则发送 CH583 WAKE_TIMER ON。
 4. 调用 UserLedStatus_PreparePowerOff()，发送 RED/GREEN LED 停止闪烁和关闭指令。
 5. 发送 CH583 POWER_OFF。
 
 这些调用会进入 CH583 V1 组帧、UART 写入、调试输出等函数，栈上存在多个局部 buffer。
 如果栈只有 3 * 1024，可能在超时关机流程中触发 Stack protection fault。
+```
+
+[⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
+
+---
+
+### 7.13 time：RTC 默认时间与 SNTP 网络校时 <span id="sec-07-13"></span>
+
+Result 定义建议：
+
+| 返回 | result | 说明 |
+|---|---|---|
+| `time_result` | `0` | 已通过 SNTP 同步网络时间 |
+| `time_result` | `1` | 当前使用默认时间，尚未 SNTP 同步 |
+| `time_result` | `2` | 时间仍无效 |
+
+功能说明：ESP32-C5 启动后初始化系统时间模块，使用 `RTC + high-resolution timer` 作为系统时间源。开机时先设置中国时区 `CST-8`，只在当前 RTC / 系统时间无效时设置默认时间 `2026-01-01 00:00:00`；如果 RTC 时间已经有效，则保留现有时间，不强制覆盖。WiFi STA 获取 IP 后启动 SNTP，从阿里云 NTP 服务器同步网络时间，SNTP 成功后 ESP-IDF 自动更新系统时间。
+
+配置要求：
+
+```ini
+CONFIG_LIBC_TIME_SYSCALL_USE_RTC_HRT=y
+CONFIG_LWIP_SNTP_MAX_SERVERS=3
+CONFIG_LWIP_SNTP_UPDATE_DELAY=3600000
+```
+
+SNTP 服务器：
+
+```text
+ntp.aliyun.com
+ntp1.aliyun.com
+ntp2.aliyun.com
+```
+
+Mermaid 时序图：
+
+```mermaid
+sequenceDiagram
+    participant APP as app_main
+    participant TIME as server_network_sta_time
+    participant WIFI as WiFi STA
+    participant SNTP as Aliyun NTP
+    participant HTTP as GET /time
+    APP->>TIME: ServerNetworkStaTime_Init()
+    TIME->>TIME: set TZ=CST-8
+    TIME->>TIME: time() 检查当前 RTC / 系统时间
+    alt 时间无效
+        TIME->>TIME: settimeofday(default 2026-01-01 00:00:00)
+    else 时间有效
+        TIME->>TIME: 保留当前时间
+    end
+    TIME->>TIME: esp_netif_sntp_init(start=false)
+    WIFI->>TIME: IP_EVENT_STA_GOT_IP
+    TIME->>SNTP: esp_netif_sntp_start()
+    SNTP-->>TIME: sync callback
+    TIME->>TIME: 标记 source=sntp synced=true
+    HTTP->>TIME: ServerNetworkStaTime_ProcessGet()
+    TIME-->>HTTP: time_result JSON
+```
+
+相关文件：
+
+```text
+main/server_network_sta/time/server_network_sta_time.c
+main/server_network_sta/time/server_network_sta_time.h
+main/file_server.c
+main/main.c
+sdkconfig
+sdkconfig.defaults.esp32c5
+```
+
+树状时序：
+
+```text
+main/main.c
+└─ app_main()
+   ├─ esp_netif_init()
+   ├─ esp_event_loop_create_default()
+   └─ ServerNetworkStaTime_Init()
+      ├─ setenv("TZ", "CST-8", 1)
+      ├─ tzset()
+      ├─ ServerNetworkStaTime_SetDefaultIfInvalid()
+      │  ├─ time()
+      │  ├─ 时间 >= 2026 年：保留现有 RTC / 系统时间
+      │  └─ 时间 < 2026 年：settimeofday(default)
+      ├─ esp_event_handler_register(IP_EVENT_STA_GOT_IP)
+      └─ esp_netif_sntp_init(start=false)
+
+WiFi got IP
+└─ ip_event_handler()
+   └─ esp_netif_sntp_start()
+
+GET /time
+└─ file_server.c download_get_handler()
+   └─ ServerNetworkStaTime_ProcessGet()
+      ├─ ServerNetworkStaTime_GetInfo()
+      └─ 返回 time_result JSON
+```
+
+HTTP 请求：
+
+```text
+GET /time
+GET /time?t=123
+```
+
+SNTP 同步成功响应示例：
+
+```json
+{
+  "func": "time_result",
+  "result": 0,
+  "message": "ok",
+  "valid": true,
+  "synced": true,
+  "source": "sntp",
+  "server": "ntp.aliyun.com",
+  "timezone": "CST-8",
+  "epoch": 1783070000,
+  "local": "2026-07-03 20:33:20",
+  "utc": "2026-07-03 12:33:20"
+}
+```
+
+未同步但已设置默认时间响应示例：
+
+```json
+{
+  "func": "time_result",
+  "result": 1,
+  "message": "using default time",
+  "valid": true,
+  "synced": false,
+  "source": "default",
+  "server": "ntp.aliyun.com",
+  "timezone": "CST-8",
+  "epoch": 1767196800,
+  "local": "2026-01-01 00:00:00",
+  "utc": "2025-12-31 16:00:00"
+}
+```
+
+Powershell 测试用例：
+
+```powershell
+$esp = "http://192.168.1.104"
+Invoke-RestMethod -Uri "$esp/time" -Method Get
+Invoke-RestMethod -Uri "$esp/time?t=123" -Method Get
+```
+
+存 / 取信息（含条件限制）：
+
+```text
+存：
+- 不写 NVS、不写 SD。
+- 当前 RTC / 系统时间无效时，使用 settimeofday() 写入默认时间。
+- SNTP 同步成功后，由 ESP-IDF SNTP 默认立即同步模式更新系统时间。
+
+取：
+- ServerNetworkStaTime_GetInfo() 读取 time() 当前时间。
+- valid 判断以本地时间年份 >= 2026 为准。
+- source=default 表示使用默认兜底时间或启动时保留的有效时间；source=sntp 表示 SNTP 已成功同步。
+- sntp_synced 只表示本轮启动后是否收到 SNTP 同步回调。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -4785,7 +4971,7 @@ Content-Length: 88
 - 随机轮播保存完整的本轮排列，一轮内每张图片显示一次。
 
 取：
-- ServerNetworkStaSlideshow_StartSaved() 启动时读取 slideshow_config、control 和待显示进度；slideshow_control 设置 interval 时使用 ServerNetworkStaSlideshow_StartSavedResetInterval()，旧轮播运行中会按最新 interval 从头等待。
+- ServerNetworkStaSlideshow_StartSaved() 启动时读取 slideshow_config、control 和待显示进度；slideshow_control 设置 interval 时使用 ServerNetworkStaSlideshow_StartSavedResetInterval()，旧轮播运行中会按最新 interval 重新计时。
 - slideshow_task() 按配置读取 `/data/bin_img/*.bin`，等待 EPD 完成；失败或断电不推进当前图片。
 ```
 
@@ -6347,6 +6533,7 @@ CMD=POWER_OFF
 ARG 为空
 WiFi 任务完成后，如果允许 CH583 关闭 WiFi 电源，ESP32-C5 发送 POWER_OFF
 CH583 收到并校验通过后回复 ACK，然后由 CH583 固件侧拉低 PB8、关闭 WiFi 电源并进入低功耗。ESP32 当前源码只负责发送 `POWER_OFF` 帧，不直接操作 PB8。发送前需要确认 OTA 不忙且 EPD task 空闲；EPD 显示未完成时继续推迟，避免关电导致显示不完整。
+轮播开启时，如果关电前计算出的 WAKE_TIMER wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，ESP32-C5 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，而是重置 wifi_work_time 运行时计时，从头等待下一次工作超时。
 ```
 
 
@@ -6357,7 +6544,7 @@ CH583 收到并校验通过后回复 ACK，然后由 CH583 固件侧拉低 PB8�
 - POWER_OFF 不写持久化数据。
 
 取：
-- 读取 WiFi 工作时间模块的 RAM 计时状态；超时后发送 POWER_OFF。
+- 读取 WiFi 工作时间模块的 RAM 计时状态；超时后先配置 WAKE_TIMER，符合关电条件时发送 POWER_OFF。
 - PB8 拉低是 CH583 固件/硬件侧动作，不是 ESP32 当前源码直接写 GPIO。
 ```
 
@@ -6864,14 +7051,16 @@ ESP32-C5 侧使用：
 ```text
 work_state_task() 工作时间到期、OTA 不忙且 EPD 空闲时：
 ├─ 读取 slideshow control
-├─ sw=1：读取 slideshow runtime timing，ch583_wifi_uart_send_wake_timer_on(max(runtime_interval - elapsed - startup_delay_seconds, 1))
+├─ sw=1：读取 slideshow runtime timing 并计算 wake_interval
+│  ├─ wake_interval >= TDX_SLIDESHOW_INTERVAL_MIN_SECONDS：ch583_wifi_uart_send_wake_timer_on(wake_interval)
+│  └─ wake_interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS：不发送 WAKE_TIMER ON/OFF，不发送 POWER_OFF，只重置 wifi_work_time 运行时计时
 ├─ sw=0：ch583_wifi_uart_send_wake_timer_off()
 ├─ 超时后立即发送一次；之后每 20 秒重发一次 WAKE_TIMER / LED 关闭 / POWER_OFF
 ├─ 关机流程中发给 CH583/CH585 的命令之间至少间隔 100ms
 └─ 然后继续 ch583_wifi_uart_send_power_off()
 ```
 
-`WAKE_TIMER` 配置失败只打印 warning，不阻止后续 `POWER_OFF`；这样 CH583/CH585 固件暂未支持新命令时，也不会破坏原有关机链路。超时后关机流程按 20 秒节流重发，但 EPD busy 时不发送 WAKE_TIMER / LED 关闭 / POWER_OFF，等 EPD task 完成后再进入关机流程，避免刷屏中途断电。
+`WAKE_TIMER` 配置失败只打印 warning，不阻止后续 `POWER_OFF`；这样 CH583/CH585 固件暂未支持新命令时，也不会破坏原有关机链路。轮播开启且 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60` 时，不调用 `ch583_wifi_uart_send_wake_timer_off()`，而是重置 wifi_work_time 运行时计时并跳过本次 `POWER_OFF`。超时后关机流程按 20 秒节流重发，但 EPD busy 时不发送 WAKE_TIMER / LED 关闭 / POWER_OFF，等 EPD task 完成后再进入关机流程，避免刷屏中途断电。
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-12)
 
@@ -9029,6 +9218,10 @@ example_start_file_server()
 GET /ping
 └─ download_get_handler()
    └─ ServerNetworkStaPing_ProcessGet() 优先拦截
+
+GET /time
+└─ download_get_handler()
+   └─ ServerNetworkStaTime_ProcessGet() 优先拦截
 ```
 
 ---
@@ -9354,8 +9547,10 @@ main/
 │  │  └─ 轮播开关/间隔控制
 │  ├─ wifi_work_time/
 │  │  └─ WiFi 工作时间、CH583 POWER_OFF
-│  └─ ping/
-│     └─ 网络心跳
+│  ├─ ping/
+│  │  └─ 网络心跳
+│  └─ time/
+│     └─ RTC 默认时间、SNTP 网络校时、GET /time
 ├─ usb_console_echo/
 │  └─ USB Serial/JTAG HTTP-like 请求、路由和响应
 ├─ ch583_uart/

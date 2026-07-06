@@ -190,6 +190,9 @@ extern "C" {
 // Keep the ping URI here so heartbeat routing can change without touching GET resource handlers.
 #define SERVER_NETWORK_STA_PING_URI "/ping"
 
+// Keep the time URI here so RTC/SNTP status routing can change without touching GET resource handlers.
+#define SERVER_NETWORK_STA_TIME_URI "/time"
+
 // Keep the mDNS host name here so board/product naming does not leak into network code.
 // 中文：将 mDNS 主机名集中在这里，避免板级/产品命名散落到网络代码里。
 #define USER_MDNS_HOSTNAME "esp32-c5-photopainter"
@@ -536,7 +539,7 @@ extern "C" {
 #define USER_EPD_DISPLAY_WAIT_TIMEOUT_MS (5 * 60 * 1000)
 
 #define USER_EPD_TYPE_NVS_KEY "epd_type"
-#define USER_EPD_TYPE_DEFAULT 4
+#define USER_EPD_TYPE_DEFAULT 10   // EPD_TYPE_1600_1200_133_DKE = 10,
 #define USER_EPD_DISPLAY_MODE_NORMAL 0
 #define USER_EPD_DISPLAY_MODE_SLIDESHOW 1
 #define USER_EPD_DISPLAY_MODE_DAILY 2

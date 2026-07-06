@@ -188,16 +188,12 @@ void send_base_info_to_mobile(void)
                  "\"WiFi\":\"%s\","
                  "\"version\":\"%s\","
                  "\"date\":\"%s\","
-                 "\"time\":\"%s\","
-                 "\"idf\":\"%s\","
                  "\"running\":\"%s\"}",
                  TDX_JSON_RESULT_OK,
                  ip_str,
                  ssid_str,
                  app != NULL ? app->version : "",
                  app != NULL ? app->date : "",
-                 app != NULL ? app->time : "",
-                 app != NULL ? app->idf_ver : "",
                  running != NULL ? running->label : "");
 
 #if (USER_BLE_ENABLE == 1)

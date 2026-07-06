@@ -255,7 +255,14 @@ static uint32_t slideshow_startup_delay_seconds(void)
     return (TDX_SLIDESHOW_STARTUP_DELAY_MS + 999U) / 1000U;
 }
 
-static void configure_ch583_wake_timer_before_power_off(void)
+static void reset_work_time_counter_for_slideshow_short_interval(void)
+{
+    s_wifi_work_start_tick = xTaskGetTickCount();
+    working_time = 0;
+    s_last_power_off_send_tick = 0;
+}
+
+static bool configure_ch583_wake_timer_before_power_off(void)
 {
     uint32_t interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
     bool random = false;
@@ -287,6 +294,18 @@ static void configure_ch583_wake_timer_before_power_off(void)
         }
         wake_interval = wake_interval > startup_delay ? wake_interval - startup_delay : 1U;
 
+        if (wake_interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
+            reset_work_time_counter_for_slideshow_short_interval();
+            ESP_LOGI(TAG,
+                     "slideshow wake interval too short, skip power off wake_interval=%lu min=%lu saved_interval=%lu elapsed=%lu startup_delay=%lu",
+                     (unsigned long)wake_interval,
+                     (unsigned long)TDX_SLIDESHOW_INTERVAL_MIN_SECONDS,
+                     (unsigned long)interval,
+                     (unsigned long)runtime_elapsed,
+                     (unsigned long)startup_delay);
+            return false;
+        }
+
         ESP_LOGI(TAG,
                  "slideshow enabled before power off, wake timer on interval=%lu saved_interval=%lu elapsed=%lu startup_delay=%lu random=%d",
                  (unsigned long)wake_interval,
@@ -303,11 +322,13 @@ static void configure_ch583_wake_timer_before_power_off(void)
     if (wake_ret < 0) {
         ESP_LOGW(TAG, "CH583 wake timer config failed ret=%d, continue power off", wake_ret);
     }
+    return true;
 }
 
 static void work_state_task(void *arg)
 {
     uint8_t counter = 0;
+    uint8_t slideshow_debug_counter = 0;
 #if CH583_WIFI_NFC_TEST_ENABLE
     bool nfc_test_done = false;
 #endif
@@ -342,6 +363,30 @@ static void work_state_task(void *arg)
                  (unsigned long)server_required_continue_work_time,
                  (unsigned long)remaining,
                  (unsigned long)wifi_standby_time_s);
+        }
+
+        uint32_t slideshow_interval = 0;
+        uint32_t slideshow_elapsed = 0;
+        bool slideshow_running = false;
+        if (ServerNetworkStaSlideshow_GetRuntimeTiming(&slideshow_interval,
+                                                       &slideshow_elapsed,
+                                                       &slideshow_running) &&
+            slideshow_running) {
+            slideshow_debug_counter++;
+            uint32_t slideshow_remaining = slideshow_interval > slideshow_elapsed ?
+                                           slideshow_interval - slideshow_elapsed :
+                                           0;
+            if (slideshow_debug_counter >= 10 || slideshow_remaining <= 3) {
+                slideshow_debug_counter = 0;
+                ESP_LOGI(TAG,
+                         "slide_timer active=1 interval=%lu elapsed=%lu remain=%lu epd=%s",
+                         (unsigned long)slideshow_interval,
+                         (unsigned long)slideshow_elapsed,
+                         (unsigned long)slideshow_remaining,
+                         ServerNetworkStaEpdDisplay_IsBusy() ? "BUSY" : "IDLE");
+            }
+        } else {
+            slideshow_debug_counter = 0;
         }
 
 
@@ -381,7 +426,10 @@ static void work_state_task(void *arg)
                          (unsigned long)elapsed,
                          (unsigned long)server_required_continue_work_time,
                          (unsigned long)wifi_standby_time_s);
-                configure_ch583_wake_timer_before_power_off();
+                if (!configure_ch583_wake_timer_before_power_off()) {
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
                 vTaskDelay(pdMS_TO_TICKS(100));
                 UserLedStatus_PreparePowerOff();
                 vTaskDelay(pdMS_TO_TICKS(100));

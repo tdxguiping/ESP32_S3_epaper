@@ -50,5 +50,6 @@ esp_err_t ServerNetworkStaPing_ProcessGet(httpd_req_t *req)
     }
     ESP_LOGI(TAG, "ping request uri=%s method=GET EPD=%s Ble_MAC=%s", req->uri, epd_state, ble_mac);
     httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Connection", "close");
     return httpd_resp_sendstr(req, json);
 }

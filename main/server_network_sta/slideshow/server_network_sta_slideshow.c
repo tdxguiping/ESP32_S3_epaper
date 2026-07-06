@@ -58,6 +58,12 @@ typedef struct {
 } slideshow_runtime_t;
 
 typedef struct {
+    char file_name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN];
+    uint8_t *buf;
+    size_t len;
+} slideshow_loaded_file_t;
+
+typedef struct {
     char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
 } slideshow_startup_delay_t;
 
@@ -68,9 +74,11 @@ static portMUX_TYPE s_slideshow_timing_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_slideshow_interval_active = false;
 static uint32_t s_slideshow_runtime_interval = 0;
 static TickType_t s_slideshow_interval_start_tick = 0;
-static bool s_slideshow_last_display_done_valid = false;
+static bool s_slideshow_last_display_start_valid = false;
 static uint32_t s_slideshow_last_display_interval = 0;
-static TickType_t s_slideshow_last_display_done_tick = 0;
+static TickType_t s_slideshow_last_display_start_tick = 0;
+
+static void slideshow_begin_interval(uint32_t interval, TickType_t start_tick);
 
 static bool json_func_equals(const char *body, const char *func)
 {
@@ -419,18 +427,44 @@ static esp_err_t write_text_file(const char *path, const char *data)
     return written == len ? ESP_OK : ESP_FAIL;
 }
 
-static esp_err_t display_slideshow_file_and_wait(const char *base_path, const char *file_name)
+static void slideshow_loaded_file_free(slideshow_loaded_file_t *loaded)
+{
+    if (loaded == NULL) {
+        return;
+    }
+    if (loaded->buf != NULL) {
+        heap_caps_free(loaded->buf);
+    }
+    memset(loaded, 0, sizeof(*loaded));
+}
+
+static bool slideshow_loaded_file_matches(const slideshow_loaded_file_t *loaded, const char *file_name)
+{
+    return loaded != NULL &&
+           loaded->buf != NULL &&
+           file_name != NULL &&
+           strcmp(loaded->file_name, file_name) == 0;
+}
+
+static esp_err_t slideshow_load_file(const char *base_path,
+                                     const char *file_name,
+                                     slideshow_loaded_file_t *loaded,
+                                     bool allow_internal_fallback)
 {
     char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
     struct stat st = {0};
 
-    if (base_path == NULL || !file_name_is_safe(file_name)) {
+    if (base_path == NULL || !file_name_is_safe(file_name) || loaded == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     if (s_slideshow_stop) {
-        ESP_LOGI(TAG, "slideshow display skipped because stop requested file=%s", file_name);
+        ESP_LOGI(TAG, "slideshow preload skipped because stop requested file=%s", file_name);
         return ESP_ERR_INVALID_STATE;
     }
+
+    slideshow_loaded_file_free(loaded);
+    TickType_t preload_start_tick = xTaskGetTickCount();
+    ESP_LOGI(TAG, "slideshow preload start file=%s", file_name);
 
     snprintf(path, sizeof(path), "%s/bin_img/%s.bin", base_path, file_name);
     esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
@@ -444,12 +478,12 @@ static esp_err_t display_slideshow_file_and_wait(const char *base_path, const ch
     }
     TdxSharedSpi_Unlock();
     if (s_slideshow_stop) {
-        ESP_LOGI(TAG, "slideshow display skipped after stat because stop requested file=%s", file_name);
+        ESP_LOGI(TAG, "slideshow preload skipped after stat because stop requested file=%s", file_name);
         return ESP_ERR_INVALID_STATE;
     }
 
     uint8_t *buf = (uint8_t *)heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (buf == NULL) {
+    if (buf == NULL && allow_internal_fallback) {
         buf = (uint8_t *)heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_8BIT);
     }
     if (buf == NULL) {
@@ -476,7 +510,7 @@ static esp_err_t display_slideshow_file_and_wait(const char *base_path, const ch
     TdxSharedSpi_Unlock();
     if (s_slideshow_stop) {
         heap_caps_free(buf);
-        ESP_LOGI(TAG, "slideshow display skipped after read because stop requested file=%s", file_name);
+        ESP_LOGI(TAG, "slideshow preload skipped after read because stop requested file=%s", file_name);
         return ESP_ERR_INVALID_STATE;
     }
     if (read_len != (size_t)st.st_size) {
@@ -486,23 +520,72 @@ static esp_err_t display_slideshow_file_and_wait(const char *base_path, const ch
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "slideshow display start file=%s size=%u",
-             file_name, (unsigned int)read_len);
     slideshow_log_bin_sha256_tail(file_name, buf, read_len);
+    strlcpy(loaded->file_name, file_name, sizeof(loaded->file_name));
+    loaded->buf = buf;
+    loaded->len = read_len;
+    uint32_t preload_ms = (uint32_t)((xTaskGetTickCount() - preload_start_tick) * portTICK_PERIOD_MS);
+    ESP_LOGI(TAG, "slideshow preload done file=%s size=%u ms=%lu",
+             file_name,
+             (unsigned int)read_len,
+             (unsigned long)preload_ms);
+    return ESP_OK;
+}
+
+static esp_err_t slideshow_display_loaded_file_and_wait(slideshow_loaded_file_t *loaded,
+                                                        uint32_t interval,
+                                                        TickType_t *display_start_tick_out)
+{
+    if (loaded == NULL || loaded->buf == NULL || loaded->len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
     if (s_slideshow_stop) {
-        heap_caps_free(buf);
-        ESP_LOGI(TAG, "slideshow display skipped before queue because stop requested file=%s", file_name);
+        ESP_LOGI(TAG, "slideshow display skipped before queue because stop requested file=%s", loaded->file_name);
+        slideshow_loaded_file_free(loaded);
         return ESP_ERR_INVALID_STATE;
     }
-    esp_err_t ret = ServerNetworkStaEpdDisplay_QueueToScreenAndWait(buf, read_len, 1);
-    heap_caps_free(buf);
+
+    TickType_t display_start_tick = xTaskGetTickCount();
+    if (display_start_tick_out != NULL) {
+        *display_start_tick_out = display_start_tick;
+    }
+    if (interval > 0) {
+        slideshow_begin_interval(interval, display_start_tick);
+        ESP_LOGI(TAG, "slideshow timing start file=%s interval=%lu tick=%lu",
+                 loaded->file_name,
+                 (unsigned long)interval,
+                 (unsigned long)display_start_tick);
+    }
+    ESP_LOGI(TAG, "slideshow display start file=%s size=%u tick=%lu",
+             loaded->file_name,
+             (unsigned int)loaded->len,
+             (unsigned long)display_start_tick);
+    esp_err_t ret = ServerNetworkStaEpdDisplay_QueueToScreenAndWait(loaded->buf, loaded->len, 1);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "slideshow display done file=%s", file_name);
+        uint32_t display_elapsed = (uint32_t)(((xTaskGetTickCount() - display_start_tick) * portTICK_PERIOD_MS) / 1000U);
+        ESP_LOGI(TAG, "slideshow display done file=%s elapsed=%lu",
+                 loaded->file_name,
+                 (unsigned long)display_elapsed);
     } else {
         ESP_LOGW(TAG, "slideshow display failed file=%s ret=%s, progress unchanged",
-                 file_name, esp_err_to_name(ret));
+                 loaded->file_name, esp_err_to_name(ret));
     }
+    slideshow_loaded_file_free(loaded);
     return ret;
+}
+
+static esp_err_t display_slideshow_file_and_wait(const char *base_path,
+                                                 const char *file_name,
+                                                 uint32_t interval,
+                                                 TickType_t *display_start_tick_out)
+{
+    slideshow_loaded_file_t loaded = {0};
+    esp_err_t ret = slideshow_load_file(base_path, file_name, &loaded, true);
+    if (ret != ESP_OK) {
+        slideshow_loaded_file_free(&loaded);
+        return ret;
+    }
+    return slideshow_display_loaded_file_and_wait(&loaded, interval, display_start_tick_out);
 }
 
 static uint32_t slideshow_hash_byte(uint32_t hash, uint8_t value)
@@ -722,36 +805,85 @@ static void prepare_next_slideshow_progress(const slideshow_request_t *request,
             sizeof(next->pending_file));
 }
 
-static void wait_slideshow_seconds(uint32_t seconds)
-{
-    if (seconds == 0) {
-        return;
-    }
-
-    TickType_t last_wake_tick = xTaskGetTickCount();
-    const TickType_t one_second_ticks = pdMS_TO_TICKS(1000);
-    portENTER_CRITICAL(&s_slideshow_timing_mux);
-    s_slideshow_interval_active = true;
-    s_slideshow_runtime_interval = seconds;
-    s_slideshow_interval_start_tick = last_wake_tick;
-    portEXIT_CRITICAL(&s_slideshow_timing_mux);
-
-    for (uint32_t elapsed_s = 0; elapsed_s < seconds && !s_slideshow_stop; elapsed_s++) {
-        vTaskDelayUntil(&last_wake_tick, one_second_ticks);
-    }
-
-    portENTER_CRITICAL(&s_slideshow_timing_mux);
-    s_slideshow_interval_active = false;
-    portEXIT_CRITICAL(&s_slideshow_timing_mux);
-}
-
-static void wait_slideshow_interval_seconds(uint32_t interval)
+static void slideshow_begin_interval(uint32_t interval, TickType_t start_tick)
 {
     if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
         interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
     }
 
-    wait_slideshow_seconds(interval);
+    portENTER_CRITICAL(&s_slideshow_timing_mux);
+    s_slideshow_interval_active = true;
+    s_slideshow_runtime_interval = interval;
+    s_slideshow_interval_start_tick = start_tick;
+    portEXIT_CRITICAL(&s_slideshow_timing_mux);
+}
+
+static TickType_t slideshow_seconds_to_ticks(uint32_t seconds)
+{
+    uint64_t ticks = (uint64_t)seconds * (uint64_t)configTICK_RATE_HZ;
+    if (ticks > (uint64_t)portMAX_DELAY) {
+        ticks = (uint64_t)portMAX_DELAY;
+    }
+    return (TickType_t)ticks;
+}
+
+static bool wait_slideshow_interval_from_start(TickType_t start_tick, uint32_t interval)
+{
+    if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
+        interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
+    }
+
+    TickType_t interval_ticks = slideshow_seconds_to_ticks(interval);
+    TickType_t target_tick = start_tick + interval_ticks;
+    TickType_t now = xTaskGetTickCount();
+    uint32_t elapsed = (uint32_t)(((now - start_tick) * portTICK_PERIOD_MS) / 1000U);
+    TickType_t remaining_ticks = (now - start_tick) < interval_ticks ? target_tick - now : 0;
+    uint32_t remaining = (uint32_t)((remaining_ticks * portTICK_PERIOD_MS + 999U) / 1000U);
+
+    ESP_LOGI(TAG, "slideshow timing wait interval=%lu elapsed=%lu remain=%lu",
+             (unsigned long)interval,
+             (unsigned long)elapsed,
+             (unsigned long)remaining);
+
+    while (remaining_ticks > 0 && !s_slideshow_stop) {
+        TickType_t delay_ticks = remaining_ticks > pdMS_TO_TICKS(1000) ?
+                                 pdMS_TO_TICKS(1000) :
+                                 remaining_ticks;
+        vTaskDelay(delay_ticks);
+        now = xTaskGetTickCount();
+        if ((now - start_tick) >= interval_ticks) {
+            break;
+        }
+        remaining_ticks = target_tick - now;
+    }
+
+    now = xTaskGetTickCount();
+    bool target_reached = (now - start_tick) >= interval_ticks;
+    if (!target_reached && s_slideshow_stop) {
+        uint32_t remain_ms = (uint32_t)((target_tick - now) * portTICK_PERIOD_MS);
+        ESP_LOGI(TAG, "slideshow timing stopped interval=%lu remain_ms=%lu",
+                 (unsigned long)interval,
+                 (unsigned long)remain_ms);
+        portENTER_CRITICAL(&s_slideshow_timing_mux);
+        s_slideshow_interval_active = false;
+        portEXIT_CRITICAL(&s_slideshow_timing_mux);
+        return false;
+    }
+
+    int32_t late_ms = 0;
+    if (target_reached) {
+        late_ms = (int32_t)((now - target_tick) * portTICK_PERIOD_MS);
+    } else {
+        late_ms = -(int32_t)((target_tick - now) * portTICK_PERIOD_MS);
+    }
+    ESP_LOGI(TAG, "slideshow timing target interval=%lu late_ms=%ld",
+             (unsigned long)interval,
+             (long)late_ms);
+
+    portENTER_CRITICAL(&s_slideshow_timing_mux);
+    s_slideshow_interval_active = false;
+    portEXIT_CRITICAL(&s_slideshow_timing_mux);
+    return target_reached;
 }
 
 static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_request_t *request)
@@ -897,17 +1029,16 @@ bool ServerNetworkStaSlideshow_GetRuntimeTiming(uint32_t *interval,
     return active && current_interval > 0;
 }
 
-static void slideshow_record_display_done(uint32_t interval)
+static void slideshow_record_display_start(uint32_t interval, TickType_t start_tick)
 {
     if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
         interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
     }
 
-    TickType_t done_tick = xTaskGetTickCount();
     portENTER_CRITICAL(&s_slideshow_timing_mux);
-    s_slideshow_last_display_done_valid = true;
+    s_slideshow_last_display_start_valid = true;
     s_slideshow_last_display_interval = interval;
-    s_slideshow_last_display_done_tick = done_tick;
+    s_slideshow_last_display_start_tick = start_tick;
     portEXIT_CRITICAL(&s_slideshow_timing_mux);
 }
 
@@ -915,24 +1046,24 @@ static uint32_t slideshow_get_initial_delay_seconds(uint32_t interval)
 {
     bool valid = false;
     uint32_t last_interval = 0;
-    TickType_t done_tick = 0;
+    TickType_t start_tick = 0;
 
     if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
         interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
     }
 
     portENTER_CRITICAL(&s_slideshow_timing_mux);
-    valid = s_slideshow_last_display_done_valid;
+    valid = s_slideshow_last_display_start_valid;
     last_interval = s_slideshow_last_display_interval;
-    done_tick = s_slideshow_last_display_done_tick;
+    start_tick = s_slideshow_last_display_start_tick;
     portEXIT_CRITICAL(&s_slideshow_timing_mux);
 
-    if (!valid || done_tick == 0 || last_interval == 0) {
+    if (!valid || start_tick == 0 || last_interval == 0) {
         return 0;
     }
 
     TickType_t now = xTaskGetTickCount();
-    uint32_t elapsed = (uint32_t)(((now - done_tick) * portTICK_PERIOD_MS) / 1000U);
+    uint32_t elapsed = (uint32_t)(((now - start_tick) * portTICK_PERIOD_MS) / 1000U);
     if (elapsed >= interval) {
         return 0;
     }
@@ -954,33 +1085,72 @@ static void slideshow_task(void *arg)
              runtime->request.random ? 1 : 0,
              (unsigned int)runtime->progress.order[runtime->progress.position]);
 
+    slideshow_loaded_file_t loaded = {0};
     if (runtime->initial_delay_seconds > 0) {
+        TickType_t initial_start_tick = xTaskGetTickCount();
         ESP_LOGI(TAG, "slideshow initial delay seconds=%lu",
                  (unsigned long)runtime->initial_delay_seconds);
-        wait_slideshow_seconds(runtime->initial_delay_seconds);
+        slideshow_begin_interval(runtime->initial_delay_seconds, initial_start_tick);
+        if (runtime->request.file_count > 0 && !s_slideshow_stop) {
+            esp_err_t preload_ret = slideshow_load_file(runtime->base_path,
+                                                       runtime->progress.pending_file,
+                                                       &loaded,
+                                                       false);
+            if (preload_ret != ESP_OK) {
+                ESP_LOGW(TAG, "slideshow preload initial failed file=%s ret=%s",
+                         runtime->progress.pending_file,
+                         esp_err_to_name(preload_ret));
+            }
+        }
+        (void)wait_slideshow_interval_from_start(initial_start_tick,
+                                                 runtime->initial_delay_seconds);
     }
 
     while (!s_slideshow_stop && runtime->request.file_count > 0) {
         const char *file_name = runtime->progress.pending_file;
-        portENTER_CRITICAL(&s_slideshow_timing_mux);
-        s_slideshow_interval_active = false;
-        portEXIT_CRITICAL(&s_slideshow_timing_mux);
+        TickType_t display_start_tick = 0;
 
-        esp_err_t display_ret = display_slideshow_file_and_wait(runtime->base_path, file_name);
+        if (!slideshow_loaded_file_matches(&loaded, file_name)) {
+            esp_err_t load_ret = slideshow_load_file(runtime->base_path, file_name, &loaded, true);
+            if (load_ret != ESP_OK) {
+                ESP_LOGW(TAG, "slideshow preload current failed file=%s ret=%s",
+                         file_name,
+                         esp_err_to_name(load_ret));
+            }
+        }
+
+        esp_err_t display_ret = slideshow_display_loaded_file_and_wait(&loaded,
+                                                                       runtime->request.interval,
+                                                                       &display_start_tick);
+        if (display_start_tick == 0) {
+            display_start_tick = xTaskGetTickCount();
+            slideshow_begin_interval(runtime->request.interval, display_start_tick);
+        }
         if (display_ret == ESP_OK) {
             slideshow_progress_t next;
             prepare_next_slideshow_progress(&runtime->request, &runtime->progress, &next);
             esp_err_t save_ret = save_slideshow_progress(&next);
             if (save_ret == ESP_OK) {
                 memcpy(&runtime->progress, &next, sizeof(runtime->progress));
-                slideshow_record_display_done(runtime->request.interval);
+                slideshow_record_display_start(runtime->request.interval, display_start_tick);
+                if (!s_slideshow_stop) {
+                    esp_err_t preload_ret = slideshow_load_file(runtime->base_path,
+                                                               runtime->progress.pending_file,
+                                                               &loaded,
+                                                               false);
+                    if (preload_ret != ESP_OK) {
+                        ESP_LOGW(TAG, "slideshow preload next failed file=%s ret=%s",
+                                 runtime->progress.pending_file,
+                                 esp_err_to_name(preload_ret));
+                    }
+                }
             } else {
                 ESP_LOGE(TAG, "slideshow progress unchanged after display file=%s ret=%s",
                          file_name, esp_err_to_name(save_ret));
             }
         }
 
-        wait_slideshow_interval_seconds(runtime->request.interval);
+        wait_slideshow_interval_from_start(display_start_tick, runtime->request.interval);
     }
 
     ESP_LOGI(TAG, "slideshow task stop");
@@ -989,6 +1159,7 @@ static void slideshow_task(void *arg)
     s_slideshow_runtime_interval = 0;
     s_slideshow_interval_start_tick = 0;
     portEXIT_CRITICAL(&s_slideshow_timing_mux);
+    slideshow_loaded_file_free(&loaded);
     free(runtime);
     s_slideshow_task = NULL;
     vTaskDelete(NULL);
@@ -1066,7 +1237,7 @@ esp_err_t ServerNetworkStaSlideshow_ShowFirst(const char *base_path)
         free(request);
         return ret;
     }
-    ret = display_slideshow_file_and_wait(base_path, request->file_names[0]);
+    ret = display_slideshow_file_and_wait(base_path, request->file_names[0], 0, NULL);
     free(request);
     return ret;
 }

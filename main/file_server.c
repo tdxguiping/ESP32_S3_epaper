@@ -30,6 +30,7 @@
 #include "server_network_sta_data.h"
 #include "server_network_sta_ping.h"
 #include "server_network_sta_saved_images.h"
+#include "server_network_sta_time.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
@@ -239,6 +240,11 @@ static esp_err_t download_get_handler(httpd_req_t *req)
     esp_err_t ping_ret = ServerNetworkStaPing_ProcessGet(req);
     if (ping_ret != ESP_ERR_NOT_SUPPORTED) {
         return ping_ret;
+    }
+
+    esp_err_t time_ret = ServerNetworkStaTime_ProcessGet(req);
+    if (time_ret != ESP_ERR_NOT_SUPPORTED) {
+        return time_ret;
     }
 
     const char *filename = get_path_from_uri(filepath, ((struct file_server_data *)req->user_ctx)->base_path,

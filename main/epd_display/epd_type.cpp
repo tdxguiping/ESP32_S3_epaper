@@ -16,7 +16,7 @@
 
 static const char *TAG = "epd_type";
 
-uint8_t EPD_type = EPD_TYPE_800_480_4S_75_3; // 默认使用 1600x1200 133ms 的屏幕
+uint8_t EPD_type = USER_EPD_TYPE_DEFAULT; // 默认使用 1600x1200 133ms 的屏幕
 static bool s_epd_type_loaded = false;
 
 static const epd_type_config_t s_epd_types[] = {
