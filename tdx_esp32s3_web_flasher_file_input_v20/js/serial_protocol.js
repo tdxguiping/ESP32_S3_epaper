@@ -126,7 +126,7 @@ const els = {
   wifiSsid: $("wifiSsid"), wifiPassword: $("wifiPassword"), sendWifiButton: $("sendWifiButton"),
   wifiRequestPreview: $("wifiRequestPreview"), copyWifiRawButton: $("copyWifiRawButton"),
   slideshowFiles: $("slideshowFiles"), slideshowInterval: $("slideshowInterval"), slideshowRandom: $("slideshowRandom"), sendStartSlideshowButton: $("sendStartSlideshowButton"),
-  slideshowSw: $("slideshowSw"), setSlideshowInterval: $("setSlideshowInterval"), setSlideshowRandom: $("setSlideshowRandom"), sendSetSlideshowButton: $("sendSetSlideshowButton"),
+  slideshowSw: $("slideshowSw"), setSlideshowInterval: $("setSlideshowInterval"), setSlideshowRandom: $("setSlideshowRandom"), setSlideshowTimestamp: $("setSlideshowTimestamp"), refreshNetworkTimeButton: $("refreshNetworkTimeButton"), networkTimeStatus: $("networkTimeStatus"), sendSetSlideshowButton: $("sendSetSlideshowButton"),
   deleteFiles: $("deleteFiles"), sendDeleteButton: $("sendDeleteButton"), wifiWorkSeconds: $("wifiWorkSeconds"), sendWifiWorkTimeButton: $("sendWifiWorkTimeButton"),
   directFilePath: $("directFilePath"), directFileContentType: $("directFileContentType"), directFileFunc: $("directFileFunc"), directFileInput: $("directFileInput"), sendDirectFileButton: $("sendDirectFileButton"),
   singleFunc: $("singleFunc"), singleFileName: $("singleFileName"), singleOldFileName: $("singleOldFileName"), singleSave: $("singleSave"), singleShow: $("singleShow"), singleBin: $("singleBin"), singleImage: $("singleImage"), sendSingleMultipartButton: $("sendSingleMultipartButton"),
@@ -692,7 +692,7 @@ function setUiConnected(connected) {
   els.sendRawButton.disabled = !connected;
   els.sendRawJsonButton.disabled = !connected;
   document.querySelectorAll("button.httpGetCmd, button.httpJsonCmd").forEach((btn) => { btn.disabled = !connected; });
-  [els.sendWifiButton, els.sendStartSlideshowButton, els.sendSetSlideshowButton, els.sendDeleteButton, els.sendWifiWorkTimeButton, els.sendDirectFileButton, els.sendSingleMultipartButton, els.sendCast2picButton, els.refreshEpdTypesButton, els.testEpdDisplayButton].forEach((btn) => { if (btn) btn.disabled = !connected; });
+  [els.sendWifiButton, els.sendStartSlideshowButton, els.sendSetSlideshowButton, els.refreshNetworkTimeButton, els.sendDeleteButton, els.sendWifiWorkTimeButton, els.sendDirectFileButton, els.sendSingleMultipartButton, els.sendCast2picButton, els.refreshEpdTypesButton, els.testEpdDisplayButton].forEach((btn) => { if (btn) btn.disabled = !connected; });
 }
 
 function describePort(port) {
@@ -1389,9 +1389,149 @@ function parseList(text) {
   return String(text || "").split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean);
 }
 
-function getNumber(id, fallback, min=1) {
+function getNumber(id, fallback, min=1, max=Number.MAX_SAFE_INTEGER) {
   const n = parseInt($(id).value || String(fallback), 10);
-  return Number.isFinite(n) && n >= min ? n : fallback;
+  return Number.isFinite(n) && n >= min ? Math.min(n, max) : fallback;
+}
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function epochSecFromMs(epochMs) {
+  return Math.floor(epochMs / 1000);
+}
+
+function cst8TextFromEpochSec(epochSec) {
+  const epochMs = epochSec * 1000;
+  const d = new Date(epochMs + 8 * 60 * 60 * 1000);
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`;
+}
+
+function cst8PartsToEpochSec(year, month, day, hour = 0, minute = 0, second = 0) {
+  return epochSecFromMs(Date.UTC(year, month - 1, day, hour - 8, minute, second));
+}
+
+async function fetchWorldTimeApiCst8() {
+  const resp = await withTimeout(fetch(`https://worldtimeapi.org/api/timezone/Asia/Shanghai?ts=${Date.now()}`, { cache: "no-store" }), 7000, "worldtimeapi timeout");
+  if (!resp.ok) throw new Error(`worldtimeapi HTTP ${resp.status}`);
+  const data = await resp.json();
+  const epochMs = Number.isFinite(data.unixtime) ? data.unixtime * 1000 : Date.parse(data.datetime);
+  if (!Number.isFinite(epochMs)) throw new Error("worldtimeapi invalid time");
+  return epochSecFromMs(epochMs);
+}
+
+async function fetchTimeApiIoCst8() {
+  const resp = await withTimeout(fetch(`https://timeapi.io/api/Time/current/zone?timeZone=Asia/Shanghai&ts=${Date.now()}`, { cache: "no-store" }), 7000, "timeapi timeout");
+  if (!resp.ok) throw new Error(`timeapi HTTP ${resp.status}`);
+  const data = await resp.json();
+  if (Number.isInteger(data.year) && Number.isInteger(data.month) && Number.isInteger(data.day)) {
+    return cst8PartsToEpochSec(data.year, data.month, data.day, data.hour || 0, data.minute || data.minutes || 0, data.seconds || 0);
+  }
+  const epochMs = Date.parse(data.dateTime || data.datetime || "");
+  if (!Number.isFinite(epochMs)) throw new Error("timeapi invalid time");
+  return epochSecFromMs(epochMs);
+}
+
+async function fetchTaobaoTimestampCst8() {
+  const resp = await withTimeout(fetch(`https://acs.m.taobao.com/gw/mtop.common.getTimestamp/?ts=${Date.now()}`, { cache: "no-store" }), 7000, "taobao time timeout");
+  if (!resp.ok) throw new Error(`taobao time HTTP ${resp.status}`);
+  const data = await resp.json();
+  const t = Number(data?.data?.t || data?.t);
+  if (!Number.isFinite(t)) throw new Error("taobao time invalid");
+  return epochSecFromMs(t);
+}
+
+function fetchTaobaoJsonpCst8() {
+  return new Promise((resolve, reject) => {
+    const cb = `tdxTimeCb_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const script = document.createElement("script");
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("taobao jsonp timeout"));
+    }, 7000);
+    function cleanup() {
+      clearTimeout(timer);
+      delete window[cb];
+      script.remove();
+    }
+    window[cb] = (data) => {
+      cleanup();
+      const t = Number(data?.data?.t || data?.t);
+      if (!Number.isFinite(t)) {
+        reject(new Error("taobao jsonp invalid"));
+        return;
+      }
+      resolve(epochSecFromMs(t));
+    };
+    script.onerror = () => {
+      cleanup();
+      reject(new Error("taobao jsonp load failed"));
+    };
+    script.src = `https://api.m.taobao.com/rest/api3.do?api=mtop.common.getTimestamp&callback=${encodeURIComponent(cb)}&ts=${Date.now()}`;
+    document.head.appendChild(script);
+  });
+}
+
+async function fetchSuningTimeCst8() {
+  const resp = await withTimeout(fetch(`https://quan.suning.com/getSysTime.do?ts=${Date.now()}`, { cache: "no-store" }), 7000, "suning time timeout");
+  if (!resp.ok) throw new Error(`suning time HTTP ${resp.status}`);
+  const data = await resp.json();
+  const text = data?.sysTime2 || data?.sysTime1 || data?.sysTime;
+  if (!text) throw new Error("suning time invalid");
+  const m = String(text).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+  if (!m) throw new Error("suning time invalid format");
+  return cst8PartsToEpochSec(Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+}
+
+async function fetchNetworkTimestamp() {
+  const errors = [];
+  for (const fetcher of [fetchTaobaoJsonpCst8, fetchTaobaoTimestampCst8, fetchSuningTimeCst8, fetchWorldTimeApiCst8, fetchTimeApiIoCst8]) {
+    try {
+      return await fetcher();
+    } catch (err) {
+      errors.push(err?.message || String(err));
+    }
+  }
+  throw new Error(`network time fetch failed: ${errors.join("; ")}`);
+}
+
+async function refreshSlideshowNetworkTime() {
+  if (els.networkTimeStatus) els.networkTimeStatus.textContent = "loading network time...";
+  const timestamp = await fetchNetworkTimestamp();
+  if (els.setSlideshowTimestamp) els.setSlideshowTimestamp.value = String(timestamp);
+  if (els.networkTimeStatus) {
+    els.networkTimeStatus.textContent = `network timestamp ${timestamp} (${cst8TextFromEpochSec(timestamp)} CST-8)`;
+  }
+  return timestamp;
+}
+
+async function slideshowTimestampForRequest() {
+  return await refreshSlideshowNetworkTime();
+}
+
+async function buildSetSlideshowBody() {
+  const sw = parseInt(els.slideshowSw.value, 10);
+  const body = {
+    func: "set_slideshow",
+    sw,
+    interval: getNumber("setSlideshowInterval", 60, 60, 604800),
+    random: !!els.setSlideshowRandom?.checked,
+  };
+  if (sw === 1) {
+    body.timestamp = await slideshowTimestampForRequest();
+  }
+  return body;
+}
+
+async function buildStartSlideshowBody() {
+  return {
+    func: "start_slideshow",
+    fileNames: parseList(els.slideshowFiles.value),
+    interval: getNumber("slideshowInterval", 60, 60, 604800),
+    random: !!els.slideshowRandom?.checked,
+    timestamp: await slideshowTimestampForRequest(),
+  };
 }
 
 async function fileToBytes(file) {
@@ -1690,8 +1830,12 @@ function bindEvents() {
   els.copyWifiRawButton?.addEventListener("click", copyWifiRequestToRawArea);
   els.wifiSsid?.addEventListener("input", updateWifiRequestPreview);
   els.wifiPassword?.addEventListener("input", updateWifiRequestPreview);
-  els.sendStartSlideshowButton.addEventListener("click", () => runAction(() => sendJsonRequest({ func: "start_slideshow", fileNames: parseList(els.slideshowFiles.value), interval: getNumber("slideshowInterval", 60), random: !!els.slideshowRandom.checked }, "/slideshow"), els.sendStartSlideshowButton));
-  els.sendSetSlideshowButton.addEventListener("click", () => runAction(() => sendJsonRequest({ func: "set_slideshow", sw: parseInt(els.slideshowSw.value, 10), interval: getNumber("setSlideshowInterval", 60), random: !!els.setSlideshowRandom.checked }, "/slideshow_control"), els.sendSetSlideshowButton));
+  els.refreshNetworkTimeButton?.addEventListener("click", () => runAction(refreshSlideshowNetworkTime, els.refreshNetworkTimeButton, "取网络时间"));
+  refreshSlideshowNetworkTime().catch((err) => {
+    if (els.networkTimeStatus) els.networkTimeStatus.textContent = `network time failed: ${err?.message || err}`;
+  });
+  els.sendStartSlideshowButton.addEventListener("click", () => runAction(async () => sendJsonRequest(await buildStartSlideshowBody(), "/slideshow"), els.sendStartSlideshowButton));
+  els.sendSetSlideshowButton.addEventListener("click", () => runAction(async () => sendJsonRequest(await buildSetSlideshowBody(), "/slideshow_control"), els.sendSetSlideshowButton));
   els.sendDeleteButton.addEventListener("click", () => runAction(() => sendJsonRequest({ func: "delete", fileNames: parseList(els.deleteFiles.value) }, "/delete"), els.sendDeleteButton));
   els.sendWifiWorkTimeButton.addEventListener("click", () => runAction(() => sendJsonRequest({ func: "set_wifi_work_time", seconds: getNumber("wifiWorkSeconds", 300) }, "/wifi_work_time"), els.sendWifiWorkTimeButton));
   els.sendDirectFileButton?.addEventListener("click", () => runAction(sendDirectFile, els.sendDirectFileButton));

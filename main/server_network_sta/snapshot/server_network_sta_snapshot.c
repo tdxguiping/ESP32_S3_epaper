@@ -8,10 +8,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "esp_check.h"
 #include "esp_log.h"
 #include "file_serving_example_common.h"
+#include "server_network_sta_slideshow.h"
+#include "server_network_sta_time.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 
@@ -21,6 +24,12 @@ typedef struct {
     int sw;
     uint32_t interval;
     bool random;
+    int64_t timestamp;
+    int64_t anchor_epoch;
+    int64_t now_epoch;
+    int64_t next_epoch;
+    uint32_t remain;
+    bool time_synced;
     char file_names[TDX_SLIDESHOW_MAX_FILES][TDX_SLIDESHOW_FILE_NAME_MAX_LEN];
     size_t file_count;
 } snapshot_slideshow_t;
@@ -162,6 +171,69 @@ static bool parse_json_u32(const char *body, const char *key, uint32_t *out)
     return true;
 }
 
+static bool parse_json_i64(const char *body, const char *key, int64_t *out)
+{
+    const char *pos = find_json_key(body, key);
+    char *end_ptr = NULL;
+    long long value = 0;
+    if (pos == NULL || out == NULL) {
+        return false;
+    }
+
+    pos += strlen(key) + 2;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != ':') {
+        return false;
+    }
+    pos++;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+
+    value = strtoll(pos, &end_ptr, 10);
+    if (end_ptr == pos) {
+        return false;
+    }
+    *out = (int64_t)value;
+    return true;
+}
+
+static bool parse_json_string(const char *body, const char *key, char *out, size_t out_size)
+{
+    const char *pos = find_json_key(body, key);
+    if (pos == NULL || out == NULL || out_size == 0) {
+        return false;
+    }
+
+    pos += strlen(key) + 2;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != ':') {
+        return false;
+    }
+    pos++;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != '"') {
+        return false;
+    }
+    pos++;
+
+    size_t len = 0;
+    while (*pos != '\0' && *pos != '"' && len + 1 < out_size) {
+        out[len++] = *pos++;
+    }
+    if (*pos != '"') {
+        return false;
+    }
+    out[len] = '\0';
+    return true;
+}
+
 static bool parse_json_bool(const char *body, const char *key, bool *out)
 {
     const char *pos = find_json_key(body, key);
@@ -264,7 +336,7 @@ static void read_slideshow_state(const char *base_path, snapshot_slideshow_t *sl
     char config_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
     char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
     char config_buf[SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX];
-    char control_buf[256];
+    char control_buf[512];
 
     memset(slideshow, 0, sizeof(*slideshow));
     snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", base_path);
@@ -287,6 +359,33 @@ static void read_slideshow_state(const char *base_path, snapshot_slideshow_t *sl
         }
         parse_json_u32(control_buf, "interval", &slideshow->interval);
         parse_json_bool(control_buf, "random", &slideshow->random);
+        parse_json_i64(control_buf, "timestamp", &slideshow->timestamp);
+        parse_json_i64(control_buf, "anchor_epoch", &slideshow->anchor_epoch);
+        if (slideshow->anchor_epoch <= 0 && slideshow->timestamp > 0) {
+            slideshow->anchor_epoch = slideshow->timestamp;
+        }
+    }
+
+    slideshow->time_synced = ServerNetworkStaTime_IsSntpSynced();
+    int64_t now_epoch = 0;
+    int64_t next_epoch = 0;
+    uint32_t remain = 0;
+    bool running = false;
+    if (ServerNetworkStaSlideshow_GetScheduleTiming(NULL,
+                                                    &now_epoch,
+                                                    &next_epoch,
+                                                    &remain,
+                                                    &running) &&
+        running) {
+        slideshow->now_epoch = now_epoch;
+        slideshow->next_epoch = next_epoch;
+        slideshow->remain = remain;
+    } else {
+        time_t now = 0;
+        time(&now);
+        slideshow->now_epoch = (int64_t)now;
+        slideshow->next_epoch = 0;
+        slideshow->remain = 0;
     }
 
     if (slideshow->file_count == 0) {
@@ -410,9 +509,17 @@ static esp_err_t append_slideshow_json(char *json, size_t json_size, size_t *use
     return append_format(json,
                          json_size,
                          used,
-                         "],\"interval\":%lu,\"random\":%s}}",
+                         "],\"interval\":%lu,\"random\":%s,"
+                         "\"timestamp\":%lld,\"anchor_epoch\":%lld,\"now_epoch\":%lld,"
+                         "\"next_epoch\":%lld,\"remain\":%lu,\"time_synced\":%s}}",
                          (unsigned long)slideshow->interval,
-                         slideshow->random ? "true" : "false");
+                         slideshow->random ? "true" : "false",
+                         (long long)slideshow->timestamp,
+                         (long long)slideshow->anchor_epoch,
+                         (long long)slideshow->now_epoch,
+                         (long long)slideshow->next_epoch,
+                         (unsigned long)slideshow->remain,
+                         slideshow->time_synced ? "true" : "false");
 }
 
 esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,

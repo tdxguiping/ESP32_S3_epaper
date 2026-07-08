@@ -13,6 +13,7 @@ extern "C" {
 typedef enum {
     SERVER_NETWORK_STA_TIME_SOURCE_NONE = 0,
     SERVER_NETWORK_STA_TIME_SOURCE_DEFAULT,
+    SERVER_NETWORK_STA_TIME_SOURCE_APP,
     SERVER_NETWORK_STA_TIME_SOURCE_SNTP,
 } server_network_sta_time_source_t;
 
@@ -29,6 +30,8 @@ typedef struct {
 
 esp_err_t ServerNetworkStaTime_Init(void);
 esp_err_t ServerNetworkStaTime_SetDefaultIfInvalid(void);
+esp_err_t ServerNetworkStaTime_SetTimestamp(int64_t timestamp);
+esp_err_t ServerNetworkStaTime_SetAppTime(int64_t epoch);
 esp_err_t ServerNetworkStaTime_ProcessGet(httpd_req_t *req);
 esp_err_t ServerNetworkStaTime_GetInfo(server_network_sta_time_info_t *info);
 bool ServerNetworkStaTime_IsSntpSynced(void);

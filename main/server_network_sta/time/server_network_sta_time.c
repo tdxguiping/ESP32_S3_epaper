@@ -48,6 +48,8 @@ static const char *time_source_to_str(server_network_sta_time_source_t source)
     switch (source) {
     case SERVER_NETWORK_STA_TIME_SOURCE_DEFAULT:
         return "default";
+    case SERVER_NETWORK_STA_TIME_SOURCE_APP:
+        return "timestamp";
     case SERVER_NETWORK_STA_TIME_SOURCE_SNTP:
         return "sntp";
     case SERVER_NETWORK_STA_TIME_SOURCE_NONE:
@@ -241,6 +243,50 @@ esp_err_t ServerNetworkStaTime_Init(void)
 bool ServerNetworkStaTime_IsSntpSynced(void)
 {
     return s_sntp_synced;
+}
+
+esp_err_t ServerNetworkStaTime_SetTimestamp(int64_t timestamp)
+{
+    char local_buf[32] = {0};
+    char utc_buf[32] = {0};
+    format_time_strings((time_t)timestamp, local_buf, sizeof(local_buf), utc_buf, sizeof(utc_buf));
+
+    if (timestamp <= 0 || !is_time_reasonable((time_t)timestamp)) {
+        ESP_LOGW(TAG,
+                 "timestamp rejected epoch=%lld local=%s utc=%s",
+                 (long long)timestamp,
+                 local_buf,
+                 utc_buf);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    struct timeval tv = {
+        .tv_sec = (time_t)timestamp,
+        .tv_usec = 0,
+    };
+    if (settimeofday(&tv, NULL) != 0) {
+        ESP_LOGE(TAG,
+                 "set timestamp RTC/system time failed epoch=%lld local=%s utc=%s",
+                 (long long)timestamp,
+                 local_buf,
+                 utc_buf);
+        return ESP_FAIL;
+    }
+
+    s_time_source = SERVER_NETWORK_STA_TIME_SOURCE_APP;
+    s_last_sync_epoch = timestamp;
+
+    ESP_LOGI(TAG,
+             "timestamp time set, RTC/system time updated epoch=%lld local=%s utc=%s",
+             (long long)timestamp,
+             local_buf,
+             utc_buf);
+    return ESP_OK;
+}
+
+esp_err_t ServerNetworkStaTime_SetAppTime(int64_t epoch)
+{
+    return ServerNetworkStaTime_SetTimestamp(epoch);
 }
 
 esp_err_t ServerNetworkStaTime_GetInfo(server_network_sta_time_info_t *info)

@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -23,6 +24,17 @@ static TickType_t s_last_network_data_tick = 0;
 static TickType_t s_last_power_off_send_tick = 0;
 static TaskHandle_t s_work_state_task = NULL;
 static bool s_ota_in_progress = false;
+
+static void format_epoch_local(int64_t epoch, char *buf, size_t buf_size)
+{
+    if (buf == NULL || buf_size == 0) {
+        return;
+    }
+    time_t t = (time_t)epoch;
+    struct tm tm_value = {0};
+    localtime_r(&t, &tm_value);
+    strftime(buf, buf_size, "%Y-%m-%d %H:%M:%S", &tm_value);
+}
 
 // Keep these globals compatible with the old sleep/work-time flow for BLE and HTTP handlers.
 uint32_t working_time = 0;
@@ -280,17 +292,37 @@ static bool configure_ch583_wake_timer_before_power_off(void)
         bool runtime_running = false;
         uint32_t wake_interval = interval;
         uint32_t startup_delay = slideshow_startup_delay_seconds();
-        if (ServerNetworkStaSlideshow_GetRuntimeTiming(&runtime_interval,
-                                                       &runtime_elapsed,
-                                                       &runtime_running) &&
-            runtime_running &&
-            runtime_interval > 0) {
-            wake_interval = runtime_interval > runtime_elapsed ?
-                            runtime_interval - runtime_elapsed :
-                            1U;
-            if (wake_interval == 0) {
-                wake_interval = 1U;
-            }
+        int64_t schedule_now = 0;
+        int64_t schedule_next = 0;
+        uint32_t schedule_remain = 0;
+        if (ServerNetworkStaSlideshow_GetScheduleTiming(&runtime_interval,
+                                                        &schedule_now,
+                                                        &schedule_next,
+                                                        &schedule_remain,
+                                                        &runtime_running) &&
+            runtime_running) {
+            wake_interval = schedule_remain > 0 ? schedule_remain : 1U;
+            runtime_elapsed = runtime_interval > schedule_remain ?
+                              runtime_interval - schedule_remain :
+                              0;
+            char now_text[32] = {0};
+            char next_text[32] = {0};
+            format_epoch_local(schedule_now, now_text, sizeof(now_text));
+            format_epoch_local(schedule_next, next_text, sizeof(next_text));
+            ESP_LOGI(TAG,
+                     "slideshow rtc wake timing now=%lld(%s) next=%lld(%s) remain=%lu interval=%lu",
+                     (long long)schedule_now,
+                     now_text,
+                     (long long)schedule_next,
+                     next_text,
+                     (unsigned long)schedule_remain,
+                     (unsigned long)runtime_interval);
+        } else if (ServerNetworkStaSlideshow_GetRuntimeTiming(&runtime_interval,
+                                                              &runtime_elapsed,
+                                                              &runtime_running) &&
+                   runtime_running &&
+                   runtime_interval > 0) {
+            wake_interval = runtime_interval > runtime_elapsed ? runtime_interval - runtime_elapsed : 1U;
         }
         wake_interval = wake_interval > startup_delay ? wake_interval - startup_delay : 1U;
 
@@ -367,11 +399,37 @@ static void work_state_task(void *arg)
 
         uint32_t slideshow_interval = 0;
         uint32_t slideshow_elapsed = 0;
+        uint32_t slideshow_rtc_remain = 0;
+        int64_t slideshow_now_epoch = 0;
+        int64_t slideshow_next_epoch = 0;
         bool slideshow_running = false;
-        if (ServerNetworkStaSlideshow_GetRuntimeTiming(&slideshow_interval,
-                                                       &slideshow_elapsed,
-                                                       &slideshow_running) &&
+        if (ServerNetworkStaSlideshow_GetScheduleTiming(&slideshow_interval,
+                                                        &slideshow_now_epoch,
+                                                        &slideshow_next_epoch,
+                                                        &slideshow_rtc_remain,
+                                                        &slideshow_running) &&
             slideshow_running) {
+            slideshow_debug_counter++;
+            if (slideshow_debug_counter >= 10 || slideshow_rtc_remain <= 3) {
+                slideshow_debug_counter = 0;
+                char now_text[32] = {0};
+                char next_text[32] = {0};
+                format_epoch_local(slideshow_now_epoch, now_text, sizeof(now_text));
+                format_epoch_local(slideshow_next_epoch, next_text, sizeof(next_text));
+                ESP_LOGI(TAG,
+                         "slide_timer rtc active=1 interval=%lu now=%lld(%s) next=%lld(%s) remain=%lu epd=%s",
+                         (unsigned long)slideshow_interval,
+                         (long long)slideshow_now_epoch,
+                         now_text,
+                         (long long)slideshow_next_epoch,
+                         next_text,
+                         (unsigned long)slideshow_rtc_remain,
+                         ServerNetworkStaEpdDisplay_IsBusy() ? "BUSY" : "IDLE");
+            }
+        } else if (ServerNetworkStaSlideshow_GetRuntimeTiming(&slideshow_interval,
+                                                              &slideshow_elapsed,
+                                                              &slideshow_running) &&
+                   slideshow_running) {
             slideshow_debug_counter++;
             uint32_t slideshow_remaining = slideshow_interval > slideshow_elapsed ?
                                            slideshow_interval - slideshow_elapsed :
@@ -379,7 +437,7 @@ static void work_state_task(void *arg)
             if (slideshow_debug_counter >= 10 || slideshow_remaining <= 3) {
                 slideshow_debug_counter = 0;
                 ESP_LOGI(TAG,
-                         "slide_timer active=1 interval=%lu elapsed=%lu remain=%lu epd=%s",
+                         "slide_timer legacy_tick active=1 interval=%lu elapsed=%lu remain=%lu epd=%s",
                          (unsigned long)slideshow_interval,
                          (unsigned long)slideshow_elapsed,
                          (unsigned long)slideshow_remaining,

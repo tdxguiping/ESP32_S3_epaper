@@ -47,6 +47,11 @@ bool WiFi_config_net = false;
 bool WiFi_config_from_ch583 = false;
 bool WiFi_config_from_ble = false;
 
+#define WIFI_INFO_NOTIFY_RETRY_COUNT 3
+#define WIFI_INFO_NOTIFY_RETRY_DELAY_MS 150
+#define WIFI_INFO_IP_READY_RECHECK_COUNT 3
+#define WIFI_INFO_IP_READY_RECHECK_DELAY_MS 300
+
 #if USER_BLE_ENABLE
 typedef struct {
     uint16_t len;
@@ -154,7 +159,7 @@ static void send_simple_result_with_sender(json_sender_t send_json,
     }
 }
 
-void send_base_info_to_mobile(void)
+static bool send_base_info_to_mobile(void)
 {
     char ip_str[sizeof("255.255.255.255")];
     char json_str[384];
@@ -167,42 +172,63 @@ void send_base_info_to_mobile(void)
     esp_netif_t *esp_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     wifi_ap_record_t ap_info = {};
 
-    if (esp_netif != NULL &&
-        esp_netif_get_ip_info(esp_netif, &ip) == ESP_OK &&
-        ip.ip.addr != 0) {
+    if (esp_netif == NULL ||
+        esp_netif_get_ip_info(esp_netif, &ip) != ESP_OK ||
+        ip.ip.addr == 0) {
+        ESP_LOGW(TAG, "wifi_info_result not sent: STA IP is not ready");
+        return false;
+    }
 
-        net_connect_OK = 1;
-        working_time = 0;
+    net_connect_OK = 1;
+    working_time = 0;
 
-        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip.ip));
+    snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip.ip));
 
-        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
-            snprintf(ssid_str, sizeof(ssid_str), "%s", (const char *)ap_info.ssid);
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        snprintf(ssid_str, sizeof(ssid_str), "%s", (const char *)ap_info.ssid);
+    }
+
+    snprintf(json_str, sizeof(json_str),
+             "{\"func\":\"wifi_info_result\","
+             "\"result\":%d,"
+             "\"message\":\"wifi info\","
+             "\"stage\":\"%s\","
+             "\"WiFi\":\"%s\","
+             "\"version\":\"%s\","
+             "\"date\":\"%s\","
+             "\"running\":\"%s\"}",
+             TDX_JSON_RESULT_OK,
+             ip_str,
+             ssid_str,
+             app != NULL ? app->version : "",
+             app != NULL ? app->date : "",
+             running != NULL ? running->label : "");
+
+    ESP_LOGI(TAG, "wifi_info_result send start ip=%s len=%u",
+             ip_str,
+             (unsigned int)strlen(json_str));
+
+    for (int attempt = 1; attempt <= WIFI_INFO_NOTIFY_RETRY_COUNT; attempt++) {
+        if (s_active_send_json(json_str)) {
+            ESP_LOGI(TAG, "wifi_info_result sent ip=%s attempt=%d", ip_str, attempt);
+#if (USER_BLE_ENABLE == 1)
+            UserDebugOutput_Printf("JSON:\n%s\n", json_str);
+#endif
+            return true;
         }
 
-        snprintf(json_str, sizeof(json_str),
-                 "{\"func\":\"wifi_info_result\","
-                 "\"result\":%d,"
-                 "\"message\":\"wifi info\","
-                 "\"stage\":\"%s\","
-                 "\"WiFi\":\"%s\","
-                 "\"version\":\"%s\","
-                 "\"date\":\"%s\","
-                 "\"running\":\"%s\"}",
-                 TDX_JSON_RESULT_OK,
-                 ip_str,
-                 ssid_str,
-                 app != NULL ? app->version : "",
-                 app != NULL ? app->date : "",
-                 running != NULL ? running->label : "");
-
-#if (USER_BLE_ENABLE == 1)
-        (void)s_active_send_json(json_str);
-        UserDebugOutput_Printf("JSON:\n%s\n", json_str);
-#else
-        (void)s_active_send_json(json_str);
-#endif
+        if (attempt < WIFI_INFO_NOTIFY_RETRY_COUNT) {
+            ESP_LOGW(TAG, "wifi_info_result send failed ip=%s attempt=%d, retry",
+                     ip_str,
+                     attempt);
+            vTaskDelay(pdMS_TO_TICKS(WIFI_INFO_NOTIFY_RETRY_DELAY_MS));
+        }
     }
+
+    ESP_LOGE(TAG, "wifi_info_result send failed ip=%s attempts=%d",
+             ip_str,
+             WIFI_INFO_NOTIFY_RETRY_COUNT);
+    return false;
 }
 
 void send_base_info_to_mobile_old(void)
@@ -372,7 +398,73 @@ static json_sender_t s_wifi_connect_reply_sender = NULL;
 static bool s_wifi_connect_notify_result = false;
 static const char *s_wifi_connect_result_func = NULL;
 static bool s_wifi_connect_force_reconnect = false;
-static uint8_t check_net_state(void);
+
+static bool notify_wifi_info_if_ip_ready(json_sender_t reply_sender,
+                                         const char *reason,
+                                         bool allow_recheck,
+                                         bool *ip_ready_out)
+{
+    server_network_sta_status_t status = {};
+
+    if (ip_ready_out != NULL) {
+        *ip_ready_out = false;
+    }
+
+    if (reply_sender == NULL) {
+        ESP_LOGE(TAG, "wifi_info_result notify skipped reason=%s sender=NULL",
+                 reason != NULL ? reason : "<null>");
+        return false;
+    }
+
+    s_active_send_json = reply_sender;
+    if (ServerNetworkSta_GetStatus(&status) != ESP_OK) {
+        ESP_LOGE(TAG, "wifi_info_result notify status read failed reason=%s",
+                 reason != NULL ? reason : "<null>");
+        return false;
+    }
+
+    for (int recheck = 1;
+         (status.state != SERVER_NETWORK_STA_STATE_GOT_IP || status.ip[0] == '\0') &&
+         allow_recheck &&
+         recheck <= WIFI_INFO_IP_READY_RECHECK_COUNT;
+         recheck++) {
+        ESP_LOGW(TAG,
+                 "wifi_info_result notify waiting for IP reason=%s state=%d last=%d ip=%s recheck=%d/%d",
+                 reason != NULL ? reason : "<null>",
+                 (int)status.state,
+                 status.last_result,
+                 status.ip[0] != '\0' ? status.ip : "<empty>",
+                 recheck,
+                 WIFI_INFO_IP_READY_RECHECK_COUNT);
+        vTaskDelay(pdMS_TO_TICKS(WIFI_INFO_IP_READY_RECHECK_DELAY_MS));
+        memset(&status, 0, sizeof(status));
+        if (ServerNetworkSta_GetStatus(&status) != ESP_OK) {
+            ESP_LOGE(TAG, "wifi_info_result notify status reread failed reason=%s recheck=%d/%d",
+                     reason != NULL ? reason : "<null>",
+                     recheck,
+                     WIFI_INFO_IP_READY_RECHECK_COUNT);
+            return false;
+        }
+    }
+
+    if (status.state == SERVER_NETWORK_STA_STATE_GOT_IP && status.ip[0] != '\0') {
+        if (ip_ready_out != NULL) {
+            *ip_ready_out = true;
+        }
+        ESP_LOGI(TAG, "wifi_info_result notify call send_base_info reason=%s ip=%s",
+                 reason != NULL ? reason : "<null>",
+                 status.ip);
+        return send_base_info_to_mobile();
+    }
+
+    ESP_LOGW(TAG,
+             "wifi_info_result notify no IP reason=%s state=%d last=%d ip=%s",
+             reason != NULL ? reason : "<null>",
+             (int)status.state,
+             status.last_result,
+             status.ip[0] != '\0' ? status.ip : "<empty>");
+    return false;
+}
 
 static void wifi_connect_task(void *arg)
 {
@@ -395,9 +487,19 @@ static void wifi_connect_task(void *arg)
     s_wifi_connect_result_func = NULL;
     s_wifi_connect_force_reconnect = false;
     if (notify_result && reply_sender != NULL) {
-        s_active_send_json = reply_sender;
-        if (connect_result == TDX_JSON_RESULT_OK && check_net_state() != 0) {
-            send_base_info_to_mobile();
+        if (connect_result == TDX_JSON_RESULT_OK) {
+            bool ip_ready = false;
+            if (!notify_wifi_info_if_ip_ready(reply_sender, "wifi_connect_task", true, &ip_ready)) {
+                if (ip_ready) {
+                    ESP_LOGE(TAG, "WiFi got IP but wifi_info_result send failed");
+                } else {
+                    ESP_LOGW(TAG, "WiFi connect result OK but IP was not ready for wifi_info_result");
+                    send_simple_result_with_sender(reply_sender,
+                                                   result_func,
+                                                   TDX_JSON_RESULT_WIFI_GOT_IP_FAILED,
+                                                   "WiFi did not obtain IP");
+                }
+            }
         } else if (connect_result == TDX_JSON_RESULT_WIFI_AUTH_FAILED) {
             send_simple_result_with_sender(reply_sender,
                                            result_func,
@@ -414,6 +516,11 @@ static void wifi_connect_task(void *arg)
                                            TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT,
                                            "WiFi connect timed out");
         }
+    } else {
+        ESP_LOGW(TAG, "WiFi connect task finished without notify sender notify=%d sender_set=%d result=%d",
+                 notify_result ? 1 : 0,
+                 reply_sender != NULL ? 1 : 0,
+                 connect_result);
     }
     WiFi_config_from_ch583 = false;
     WiFi_config_from_ble = false;
@@ -446,16 +553,6 @@ static esp_err_t submit_wifi_connect(json_sender_t reply_sender,
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
-}
-
-static uint8_t check_net_state(void)
-{
-    server_network_sta_status_t status = {};
-    return ServerNetworkSta_GetStatus(&status) == ESP_OK &&
-                   status.state == SERVER_NETWORK_STA_STATE_GOT_IP &&
-                   status.ip[0] != '\0'
-               ? 1
-               : 0;
 }
 
 int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
@@ -609,15 +706,11 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
     (void)ServerNetworkSta_GetStatus(&status);
     if (status.state == SERVER_NETWORK_STA_STATE_GOT_IP && status.ip[0] != '\0')
     {
-       send_base_info_to_mobile();      
+       (void)notify_wifi_info_if_ip_ready(s_active_send_json, "wifi_wakeup_got_ip", false, NULL);
     }
     else if (status.state == SERVER_NETWORK_STA_STATE_CONNECTING)
     {
-        char reply_json[192];
-        snprintf(reply_json, sizeof(reply_json),
-                 "{\"func\":\"wifi_wakeup_result\",\"result\":%d,\"message\":\"WiFi connection already in progress\",\"stage\":\"connecting\"}",
-                 TDX_JSON_RESULT_OK);
-        (void)s_active_send_json(reply_json);
+        ESP_LOGW(TAG, "WiFi wakeup ignored: connection already in progress");
     }
     else if (!ble_has_saved_wifi_info()) {
         ESP_LOGW(TAG, "No saved WiFi credential");
@@ -643,11 +736,7 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
                      TDX_JSON_RESULT_OK);
             (void)s_active_send_json(reply_json);
         } else if (submit_ret == ESP_ERR_INVALID_STATE) {
-            char reply_json[192];
-            snprintf(reply_json, sizeof(reply_json),
-                     "{\"func\":\"wifi_wakeup_result\",\"result\":%d,\"message\":\"WiFi connection already in progress\",\"stage\":\"connecting\"}",
-                     TDX_JSON_RESULT_OK);
-            (void)s_active_send_json(reply_json);
+            ESP_LOGW(TAG, "WiFi wakeup ignored: connection task already in progress");
         } else {
             send_simple_result_with_sender(s_active_send_json,
                                            "wifi_wakeup_result",

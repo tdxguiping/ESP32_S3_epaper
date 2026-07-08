@@ -576,7 +576,13 @@ image=@67890.jpg</code></pre>
     "sw": 1,
     "fileNames": ["26422", "26423"],
     "interval": 60,
-    "random": false
+    "random": false,
+    "timestamp": 1783372200,
+    "anchor_epoch": 1783305000,
+    "now_epoch": 1783305000,
+    "next_epoch": 1783305000,
+    "remain": 0,
+    "time_synced": true
   }
 }</code></pre>
             <ul>
@@ -584,27 +590,29 @@ image=@67890.jpg</code></pre>
               <li><code>slideshow.sw</code> 返回当前轮播开关，<code>1</code> 开启，<code>0</code> 关闭。</li>
               <li><code>slideshow.fileNames</code> 返回最近一次 <code>start_slideshow</code> 下发的轮播图片列表，按设备实际轮播顺序返回。</li>
               <li><code>slideshow.interval</code> 返回最近一次 <code>start_slideshow</code> 或 <code>set_slideshow</code> 保存的轮播间隔。</li>
-              <li><code>slideshow.random</code> 返回最近一次 <code>start_slideshow</code> 或 <code>set_slideshow</code> 保存的随机轮播开关。</li>
+              <li><code>slideshow.random</code> 返回设备当前保存的随机轮播开关；<code>set_slideshow</code> 新协议不再接收 <code>random</code> 字段。</li>
+              <li><code>slideshow.timestamp</code> 返回最近一次 <code>set_slideshow</code> 保存的秒级 Unix 时间戳。</li>
+              <li><code>slideshow.next_epoch</code> / <code>slideshow.remain</code> 可用于 PC / APP 同步轮播倒计时。</li>
               <li>如果设备未设置过轮播，建议返回 <code>{"sw":0,"fileNames":[],"interval":0,"random":false}</code>。</li>
             </ul>
 
-            <h3 id="func-start-slideshow">2.8 start_slideshow 下发轮播列表</h3>
+            <h3 id="func-start-slideshow">2.8 start_slideshow 旧轮播接口</h3>
             <pre><code>{
   "func": "start_slideshow",
   "fileNames": ["26422", "26423"],
   "interval": 60,
   "random": false
 }</code></pre>
-            <p><code>fileNames</code> 顺序就是轮播顺序；<code>random=true</code> 表示随机轮播；<code>interval</code> 前端会归一为大于等于 1 的整数。</p>
+            <p>该旧接口已废弃，设备返回错误且不执行轮播。开启轮播统一使用 <code>set_slideshow</code>，并携带秒级 Unix <code>timestamp</code>。</p>
 
             <h3 id="func-set-slideshow">2.9 set_slideshow 设置轮播开关与周期</h3>
             <pre><code>{
   "func": "set_slideshow",
   "sw": 1,
   "interval": 60,
-  "random": false
+  "timestamp": 1783372200
 }</code></pre>
-            <p><code>sw=1</code> 开启轮播，<code>sw=0</code> 关闭轮播；<code>random=true</code> 表示随机轮播，<code>random=false</code> 表示按列表顺序轮播。</p>
+            <p><code>sw=1</code> 开启轮播，<code>sw=0</code> 关闭轮播；<code>interval</code> 范围为 <code>60..604800</code> 秒；<code>timestamp</code> 为秒级 Unix 时间戳。若设备 SNTP 未同步，会用 PC / APP 发来的 <code>timestamp</code> 写入 RTC 后开始计时；若 SNTP 已同步且两者差值超过 5 秒，设备返回错误并不执行本次轮播指令。</p>
 
             <h3 id="func-delete">2.10 delete 删除已保存图片</h3>
             <pre><code>{

@@ -691,7 +691,7 @@ Result 定义建议：
 | WiFi 连接事件通知 | `1308` | WiFi 认证失败 |
 | WiFi 连接事件通知 | `1309` | WiFi 获取 IP 失败 |
 
-BLE / CH583 的普通 `wifi` 配网请求先同步确认“配置已保存并已提交 worker”，随后由后台任务通过 `wifi_result` 通知 `1307`（连接超时）、`1308`（认证失败）或 `1309`（已关联但未取得 IP）；`wifi_wakeup` 使用相同分类并通过 `wifi_wakeup_result` 通知。若 STA 已关联但主等待窗口内还没收到 `IP_EVENT_STA_GOT_IP`，会再等待一个短 `GOT_IP` 宽限窗口，避免 DHCP 稍慢时误报 `1309`。USB `/wifi` 仍只同步返回保存和 worker 提交结果。
+BLE / CH583 的普通 `wifi` 配网请求先同步确认“配置已保存并已提交 worker”，随后由后台任务通过 `wifi_result` 通知 `1307`（连接超时）、`1308`（认证失败）或 `1309`（已关联但未取得 IP）；`wifi_wakeup` 使用相同分类并通过 `wifi_wakeup_result` 通知。若 STA 已关联但主等待窗口内还没收到 `IP_EVENT_STA_GOT_IP`，会再等待一个短 `GOT_IP` 宽限窗口，避免 DHCP 稍慢时误报 `1309`。配网任务结果为成功时会通过 `notify_wifi_info_if_ip_ready()` 确认 IP；如果第一次没读到 IP，会每 300 ms 复查一次，最多复查 3 次；只要 ESP32-C5 已经读到 STA IP，就必须调用 `send_base_info_to_mobile()` 发送 `wifi_info_result`，发送失败会短重试并打印日志。USB `/wifi` 仍只同步返回保存和 worker 提交结果。
 
 Mermaid 时序图：
 
@@ -2387,7 +2387,7 @@ Result 定义建议：
 
 | 返回 | result | 说明 |
 |---|---|---|
-| `start_slideshow_result` | `0` | 轮播启动成功 |
+| `start_slideshow_result` | `0` | 轮播列表配置保存成功，并已按 `timestamp` 写入 RTC control、启动 RTC 轮播 |
 | `start_slideshow_result` | `1012` | SD 卡 / 存储未就绪 |
 | `start_slideshow_result` | `1501` | `fileNames` 缺失 |
 | `start_slideshow_result` | `1502` | 文件名非法 |
@@ -2396,8 +2396,11 @@ Result 定义建议：
 | `start_slideshow_result` | `1506` | 轮播运行时启动失败 |
 | `start_slideshow_result` | `1507` | `interval` 非法 |
 | `start_slideshow_result` | `1508` | 轮播文件不存在 |
+| `start_slideshow_result` | `1510` | `timestamp` 缺失、不是整数、不是秒级 Unix 时间戳，或时间范围不合理 |
+| `start_slideshow_result` | `1512` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
+| `start_slideshow_result` | `1513` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次指令 |
 
-功能说明：保存轮播图片列表、轮播间隔、随机开关，并在后台任务中按配置切换图片刷新 EPD。
+功能说明：`start_slideshow` 用于下发并保存轮播图片列表、轮播顺序、随机模式和默认 interval，并在同一条命令中使用 `timestamp` 写入标准 RTC control、强制 `sw=1`、启动 RTC 轮播。它等价于“原 start_slideshow 列表配置功能 + set_slideshow 的 sw=1/interval/random/timestamp 启动功能”。
 
 Mermaid 时序图：
 
@@ -2411,20 +2414,11 @@ sequenceDiagram
     participant EPD as EPD Display Queue
     APP->>DATAUP: start_slideshow fileNames/interval/random
     DATAUP->>SS: process_small_json_request()
-    SS->>FILE: save slideshow_config
-    SS->>FILE: save slideshow_control
-    SS->>FILE: save pending_file=first image
-    loop interval
-        TASK->>FILE: read pending_file bin
-        TASK->>EPD: display_slideshow_file_and_wait()
-        EPD-->>TASK: actual display done / failed
-        alt display done
-            TASK->>FILE: save and verify next pending progress
-            TASK->>TASK: record last display start tick
-        else display failed
-            TASK->>TASK: keep current pending progress
-        end
-    end
+    SS->>SS: validate timestamp and check/set RTC
+    SS->>FILE: save slideshow_config fileNames/interval/random
+    SS->>FILE: write show_control sw=1 interval/random/timestamp/anchor_epoch
+    SS->>TASK: ServerNetworkStaSlideshow_StartSavedResetInterval()
+    SS-->>APP: start_slideshow_result result=0
 ```
 
 相关文件：
@@ -2442,15 +2436,12 @@ HTTP small JSON start_slideshow
    └─ process_small_json_request()
       └─ ServerNetworkStaSlideshow_ProcessJson()
          ├─ parse_start_slideshow_request()
+         ├─ parse timestamp and check/set RTC
          ├─ check_slideshow_files_exist()
          ├─ save_slideshow_config()
-         ├─ save_slideshow_control()
-         ├─ 初始化并保存 pending_file=第一张
-         └─ start_slideshow_runtime()
-            ├─ 运行中收到新的 start_slideshow 时，按最新 interval 重新计时
-            ├─ 未运行但刚开始显示过上一张且未到 interval 时，先等待剩余秒数
-            └─ display_slideshow_file_and_wait()
-               └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
+         ├─ save random config
+         ├─ write show_control sw=1 interval/random/timestamp/anchor_epoch
+         └─ ServerNetworkStaSlideshow_StartSavedResetInterval()
 
 main/main.c
 └─ ServerNetworkStaSlideshow_StartSavedDelayed("/data")
@@ -2471,7 +2462,6 @@ server_network_sta_slideshow.c
 ├─ parse_start_slideshow_request()
 ├─ check_slideshow_files_exist()
 ├─ save_slideshow_config()
-├─ save_slideshow_control()
 ├─ ServerNetworkStaSlideshow_ShowFirst()
 ├─ ServerNetworkStaSlideshow_StartSaved()
 ├─ ServerNetworkStaSlideshow_StartSavedResetInterval()
@@ -2488,19 +2478,18 @@ V2 协议资料拆分：
   "func": "start_slideshow",
   "fileNames": ["26422", "26423"],
   "interval": 60,
-  "random": false
+  "random": false,
+  "timestamp": 1783372200
 }
 ```
 
 字段说明：
 
 ```text
-fileNames 图片轮播顺序；最多 50 个，对应 TDX_SLIDESHOW_MAX_FILES=50
-单个 fileName 缓冲区为 48 bytes，对应 TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48
-当前代码用 C 字符串保存 fileName，因此实际文件名内容长度必须小于 48 bytes，最多 47 bytes，不含结尾 '\0'
-超过 50 个文件名时，当前解析只保存前 50 个，后续条目忽略
-random=true 时随机轮播
-interval  轮播间隔，单位秒，允许范围 60..604800；表示两次轮播图片送入 EPD 显示队列之间的目标间隔，EPD 显示耗时计入该间隔
+fileNames 轮播文件顺序；最多 50 个，文件必须已存在于 /data/bin_img
+interval 默认轮播间隔，单位秒，固件校验 60..604800
+random=true 表示随机轮播；random=false 按 fileNames 顺序轮播
+timestamp 必填；秒级 Unix 时间戳，用作第一张图片目标播放时间，同时写入 show_control.timestamp 和 anchor_epoch
 ```
 
 
@@ -2508,13 +2497,14 @@ interval  轮播间隔，单位秒，允许范围 60..604800；表示两次轮�
 Powershell 测试用例：
 
 ```powershell
-# start_slideshow：下发轮播列表，要求文件已存在于设备 SD 卡。
+# start_slideshow：下发并保存轮播列表。
 $esp = "http://192.168.1.104"
 $body = @{
   func = "start_slideshow"
   fileNames = @("26422", "26423")
   interval = 60
   random = $false
+  timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 } | ConvertTo-Json -Depth 4
 
 Invoke-RestMethod -Uri "$esp/dataUP" `
@@ -2523,13 +2513,12 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
   -Body $body
 ```
 
-预期：设备保存 slideshow 配置，并按列表触发显示；如果文件不存在，源码会按校验结果返回失败。
+预期：设备保存轮播列表、interval 和 random，重写 `show_control.txt` 为标准 RTC control，强制 `sw=1`，并按 `timestamp` 启动 RTC 轮播。
 
 当前实现：
 
 ```text
-slideshow 已区分 fileNames 缺失/非法、interval 非法、文件不存在、配置保存失败和运行时启动失败。
-网络与 USB 入口均在保存配置前校验 fileNames 和 interval；runtime 启动失败返回 1506。
+start_slideshow 是正式轮播列表配置接口；会重写 `show_control.txt` 为标准 RTC control，不再写缺少 timestamp/anchor_epoch 的旧 control。
 网络 JSON 的 `func` 判断支持空格、CRLF 和 PowerShell `ConvertTo-Json` 输出格式。
 ```
 
@@ -2537,15 +2526,14 @@ slideshow 已区分 fileNames 缺失/非法、interval 非法、文件不存在�
 
 ```text
 存：
-- save_slideshow_config() 保存轮播列表、interval、random 等配置文件。
-- save_slideshow_control() 保存轮播开关/控制状态。
-- save_slideshow_control() 写入 sw=1 成功后，同步写 PhotoPainter:epd_mode=1。
+- start_slideshow 保存 slideshow_config 的 fileNames / interval / random，保存 random 配置，并写入 `show_control.txt`：`{"func":"set_slideshow","sw":1,"interval":...,"random":...,"timestamp":...,"anchor_epoch":...}`。
+- set_slideshow 写入 sw / interval / timestamp / anchor_epoch，并同步写 PhotoPainter:epd_mode=1。
 - NVS `slide_progress` 保存版本、配置 hash、待显示文件、随机种子、整轮顺序和当前位置。
 - `pending_file` 表示下一次必须完成显示的图片，不表示已经显示成功的图片。
 - EPD 实际返回成功后才计算并提交下一张；NVS 写入并读回校验成功后运行索引才推进。
-- slideshow_task() 在每次轮播图片送入 EPD 显示队列前，把本次 interval 总秒数和显示开始 tick 保存为 RAM runtime timing；正常轮播 interval 为 `runtime->request.interval`，EPD 显示耗时计入该 interval，运行中收到新的 interval 设置时按最新 interval 重新计时，未运行重启后的初始等待可为剩余秒数；初始等待也会先用 PSRAM 预加载当前 pending 图片，再等到目标 tick 后显示。
-- `ServerNetworkStaSlideshow_GetRuntimeTiming()` 可读取当前轮播 interval 已经走过的秒数。
-- slideshow_task() 在 EPD 显示成功且下一进度保存成功后记录 RAM last display start tick；如果随后在未运行状态重新启动轮播且距离上次开始显示还没等满 interval，新 task 会先等待剩余秒数，不会立即刷下一张；如果旧轮播正在运行时收到新的 start_slideshow，则按最新 interval 重新计时。
+- slideshow_task() 在 RTC 模式下按 `anchor_epoch + N * interval` 计算下一次播放点；EPD 显示耗时计入间隔，等待期间会预加载下一张。
+- `ServerNetworkStaSlideshow_GetScheduleTiming()` 可读取 RTC 轮播的 now / next / remain；`ServerNetworkStaSlideshow_GetRuntimeTiming()` 只作为非 RTC 兼容状态读取。
+- slideshow_task() 在 EPD 显示成功且下一进度保存成功后，RTC 模式重新计算 `next_epoch`，并打印 `slideshow rtc next ...`。
 - slideshow_task() 在上一张 EPD 显示完成并保存下一进度后，会在剩余 interval 时间内用 PSRAM 预加载下一张 bin 并做 SHA-256 文件名校验；目标 tick 到达后直接送入 EPD 显示队列，减少“300 秒后再读文件”造成的额外延迟。若 PSRAM 预加载失败，已保存的下一进度不变，下一轮会重新读取该图片，不长时间占用内部 RAM，不影响停止和失败不推进的规则。
 - 显示失败、等待超时、NVS 保存失败或显示中途断电均不推进；下次继续当前图片。
 - 随机模式按“整轮洗牌”运行，一轮内所有图片各显示一次，不重复、不遗漏。
@@ -2553,13 +2541,14 @@ slideshow 已区分 fileNames 缺失/非法、interval 非法、文件不存在�
 取：
 - ServerNetworkStaSlideshow_StartSavedDelayed() 只用于开机自动恢复轮播：启动位置仍保持在网络初始化之后，但先等待 `TDX_SLIDESHOW_STARTUP_DELAY_MS=10000` 毫秒；等待期间手机 APP 或 USB Serial 的 cast/cast2pic/upload `show=true` 请求优先进入 EPD 显示；延迟结束时如果 EPD task 仍忙，则继续推迟启动。
 - 延迟结束后先重新读取 control；如果 10 秒内 show=true 已把 control 写成 `sw=0`，则跳过自动恢复轮播；如果 EPD task 仍有待显示任务或正在显示，则继续短周期推迟，直到 EPD 空闲后再重新读取 slideshow_config、control 和 `slide_progress` 并决定是否启动。
+- 读取 SD 卡中的 control 时严格校验：`sw=1` 必须包含合法 `interval`、`timestamp` 和 `anchor_epoch`；旧格式如 `{"sw":1,"interval":90,"random":false,"run_mode":0}` 视为非法，打印 `legacy control rejected`，不启动轮播，也不回退到 task tick 计时。
 - ServerNetworkStaSlideshow_StartSaved() 仍用于立即启动已保存轮播，不带开机 10 秒延迟。
 - 进度版本、配置 hash、随机模式、排列或文件名不匹配时，从当前配置第一张重建进度。
 - 兼容旧 `slide_last`：首次升级时将旧文件名迁移为新的待显示进度。
 - slideshow_task() 读取 `/data/bin_img/*.bin`，等待 EPD 真正完成后再提交下一进度；如果读文件前、读文件后或送 EPD 前收到停止请求，则放弃本张显示并退出。
 - slideshow_task() 从 SD 读出 bin 后、送 EPD 前，会计算文件内容 SHA-256 的十六进制后 16 位并与 fileName 比对，只打印 `sha256 ok` / `sha256 mismatch` / `sha256 failed` / `skip invalid basename` 诊断日志，不阻止显示、不修改进度；匹配成功用 `ESP_LOGI`，无效 basename 跳过用 `ESP_LOGW`，计算失败或 mismatch 用 `ESP_LOGE`。
-- 轮播 runtime timing 表示当前轮播 interval 的计时进度；显示 EPD 期间也计入 interval 已走时间。例如 interval=300，EPD 显示耗时 37 秒，则显示完成后只继续等待约 263 秒；下一张会尽量提前预加载，到目标 tick 后立即送入 EPD 显示队列。
-- last display start tick 只保存在 RAM 中，断电重启后不保留；它只用于未运行状态下 `start_slideshow` / `set_slideshow sw=1` 重启轮播时避免未到目标 interval 又立即显示下一张。若旧轮播正在运行并收到新的 interval 设置，则不继承已走时间，按最新 interval 从 0 开始计时。
+- 轮播日志中 `slideshow rtc ...` / `slide_timer rtc ...` 表示真实 RTC 时间控制；`legacy_tick` 只表示非 RTC 兼容路径或旧状态统计，不能作为新协议轮播判断依据。RTC 模式以真实系统时间计算 remain，不依赖 task tick 延时。
+- `set_slideshow sw=1` 会按新的 timestamp / interval 重算 RTC 播放点；`start_slideshow` 也会用自身 timestamp 写 RTC control 并启动轮播。
 - 极端情况下若 EPD 已完成但提交下一进度前断电，当前图片会重复一次，但绝不会跳图。
 ```
 
@@ -2575,13 +2564,17 @@ Result 定义建议：
 |---|---|---|
 | `set_slideshow_result` | `0` | 轮播控制设置成功 |
 | `set_slideshow_result` | `1012` | SD 卡 / 存储未就绪 |
-| `set_slideshow_result` | `1004` | `sw` / `random` / `interval` 参数非法 |
+| `set_slideshow_result` | `1004` | `sw` / `interval` / `random` 参数非法 |
 | `set_slideshow_result` | `1501` | 开启轮播时还没有保存过轮播列表 |
 | `set_slideshow_result` | `1506` | 开启轮播时运行时启动失败 |
 | `set_slideshow_result` | `1507` | `interval` 非法 |
 | `set_slideshow_result` | `1509` | 控制状态保存失败 |
+| `set_slideshow_result` | `1510` | `timestamp` 缺失、不是整数、不是秒级 Unix 时间戳，或时间范围不合理 |
+| `set_slideshow_result` | `1511` | 旧协议 `timezone` 已废弃；新协议不再接收 `datetime/timezone` |
+| `set_slideshow_result` | `1512` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
+| `set_slideshow_result` | `1513` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次轮播指令 |
 
-功能说明：单独控制轮播开启/关闭、轮播周期和随机模式。
+功能说明：单独控制轮播开启/关闭、轮播周期、随机模式和 RTC 同步播放时间。`sw=1` 时轮播时间由 ESP32-C5 RTC / 系统时间控制，协议使用秒级标准 Unix 时间戳 `timestamp`，单位秒。
 
 Mermaid 时序图：
 
@@ -2592,7 +2585,7 @@ sequenceDiagram
     participant CTRL as ServerNetworkStaSlideshowControl_ProcessJson
     participant FILE as show_control/slideshow state
     participant SS as slideshow task
-    APP->>DATAUP: set_slideshow sw/interval/random
+    APP->>DATAUP: set_slideshow sw/interval/random/timestamp
     DATAUP->>CTRL: process_small_json_request()
     CTRL->>FILE: write control file/state
     alt sw=0
@@ -2617,10 +2610,10 @@ HTTP small JSON set_slideshow
 └─ receive_data_redirect_handler()
    └─ process_small_json_request()
       └─ ServerNetworkStaSlideshowControl_ProcessJson()
-         ├─ parse_json_bool_optional("random")
-         ├─ parse_json_u32("interval")
          ├─ parse sw field
-         ├─ write_control_file()
+         ├─ parse interval/random
+         ├─ sw=1 parse timestamp and check/set RTC
+         ├─ write_control_file(sw/interval/timestamp/anchor_epoch)
          ├─ sw=0
          │  └─ ServerNetworkStaSlideshow_Stop()
          └─ sw=1
@@ -2633,6 +2626,9 @@ HTTP small JSON set_slideshow
 server_network_sta_slideshow_control.c
 ├─ parse_json_bool_optional()
 ├─ parse_json_u32()
+├─ parse_json_i64()
+├─ timestamp_reasonable()
+├─ ServerNetworkStaSlideshowControl_ApplyJson()
 ├─ write_control_file()
 └─ ServerNetworkStaSlideshowControl_ProcessJson()
 ```
@@ -2644,7 +2640,8 @@ V2 协议资料拆分：
   "func": "set_slideshow",
   "sw": 1,
   "interval": 60,
-  "random": false
+  "random": false,
+  "timestamp": 1783372200
 }
 ```
 
@@ -2653,11 +2650,28 @@ V2 协议资料拆分：
 ```text
 sw=1 开启轮播
 sw=0 关闭轮播
-interval 轮播间隔
+interval 轮播间隔，单位秒
 interval 允许范围 60..604800；sw=0 时可省略，省略时沿用已有控制文件或默认最小值
-control.interval 是 set_slideshow 写入控制文件的配置值；轮播 task 实际使用的是启动/恢复后复制到 runtime->request.interval 的 RAM 值。
-random=true 随机轮播
-random=false 按列表顺序轮播
+random=true 表示随机轮播；random=false 按列表顺序轮播；省略时沿用已有 control 的 random
+control.interval / control.random 是 set_slideshow 写入控制文件的配置值；轮播 task 实际使用的是启动/恢复后复制到 runtime 的 RAM 值。
+timestamp 第一张图片的目标播放时间，秒级标准 Unix 时间戳，含义是从 1970-01-01 00:00:00 UTC 到当前时间的秒数
+旧 datetime/timezone 已删除；新请求中不再发送 timezone
+anchor_epoch 等于 timestamp，用于后续按 interval 计算播放点
+```
+
+RTC 同步规则：
+
+```text
+sw=1 时如果 SNTP 已同步，设备使用 SNTP 当前时间，不用 APP / PC 的 timestamp 修 RTC；同时比较 abs(now_epoch - timestamp)。
+SNTP 已同步且差值 > 5 秒时，返回 1513，不写控制文件，不停止/启动轮播，不执行本次指令；返回中带 timestamp、now_epoch、time_diff，方便 APP / PC 知道差几秒。
+SNTP 已同步且差值 <= 5 秒时，接受指令，anchor_epoch=timestamp。
+SNTP 未同步时，设备把 APP / PC 发来的 timestamp 写入 ESP32-C5 RTC / 系统时间，并以此作为本次轮播时间基准；写入失败返回 1512。
+timestamp 表示第一张图片播放时间，之后每 interval 秒一个播放点。
+如果收到命令或设备启动恢复时已经超过 timestamp：
+- 超过时间 <= 5 秒：仍按第一张图片播放点执行，允许立即播放，避免 1 秒轮询和网络/串口延迟导致跳过。
+- 超过时间 > 5 秒：按 anchor_epoch + N * interval 自动计算下一个未来播放点，保持和手机 APP 倒计时一致。
+轮播 task 内部 1 秒检查一次 RTC / 系统时间，到 next_epoch 后送入 EPD 显示；原来的图片顺序、随机、进度保存和 EPD 显示流程不改。
+返回成功时带 timestamp、time_source、time_diff、anchor_epoch、now_epoch、next_epoch、remain，APP 可用 remain 校验倒计时同步。time_source=sntp 表示使用设备 SNTP 时间；time_source=timestamp 表示 SNTP 未同步，已使用 APP / PC timestamp 写入 RTC。
 ```
 
 
@@ -2672,6 +2686,7 @@ $body = @{
   sw = 1
   interval = 60
   random = $false
+  timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 } | ConvertTo-Json -Depth 4
 
 Invoke-RestMethod -Uri "$esp/dataUP" `
@@ -2686,7 +2701,6 @@ $body = @{
   func = "set_slideshow"
   sw = 0
   interval = 60
-  random = $false
 } | ConvertTo-Json -Depth 4
 
 Invoke-RestMethod -Uri "$esp/dataUP" `
@@ -2701,9 +2715,9 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 ```text
 set_slideshow 的 sw=1 会更新控制文件、同步写 `epd_mode=1(SLIDESHOW)`，并尝试启动轮播。
-若旧轮播正在运行，`set_slideshow sw=1` 写入新的 interval 后会按最新 interval 重新计时；如果 EPD 正在显示，不打断本次显示，显示完成后按最新 interval 的剩余时间等待，等待期间会预加载下一张。
-若轮播未运行且上一张轮播图片刚刚开始显示过、interval 还没走完，sw=1 只启动/恢复轮播 task；task 会先预加载当前 pending 图片并等待剩余 interval，到时间后再显示下一张，不保证立即刷新。
-存储未就绪、未保存轮播列表、参数非法、interval 非法、控制文件/NVS 保存失败和轮播 runtime 启动失败已分别返回 1012、1501、1004、1507、1509、1506。
+若旧轮播正在运行，`set_slideshow sw=1` 写入新的 interval / timestamp 后会按 RTC 计算出的 next_epoch 重新同步；如果 EPD 正在显示，不打断本次显示，显示完成后继续按 RTC 下一个播放点等待，等待期间会预加载下一张。
+`ServerNetworkStaSlideshow_GetScheduleTiming()` 可读取当前 RTC 轮播的 now_epoch / next_epoch / remain，snapshot 和关机前 WAKE_TIMER 计算优先使用这组值。
+存储未就绪、未保存轮播列表、参数非法、interval 非法、控制文件/NVS 保存失败、轮播 runtime 启动失败、timestamp 非法、timestamp 写 RTC 失败、SNTP 时间差过大已分别返回 1012、1501、1004、1507、1509、1506、1510、1512、1513。
 网络 JSON 的 `func` 判断支持空格、CRLF 和 PowerShell `ConvertTo-Json` 输出格式。
 ```
 
@@ -2711,13 +2725,13 @@ set_slideshow 的 sw=1 会更新控制文件、同步写 `epd_mode=1(SLIDESHOW)`
 
 ```text
 存：
-- set_slideshow 写入轮播控制文件，保存 sw / interval / random；sw=1 时通过 ServerNetworkStaSlideshow_StartSavedResetInterval() 启动，旧轮播运行中会按最新 interval 重新计时。
+- set_slideshow 写入轮播控制文件，保存 sw / interval / random / timestamp / anchor_epoch；random 省略时沿用已有 control。sw=1 时通过 ServerNetworkStaSlideshow_StartSavedResetInterval() 启动，并按 RTC next_epoch 等待。
 - sw 写入成功后同步写 PhotoPainter:epd_mode；sw=1 写 1，sw=0 写 0。
 - 关闭轮播时更新控制状态并请求停止轮播任务；若 EPD 正在刷新，等待本次真实结果，成功时先提交下一待显示进度再退出。
-- 修改随机模式会改变配置 hash；再次开启时旧排列失效，从当前配置第一张建立新一轮进度。
+- 配置 hash 或已保存随机排列失效时，再次开启会从当前配置第一张建立新一轮进度。
 
 取：
-- 读取 JSON 中 sw、interval、random。
+- 读取 JSON 中 sw、interval、random、timestamp；random 省略时沿用已有 control。
 - `sw=1` 时读取并校验持久化待显示进度，用于断电后继续；`sw=0` 时重启不会自动恢复轮播。
 ```
 
@@ -2814,6 +2828,17 @@ V2 协议资料拆分：
 ```
 
 V2 说明：如果设备未设置过轮播，建议返回 `{"sw":0,"fileNames":[],"interval":0,"random":false}`。
+
+RTC 轮播字段：
+
+```text
+timestamp     set_slideshow sw=1 写入的第一张图片播放时间，秒级 Unix 时间戳。
+anchor_epoch  等于 timestamp，用于按 interval 计算后续播放点。
+now_epoch     设备当前 RTC / 系统 Unix 秒。
+next_epoch    当前运行中下一次轮播播放点；未运行或非 RTC 轮播为 0。
+remain        next_epoch - now_epoch，单位秒；APP 可用于同步倒计时。
+time_synced   SNTP 是否已完成同步。
+```
 
 
 
@@ -3181,7 +3206,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 - load_work_state_from_nvs() 读取工作状态 blob。
 - load_work_time_vars_from_app_nvs() 读取兼容字符串 key。
 - work_state_task() 读取 RAM 中计时值；超时后如果 OTA 忙或 EPD task 忙则推迟，只有 OTA 不忙且 EPD 空闲时才先配置 CH583 WAKE_TIMER，再发送 CH583 POWER_OFF。
-- 轮播开启时，WAKE_TIMER 优先使用轮播 runtime 当前 interval 的剩余时间，并扣除开机自动恢复轮播延迟：`runtime_interval - 已走秒数 - startup_delay_seconds`；其中 `startup_delay_seconds = ceil(TDX_SLIDESHOW_STARTUP_DELAY_MS / 1000)`，单位为秒，最小值为 1 秒。若 runtime timing 不可用，则回退使用 control 文件中的 interval 并同样扣除 startup delay。若计算出的 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，ESP32 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，只重置 wifi_work_time 运行时计时，从头等待下一次工作超时。
+- 轮播开启时，WAKE_TIMER 优先使用 RTC 轮播的 `next_epoch - now_epoch` 剩余秒数，并扣除开机自动恢复轮播延迟：`remain - startup_delay_seconds`；其中 `startup_delay_seconds = ceil(TDX_SLIDESHOW_STARTUP_DELAY_MS / 1000)`，单位为秒，最小值为 1 秒。若当前不是 RTC 轮播或 RTC timing 不可用，则回退使用旧 runtime timing：`runtime_interval - 已走秒数 - startup_delay_seconds`；再不可用才回退 control 文件中的 interval。若计算出的 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，ESP32 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，只重置 wifi_work_time 运行时计时，从头等待下一次工作超时。
 ```
 
 work_state 栈大小要求：
@@ -3194,7 +3219,7 @@ USER_WORK_STATE_TASK_STACK_SIZE 默认使用 8 * 1024。
 work_state_task() 不是只做简单计时。工作时间超时后，它会执行关机前完整链路：
 1. 先确认 OTA 不忙且 EPD task 空闲；EPD 正在显示或队列仍有待显示任务时不关机。
 2. 读取 slideshow control，决定 WAKE_TIMER ON/OFF。
-3. slideshow 开启时读取 runtime timing，扣掉当前 interval 已经走过的秒数，并额外扣掉 `TDX_SLIDESHOW_STARTUP_DELAY_MS` 换算后的秒数。若剩余 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，不发送 WAKE_TIMER ON/OFF，不发送 POWER_OFF，只重置 wifi_work_time 运行时计时；否则发送 CH583 WAKE_TIMER ON。
+3. slideshow 开启时优先读取 RTC schedule timing，使用 `next_epoch - now_epoch` 作为剩余秒数，并额外扣掉 `TDX_SLIDESHOW_STARTUP_DELAY_MS` 换算后的秒数；若没有 RTC timing，再回退旧 runtime timing。若剩余 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，不发送 WAKE_TIMER ON/OFF，不发送 POWER_OFF，只重置 wifi_work_time 运行时计时；否则发送 CH583 WAKE_TIMER ON。
 4. 调用 UserLedStatus_PreparePowerOff()，发送 RED/GREEN LED 停止闪烁和关闭指令。
 5. 发送 CH583 POWER_OFF。
 
@@ -3361,7 +3386,7 @@ Invoke-RestMethod -Uri "$esp/time?t=123" -Method Get
 取：
 - ServerNetworkStaTime_GetInfo() 读取 time() 当前时间。
 - valid 判断以本地时间年份 >= 2026 为准。
-- source=default 表示使用默认兜底时间或启动时保留的有效时间；source=sntp 表示 SNTP 已成功同步。
+- source=default 表示使用默认兜底时间或启动时保留的有效时间；source=timestamp 表示使用 APP / PC 下发的 timestamp 写入 RTC；source=sntp 表示 SNTP 已成功同步。
 - sntp_synced 只表示本轮启动后是否收到 SNTP 同步回调。
 ```
 
@@ -4874,18 +4899,21 @@ Result 定义建议：
 
 | 返回 | result | 说明 |
 |---|---|---|
-| `start_slideshow_result` | `0` | USB 轮播启动成功 |
+| `start_slideshow_result` | `0` | USB 轮播列表配置保存成功，并已按 `timestamp` 写入 RTC control、启动 RTC 轮播 |
 | `start_slideshow_result` | `1501` | `fileNames` 缺失 |
 | `start_slideshow_result` | `1502` | 文件名非法 |
 | `start_slideshow_result` | `1504` | 轮播配置保存失败 |
 | `start_slideshow_result` | `1506` | 运行时启动失败 |
 | `start_slideshow_result` | `1507` | `interval` 非法 |
 | `start_slideshow_result` | `1508` | 轮播文件不存在；写配置前逐个检查 `/data/bin_img/<fileName>.bin` |
+| `start_slideshow_result` | `1510` | `timestamp` 缺失、不是整数、不是秒级 Unix 时间戳，或时间范围不合理 |
+| `start_slideshow_result` | `1512` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
+| `start_slideshow_result` | `1513` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次指令 |
 
 功能说明：
 
 ```text
-slideshow USB 接口用于下发轮播图片列表、轮播间隔和随机开关，并写入轮播配置，后续由 server_network_sta/slideshow 后台任务执行显示。
+slideshow USB 接口用于下发并保存轮播图片列表、轮播顺序、随机模式和默认 interval，并在同一条命令中使用 `timestamp` 写入标准 RTC control、强制 `sw=1`、启动 RTC 轮播。
 ```
 
 Mermaid 时序图：
@@ -4901,9 +4929,11 @@ sequenceDiagram
     PC->>Router: POST /slideshow JSON
     Router->>Slide: UsbConsoleSlideshow_Handle()
     Slide->>Slide: UsbConsoleSlideshow_Process()
-    Slide->>ServerSlide: 写 slideshow_config + show_control sw=1
-    Slide->>Slide: epd_mode=1
-    ServerSlide->>EPD: queue first/next image
+    Slide->>Slide: validate fileNames/interval/random/timestamp
+    Slide->>Slide: check/set RTC
+    Slide->>Slide: save slideshow_config
+    Slide->>Slide: write show_control sw=1 interval/random/timestamp/anchor_epoch
+    Slide->>ServerSlide: ServerNetworkStaSlideshow_StartSavedResetInterval()
     Slide-->>PC: start_slideshow_result JSON
 ```
 
@@ -4922,12 +4952,11 @@ UsbConsoleRouter_Handle()
 └─ /slideshow
    └─ UsbConsoleSlideshow_Handle()
       └─ UsbConsoleSlideshow_Process()
-         ├─ parse fileNames[]
-         ├─ parse interval
-         ├─ parse random
+         ├─ validate fileNames / interval / timestamp
+         ├─ check/set RTC
          ├─ write slideshow_config
-         ├─ write show_control sw=1
-         ├─ EpdDisplayMode_SetBySlideshowSwitch(true)
+         ├─ write show_control sw=1 interval/random/timestamp/anchor_epoch
+         ├─ ServerNetworkStaSlideshow_StartSavedResetInterval()
          └─ response start_slideshow_result
 ```
 
@@ -4945,7 +4974,7 @@ ServerNetworkStaSlideshow_Stop()
 串口发送数据：
 
 ```text
-下发轮播列表。文件名必须已经存在于 /data/bin_img 和 /data/jpg_img：
+下发轮播列表：
 
 @#$
 POST /slideshow HTTP/1.1
@@ -4953,20 +4982,19 @@ Host: usb
 Content-Type: application/json
 Content-Length: 88
 
-{"func":"start_slideshow","fileNames":["26422","screen_a"],"interval":60,"random":false}
+{"func":"start_slideshow","fileNames":["26422","screen_a"],"interval":60,"random":false,"timestamp":1783372200}
 %^&
 ```
 
-预期：返回 `start_slideshow_result`；`result=0` 表示轮播配置写入并启动成功。
+预期：返回 `start_slideshow_result`；`result=0` 表示列表配置保存成功、RTC control 写入成功并已启动 RTC 轮播。
 
 
 存 / 取信息（含条件限制）：
 
 ```text
 存：
-- save_slideshow_config() 保存轮播列表、interval、random 等配置文件。
-- save_slideshow_control() 保存轮播开关/控制状态。
-- USB slideshow 写入 show_control.txt sw=1 成功后，同步写 PhotoPainter:epd_mode=1。
+- USB slideshow 写入轮播列表配置 fileNames / interval / random，并写入 `show_control.txt`：`{"func":"set_slideshow","sw":1,"interval":...,"random":...,"timestamp":...,"anchor_epoch":...}`。
+- USB slideshow_control 的 set_slideshow 写入 sw / interval / timestamp / anchor_epoch，并同步写 PhotoPainter:epd_mode=1。
 - 网络与 USB 共用 NVS `slide_progress` 待显示进度；仅在 EPD 实际完成且进度提交成功后推进。
 - 随机轮播保存完整的本轮排列，一轮内每张图片显示一次。
 
@@ -4987,13 +5015,20 @@ Result 定义建议：
 |---|---|---|
 | `set_slideshow_result` | `0` | USB 轮播控制成功 |
 | `set_slideshow_result` | `1004` | `sw` / `interval` / `random` 参数非法 |
+| `set_slideshow_result` | `1012` | SD 卡 / 存储未就绪 |
+| `set_slideshow_result` | `1501` | 开启轮播时还没有保存过轮播列表 |
 | `set_slideshow_result` | `1506` | 开启轮播时运行时启动失败 |
+| `set_slideshow_result` | `1507` | `interval` 非法 |
 | `set_slideshow_result` | `1509` | 控制文件保存失败 |
+| `set_slideshow_result` | `1510` | `timestamp` 缺失、不是整数、不是秒级 Unix 时间戳，或时间范围不合理 |
+| `set_slideshow_result` | `1511` | 旧协议 `timezone` 已废弃；新协议不再接收 `datetime/timezone` |
+| `set_slideshow_result` | `1512` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
+| `set_slideshow_result` | `1513` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次轮播指令 |
 
 功能说明：
 
 ```text
-slideshow_control USB 接口用于单独控制轮播开关、间隔和随机模式，等价于网络 JSON 控制中的 set_slideshow。
+slideshow_control USB 接口用于单独控制轮播开关、间隔、随机模式和 RTC 同步播放时间，等价于网络 JSON 控制中的 set_slideshow。
 ```
 
 Mermaid 时序图：
@@ -5008,7 +5043,7 @@ sequenceDiagram
     PC->>Router: POST /slideshow_control JSON
     Router->>Ctrl: UsbConsoleSlideshowControl_Handle()
     Ctrl->>Ctrl: UsbConsoleSlideshowControl_Process()
-    Ctrl->>ServerCtrl: 保存 sw / interval / random
+    Ctrl->>ServerCtrl: ServerNetworkStaSlideshowControl_ApplyJson()
     Ctrl-->>PC: set_slideshow_result JSON
 ```
 
@@ -5027,12 +5062,12 @@ UsbConsoleRouter_Handle()
 └─ /slideshow_control
    └─ UsbConsoleSlideshowControl_Handle()
       └─ UsbConsoleSlideshowControl_Process()
-         ├─ parse sw
-         ├─ parse interval
-         ├─ parse random
-         ├─ write control file
-         └─ sw=0
-            └─ ServerNetworkStaSlideshow_Stop()
+         └─ ServerNetworkStaSlideshowControl_ApplyJson()
+            ├─ parse sw/interval/random/timestamp
+            ├─ sw=1 check/set RTC and require saved slideshow list
+            ├─ write control file
+            ├─ sw=0 -> ServerNetworkStaSlideshow_Stop()
+            └─ sw=1 -> ServerNetworkStaSlideshow_StartSavedResetInterval()
 ```
 
 关键辅助函数：
@@ -5040,7 +5075,7 @@ UsbConsoleRouter_Handle()
 ```text
 UsbConsoleSlideshowControl_Handle()
 UsbConsoleSlideshowControl_Process()
-ServerNetworkStaSlideshow_Stop()
+ServerNetworkStaSlideshowControl_ApplyJson()
 UsbConsoleCommon_SetJsonf()
 ```
 
@@ -5053,9 +5088,9 @@ UsbConsoleCommon_SetJsonf()
 POST /slideshow_control HTTP/1.1
 Host: usb
 Content-Type: application/json
-Content-Length: 60
+Content-Length: 80
 
-{"func":"set_slideshow","sw":1,"interval":60,"random":false}
+{"func":"set_slideshow","sw":1,"interval":60,"random":false,"timestamp":1783372200}
 %^&
 ```
 
@@ -5068,24 +5103,26 @@ Host: usb
 Content-Type: application/json
 Content-Length: 60
 
-{"func":"set_slideshow","sw":0,"interval":60,"random":false}
+{"func":"set_slideshow","sw":0,"interval":60}
 %^&
 ```
 
 预期：返回 `set_slideshow_result`；`sw=1` 开启，`sw=0` 停止。
+
+`sw=1` 成功返回会带 `timestamp`、`time_source`、`time_diff`、`anchor_epoch`、`now_epoch`、`next_epoch`、`remain`，用于 PC/APP 同步倒计时。`sw=1` 时若 SNTP 已同步，设备比较 SNTP 当前时间和 APP / PC 发来的 `timestamp`，差值超过 5 秒返回 1513 且不执行；若 SNTP 未同步，则用 `timestamp` 写入 RTC 并返回 `time_source=timestamp`。
 
 
 存 / 取信息（含条件限制）：
 
 ```text
 存：
-- set_slideshow 写入轮播控制文件，保存 sw / interval / random。
+- set_slideshow 写入轮播控制文件，保存 sw / interval / random / timestamp / anchor_epoch。
 - sw 写入成功后同步写 PhotoPainter:epd_mode；sw=1 写 1，sw=0 写 0。
 - 关闭轮播时更新控制状态并停止轮播任务。
 
 取：
-- 读取 JSON 中 sw、interval、random。
-- 读取当前轮播状态，用于决定启动、停止或更新 interval。
+- 读取 JSON 中 sw、interval、random、timestamp；random 省略时沿用已有 control。
+- 读取当前轮播状态，用于决定启动、停止或按 RTC next_epoch 更新倒计时；SD 卡旧 control 若 `sw=1` 但没有合法 `timestamp/anchor_epoch`，按非法处理并拒绝恢复轮播。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-09)
@@ -7491,10 +7528,13 @@ User_HandleWifiJsonTextFromCh583(json)
    │  ├─ 解析 func / ssid / key
    │  ├─ Save ssid/key to NVS
    │  ├─ User_Network_mode_app_init("/data")
-   │  └─ ch583_send_json("Find wifi")
+   │  ├─ ch583_send_json("Find wifi")
+   │  └─ notify_wifi_info_if_ip_ready()
+   │     └─ send_base_info_to_mobile()
    ├─ parse_wifi_wakeup_json()
-   │  ├─ check_net_state()
-   │  ├─ send_base_info_to_mobile()
+   │  ├─ ServerNetworkSta_GetStatus()
+   │  ├─ GOT_IP -> notify_wifi_info_if_ip_ready()
+   │  │  └─ send_base_info_to_mobile()
    │  └─ ch583_send_json("wakeup No-WiFi")
    ├─ parse_wifi_work_time_json()
    │  ├─ accept set_wifi_work_time seconds/time
@@ -7515,7 +7555,7 @@ User_HandleWifiJsonTextFromCh583(json)
 
 取：
 - wifi_wakeup 读取已保存 WiFi 配置是否存在。
-- 成功联网后读取 IP、版本、running partition 等信息发送给前端。
+- 成功联网后读取 IP、版本、running partition 等信息发送给前端；配网任务成功后若第一次没读到 IP，会每 300 ms 复查一次，最多复查 3 次；读到 IP 时必须调用 `send_base_info_to_mobile()`，发送失败会短重试并打印 `ESP_LOGW` / `ESP_LOGE`。
 ```
 
 
@@ -7551,9 +7591,11 @@ sequenceDiagram
     ESP->>ESP: parse_wifi_config_json()
     ESP->>NVS: save ssid/key
     ESP->>WIFI: User_Network_mode_app_init("/data")
-    ESP-->>CH583: WIFI_DATA {result:0,message:Find wifi}
+    ESP-->>CH583: WIFI_DATA {func:wifi_result,result:0,message:WiFi config saved and connect submitted}
     WIFI-->>ESP: IP_EVENT_STA_GOT_IP
-    ESP-->>CH583: WIFI_DATA {result:0,message:wifi info,stage:IP}
+    ESP->>ESP: notify_wifi_info_if_ip_ready()
+    ESP->>ESP: send_base_info_to_mobile()
+    ESP-->>CH583: WIFI_DATA {func:wifi_info_result,result:0,message:wifi info,stage:IP}
     CH583-->>APP: BLE notify
 ```
 
@@ -7624,7 +7666,7 @@ Result 定义建议：
 
 | 返回 | result | 说明 |
 |---|---|---|
-| `wifi_wakeup_result` | `0` | 已提交或正在执行唤醒连接；此时 `stage=connecting`，不代表已经联网 |
+| `wifi_wakeup_result` | `0` | 新提交唤醒连接；此时 `stage=connecting`，不代表已经联网 |
 | `wifi_info_result` | `0` | 已取得 STA IP；`stage` 为当前 IP，表示网络已经可用 |
 | `wifi_wakeup_result` | `1205` | 未找到已保存 WiFi |
 | `wifi_wakeup_result` | `1307` | WiFi 连接超时 |
@@ -7645,7 +7687,7 @@ sequenceDiagram
     alt already has IP
         ESP-->>CH583: WIFI_DATA {result:0,stage:IP}
     else connection in progress
-        ESP-->>CH583: WIFI_DATA {func:wifi_wakeup_result,result:0,stage:connecting}
+        ESP->>ESP: ESP_LOGW only, no WIFI_DATA
     else no saved WiFi
         ESP-->>CH583: WIFI_DATA {result:1205,message:wakeup No-WiFi}
     else idle or failed
@@ -7707,15 +7749,16 @@ http://<host>/dataUP
 
 取：
 - ble_has_saved_wifi_info() 检查 namespace="wifi" 的 ssid 或 namespace="nvs.net80211" 的 sta.ssid 是否存在。
-- check_net_state() 读取当前 STA IP 状态。
-- send_base_info_to_mobile() 读取 IP、app 描述、running partition 信息。
+- ServerNetworkSta_GetStatus() 读取当前 STA IP 状态。
+- notify_wifi_info_if_ip_ready() 统一判断 GOT_IP；配网任务成功后若第一次没读到 IP，会每 300 ms 复查一次，最多复查 3 次；读到 IP 时必须调用 send_base_info_to_mobile()。
+- send_base_info_to_mobile() 读取 IP、app 描述、running partition 信息，并对 wifi_info_result 发送失败做短重试。
 ```
 
 连接规则：
 
 ```text
 - GOT_IP：wifi_wakeup 不 disconnect、不 stop、不重新连接，直接返回 wifi_info_result 和当前 STA IP。
-- CONNECTING：wifi_wakeup 不创建第二条连接流程，返回 wifi_wakeup_result result=0 stage=connecting。
+- CONNECTING：wifi_wakeup 不创建第二条连接流程，只打印 ESP_LOGW 日志，不发送 WIFI_DATA。
 - IDLE / FAILED：存在保存配置时才提交连接任务。
 - func=wifi 属于显式配网：保存配置后使用 force reconnect 策略；若已有 BLE/CH583 配网任务，先返回 BUSY，避免出现“配置已保存但未应用”。
 - 显式配网会设置 provisioning cancel 标志并唤醒旧的开机连接等待；旧配置不再跑完剩余轮次，新配置取得全局 operation mutex 后立即执行。

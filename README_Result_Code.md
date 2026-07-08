@@ -292,9 +292,15 @@ set_slideshow_result
 |---:|---|---|
 | `0` | `TDX_JSON_RESULT_OK` | 轮播控制设置成功 |
 | `1004` | `TDX_JSON_RESULT_PARAM_INVALID` | `sw` / `random` / `interval` 参数非法 |
+| `1012` | `TDX_JSON_RESULT_STORAGE_NOT_READY` | SD 卡 / 存储未就绪 |
+| `1501` | `TDX_JSON_RESULT_FILE_NAMES_MISSING` | 开启轮播时还没有保存过轮播列表 |
 | `1506` | `TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED` | 开启轮播时运行时启动失败 |
 | `1507` | `TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID` | 轮播间隔非法 |
 | `1509` | `TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED` | 轮播控制状态保存失败 |
+| `1510` | `TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID` | `timestamp` 缺失、不是整数、不是秒级 Unix 时间戳，或时间范围不合理 |
+| `1511` | `TDX_JSON_RESULT_SLIDESHOW_TIMEZONE_DEPRECATED` | 旧协议 `timezone` 已废弃；新协议不再接收 `datetime/timezone` |
+| `1512` | `TDX_JSON_RESULT_SLIDESHOW_TIME_SET_FAILED` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
+| `1513` | `TDX_JSON_RESULT_SLIDESHOW_TIME_DIFF_TOO_LARGE` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次轮播指令 |
 
 [⬆ 返回目录](#toc)
 
@@ -665,11 +671,11 @@ PhotoPainter:epd_mode
 示例：
 
 ```json
-{"fileNames":["26422","26423"],"interval":60,"random":false}
+{"func":"start_slideshow","fileNames":["26422","26423"],"interval":60,"random":false,"timestamp":1783372200}
 ```
 
 ```json
-{"sw":1,"interval":60,"random":false,"run_mode":0}
+{"func":"set_slideshow","sw":1,"interval":60,"random":false,"timestamp":1783372200}
 ```
 
 [⬆ 返回目录](#toc)
@@ -774,6 +780,10 @@ PhotoPainter:epd_mode
 | `1507` | `TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID` | 轮播间隔非法 |
 | `1508` | `TDX_JSON_RESULT_SLIDESHOW_FILE_NOT_FOUND` | 轮播文件不存在 |
 | `1509` | `TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED` | 轮播控制状态保存失败 |
+| `1510` | `TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID` | `timestamp` 缺失、不是整数、不是秒级 Unix 时间戳，或时间范围不合理 |
+| `1511` | `TDX_JSON_RESULT_SLIDESHOW_TIMEZONE_DEPRECATED` | 旧协议 `timezone` 已废弃；新协议不再接收 `datetime/timezone` |
+| `1512` | `TDX_JSON_RESULT_SLIDESHOW_TIME_SET_FAILED` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
+| `1513` | `TDX_JSON_RESULT_SLIDESHOW_TIME_DIFF_TOO_LARGE` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次轮播指令 |
 
 [⬆ 返回目录](#toc)
 

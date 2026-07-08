@@ -25,6 +25,11 @@ bool ServerNetworkStaSlideshow_IsSavedEnabled(const char *base_path,
 bool ServerNetworkStaSlideshow_GetRuntimeTiming(uint32_t *interval,
                                                 uint32_t *elapsed,
                                                 bool *running);
+bool ServerNetworkStaSlideshow_GetScheduleTiming(uint32_t *interval,
+                                                 int64_t *now_epoch,
+                                                 int64_t *next_epoch,
+                                                 uint32_t *remain,
+                                                 bool *running);
 void ServerNetworkStaSlideshow_Stop(void);
 
 #ifdef __cplusplus

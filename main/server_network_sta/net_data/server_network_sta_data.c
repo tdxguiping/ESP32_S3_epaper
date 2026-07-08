@@ -191,10 +191,34 @@ static esp_err_t send_unsupported_func_response(httpd_req_t *req)
     return send_json_response(req, json);
 }
 
+static void log_network_small_json_body(const char *body, size_t body_len)
+{
+    const size_t chunk_size = 240;
+    size_t offset = 0;
+    if (body == NULL) {
+        ESP_LOGI(TAG, "network small JSON received len=%u body=<null>", (unsigned int)body_len);
+        return;
+    }
+
+    ESP_LOGI(TAG, "network small JSON received full body len=%u", (unsigned int)body_len);
+    while (offset < body_len) {
+        size_t chunk_len = body_len - offset;
+        if (chunk_len > chunk_size) {
+            chunk_len = chunk_size;
+        }
+        ESP_LOGI(TAG,
+                 "network small JSON body chunk offset=%u len=%u: %.*s",
+                 (unsigned int)offset,
+                 (unsigned int)chunk_len,
+                 (int)chunk_len,
+                 body + offset);
+        offset += chunk_len;
+    }
+}
+
 static esp_err_t process_small_json_request(httpd_req_t *req, const char *body, size_t body_len)
 {
-    ESP_LOGI(TAG, "small JSON len=%u body=%s",
-             (unsigned int)body_len, body != NULL ? body : "<null>");
+    log_network_small_json_body(body, body_len);
 
     if (!body_looks_like_json(body, body_len)) {
         ESP_LOGW(TAG, "small JSON invalid body");

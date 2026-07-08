@@ -85,7 +85,7 @@
         </label>
         <label>默认 JSON 路由模式
           <select id="jsonRouteMode">
-            <option value="feature" selected>独立功能路径：/delete /snapshot /slideshow...</option>
+            <option value="feature" selected>独立功能路径：/delete /snapshot /slideshow /slideshow_control...</option>
             <option value="dataup">兼容原网络入口：POST /dataUP + JSON</option>
           </select>
         </label>
@@ -145,14 +145,17 @@ Content-Length: 0
       <textarea id="wifiRequestPreview" rows="7" readonly></textarea>
       <div class="formGrid">
         <label>轮播文件名，逗号/空格/换行分隔<input id="slideshowFiles" type="text" value="26422,26423"></label>
-        <label>interval 秒<input id="slideshowInterval" type="number" min="1" value="60"></label>
+        <label>interval 秒<input id="slideshowInterval" type="number" min="60" max="604800" value="60"></label>
         <label class="checkbox"><input id="slideshowRandom" type="checkbox"> random</label>
         <button id="sendStartSlideshowButton" disabled>POST /slideshow</button>
       </div>
       <div class="formGrid">
         <label>sw<select id="slideshowSw"><option value="1" selected>1 开启</option><option value="0">0 关闭</option></select></label>
-        <label>interval 秒<input id="setSlideshowInterval" type="number" min="1" value="60"></label>
+        <label>interval 秒<input id="setSlideshowInterval" type="number" min="60" max="604800" value="60"></label>
         <label class="checkbox"><input id="setSlideshowRandom" type="checkbox"> random</label>
+        <label>timestamp 秒<input id="setSlideshowTimestamp" type="number" min="1" step="1"></label>
+        <button id="refreshNetworkTimeButton" type="button" disabled>取网络时间</button>
+        <span id="networkTimeStatus" class="hint">network time not loaded</span>
         <button id="sendSetSlideshowButton" disabled>POST /slideshow_control</button>
       </div>
       <div class="formGrid">
