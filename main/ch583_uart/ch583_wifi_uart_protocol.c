@@ -6,6 +6,7 @@
 #include "debug_output.h"
 #include "epd_display_mode.h"
 #include "led_status.h"
+#include "server_network_sta_time.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 
@@ -210,6 +211,8 @@ static bool ch583_wifi_cmd_expects_reply(const char *cmd)
            strcmp(cmd, "ERR") != 0 &&
            strcmp(cmd, "PONG") != 0 &&
            strcmp(cmd, "POWER_OFF") != 0 &&
+           strcmp(cmd, "TIME_GET") != 0 &&
+           strcmp(cmd, "TIME_STATUS") != 0 &&
            strcmp(cmd, "NFC_STATUS") != 0;
 }
 
@@ -845,11 +848,15 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
                strcmp(frame.cmd, "ERR") == 0 ||
                strcmp(frame.cmd, "PONG") == 0 ||
                strcmp(frame.cmd, "GPIO_VALUE") == 0 ||
+               strcmp(frame.cmd, "TIME_STATUS") == 0 ||
                strcmp(frame.cmd, "NFC_STATUS") == 0) {
 
       CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
            (unsigned int)frame.seq,frame.cmd,frame.arg);
 
+        if (strcmp(frame.cmd, "TIME_STATUS") == 0) {
+            ServerNetworkStaTime_OnCh583TimeStatus(frame.arg);
+        }
         ch583_wifi_handle_reply_status(&frame);
         CH583_WIFI_DEBUG_PRINTF("CH583_PROTO status cmd=%s arg=%s\r\n", frame.cmd, frame.arg);
     } else {
@@ -1035,6 +1042,21 @@ int ch583_wifi_uart_send_nfc_clear(void)
 int ch583_wifi_uart_send_nfc_status(void)
 {
     return ch583_wifi_send_frame("NFC_STATUS", "", 1);
+}
+
+int ch583_wifi_uart_send_time_get(void)
+{
+    return ch583_wifi_send_frame("TIME_GET", "", 1);
+}
+
+int ch583_wifi_uart_send_time_set(const char *beijing_time)
+{
+    if (beijing_time == NULL || strlen(beijing_time) != 19U) {
+        UserDebugOutput_Printf("CH583_PROTO TIME_SET reject arg=%s\r\n",
+                               beijing_time != NULL ? beijing_time : "(null)");
+        return -1;
+    }
+    return ch583_wifi_send_frame("TIME_SET", beijing_time, 1);
 }
 
 bool ch583_wifi_uart_test_nfc_step(void)

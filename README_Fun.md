@@ -68,6 +68,7 @@
   - [10.6 WIFI_DATA：WiFi 到前端通知](#sec-10-6)
   - [10.7 POWER_OFF：WiFi 主动关电](#sec-10-7)
   - [10.8 GPIO / GPIO_READ：CH583 GPIO 控制](#sec-10-8)
+  - [10.15 WiFi 网络时间同步与备份时间](#sec-10-15)
   - [10.9 接收方处理原则](#sec-10-9)
   - [10.10 当前工程源码对应关系](#sec-10-10)
   - [10.11 LED 闪烁控制](#sec-10-11)
@@ -2667,11 +2668,13 @@ SNTP 已同步且差值 > 5 秒时，返回 1513，不写控制文件，不停�
 SNTP 已同步且差值 <= 5 秒时，接受指令，anchor_epoch=timestamp。
 SNTP 未同步时，设备把 APP / PC 发来的 timestamp 写入 ESP32-C5 RTC / 系统时间，并以此作为本次轮播时间基准；写入失败返回 1512。
 timestamp 表示第一张图片播放时间，之后每 interval 秒一个播放点。
+设备收到 APP / PC 合法 timestamp 后，会尽量通过 CH583/CH585 TIME_SET 备份该时间；即使 SNTP 已同步且 timestamp 与设备当前 SNTP 时间差值超过 5 秒、最终返回 1513 不执行轮播，也会先备份 APP / PC timestamp。若 timestamp 非法但 SNTP 已同步，则备份设备当前 SNTP 时间。
 如果收到命令或设备启动恢复时已经超过 timestamp：
 - 超过时间 <= 5 秒：仍按第一张图片播放点执行，允许立即播放，避免 1 秒轮询和网络/串口延迟导致跳过。
 - 超过时间 > 5 秒：按 anchor_epoch + N * interval 自动计算下一个未来播放点，保持和手机 APP 倒计时一致。
 轮播 task 内部 1 秒检查一次 RTC / 系统时间，到 next_epoch 后送入 EPD 显示；原来的图片顺序、随机、进度保存和 EPD 显示流程不改。
 返回成功时带 timestamp、time_source、time_diff、anchor_epoch、now_epoch、next_epoch、remain，APP 可用 remain 校验倒计时同步。time_source=sntp 表示使用设备 SNTP 时间；time_source=timestamp 表示 SNTP 未同步，已使用 APP / PC timestamp 写入 RTC。
+开机自动恢复旧 RTC 轮播时，必须先具备可靠时间源：SNTP、APP/PC timestamp，或 CH583/CH585 TIME_STATUS VALID。若当前仍是默认时间或 CH583 返回 STALE/INVALID，则不按旧 anchor_epoch 启动轮播，启动任务会等待可靠时间源，避免用 2026-01-01 默认时间算出错误等待时间。
 ```
 
 
@@ -7452,6 +7455,155 @@ ESP32-C5 不处理 CH583/CH585 的 scanRspData 字节，广播名刷新由 CH583
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-14)
+
+---
+
+### 10.15 WiFi 网络时间同步与备份时间 <span id="sec-10-15"></span>
+
+该功能用于 WiFi（ESP32-C5）在有网络时间时，把北京时间同步给 CH583/CH585。CH583/CH585 不直接重设硬件 RTC，而是保存“WiFi 网络时间”和“当前 RTC 时间”的映射关系，用于后续 `TIME_GET` 查询和定时唤醒到期判断。
+
+内部时间模型：
+
+```text
+base_wall_time = WiFi 下发的北京时间
+base_rtc_time  = 收到 TIME_SET 时 CH583/CH585 当前 RTC 时间
+backup_time    = base_wall_time + (rtc_now - base_rtc_time)
+```
+
+说明：
+
+```text
+WiFi 下发时间按北京时间解释，不是 UTC。
+CH583/CH585 不调用 RTC_InitTime 校准硬件 RTC。
+TIME_SET 只更新 RAM 并立即 ACK，不立即写 DataFlash。
+DataFlash 保存发生在 WiFi POWER_OFF / LOWPOWER 收尾阶段。
+复位后如果只能读取到 DataFlash 中最后保存的时间，TIME_GET 返回 STALE。
+从未成功 TIME_SET 且没有可用保存值时，TIME_GET 返回 INVALID。
+ESP32-C5 只接受 TIME_STATUS VALID 作为开机恢复 RTC 轮播的备份时间源；STALE / INVALID 只打印，不启动旧 RTC 轮播。
+SNTP 成功后，ESP32-C5 会发送 TIME_SET 给 CH583/CH585，同步最新北京时间。
+APP/PC 请求中带合法 timestamp 时，ESP32-C5 会尽量发送 TIME_SET 给 CH583/CH585；该备份动作不改变原业务逻辑、result 返回码或是否启动轮播。
+APP/PC timestamp 非法但 ESP32-C5 已完成 SNTP 同步时，ESP32-C5 会把当前 SNTP 时间发送给 CH583/CH585。
+SNTP 已同步且 APP/PC timestamp 与当前 SNTP 时间差值超过 5 秒时，原轮播逻辑仍返回 1513 并拒绝本次轮播，但仍会先把 APP/PC timestamp 发送给 CH583/CH585 作为备份。
+```
+
+#### 10.15.1 设置网络时间
+
+WiFi 发送：
+
+```text
+@#V1|SEQ=<seq>|CMD=TIME_SET|LEN=19|PART=1|TOTAL=1|ARG=YYYY-MM-DD,HH:MM:SS|CRC=<crc>^&
+```
+
+参数：
+
+```text
+YYYY-MM-DD,HH:MM:SS 固定 19 字节，北京时间
+年份范围：2020..2064
+月、日、时、分、秒必须是合法日期时间
+```
+
+CH583/CH585 回复 WiFi：
+
+```text
+参数合法并更新 RAM 成功：ACK
+LEN 不是 19：ERR,BAD_LEN
+日期格式错误或日期非法：ERR,BAD_TIME
+PART/TOTAL 不是 1/1：ERR,BAD_PART
+CRC 错误：ERR,BAD_CRC
+```
+
+ESP32-C5 调用点：
+
+```text
+SNTP synced callback
+└─ ServerNetworkStaTime_BackupTimestampToCh583(reason=sntp)
+
+APP/PC set_slideshow / start_slideshow / USB start_slideshow
+├─ timestamp 合法：ServerNetworkStaTime_BackupTimestampToCh583(reason=...timestamp)
+├─ timestamp 非法且 SNTP 已同步：ServerNetworkStaTime_BackupCurrentToCh583(reason=...bad_timestamp_sntp_now)
+├─ set_slideshow sw=0 且未带合法 timestamp，但 SNTP 已同步：ServerNetworkStaTime_BackupCurrentToCh583(reason=set_slideshow_sw0_sntp_now)
+└─ timestamp 非法且 SNTP 未同步：不发 TIME_SET
+
+ServerNetworkStaTime_SetTimestamp()
+└─ SNTP 未同步时接受 APP/PC timestamp 写入 RTC/system time 后，再 TIME_SET 备份到 CH583/CH585
+```
+
+关键打印：
+
+```text
+SNTP synced, RTC/system time updated ...
+CH583 TIME_SET backup reason=sntp epoch=1783496860 time=2026-07-08,15:47:40 ret=0
+CH583 TIME_SET backup reason=set_slideshow_timestamp epoch=... time=... ret=0
+CH583 TIME_SET backup reason=start_slideshow_bad_timestamp_sntp_now epoch=... time=... ret=0
+WiFi -> CH583: seq=<seq> cmd=TIME_SET arg=2026-07-08,15:47:40
+```
+
+#### 10.15.2 查询备份时间
+
+WiFi 发送：
+
+```text
+@#V1|SEQ=<seq>|CMD=TIME_GET|LEN=0|PART=1|TOTAL=1|ARG=|CRC=<crc>^&
+```
+
+CH583/CH585 回复：
+
+```text
+@#V1|SEQ=<seq>|CMD=TIME_STATUS|LEN=<len>|PART=1|TOTAL=1|ARG=<status>|CRC=<crc>^&
+```
+
+`ARG=<status>` 格式：
+
+```text
+VALID,YYYY-MM-DD,HH:MM:SS
+STALE,YYYY-MM-DD,HH:MM:SS
+INVALID
+```
+
+含义：
+
+```text
+VALID   本轮 RTC 未复位，时间由 RTC 差值实时推算，可信；ESP32-C5 可写入 RTC/system time，并允许恢复旧 RTC 轮播。
+STALE   复位后只能返回 DataFlash 中最后保存的备份时间，不保证继续走过离线时长；ESP32-C5 不用它启动旧 RTC 轮播。
+INVALID 从未成功 TIME_SET，且没有可用备份时间；ESP32-C5 不用它启动旧 RTC 轮播。
+```
+
+ESP32-C5 调用点：
+
+```text
+Ch583UartApp_Init()
+└─ ServerNetworkStaTime_RequestCh583Backup()
+   └─ ch583_wifi_uart_send_time_get()
+
+CH583 -> WiFi CMD=TIME_STATUS
+└─ ServerNetworkStaTime_OnCh583TimeStatus()
+   ├─ VALID：写 ESP32-C5 RTC/system time，source=ch583_valid
+   ├─ STALE：打印并忽略
+   └─ INVALID：打印并忽略
+```
+
+开机恢复 RTC 轮播保护：
+
+```text
+ServerNetworkStaSlideshow_StartSavedDelayed()
+└─ 等待可靠时间源
+   ├─ source=sntp：允许恢复
+   ├─ source=timestamp：允许恢复
+   ├─ source=ch583_valid：允许恢复
+   └─ source=default/none 或 TIME_STATUS STALE/INVALID：继续等待，不用旧 anchor_epoch 启动；等待期间每 5 秒补发一次 TIME_GET
+```
+
+关键打印：
+
+```text
+CH583 TIME_GET request ret=0
+CH583 TIME_STATUS VALID accepted, RTC/system time updated epoch=... local=...
+CH583 TIME_STATUS STALE ignored for RTC restore arg=...
+CH583 TIME_STATUS INVALID ignored for RTC restore
+slideshow startup postponed waiting reliable RTC time source
+```
+
+[⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-15)
 
 ---
 

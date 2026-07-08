@@ -15,6 +15,7 @@ typedef enum {
     SERVER_NETWORK_STA_TIME_SOURCE_DEFAULT,
     SERVER_NETWORK_STA_TIME_SOURCE_APP,
     SERVER_NETWORK_STA_TIME_SOURCE_SNTP,
+    SERVER_NETWORK_STA_TIME_SOURCE_CH583,
 } server_network_sta_time_source_t;
 
 typedef struct {
@@ -32,9 +33,14 @@ esp_err_t ServerNetworkStaTime_Init(void);
 esp_err_t ServerNetworkStaTime_SetDefaultIfInvalid(void);
 esp_err_t ServerNetworkStaTime_SetTimestamp(int64_t timestamp);
 esp_err_t ServerNetworkStaTime_SetAppTime(int64_t epoch);
+esp_err_t ServerNetworkStaTime_RequestCh583Backup(void);
+esp_err_t ServerNetworkStaTime_OnCh583TimeStatus(const char *status);
+esp_err_t ServerNetworkStaTime_BackupTimestampToCh583(int64_t timestamp, const char *reason);
+esp_err_t ServerNetworkStaTime_BackupCurrentToCh583(const char *reason);
 esp_err_t ServerNetworkStaTime_ProcessGet(httpd_req_t *req);
 esp_err_t ServerNetworkStaTime_GetInfo(server_network_sta_time_info_t *info);
 bool ServerNetworkStaTime_IsSntpSynced(void);
+bool ServerNetworkStaTime_IsReliableForRtcRestore(void);
 
 #ifdef __cplusplus
 }

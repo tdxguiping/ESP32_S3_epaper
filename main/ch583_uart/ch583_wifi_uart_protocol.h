@@ -27,6 +27,8 @@ int ch583_wifi_uart_send_led_blink_stop(const char *led);
 int ch583_wifi_uart_send_nfc_set_json(const char *json);
 int ch583_wifi_uart_send_nfc_clear(void);
 int ch583_wifi_uart_send_nfc_status(void);
+int ch583_wifi_uart_send_time_get(void);
+int ch583_wifi_uart_send_time_set(const char *beijing_time);
 bool ch583_wifi_uart_test_nfc_step(void);
 int ch583_wifi_uart_test_gpio_pa1_high(void);
 

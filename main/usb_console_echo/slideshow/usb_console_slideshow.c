@@ -249,6 +249,9 @@ static int apply_start_slideshow_timestamp(int64_t timestamp)
 {
     if (!timestamp_reasonable(timestamp)) {
         ESP_LOGW("usb_slideshow", "start_slideshow timestamp invalid timestamp=%lld", (long long)timestamp);
+        if (ServerNetworkStaTime_IsSntpSynced()) {
+            (void)ServerNetworkStaTime_BackupCurrentToCh583("usb_start_slideshow_bad_timestamp_sntp_now");
+        }
         return TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID;
     }
 
@@ -260,6 +263,8 @@ static int apply_start_slideshow_timestamp(int64_t timestamp)
     format_epoch_local(timestamp, timestamp_text, sizeof(timestamp_text));
     format_epoch_local((int64_t)now_time, now_text, sizeof(now_text));
     if (time_from_sntp) {
+        (void)ServerNetworkStaTime_BackupTimestampToCh583(timestamp,
+                                                          "usb_start_slideshow_timestamp");
         int64_t diff = (int64_t)now_time - timestamp;
         if (diff < 0) {
             diff = -diff;
@@ -339,6 +344,9 @@ esp_err_t UsbConsoleSlideshow_Process(const usb_console_http_request_t *request,
     int64_t timestamp = 0;
     if (!parse_json_i64(request->body, "timestamp", &timestamp) ||
         !timestamp_reasonable(timestamp)) {
+        if (ServerNetworkStaTime_IsSntpSynced()) {
+            (void)ServerNetworkStaTime_BackupCurrentToCh583("usb_start_slideshow_bad_timestamp_sntp_now");
+        }
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",

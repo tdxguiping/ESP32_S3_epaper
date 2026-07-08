@@ -540,6 +540,9 @@ esp_err_t ServerNetworkStaSlideshowControl_ApplyJson(const char *body,
         return ESP_OK;
     }
     if (ret == SLIDESHOW_CONTROL_ERR_TIMESTAMP) {
+        if (ServerNetworkStaTime_IsSntpSynced()) {
+            (void)ServerNetworkStaTime_BackupCurrentToCh583("set_slideshow_bad_timestamp_sntp_now");
+        }
         set_apply_result(result, TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID, "invalid timestamp");
         return ESP_OK;
     }
@@ -554,6 +557,12 @@ esp_err_t ServerNetworkStaSlideshowControl_ApplyJson(const char *body,
 
     bool time_from_sntp = ServerNetworkStaTime_IsSntpSynced();
     int64_t checked_time_diff = 0;
+    if (timestamp_reasonable(control.timestamp) && (time_from_sntp || control.sw == 0)) {
+        (void)ServerNetworkStaTime_BackupTimestampToCh583(control.timestamp,
+                                                          "set_slideshow_timestamp");
+    } else if (control.sw == 0 && time_from_sntp) {
+        (void)ServerNetworkStaTime_BackupCurrentToCh583("set_slideshow_sw0_sntp_now");
+    }
     if (control.sw == 1) {
         time_t now_for_diff = 0;
         time(&now_for_diff);

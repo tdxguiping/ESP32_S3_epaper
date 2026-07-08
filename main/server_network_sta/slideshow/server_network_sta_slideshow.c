@@ -574,6 +574,9 @@ static esp_err_t start_slideshow_apply_timestamp(slideshow_request_t *request)
         ESP_LOGW(TAG,
                  "start_slideshow timestamp invalid timestamp=%lld",
                  request != NULL ? (long long)request->timestamp : 0LL);
+        if (ServerNetworkStaTime_IsSntpSynced()) {
+            (void)ServerNetworkStaTime_BackupCurrentToCh583("start_slideshow_bad_timestamp_sntp_now");
+        }
         return TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID;
     }
 
@@ -587,6 +590,8 @@ static esp_err_t start_slideshow_apply_timestamp(slideshow_request_t *request)
     format_epoch_local((int64_t)now_time, now_text, sizeof(now_text));
 
     if (time_from_sntp) {
+        (void)ServerNetworkStaTime_BackupTimestampToCh583(request->timestamp,
+                                                          "start_slideshow_timestamp");
         int64_t diff = (int64_t)now_time - request->timestamp;
         if (diff < 0) {
             diff = -diff;
@@ -1712,6 +1717,12 @@ static esp_err_t start_saved_slideshow_with_mode(const char *base_path,
     request->random = random;
     request->timestamp = timestamp;
     request->anchor_epoch = anchor_epoch;
+    if (!ServerNetworkStaTime_IsReliableForRtcRestore()) {
+        ESP_LOGW(TAG,
+                 "slideshow RTC restore blocked: time source is not reliable yet, wait SNTP/APP timestamp/CH583 VALID");
+        free(request);
+        return ESP_ERR_INVALID_STATE;
+    }
     slideshow_progress_t progress;
     ret = load_or_create_slideshow_progress(request, false, &progress);
     if (ret == ESP_OK) {
@@ -1734,6 +1745,7 @@ esp_err_t ServerNetworkStaSlideshow_StartSavedResetInterval(const char *base_pat
 static void slideshow_startup_delay_task(void *arg)
 {
     slideshow_startup_delay_t *delay = (slideshow_startup_delay_t *)arg;
+    uint32_t time_wait_seconds = 0;
     if (delay == NULL) {
         s_slideshow_startup_delay_task = NULL;
         vTaskDelete(NULL);
@@ -1759,6 +1771,15 @@ static void slideshow_startup_delay_task(void *arg)
         if (ServerNetworkStaEpdDisplay_IsBusy()) {
             ESP_LOGI(TAG, "slideshow startup postponed because EPD busy");
             vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+        if (!ServerNetworkStaTime_IsReliableForRtcRestore()) {
+            ESP_LOGI(TAG, "slideshow startup postponed waiting reliable RTC time source");
+            time_wait_seconds++;
+            if ((time_wait_seconds % 5U) == 0U) {
+                (void)ServerNetworkStaTime_RequestCh583Backup();
+            }
+            vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
 
@@ -1891,6 +1912,9 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
         return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID, "invalid interval");
     }
     if (ret == TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID) {
+        if (ServerNetworkStaTime_IsSntpSynced()) {
+            (void)ServerNetworkStaTime_BackupCurrentToCh583("start_slideshow_bad_timestamp_sntp_now");
+        }
         return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID, "invalid timestamp");
     }
     if (ret != ESP_OK) {

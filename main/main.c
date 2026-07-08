@@ -268,6 +268,7 @@ void app_main(void)
     // Start CH583 UART before LED status because C5 status LEDs are controlled by CH583 GPIO.
     // 先启动 CH583 串口再初始化 LED 状态，因为 C5 状态灯由 CH583 GPIO 控制。
     ESP_ERROR_CHECK(Ch583UartApp_Init());
+    (void)ServerNetworkStaTime_RequestCh583Backup();
     ESP_ERROR_CHECK(UserLedStatus_Init());
 #if USER_BLE_ENABLE
     // Start BLE after NVS/event loop so BT state and callbacks have the required system services.
