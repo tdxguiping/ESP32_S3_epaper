@@ -1,5 +1,4 @@
 #pragma once
-
 /* -------------------------------------------------------------------------- */
 /* 00. Header / Includes                                                       */
 /* -------------------------------------------------------------------------- */
@@ -344,6 +343,8 @@ extern "C" {
 #define TDX_SLIDESHOW_CONFIG_FILE "slideshow_config.txt"
 #define TDX_SLIDESHOW_CONTROL_FILE "show_control.txt"
 #define TDX_SLIDESHOW_STARTUP_DELAY_MS 10000
+#define TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS 2
+#define TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS 20
 #define TDX_SLIDESHOW_AFTER_DISPLAY_WAIT_MS 12000
 #define TDX_SLIDESHOW_DEEP_SLEEP_FLAG_VALUE 0xA5
 #define TDX_SLIDESHOW_NVS_FLAG_KEY "slide_ds"

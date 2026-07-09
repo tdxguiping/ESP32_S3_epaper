@@ -267,6 +267,15 @@ static uint32_t slideshow_startup_delay_seconds(void)
     return (TDX_SLIDESHOW_STARTUP_DELAY_MS + 999U) / 1000U;
 }
 
+static uint32_t slideshow_wake_advance_seconds(uint32_t *startup_delay_out)
+{
+    uint32_t startup_delay = slideshow_startup_delay_seconds();
+    if (startup_delay_out != NULL) {
+        *startup_delay_out = startup_delay;
+    }
+    return startup_delay + TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS;
+}
+
 static void reset_work_time_counter_for_slideshow_short_interval(void)
 {
     s_wifi_work_start_tick = xTaskGetTickCount();
@@ -291,7 +300,8 @@ static bool configure_ch583_wake_timer_before_power_off(void)
         uint32_t runtime_elapsed = 0;
         bool runtime_running = false;
         uint32_t wake_interval = interval;
-        uint32_t startup_delay = slideshow_startup_delay_seconds();
+        uint32_t startup_delay = 0;
+        uint32_t wake_advance = slideshow_wake_advance_seconds(&startup_delay);
         int64_t schedule_now = 0;
         int64_t schedule_next = 0;
         uint32_t schedule_remain = 0;
@@ -324,26 +334,30 @@ static bool configure_ch583_wake_timer_before_power_off(void)
                    runtime_interval > 0) {
             wake_interval = runtime_interval > runtime_elapsed ? runtime_interval - runtime_elapsed : 1U;
         }
-        wake_interval = wake_interval > startup_delay ? wake_interval - startup_delay : 1U;
+        wake_interval = wake_interval > wake_advance ? wake_interval - wake_advance : 1U;
 
         if (wake_interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
             reset_work_time_counter_for_slideshow_short_interval();
             ESP_LOGI(TAG,
-                     "slideshow wake interval too short, skip power off wake_interval=%lu min=%lu saved_interval=%lu elapsed=%lu startup_delay=%lu",
+                     "slideshow wake interval too short, skip power off wake_interval=%lu min=%lu saved_interval=%lu elapsed=%lu startup_delay=%lu extra_advance=%lu wake_advance=%lu",
                      (unsigned long)wake_interval,
                      (unsigned long)TDX_SLIDESHOW_INTERVAL_MIN_SECONDS,
                      (unsigned long)interval,
                      (unsigned long)runtime_elapsed,
-                     (unsigned long)startup_delay);
+                     (unsigned long)startup_delay,
+                     (unsigned long)TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS,
+                     (unsigned long)wake_advance);
             return false;
         }
 
         ESP_LOGI(TAG,
-                 "slideshow enabled before power off, wake timer on interval=%lu saved_interval=%lu elapsed=%lu startup_delay=%lu random=%d",
+                 "slideshow enabled before power off, wake timer on interval=%lu saved_interval=%lu elapsed=%lu startup_delay=%lu extra_advance=%lu wake_advance=%lu random=%d",
                  (unsigned long)wake_interval,
                  (unsigned long)interval,
                  (unsigned long)runtime_elapsed,
                  (unsigned long)startup_delay,
+                 (unsigned long)TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS,
+                 (unsigned long)wake_advance,
                  random ? 1 : 0);
         wake_ret = ch583_wifi_uart_send_wake_timer_on(wake_interval);
     } else {

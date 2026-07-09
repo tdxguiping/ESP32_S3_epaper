@@ -16,6 +16,7 @@
 #include "esp_random.h"
 #include "mbedtls/sha256.h"
 #include "nvs.h"
+#include "epd_type.h"
 #include "file_serving_example_common.h"
 #include "epd_display_app.h"
 #include "epd_display_mode.h"
@@ -740,6 +741,8 @@ static esp_err_t slideshow_load_file(const char *base_path,
 static esp_err_t slideshow_display_loaded_file_and_wait(slideshow_loaded_file_t *loaded,
                                                         uint32_t interval,
                                                         bool rtc_mode,
+                                                        uint16_t position,
+                                                        uint16_t total,
                                                         TickType_t *display_start_tick_out)
 {
     if (loaded == NULL || loaded->buf == NULL || loaded->len == 0) {
@@ -762,8 +765,10 @@ static esp_err_t slideshow_display_loaded_file_and_wait(slideshow_loaded_file_t 
                  (unsigned long)interval,
                  (unsigned long)display_start_tick);
     } else if (rtc_mode) {
-        ESP_LOGI(TAG, "slideshow rtc display start file=%s interval=%lu tick_marker=%lu",
+        ESP_LOGI(TAG, "slideshow rtc display start file=%s position=%u/%u interval=%lu tick_marker=%lu",
                  loaded->file_name,
+                 (unsigned int)position,
+                 (unsigned int)total,
                  (unsigned long)interval,
                  (unsigned long)display_start_tick);
     }
@@ -796,7 +801,7 @@ static esp_err_t display_slideshow_file_and_wait(const char *base_path,
         slideshow_loaded_file_free(&loaded);
         return ret;
     }
-    return slideshow_display_loaded_file_and_wait(&loaded, interval, false, display_start_tick_out);
+    return slideshow_display_loaded_file_and_wait(&loaded, interval, false, 0, 0, display_start_tick_out);
 }
 
 static uint32_t slideshow_hash_byte(uint32_t hash, uint8_t value)
@@ -1053,6 +1058,18 @@ static TickType_t slideshow_seconds_to_ticks(uint32_t seconds)
     return (TickType_t)ticks;
 }
 
+static uint32_t slideshow_rtc_display_lead_seconds(void)
+{
+    switch (EPD_type) {
+    case EPD_TYPE_1600_1200_133_DKE:
+        return 1;
+    case EPD_TYPE_1600_1200_133:
+        return 3;
+    default:
+        return TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS;
+    }
+}
+
 static bool wait_slideshow_interval_from_start(TickType_t start_tick, uint32_t interval)
 {
     if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
@@ -1114,30 +1131,39 @@ static bool wait_slideshow_interval_from_start(TickType_t start_tick, uint32_t i
 
 static bool wait_slideshow_rtc_epoch(int64_t target_epoch, uint32_t interval)
 {
+    uint32_t lead_seconds = slideshow_rtc_display_lead_seconds();
+    int64_t display_epoch = target_epoch > (int64_t)lead_seconds ?
+                            target_epoch - (int64_t)lead_seconds :
+                            target_epoch;
     time_t now_time = 0;
     time(&now_time);
     int64_t now_epoch = (int64_t)now_time;
-    int64_t remain = target_epoch > now_epoch ? target_epoch - now_epoch : 0;
+    int64_t remain = display_epoch > now_epoch ? display_epoch - now_epoch : 0;
     char target_text[32] = {0};
+    char display_text[32] = {0};
     char now_text[32] = {0};
 
     slideshow_begin_rtc_interval(interval, target_epoch);
     format_epoch_local(target_epoch, target_text, sizeof(target_text));
+    format_epoch_local(display_epoch, display_text, sizeof(display_text));
     format_epoch_local(now_epoch, now_text, sizeof(now_text));
     ESP_LOGI(TAG,
-             "slideshow rtc wait target=%lld(%s) now=%lld(%s) remain=%lld interval=%lu",
+             "slideshow rtc wait target=%lld(%s) display_target=%lld(%s) now=%lld(%s) remain=%lld interval=%lu lead=%lu",
              (long long)target_epoch,
              target_text,
+             (long long)display_epoch,
+             display_text,
              (long long)now_epoch,
              now_text,
              (long long)remain,
-             (unsigned long)interval);
+             (unsigned long)interval,
+             (unsigned long)lead_seconds);
 
     while (remain > 0 && !s_slideshow_stop) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         time(&now_time);
         now_epoch = (int64_t)now_time;
-        remain = target_epoch > now_epoch ? target_epoch - now_epoch : 0;
+        remain = display_epoch > now_epoch ? display_epoch - now_epoch : 0;
     }
 
     portENTER_CRITICAL(&s_slideshow_timing_mux);
@@ -1147,25 +1173,33 @@ static bool wait_slideshow_rtc_epoch(int64_t target_epoch, uint32_t interval)
 
     if (s_slideshow_stop) {
         format_epoch_local(target_epoch, target_text, sizeof(target_text));
+        format_epoch_local(display_epoch, display_text, sizeof(display_text));
         format_epoch_local(now_epoch, now_text, sizeof(now_text));
         ESP_LOGI(TAG,
-                 "slideshow rtc wait stopped target=%lld(%s) now=%lld(%s) remain=%lld",
+                 "slideshow rtc wait stopped target=%lld(%s) display_target=%lld(%s) now=%lld(%s) remain=%lld lead=%lu",
                  (long long)target_epoch,
                  target_text,
+                 (long long)display_epoch,
+                 display_text,
                  (long long)now_epoch,
                  now_text,
-                 (long long)remain);
+                 (long long)remain,
+                 (unsigned long)lead_seconds);
         return false;
     }
 
     format_epoch_local(target_epoch, target_text, sizeof(target_text));
+    format_epoch_local(display_epoch, display_text, sizeof(display_text));
     format_epoch_local(now_epoch, now_text, sizeof(now_text));
     ESP_LOGI(TAG,
-             "slideshow rtc target reached target=%lld(%s) now=%lld(%s) late=%lld",
+             "slideshow rtc display lead reached target=%lld(%s) display_target=%lld(%s) now=%lld(%s) lead=%lu target_delta=%lld",
              (long long)target_epoch,
              target_text,
+             (long long)display_epoch,
+             display_text,
              (long long)now_epoch,
              now_text,
+             (unsigned long)lead_seconds,
              (long long)(now_epoch - target_epoch));
     return true;
 }
@@ -1514,6 +1548,8 @@ static void slideshow_task(void *arg)
         esp_err_t display_ret = slideshow_display_loaded_file_and_wait(&loaded,
                                                                        runtime->request.interval,
                                                                        runtime->rtc_enabled,
+                                                                       runtime->progress.position,
+                                                                       runtime->request.file_count,
                                                                        &display_start_tick);
         if (display_start_tick == 0) {
             display_start_tick = xTaskGetTickCount();

@@ -2535,7 +2535,7 @@ start_slideshow 是正式轮播列表配置接口；会重写 `show_control.txt`
 - slideshow_task() 在 RTC 模式下按 `anchor_epoch + N * interval` 计算下一次播放点；EPD 显示耗时计入间隔，等待期间会预加载下一张。
 - `ServerNetworkStaSlideshow_GetScheduleTiming()` 可读取 RTC 轮播的 now / next / remain；`ServerNetworkStaSlideshow_GetRuntimeTiming()` 只作为非 RTC 兼容状态读取。
 - slideshow_task() 在 EPD 显示成功且下一进度保存成功后，RTC 模式重新计算 `next_epoch`，并打印 `slideshow rtc next ...`。
-- slideshow_task() 在上一张 EPD 显示完成并保存下一进度后，会在剩余 interval 时间内用 PSRAM 预加载下一张 bin 并做 SHA-256 文件名校验；目标 tick 到达后直接送入 EPD 显示队列，减少“300 秒后再读文件”造成的额外延迟。若 PSRAM 预加载失败，已保存的下一进度不变，下一轮会重新读取该图片，不长时间占用内部 RAM，不影响停止和失败不推进的规则。
+- slideshow_task() 在上一张 EPD 显示完成并保存下一进度后，会在剩余 interval 时间内用 PSRAM 预加载下一张 bin 并做 SHA-256 文件名校验；RTC 真实目标时间保持 `next_epoch` 不变，但设备内部会在 `next_epoch - lead_seconds` 时进入 EPD 显示流程，用于抵消 SD / 调度 / EPD 调用链路开销。`lead_seconds` 按当前 EPD type 选择：`EPD_TYPE_1600_1200_133_DKE` 为 1 秒，`EPD_TYPE_1600_1200_133` 为 4 秒，其它屏型使用默认 `TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS=2` 秒。若 PSRAM 预加载失败，已保存的下一进度不变，下一轮会重新读取该图片，不长时间占用内部 RAM，不影响停止和失败不推进的规则。
 - 显示失败、等待超时、NVS 保存失败或显示中途断电均不推进；下次继续当前图片。
 - 随机模式按“整轮洗牌”运行，一轮内所有图片各显示一次，不重复、不遗漏。
 
@@ -2548,7 +2548,7 @@ start_slideshow 是正式轮播列表配置接口；会重写 `show_control.txt`
 - 兼容旧 `slide_last`：首次升级时将旧文件名迁移为新的待显示进度。
 - slideshow_task() 读取 `/data/bin_img/*.bin`，等待 EPD 真正完成后再提交下一进度；如果读文件前、读文件后或送 EPD 前收到停止请求，则放弃本张显示并退出。
 - slideshow_task() 从 SD 读出 bin 后、送 EPD 前，会计算文件内容 SHA-256 的十六进制后 16 位并与 fileName 比对，只打印 `sha256 ok` / `sha256 mismatch` / `sha256 failed` / `skip invalid basename` 诊断日志，不阻止显示、不修改进度；匹配成功用 `ESP_LOGI`，无效 basename 跳过用 `ESP_LOGW`，计算失败或 mismatch 用 `ESP_LOGE`。
-- 轮播日志中 `slideshow rtc ...` / `slide_timer rtc ...` 表示真实 RTC 时间控制；`legacy_tick` 只表示非 RTC 兼容路径或旧状态统计，不能作为新协议轮播判断依据。RTC 模式以真实系统时间计算 remain，不依赖 task tick 延时。
+- 轮播日志中 `slideshow rtc ...` / `slide_timer rtc ...` 表示真实 RTC 时间控制；`slideshow rtc wait target=... display_target=... lead=...` 中 `target` 是真实播放点，`display_target` 是提前进入显示流程的时间点，`lead` 是当前 EPD type 实际提前秒数；`slideshow rtc display start file=... position=x/y interval=...` 表示本轮第 x/y 个播放点已进入 EPD 显示；`legacy_tick` 只表示非 RTC 兼容路径或旧状态统计，不能作为新协议轮播判断依据。RTC 模式以真实系统时间计算 remain，不依赖 task tick 延时。
 - `set_slideshow sw=1` 会按新的 timestamp / interval 重算 RTC 播放点；`start_slideshow` 也会用自身 timestamp 写 RTC control 并启动轮播。
 - 极端情况下若 EPD 已完成但提交下一进度前断电，当前图片会重复一次，但绝不会跳图。
 ```
@@ -2672,7 +2672,7 @@ timestamp 表示第一张图片播放时间，之后每 interval 秒一个播放
 如果收到命令或设备启动恢复时已经超过 timestamp：
 - 超过时间 <= 5 秒：仍按第一张图片播放点执行，允许立即播放，避免 1 秒轮询和网络/串口延迟导致跳过。
 - 超过时间 > 5 秒：按 anchor_epoch + N * interval 自动计算下一个未来播放点，保持和手机 APP 倒计时一致。
-轮播 task 内部 1 秒检查一次 RTC / 系统时间，到 next_epoch 后送入 EPD 显示；原来的图片顺序、随机、进度保存和 EPD 显示流程不改。
+轮播 task 内部 1 秒检查一次 RTC / 系统时间；真实周期仍按 `anchor_epoch + N * interval` 计算 `next_epoch`，但设备内部会按当前 EPD type 在 `next_epoch - lead_seconds` 时提前进入 EPD 显示流程：DKE 13.3 寸为 1 秒，兴泰 13.3 寸为 4 秒，其它屏型默认 2 秒；原来的图片顺序、随机、进度保存和 EPD 显示流程不改。
 返回成功时带 timestamp、time_source、time_diff、anchor_epoch、now_epoch、next_epoch、remain，APP 可用 remain 校验倒计时同步。time_source=sntp 表示使用设备 SNTP 时间；time_source=timestamp 表示 SNTP 未同步，已使用 APP / PC timestamp 写入 RTC。
 开机自动恢复旧 RTC 轮播时，必须先具备可靠时间源：SNTP、APP/PC timestamp，或 CH583/CH585 TIME_STATUS VALID。若当前仍是默认时间或 CH583 返回 STALE/INVALID，则不按旧 anchor_epoch 启动轮播，启动任务会等待可靠时间源，避免用 2026-01-01 默认时间算出错误等待时间。
 ```
@@ -3209,7 +3209,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 - load_work_state_from_nvs() 读取工作状态 blob。
 - load_work_time_vars_from_app_nvs() 读取兼容字符串 key。
 - work_state_task() 读取 RAM 中计时值；超时后如果 OTA 忙或 EPD task 忙则推迟，只有 OTA 不忙且 EPD 空闲时才先配置 CH583 WAKE_TIMER，再发送 CH583 POWER_OFF。
-- 轮播开启时，WAKE_TIMER 优先使用 RTC 轮播的 `next_epoch - now_epoch` 剩余秒数，并扣除开机自动恢复轮播延迟：`remain - startup_delay_seconds`；其中 `startup_delay_seconds = ceil(TDX_SLIDESHOW_STARTUP_DELAY_MS / 1000)`，单位为秒，最小值为 1 秒。若当前不是 RTC 轮播或 RTC timing 不可用，则回退使用旧 runtime timing：`runtime_interval - 已走秒数 - startup_delay_seconds`；再不可用才回退 control 文件中的 interval。若计算出的 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，ESP32 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，只重置 wifi_work_time 运行时计时，从头等待下一次工作超时。
+- 轮播开启时，WAKE_TIMER 优先使用 RTC 轮播的 `next_epoch - now_epoch` 剩余秒数，并扣除开机自动恢复轮播延迟和额外提前量：`remain - (startup_delay_seconds + TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS)`；其中 `startup_delay_seconds = ceil(TDX_SLIDESHOW_STARTUP_DELAY_MS / 1000)`，当前为 10 秒，`TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS` 当前为 20 秒，总提前 30 秒。若当前不是 RTC 轮播或 RTC timing 不可用，则回退使用旧 runtime timing：`runtime_interval - 已走秒数 - 总提前秒数`；再不可用才回退 control 文件中的 interval。若计算出的 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，ESP32 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，只重置 wifi_work_time 运行时计时，从头等待下一次工作超时。
 ```
 
 work_state 栈大小要求：
@@ -3222,7 +3222,7 @@ USER_WORK_STATE_TASK_STACK_SIZE 默认使用 8 * 1024。
 work_state_task() 不是只做简单计时。工作时间超时后，它会执行关机前完整链路：
 1. 先确认 OTA 不忙且 EPD task 空闲；EPD 正在显示或队列仍有待显示任务时不关机。
 2. 读取 slideshow control，决定 WAKE_TIMER ON/OFF。
-3. slideshow 开启时优先读取 RTC schedule timing，使用 `next_epoch - now_epoch` 作为剩余秒数，并额外扣掉 `TDX_SLIDESHOW_STARTUP_DELAY_MS` 换算后的秒数；若没有 RTC timing，再回退旧 runtime timing。若剩余 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，不发送 WAKE_TIMER ON/OFF，不发送 POWER_OFF，只重置 wifi_work_time 运行时计时；否则发送 CH583 WAKE_TIMER ON。
+3. slideshow 开启时优先读取 RTC schedule timing，使用 `next_epoch - now_epoch` 作为剩余秒数，并额外扣掉 `TDX_SLIDESHOW_STARTUP_DELAY_MS` 换算后的 10 秒和 `TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS=20` 秒；若没有 RTC timing，再回退旧 runtime timing。若剩余 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，不发送 WAKE_TIMER ON/OFF，不发送 POWER_OFF，只重置 wifi_work_time 运行时计时；否则发送 CH583 WAKE_TIMER ON。
 4. 调用 UserLedStatus_PreparePowerOff()，发送 RED/GREEN LED 停止闪烁和关闭指令。
 5. 发送 CH583 POWER_OFF。
 
@@ -7091,7 +7091,7 @@ ESP32-C5 侧使用：
 ```text
 work_state_task() 工作时间到期、OTA 不忙且 EPD 空闲时：
 ├─ 读取 slideshow control
-├─ sw=1：读取 slideshow runtime timing 并计算 wake_interval
+├─ sw=1：优先读取 RTC schedule timing，再回退 runtime timing，并扣除总提前秒数 30 秒后计算 wake_interval
 │  ├─ wake_interval >= TDX_SLIDESHOW_INTERVAL_MIN_SECONDS：ch583_wifi_uart_send_wake_timer_on(wake_interval)
 │  └─ wake_interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS：不发送 WAKE_TIMER ON/OFF，不发送 POWER_OFF，只重置 wifi_work_time 运行时计时
 ├─ sw=0：ch583_wifi_uart_send_wake_timer_off()
