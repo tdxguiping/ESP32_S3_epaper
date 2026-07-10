@@ -112,6 +112,7 @@ static esp_err_t cast2pic_parse_one(const usb_console_http_request_t *request,
     item->save = save;
     item->show = show;
     item->record_last_cast = false;
+    item->storage = TDX_IMAGE_TRANSFER_STORAGE_CAST_DIR;
     item->epd_target = screen_number;
     item->bin_part = *bin_part;
     item->image_part = *image_part;

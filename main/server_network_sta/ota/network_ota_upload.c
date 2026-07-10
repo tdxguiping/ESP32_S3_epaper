@@ -811,7 +811,7 @@ $esp = "http://192.168.1.104"
 $bin = "H:\AI2\ESP32-S3-PhotoPainter-main\01_Example\xiaozhi-esp32\build\xiaozhi.bin"
 
 $size = (Get-Item $bin).Length
-$version = "2.0.2"
+$version = "000.001"
 
 $meta = '{"func":"ota","version":"' + $version + '","firmware_size":' + $size + ',"reboot":true}'
 $meta | Set-Content -Path ".\ota_meta.json" -NoNewline -Encoding ascii

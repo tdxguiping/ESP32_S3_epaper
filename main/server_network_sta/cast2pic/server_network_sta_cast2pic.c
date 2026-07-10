@@ -287,6 +287,7 @@ static esp_err_t process_cast2pic_items(const char *base_path, const cast2pic_me
         items[i].save = meta->save;
         items[i].show = meta->show;
         items[i].record_last_cast = false;
+        items[i].storage = TDX_IMAGE_TRANSFER_STORAGE_CAST_DIR;
         items[i].epd_target = screen_number;
         copy_cast2pic_part(&meta->images[i].bin_part, &items[i].bin_part);
         copy_cast2pic_part(&meta->images[i].image_part, &items[i].image_part);

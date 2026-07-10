@@ -1058,6 +1058,19 @@ static TickType_t slideshow_seconds_to_ticks(uint32_t seconds)
     return (TickType_t)ticks;
 }
 
+static bool slideshow_force_random_config(const char *scope, bool random)
+{
+#if TDX_SLIDESHOW_RANDOM_ENABLE
+    (void)scope;
+    return random;
+#else
+    if (random) {
+        ESP_LOGW(TAG, "%s random disabled temporarily, force random=false", scope);
+    }
+    return false;
+#endif
+}
+
 static uint32_t slideshow_rtc_display_lead_seconds(void)
 {
     switch (EPD_type) {
@@ -1259,7 +1272,8 @@ static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_req
         request->interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
         request->interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
     }
-    request->random = parse_json_bool_default(json, "random", false);
+    request->random = slideshow_force_random_config("saved slideshow_config",
+                                                    parse_json_bool_default(json, "random", false));
     free(json);
     return ESP_OK;
 }
@@ -1305,7 +1319,8 @@ static bool read_slideshow_control_schedule(const char *base_path,
     }
     (void)parse_json_u32(buf, "interval", &parsed_interval);
     if (random != NULL) {
-        *random = parse_json_bool_default(buf, "random", *random);
+        *random = slideshow_force_random_config("saved show_control",
+                                                parse_json_bool_default(buf, "random", *random));
     }
     timestamp_present = parse_json_i64(buf, "timestamp", &parsed_timestamp);
     anchor_present = parse_json_i64(buf, "anchor_epoch", &parsed_anchor);
@@ -1920,7 +1935,8 @@ static esp_err_t parse_start_slideshow_request(const char *body, slideshow_reque
         request->interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
         return ESP_ERR_INVALID_SIZE;
     }
-    request->random = parse_json_bool_default(body, "random", false);
+    request->random = slideshow_force_random_config("start_slideshow",
+                                                    parse_json_bool_default(body, "random", false));
     if (!parse_json_i64(body, "timestamp", &request->timestamp)) {
         return TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID;
     }

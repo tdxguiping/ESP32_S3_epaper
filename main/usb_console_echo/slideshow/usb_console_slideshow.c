@@ -187,22 +187,61 @@ static int validate_file_names(const char *body)
     return TDX_JSON_RESULT_JSON_INVALID;
 }
 
-static bool write_slideshow_config(const char *body)
+static bool usb_slideshow_force_random_config(const char *scope, bool random)
+{
+#if TDX_SLIDESHOW_RANDOM_ENABLE
+    (void)scope;
+    return random;
+#else
+    if (random) {
+        ESP_LOGW("usb_slideshow", "%s random disabled temporarily, force random=false", scope);
+    }
+    return false;
+#endif
+}
+
+static bool write_slideshow_config(const char *body, uint32_t interval, bool random)
 {
     char config_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
+    char *json = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
+    if (json == NULL) {
+        return false;
+    }
+    const char *file_names_key = find_json_key(body, "fileNames");
+    const char *array_start = file_names_key != NULL ? strchr(file_names_key, '[') : NULL;
+    const char *array_end = array_start != NULL ? strchr(array_start, ']') : NULL;
+    if (array_start == NULL || array_end == NULL || array_end < array_start) {
+        free(json);
+        return false;
+    }
+    size_t array_len = (size_t)(array_end - array_start + 1);
+    int len = snprintf(json,
+                       SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX,
+                       "{\"fileNames\":%.*s,\"interval\":%lu,\"random\":%s}",
+                       (int)array_len,
+                       array_start,
+                       (unsigned long)interval,
+                       random ? "true" : "false");
+    if (len < 0 || (size_t)len >= SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX) {
+        free(json);
+        return false;
+    }
+
     snprintf(config_path, sizeof(config_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, TDX_SLIDESHOW_CONFIG_FILE);
     if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+        free(json);
         return false;
     }
     FILE *fp = fopen(config_path, "wb");
     if (fp == NULL) {
         TdxSharedSpi_Unlock();
+        free(json);
         return false;
     }
-    size_t len = strlen(body);
-    size_t written = fwrite(body, 1, len, fp);
-    bool ok = fclose(fp) == 0 && written == len;
+    size_t written = fwrite(json, 1, (size_t)len, fp);
+    bool ok = fclose(fp) == 0 && written == (size_t)len;
     TdxSharedSpi_Unlock();
+    free(json);
     return ok;
 }
 
@@ -340,7 +379,8 @@ esp_err_t UsbConsoleSlideshow_Process(const usb_console_http_request_t *request,
                                          TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID);
     }
 
-    bool random = parse_json_bool_default(request->body, "random", false);
+    bool random = usb_slideshow_force_random_config("usb start_slideshow",
+                                                    parse_json_bool_default(request->body, "random", false));
     int64_t timestamp = 0;
     if (!parse_json_i64(request->body, "timestamp", &timestamp) ||
         !timestamp_reasonable(timestamp)) {
@@ -363,7 +403,7 @@ esp_err_t UsbConsoleSlideshow_Process(const usb_console_http_request_t *request,
                                          time_result);
     }
 
-    if (!write_slideshow_config(request->body)) {
+    if (!write_slideshow_config(request->body, interval, random)) {
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",

@@ -14,6 +14,7 @@
 #include "nvs.h"
 #include "ch583_wifi_uart_protocol.h"
 #include "epd_display_app.h"
+#include "epd_display_mode.h"
 #include "led_status.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
@@ -24,6 +25,9 @@ static TickType_t s_last_network_data_tick = 0;
 static TickType_t s_last_power_off_send_tick = 0;
 static TaskHandle_t s_work_state_task = NULL;
 static bool s_ota_in_progress = false;
+static bool s_one_shot_power_off_countdown_active = false;
+static uint32_t s_one_shot_restore_continue_time = USER_WORK_STATE_DEFAULT_CONTINUE_SECONDS;
+static uint32_t s_one_shot_restore_standby_time = USER_WORK_STATE_DEFAULT_STANDBY_SECONDS;
 
 static void format_epoch_local(int64_t epoch, char *buf, size_t buf_size)
 {
@@ -283,6 +287,94 @@ static void reset_work_time_counter_for_slideshow_short_interval(void)
     s_last_power_off_send_tick = 0;
 }
 
+static void restore_work_time_after_one_shot_skip(void)
+{
+    server_required_continue_work_time = s_one_shot_restore_continue_time;
+    wifi_standby_time_s = s_one_shot_restore_standby_time;
+    working_time = 0;
+    s_wifi_work_start_tick = xTaskGetTickCount();
+    s_last_network_data_tick = s_wifi_work_start_tick;
+    s_last_power_off_send_tick = 0;
+    s_one_shot_power_off_countdown_active = false;
+}
+
+static bool should_skip_one_shot_power_off_for_slideshow(void)
+{
+    if (!s_one_shot_power_off_countdown_active) {
+        return false;
+    }
+
+    uint8_t mode = EpdDisplayMode_Get();
+    if (mode != USER_EPD_DISPLAY_MODE_SLIDESHOW) {
+        ESP_LOGI(TAG,
+                 "one-shot power off skip slideshow remain check mode=%u(%s)",
+                 (unsigned int)mode,
+                 EpdDisplayMode_ToString(mode));
+        return false;
+    }
+
+    uint32_t interval = 0;
+    uint32_t elapsed = 0;
+    uint32_t remain = 0;
+    int64_t now_epoch = 0;
+    int64_t next_epoch = 0;
+    bool running = false;
+    if (ServerNetworkStaSlideshow_GetScheduleTiming(&interval,
+                                                    &now_epoch,
+                                                    &next_epoch,
+                                                    &remain,
+                                                    &running) &&
+        running) {
+        char now_text[32] = {0};
+        char next_text[32] = {0};
+        format_epoch_local(now_epoch, now_text, sizeof(now_text));
+        format_epoch_local(next_epoch, next_text, sizeof(next_text));
+        if (remain <= USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS) {
+            ESP_LOGI(TAG,
+                     "one-shot power off skipped because slideshow next is soon remain=%lu min=%lu now=%lld(%s) next=%lld(%s)",
+                     (unsigned long)remain,
+                     (unsigned long)USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS,
+                     (long long)now_epoch,
+                     now_text,
+                     (long long)next_epoch,
+                     next_text);
+            restore_work_time_after_one_shot_skip();
+            return true;
+        }
+        ESP_LOGI(TAG,
+                 "one-shot power off allowed by slideshow rtc remain=%lu min=%lu now=%lld(%s) next=%lld(%s)",
+                 (unsigned long)remain,
+                 (unsigned long)USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS,
+                 (long long)now_epoch,
+                 now_text,
+                 (long long)next_epoch,
+                 next_text);
+        return false;
+    }
+
+    if (ServerNetworkStaSlideshow_GetRuntimeTiming(&interval, &elapsed, &running) &&
+        running) {
+        remain = interval > elapsed ? interval - elapsed : 0;
+        if (remain <= USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS) {
+            ESP_LOGI(TAG,
+                     "one-shot power off skipped because slideshow next is soon remain=%lu min=%lu interval=%lu elapsed=%lu",
+                     (unsigned long)remain,
+                     (unsigned long)USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS,
+                     (unsigned long)interval,
+                     (unsigned long)elapsed);
+            restore_work_time_after_one_shot_skip();
+            return true;
+        }
+        ESP_LOGI(TAG,
+                 "one-shot power off allowed by slideshow runtime remain=%lu min=%lu interval=%lu elapsed=%lu",
+                 (unsigned long)remain,
+                 (unsigned long)USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS,
+                 (unsigned long)interval,
+                 (unsigned long)elapsed);
+    }
+    return false;
+}
+
 static bool configure_ch583_wake_timer_before_power_off(void)
 {
     uint32_t interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
@@ -336,7 +428,8 @@ static bool configure_ch583_wake_timer_before_power_off(void)
         }
         wake_interval = wake_interval > wake_advance ? wake_interval - wake_advance : 1U;
 
-        if (wake_interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
+        if (!s_one_shot_power_off_countdown_active &&
+            wake_interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
             reset_work_time_counter_for_slideshow_short_interval();
             ESP_LOGI(TAG,
                      "slideshow wake interval too short, skip power off wake_interval=%lu min=%lu saved_interval=%lu elapsed=%lu startup_delay=%lu extra_advance=%lu wake_advance=%lu",
@@ -382,8 +475,11 @@ static void work_state_task(void *arg)
 
     while (true) {
         uint32_t elapsed = update_working_time_seconds();
-        uint32_t clamped_continue_time = clamp_continue_seconds(server_required_continue_work_time);
-        if (clamped_continue_time != server_required_continue_work_time) {
+        uint32_t clamped_continue_time = s_one_shot_power_off_countdown_active ?
+                                         server_required_continue_work_time :
+                                         clamp_continue_seconds(server_required_continue_work_time);
+        if (!s_one_shot_power_off_countdown_active &&
+            clamped_continue_time != server_required_continue_work_time) {
             server_required_continue_work_time = clamped_continue_time;
             (void)save_work_state_to_nvs();
             (void)save_work_time_vars_to_app_nvs();
@@ -493,6 +589,10 @@ static void work_state_task(void *arg)
                 }
                 s_last_power_off_send_tick = now;
 
+                if (should_skip_one_shot_power_off_for_slideshow()) {
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
                 ESP_LOGI(TAG,
                          "working_time timeout, send CH583 power off elapsed=%lu target=%lu standby=%lu",
                          (unsigned long)elapsed,
@@ -628,6 +728,30 @@ void ServerNetworkStaWifiWorkTime_OnNetworkData(void)
     }
 }
 
+void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t seconds)
+{
+    if (seconds == 0) {
+        return;
+    }
+    if (!s_one_shot_power_off_countdown_active) {
+        s_one_shot_restore_continue_time = server_required_continue_work_time;
+        s_one_shot_restore_standby_time = wifi_standby_time_s;
+    }
+
+    server_required_continue_work_time = seconds;
+    wifi_standby_time_s = seconds;
+    working_time = 0;
+    s_wifi_work_start_tick = xTaskGetTickCount();
+    s_last_network_data_tick = s_wifi_work_start_tick;
+    s_last_power_off_send_tick = 0;
+    s_one_shot_power_off_countdown_active = true;
+
+    ESP_LOGI(TAG,
+             "one-shot power off countdown requested target=%lu standby=%lu",
+             (unsigned long)server_required_continue_work_time,
+             (unsigned long)wifi_standby_time_s);
+}
+
 void ServerNetworkStaWifiWorkTime_SetOtaInProgress(bool in_progress)
 {
     s_ota_in_progress = in_progress;
@@ -697,6 +821,7 @@ esp_err_t ServerNetworkStaWifiWorkTime_SetAndSave(uint32_t seconds)
     s_wifi_work_start_tick = xTaskGetTickCount();
     s_last_network_data_tick = s_wifi_work_start_tick;
     s_last_power_off_send_tick = 0;
+    s_one_shot_power_off_countdown_active = false;
 
     ESP_LOGI(TAG, "set work time requested=%lu continue=%lu standby=%lu",
              (unsigned long)seconds,

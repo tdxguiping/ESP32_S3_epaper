@@ -88,7 +88,7 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
         return resp_ret;
     }
 
-    (void)TdxCastCore_ProcessValidated(&cast, base_path, "network cast", &result);
+    (void)TdxCastCore_ProcessValidatedCastDir(&cast, base_path, "network cast", &result);
     (void)send_cast_result(req, &result);
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;

@@ -366,6 +366,10 @@ static void read_slideshow_state(const char *base_path, snapshot_slideshow_t *sl
         }
     }
 
+#if !TDX_SLIDESHOW_RANDOM_ENABLE
+    slideshow->random = false;
+#endif
+
     slideshow->time_synced = ServerNetworkStaTime_IsSntpSynced();
     int64_t now_epoch = 0;
     int64_t next_epoch = 0;

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/unistd.h>
 
@@ -28,6 +29,7 @@ typedef struct {
     const char *image_data;
     size_t image_len;
     bool record_last_cast;
+    tdx_image_transfer_storage_t storage;
     SemaphoreHandle_t done;
     esp_err_t *ret_out;
     int *result_out;
@@ -38,6 +40,7 @@ typedef struct {
 static const char *TAG = "cast_core";
 static QueueHandle_t s_cast_save_queue;
 static TaskHandle_t s_cast_save_task;
+static const char *CAST_IMAGE_DIR_NAME = "cast_img";
 
 static esp_err_t stop_slideshow_for_cast(const char *base_path);
 
@@ -176,16 +179,165 @@ static esp_err_t save_one_file(const char *dir,
     return ESP_OK;
 }
 
-static esp_err_t record_last_cast(const char *base_path, const char *file_name)
+static bool has_extension(const char *name, const char *ext)
+{
+    size_t name_len = 0;
+    size_t ext_len = 0;
+
+    if (name == NULL || ext == NULL) {
+        return false;
+    }
+    name_len = strlen(name);
+    ext_len = strlen(ext);
+    return name_len > ext_len && strcmp(name + name_len - ext_len, ext) == 0;
+}
+
+static bool saved_name_matches(const char *entry_name,
+                               const tdx_image_transfer_item_t *items,
+                               size_t item_count,
+                               const char *ext)
+{
+    char expected[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX + 5];
+
+    if (entry_name == NULL || items == NULL || ext == NULL) {
+        return false;
+    }
+    for (size_t i = 0; i < item_count; i++) {
+        if (!items[i].save || items[i].storage != TDX_IMAGE_TRANSFER_STORAGE_CAST_DIR) {
+            continue;
+        }
+        int len = snprintf(expected, sizeof(expected), "%s%s", items[i].save_name, ext);
+        if (len > 0 && (size_t)len < sizeof(expected) && strcmp(entry_name, expected) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static esp_err_t cleanup_cast_dir_old_images(const char *base_path,
+                                             const tdx_image_transfer_item_t *items,
+                                             size_t item_count)
+{
+    char cast_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
+    DIR *dir = NULL;
+    struct dirent *entry = NULL;
+    bool has_cast_dir_save = false;
+    bool has_last_cast_record = false;
+    int deleted_count = 0;
+    int kept_count = 0;
+
+    if (base_path == NULL || items == NULL || item_count == 0 ||
+        !example_storage_supports_directories()) {
+        return ESP_OK;
+    }
+    for (size_t i = 0; i < item_count; i++) {
+        if (items[i].save && items[i].storage == TDX_IMAGE_TRANSFER_STORAGE_CAST_DIR) {
+            has_cast_dir_save = true;
+            if (items[i].record_last_cast) {
+                has_last_cast_record = true;
+            }
+        }
+    }
+    if (!has_cast_dir_save) {
+        return ESP_OK;
+    }
+
+    snprintf(cast_dir, sizeof(cast_dir), "%s/%s", base_path, CAST_IMAGE_DIR_NAME);
+    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        ESP_LOGW(TAG, "cleanup cast dir lock failed path=%s ret=%s", cast_dir, esp_err_to_name(lock_ret));
+        return lock_ret;
+    }
+
+    dir = opendir(cast_dir);
+    if (dir == NULL) {
+        ESP_LOGW(TAG, "cleanup cast dir open failed path=%s errno=%d", cast_dir, errno);
+        TdxSharedSpi_Unlock();
+        return ESP_OK;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        const char *name = entry->d_name;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+            continue;
+        }
+        const char *ext = has_extension(name, ".bin") ? ".bin" :
+                          has_extension(name, ".jpg") ? ".jpg" : NULL;
+        if (ext == NULL) {
+            continue;
+        }
+        if (saved_name_matches(name, items, item_count, ext)) {
+            kept_count++;
+            continue;
+        }
+
+        char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX + 24];
+        int len = snprintf(path, sizeof(path), "%s/%s", cast_dir, name);
+        if (len < 0 || (size_t)len >= sizeof(path)) {
+            ESP_LOGW(TAG, "cleanup cast dir skip long path name=%s", name);
+            continue;
+        }
+        if (unlink(path) == 0) {
+            deleted_count++;
+            ESP_LOGI(TAG, "cleanup cast dir old image=%s", path);
+        } else {
+            ESP_LOGW(TAG, "cleanup cast dir unlink failed path=%s errno=%d", path, errno);
+        }
+    }
+    closedir(dir);
+
+    if (!has_last_cast_record) {
+        char last_cast_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
+        int len = snprintf(last_cast_path,
+                           sizeof(last_cast_path),
+                           "%s/%s",
+                           cast_dir,
+                           SERVER_NETWORK_STA_LAST_CAST_FILE);
+        if (len > 0 && (size_t)len < sizeof(last_cast_path)) {
+            if (unlink(last_cast_path) == 0) {
+                ESP_LOGI(TAG, "cleanup cast dir stale last_cast=%s", last_cast_path);
+            } else if (errno != ENOENT) {
+                ESP_LOGW(TAG, "cleanup cast dir last_cast unlink failed path=%s errno=%d",
+                         last_cast_path,
+                         errno);
+            }
+        }
+    }
+
+    TdxSharedSpi_Unlock();
+    ESP_LOGI(TAG,
+             "cleanup cast dir done path=%s kept=%d deleted=%d keep_last_cast=%d",
+             cast_dir,
+             kept_count,
+             deleted_count,
+             has_last_cast_record ? 1 : 0);
+    return ESP_OK;
+}
+
+static const char *storage_bin_dir_name(tdx_image_transfer_storage_t storage)
+{
+    return storage == TDX_IMAGE_TRANSFER_STORAGE_CAST_DIR ? CAST_IMAGE_DIR_NAME : "bin_img";
+}
+
+static const char *storage_jpg_dir_name(tdx_image_transfer_storage_t storage)
+{
+    return storage == TDX_IMAGE_TRANSFER_STORAGE_CAST_DIR ? CAST_IMAGE_DIR_NAME : "jpg_img";
+}
+
+static esp_err_t record_last_cast(const char *base_path,
+                                  tdx_image_transfer_storage_t storage,
+                                  const char *file_name)
 {
     int64_t start_us = esp_timer_get_time();
     char record_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
     char json[256];
+    const char *bin_dir = storage_bin_dir_name(storage);
+    const char *jpg_dir = storage_jpg_dir_name(storage);
 
-    snprintf(record_path, sizeof(record_path), "%s/bin_img/%s", base_path, SERVER_NETWORK_STA_LAST_CAST_FILE);
+    snprintf(record_path, sizeof(record_path), "%s/%s/%s", base_path, bin_dir, SERVER_NETWORK_STA_LAST_CAST_FILE);
     int len = snprintf(json, sizeof(json),
-                       "{\"fileName\":\"%s\",\"bin\":\"%s/bin_img/%s.bin\",\"image\":\"%s/jpg_img/%s.jpg\"}",
-                       file_name, base_path, file_name, base_path, file_name);
+                       "{\"fileName\":\"%s\",\"bin\":\"%s/%s/%s.bin\",\"image\":\"%s/%s/%s.jpg\"}",
+                       file_name, base_path, bin_dir, file_name, base_path, jpg_dir, file_name);
     if (len < 0 || (size_t)len >= sizeof(json)) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -221,8 +373,8 @@ static void CastSaveTask(void *arg)
         int64_t start_us = esp_timer_get_time();
         char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
         char jpg_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
-        snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", job.base_path);
-        snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", job.base_path);
+        snprintf(bin_dir, sizeof(bin_dir), "%s/%s", job.base_path, storage_bin_dir_name(job.storage));
+        snprintf(jpg_dir, sizeof(jpg_dir), "%s/%s", job.base_path, storage_jpg_dir_name(job.storage));
 
         ESP_LOGI(TAG, "save task start file=%s bin=%u image=%u",
                  job.file_name, (unsigned int)job.bin_len, (unsigned int)job.image_len);
@@ -238,7 +390,7 @@ static void CastSaveTask(void *arg)
             save_task_set_error(&job, ESP_FAIL, TDX_JSON_RESULT_SAVE_BIN_FAILED, "save_bin_failed");
         } else if (save_one_file(jpg_dir, job.file_name, ".jpg", job.image_data, job.image_len) != ESP_OK) {
             save_task_set_error(&job, ESP_FAIL, TDX_JSON_RESULT_SAVE_IMAGE_FAILED, "save_image_failed");
-        } else if (job.record_last_cast && record_last_cast(job.base_path, job.file_name) != ESP_OK) {
+        } else if (job.record_last_cast && record_last_cast(job.base_path, job.storage, job.file_name) != ESP_OK) {
             save_task_set_error(&job, ESP_FAIL, TDX_JSON_RESULT_LAST_CAST_SAVE_FAILED, "last_cast_failed");
         } else {
             save_task_set_error(&job, ESP_OK, TDX_JSON_RESULT_OK, "");
@@ -313,6 +465,7 @@ static esp_err_t submit_save_item_and_wait(const tdx_image_transfer_item_t *item
         .image_data = item->image_part.data,
         .image_len = item->image_part.len,
         .record_last_cast = item->record_last_cast,
+        .storage = item->storage,
         .done = done,
         .ret_out = &save_ret,
         .result_out = &save_result,
@@ -415,6 +568,8 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
             return save_ret;
         }
     }
+
+    (void)cleanup_cast_dir_old_images(base_path, items, item_count);
 
     TdxCastCore_ResultOk(result, items[0].save_name, "ok");
     return ESP_OK;
@@ -706,10 +861,11 @@ esp_err_t TdxCastCore_ParseAndValidate(const char *body,
     return TdxImageTransfer_ParseSingle(body, body_len, content_type, "cast", true, true, cast, result);
 }
 
-esp_err_t TdxCastCore_ProcessValidated(const tdx_cast_core_request_t *cast,
-                                       const char *base_path,
-                                       const char *log_prefix,
-                                       tdx_cast_core_result_t *result)
+static esp_err_t process_validated_with_storage(const tdx_cast_core_request_t *cast,
+                                                const char *base_path,
+                                                const char *log_prefix,
+                                                tdx_image_transfer_storage_t storage,
+                                                tdx_cast_core_result_t *result)
 {
     int64_t total_start_us = esp_timer_get_time();
     if (cast == NULL || base_path == NULL || result == NULL) {
@@ -721,6 +877,7 @@ esp_err_t TdxCastCore_ProcessValidated(const tdx_cast_core_request_t *cast,
         .save = cast->save,
         .show = cast->show,
         .record_last_cast = true,
+        .storage = storage,
         .epd_target = 1,
         .bin_part = cast->bin_part,
         .image_part = cast->image_part,
@@ -737,4 +894,28 @@ esp_err_t TdxCastCore_ProcessValidated(const tdx_cast_core_request_t *cast,
              log_prefix != NULL ? log_prefix : "cast",
              (unsigned long)elapsed_ms_since(total_start_us));
     return ESP_OK;
+}
+
+esp_err_t TdxCastCore_ProcessValidated(const tdx_cast_core_request_t *cast,
+                                       const char *base_path,
+                                       const char *log_prefix,
+                                       tdx_cast_core_result_t *result)
+{
+    return process_validated_with_storage(cast,
+                                          base_path,
+                                          log_prefix,
+                                          TDX_IMAGE_TRANSFER_STORAGE_DEFAULT,
+                                          result);
+}
+
+esp_err_t TdxCastCore_ProcessValidatedCastDir(const tdx_cast_core_request_t *cast,
+                                              const char *base_path,
+                                              const char *log_prefix,
+                                              tdx_cast_core_result_t *result)
+{
+    return process_validated_with_storage(cast,
+                                          base_path,
+                                          log_prefix,
+                                          TDX_IMAGE_TRANSFER_STORAGE_CAST_DIR,
+                                          result);
 }

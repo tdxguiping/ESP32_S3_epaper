@@ -351,6 +351,24 @@ extern "C" {
 #define TDX_SLIDESHOW_NVS_LAST_FILE_KEY "slide_last"
 #define TDX_SLIDESHOW_NVS_PROGRESS_KEY "slide_progress"
 #define TDX_SLIDESHOW_RANDOM_NVS_KEY "slide_random"
+#define TDX_SLIDESHOW_RANDOM_ENABLE 0
+
+/* -------------------------------------------------------------------------- */
+/* 10. Factory Reset Button                                                    */
+/* -------------------------------------------------------------------------- */
+
+// Enable the GPIO based factory-default image cleanup feature.
+#define TDX_FACTORY_RESET_ENABLE 1
+// GPIO28 is normally high and becomes low while the physical button is pressed.
+#define TDX_FACTORY_RESET_GPIO GPIO_NUM_28
+// Active level for the button. Keep this separate so future hardware can invert the input without changing logic.
+#define TDX_FACTORY_RESET_ACTIVE_LEVEL 0
+// Poll period for the button task. A small task is used so power-off and WiFi timers stay independent.
+#define TDX_FACTORY_RESET_CHECK_MS 300
+// The button must remain continuously active for 5 seconds. Any high-level sample before this timeout cancels the hold.
+#define TDX_FACTORY_RESET_HOLD_MS 5000
+// Keep disabled by default: clearing images does not require a reboot, and no WiFi/EPD/CH583 settings are erased.
+#define TDX_FACTORY_RESET_RESTART_AFTER_DONE 0
 
 /* -------------------------------------------------------------------------- */
 /* 11. WiFi Work Time / Sleep Runtime State / NVS Keys                         */
@@ -375,6 +393,11 @@ extern "C" {
 #define USER_WORK_STATE_TASK_STACK_SIZE (8 * 1024)
 #define USER_WORK_STATE_TASK_PRIORITY 3
 #define USER_WORK_STATE_TASK_INTERVAL_MS 1000
+
+// After each EPD display job finishes, request one low-power countdown through work_state_task.
+#define USER_EPD_DONE_LOW_POWER_ENABLE 1
+#define USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 3
+#define USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 60
 
 /* -------------------------------------------------------------------------- */
 /* 12. BLE / GATT Legacy Compatibility                                         */
@@ -663,6 +686,7 @@ esp_err_t app_nvs_read_str(const char *key, char *value, size_t value_size, cons
 esp_err_t app_nvs_write_str(const char *key, const char *value);
 esp_err_t app_nvs_read_blob(const char *key, void *value, size_t value_size);
 esp_err_t app_nvs_write_blob(const char *key, const void *value, size_t value_size);
+esp_err_t app_nvs_erase_key(const char *key);
 
 #ifdef __cplusplus
 }

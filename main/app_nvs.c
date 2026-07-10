@@ -214,3 +214,36 @@ esp_err_t app_nvs_read_blob(const char *key, void *value, size_t value_size)
     }
     return ret;
 }
+
+esp_err_t app_nvs_erase_key(const char *key)
+{
+    nvs_handle_t handle;
+    esp_err_t ret;
+
+    if (key == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ret = nvs_open("PhotoPainter", NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "open PhotoPainter failed key=%s ret=%s", key, esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = nvs_erase_key(handle, key);
+    if (ret == ESP_ERR_NVS_NOT_FOUND) {
+        ret = ESP_OK;
+    }
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    }
+    nvs_close(handle);
+
+#if USER_NVS_VERBOSE_LOG_ENABLE
+    ESP_LOGI(TAG, "erase_key key=%s ret=%s", key, esp_err_to_name(ret));
+#endif
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "erase_key failed key=%s ret=%s", key, esp_err_to_name(ret));
+    }
+    return ret;
+}

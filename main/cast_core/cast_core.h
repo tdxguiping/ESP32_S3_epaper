@@ -28,11 +28,17 @@ typedef struct {
     char file_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX];
 } tdx_cast_core_result_t;
 
+typedef enum {
+    TDX_IMAGE_TRANSFER_STORAGE_DEFAULT = 0,
+    TDX_IMAGE_TRANSFER_STORAGE_CAST_DIR,
+} tdx_image_transfer_storage_t;
+
 typedef struct {
     char save_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX];
     bool save;
     bool show;
     bool record_last_cast;
+    tdx_image_transfer_storage_t storage;
     uint8_t epd_target;
     usb_console_multipart_part_t bin_part;
     usb_console_multipart_part_t image_part;
@@ -62,6 +68,10 @@ esp_err_t TdxCastCore_ProcessValidated(const tdx_cast_core_request_t *cast,
                                        const char *base_path,
                                        const char *log_prefix,
                                        tdx_cast_core_result_t *result);
+esp_err_t TdxCastCore_ProcessValidatedCastDir(const tdx_cast_core_request_t *cast,
+                                              const char *base_path,
+                                              const char *log_prefix,
+                                              tdx_cast_core_result_t *result);
 
 #ifdef __cplusplus
 }

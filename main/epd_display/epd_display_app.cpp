@@ -217,6 +217,10 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
             release_completion(completion);
         }
         __atomic_store_n(&s_epd_display_active, false, __ATOMIC_RELEASE);
+#if USER_EPD_DONE_LOW_POWER_ENABLE
+        ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(
+            USER_EPD_DONE_LOW_POWER_DELAY_SECONDS);
+#endif
     }
 }
 

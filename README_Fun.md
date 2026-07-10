@@ -38,6 +38,7 @@
   - [7.11 upload：PC或手机传文件到ESP32-C5，并存](#sec-07-11)
   - [7.12 wifi_work_time：WiFi 省电管理](#sec-07-12)
   - [7.13 time：RTC 默认时间与 SNTP 网络校时](#sec-07-13)
+  - [7.14 factory_reset：GPIO28 长按清除图片](#sec-07-14)
 - [8. USB Serial/JTAG HTTP-like 协议](#sec-08)
 - [9. USB 路由与各功能处理汇总](#sec-09)
   - [9.1 cast：投屏功能模块](#sec-09-1)
@@ -129,8 +130,8 @@ The full result-code table is in `README_Result_Code.md`; this file keeps featur
 |---|---|---|---|
 | `app_nvs` 通用 NVS | `PhotoPainter` namespace | `key != NULL`；写字符串时 `value != NULL`；写入后必须 `nvs_commit()`；`read_u8` 发现 key 不存在时会写入默认值 | `read_u8` 要求 `out_value != NULL`；`read_str` 要求 `value != NULL` 且 `value_size > 0`；打开失败或读取失败时按默认值回退 |
 | WiFi 配网 NVS | `wifi:ssid/password`，`nvs.net80211:sta.ssid/sta.pswd` | USB、BLE、CH583 配网都要求 `func=wifi`、`ssid` 可解析且长度 1..32、`key` 可解析且长度小于 65；两个 namespace 都写入成功后才提交 worker 连接 | STA 启动时从保存的 WiFi 配置恢复连接；请求侧只负责保存和提交 worker，真正连接在 `User_Network_mode_app_init()` / `server_network_sta.c` |
-| `cast` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg`，`/data/bin_img/last_cast.txt` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存并记录 last cast；重启恢复或快照等流程可读取 last cast 和 `/data/bin_img`、`/data/jpg_img` |
-| `cast2pic` 图片保存 | `screen=a` 保存 `/data/bin_img/screen_b.bin`、`/data/jpg_img/screen_b.jpg`；`screen=b` 保存 `/data/bin_img/screen_a.bin`、`/data/jpg_img/screen_a.jpg` | 当前源码 `screen` 只接受 `a` 或 `b`，`ab` 明确返回 `1617`；`screen=a -> EPD2 -> screen_b`，`screen=b -> EPD1 -> screen_a`；每组 `fileName/bin_size/image_size/bin/image` 必须完整，并兼容 `fileNameA/bin_sizeA/image_sizeA/binA/imageA`、`fileNameB/bin_sizeB/image_sizeB/binB/imageB`；大小必须匹配；`save=true` 才保存；写入使用 `.tmp`，大小校验通过后 rename；空间不足返回失败 | `show=true && save=true` 时按 screen 转成 EPD number，等待 EPD 显示任务完成后再保存；保存后从固定 screen 文件名读取；核心处理 result 原值透传到响应 |
+| `cast` 图片保存 | `/data/cast_img/<fileName>.bin`，`/data/cast_img/<fileName>.jpg`，`/data/cast_img/last_cast.txt` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename；新 bin/jpg 保存和 last_cast 记录成功后，清理 `/data/cast_img` 中非本次文件名的旧 `.bin/.jpg` | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存并记录 last cast；重启恢复可读取 last cast 和 `/data/cast_img` |
+| `cast2pic` 图片保存 | `screen=a` 保存 `/data/cast_img/screen_b.bin`、`/data/cast_img/screen_b.jpg`；`screen=b` 保存 `/data/cast_img/screen_a.bin`、`/data/cast_img/screen_a.jpg` | 当前源码 `screen` 只接受 `a` 或 `b`，`ab` 明确返回 `1617`；`screen=a -> EPD2 -> screen_b`，`screen=b -> EPD1 -> screen_a`；每组 `fileName/bin_size/image_size/bin/image` 必须完整，并兼容 `fileNameA/bin_sizeA/image_sizeA/binA/imageA`、`fileNameB/bin_sizeB/image_sizeB/binB/imageB`；大小必须匹配；`save=true` 才保存；写入使用 `.tmp`，大小校验通过后 rename；空间不足返回失败；本次需要保存的 screen 文件全部成功后，清理 `/data/cast_img` 中非本次 screen 名的旧 `.bin/.jpg`，并删除旧 `last_cast.txt` 避免指向已清理文件 | `show=true && save=true` 时按 screen 转成 EPD number，等待 EPD 显示任务完成后再保存；保存后从固定 screen 文件名读取；核心处理 result 原值透传到响应 |
 | `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | 字段、文件名安全、大小匹配、目录和剩余空间条件与 cast 类似；主要用于保存，`show=true` 时也可显示 | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存；图片列表、轮播、快照从 jpg/bin 目录取数据 |
 | `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `SERVER_NETWORK_STA_DELETE_MAX_FILES=50` 限制；文件名必须安全；只删除匹配的 bin/jpg；不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度 | 从 JSON `fileNames` 取删除列表；删除前按文件名拼路径 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从轮播配置/control 文件读取轮播状态 |
@@ -1189,7 +1190,7 @@ flowchart TD
     D -->|set_slideshow| L[slideshow_control]
     D -->|set_wifi_work_time| M[wifi_work_time]
     D -->|OTA request| N[ota]
-    E --> SD[(SD /data/bin_img + /data/jpg_img)]
+    E --> SD[(SD /data/cast_img + /data/bin_img + /data/jpg_img)]
     F --> SD
     G --> SD
     H --> SD
@@ -1312,7 +1313,8 @@ V2 协议中，HTTP 图片与控制协议主要使用：
 
 ```text
 存：
-- 图片类：/data/bin_img/*.bin，/data/jpg_img/*.jpg。
+- network/USB cast/cast2pic：/data/cast_img/*.bin，/data/cast_img/*.jpg。
+- upload / saved_images / slideshow：/data/bin_img/*.bin，/data/jpg_img/*.jpg。
 - 状态类：last cast 记录、slideshow_config、show_control / slideshow control 文件。
 - OTA 类：OTA update partition。
 - WiFi 工作时间：NVS blob + PhotoPainter 字符串 key。
@@ -1400,16 +1402,16 @@ HTTP multipart /dataUP
       │  ├─ UsbConsoleCommon_FileNameIsSafe()
       │  └─ validate bin_size/image_size/save/show
       ├─ send cast_received chunk
-      ├─ TdxCastCore_ProcessValidated()
+      ├─ TdxCastCore_ProcessValidatedCastDir()
       │  ├─ show=true
       │  │  ├─ stop_slideshow_for_cast() 并确认 sw=0
       │  │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
       │  └─ save=true
       │     └─ CastSaveTask
       │        ├─ check_save_space()
-      │        ├─ save /data/bin_img/<fileName>.bin
-      │        ├─ save /data/jpg_img/<fileName>.jpg
-      │        └─ record /data/bin_img/last_cast.txt
+      │        ├─ save /data/cast_img/<fileName>.bin
+      │        ├─ save /data/cast_img/<fileName>.jpg
+      │        └─ record /data/cast_img/last_cast.txt
       └─ send cast_result chunk
 ```
 
@@ -1423,13 +1425,13 @@ server_network_sta_cast.c
 
 cast_core.c
 ├─ TdxCastCore_ParseAndValidate()
-├─ TdxCastCore_ProcessValidated()
+├─ TdxCastCore_ProcessValidatedCastDir()
 ├─ CastSaveTask()
 ├─ stop_slideshow_for_cast()
 └─ record_last_cast()
 ```
 
-说明：network cast 与 USB cast 共享 `cast_core`。EPD 显示使用已有的 `ServerNetworkStaEpdDisplay` task，保存使用统一的 `CastSaveTask`。network cast 正常成功时使用 `application/x-ndjson` 两阶段返回：multipart 解析和字段校验通过后先返回 `cast_received`；EPD 显示、bin/jpg 保存和 last_cast 记录完成后再返回 `cast_result`。`show=true && save=true` 时先调用 `stop_slideshow_for_cast()` 停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再通过 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 等待 EPD 显示任务完成，最后提交保存任务。`cast_result result=0` 表示 EPD 显示任务已完成、bin/jpg 保存成功、last_cast 写入成功。
+说明：network cast 和 USB cast 都复用 `cast_core`，并通过 `TdxCastCore_ProcessValidatedCastDir()` 指定保存到 `/data/cast_img`。EPD 显示使用已有的 `ServerNetworkStaEpdDisplay` task，保存使用统一的 `CastSaveTask`。network cast 正常成功时使用 `application/x-ndjson` 两阶段返回：multipart 解析和字段校验通过后先返回 `cast_received`；EPD 显示、bin/jpg 保存和 last_cast 记录完成后再返回 `cast_result`。`show=true && save=true` 时先调用 `stop_slideshow_for_cast()` 停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再通过 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 等待 EPD 显示任务完成，最后提交保存任务。`cast_result result=0` 表示 EPD 显示任务已完成、bin/jpg 保存成功、last_cast 写入成功。
 
 V2 协议资料拆分：
 
@@ -1474,12 +1476,12 @@ V2 说明：`cast` 成功后应记录最后一次投图，设备重启或 OTA �
 ```text
 network cast 当前要求 save=true。
 如果 save=false，设备返回 cast_result 失败，error=save_required_for_last_cast。
-原因是 cast 成功后需要保存 bin/jpg，并记录 /data/bin_img/last_cast.txt，供重启或 OTA 后恢复显示。
+原因是 cast 成功后需要保存 bin/jpg，并记录 /data/cast_img/last_cast.txt，供重启或 OTA 后恢复显示。
 
 show/save 顺序：
 1. show=true 时，先把当前请求中的 bin 投递到 EPD 显示任务并等待完成。
 2. save=true 时，再保存 bin/jpg 到 SD。
-3. 保存成功后写入 /data/bin_img/last_cast.txt。
+3. 保存成功后写入 /data/cast_img/last_cast.txt。
 ```
 
 
@@ -1511,12 +1513,13 @@ curl.exe -X POST "$esp/dataUP" `
 
 ```text
 存：
-- TdxCastCore_ProcessValidated() 先等待 EPD 显示任务完成，再提交 CastSaveTask。
+- TdxCastCore_ProcessValidatedCastDir() 先等待 EPD 显示任务完成，再提交 CastSaveTask。
 - show=true 停止轮播并写入 show_control.txt sw=0 后，同步写 PhotoPainter:epd_mode=0。
-- CastSaveTask 写入：/data/bin_img/<fileName>.bin。
-- CastSaveTask 写入：/data/jpg_img/<fileName>.jpg。
+- CastSaveTask 写入：/data/cast_img/<fileName>.bin。
+- CastSaveTask 写入：/data/cast_img/<fileName>.jpg。
 - CastSaveTask 使用 <fileName>.<ext>.tmp 临时文件，写完校验大小后 rename 成正式文件。
-- CastSaveTask 写入 last cast 记录文件，路径在 /data/bin_img/ 下。
+- CastSaveTask 写入 last cast 记录文件，路径在 /data/cast_img/ 下。
+- 保存和 last_cast 全部成功后，扫描 /data/cast_img，删除非本次 <fileName> 的旧 .bin/.jpg；last_cast.txt 不删除。
 
 取：
 - check_save_space() 通过 example_storage_get_free_bytes() 读取剩余空间。
@@ -1609,8 +1612,7 @@ HTTP multipart /dataUP
       │  │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
       │  └─ save=true
       │     └─ CastSaveTask
-      │        ├─ save /data/bin_img/screen_a.bin or screen_b.bin
-      │        └─ save /data/jpg_img/screen_a.jpg or screen_b.jpg
+      │        └─ save /data/cast_img/screen_a/screen_b .bin and .jpg
       └─ send_cast2pic_result()
 ```
 
@@ -1633,7 +1635,7 @@ cast_core.c
 └─ CastSaveTask()
 ```
 
-说明：network cast2pic 与 USB cast2pic 共享 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。`show` 和 `save` 是独立动作：存在 `show=true` 时先停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再等待 EPD 显示任务完成；`save=true` 时再提交保存任务；`show=false` 不显示，`save=false` 不保存。`cast2pic_result=0` 表示需要显示的 EPD 任务已完成、需要保存的文件已保存完成。
+说明：network cast2pic 和 USB cast2pic 都复用 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`，并给 image transfer item 指定保存到 `/data/cast_img`。`show` 和 `save` 是独立动作：存在 `show=true` 时先停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再等待 EPD 显示任务完成；`save=true` 时再提交保存任务；`show=false` 不显示，`save=false` 不保存。`cast2pic_result=0` 表示需要显示的 EPD 任务已完成、需要保存的文件已保存完成。
 
 当前源码协议资料拆分（以 `server_network_sta_cast2pic.c` 为准）：
 
@@ -1669,8 +1671,8 @@ show     是否立即显示
 screen 映射注意：
 
 ```text
-screen=a -> epd_number=2 -> 保存为 /data/bin_img/screen_b.bin 和 /data/jpg_img/screen_b.jpg
-screen=b -> epd_number=1 -> 保存为 /data/bin_img/screen_a.bin 和 /data/jpg_img/screen_a.jpg
+screen=a -> epd_number=2 -> 保存为 /data/cast_img/screen_b.bin 和 /data/cast_img/screen_b.jpg
+screen=b -> epd_number=1 -> 保存为 /data/cast_img/screen_a.bin 和 /data/cast_img/screen_a.jpg
 
 这里不是直观的 a->screen_a、b->screen_b。
 源码为了硬件兼容做了反向保存映射，显示投递也按 epd_number 执行。
@@ -1716,9 +1718,10 @@ curl.exe -X POST "$esp/dataUP" `
 
 ```text
 存：
-- 保存当前 1 组图片对应的 .bin 和 .jpg 到 /data/bin_img 与 /data/jpg_img。
+- 保存当前 1 组图片对应的 .bin 和 .jpg 到 /data/cast_img。
 - screen=a 保存为 screen_b.bin / screen_b.jpg；screen=b 保存为 screen_a.bin / screen_a.jpg。
 - 使用临时文件写入再 rename，避免半文件覆盖正式文件。
+- 本次需要保存的 screen 文件全部成功后，扫描 /data/cast_img，删除非本次 screen 名的旧 .bin/.jpg，并删除旧 last_cast.txt，避免它指向已清理文件。
 
 取：
 - 读取 multipart 中的 fileName/bin_size/image_size/bin/image，兼容 A/B 后缀字段。
@@ -2101,7 +2104,7 @@ Powershell 测试用例：
 $esp = "http://192.168.1.104"
 $fw = "H:\AI2\ESP32-S3-PhotoPainter-main\01_Example\xiaozhi-esp32\build\xiaozhi.bin"
 $size = (Get-Item $fw).Length
-$version = "2.0.2"
+$version = "000.001"
 $meta = '{"func":"ota","version":"' + $version + '","firmware_size":' + $size + ',"reboot":false}'
 
 curl.exe -X POST "$esp/ota" `
@@ -2116,7 +2119,9 @@ curl.exe -X POST "$esp/ota_upload" `
   -F "firmware=@$fw;type=application/octet-stream"
 ```
 
-预期：固件大小不能超过 OTA 分区；校验通过后写 OTA 分区并设置 boot partition。需要自动重启时把 `reboot` 改成 `true`。
+版本规则：固件版本号使用 `000.000`..`255.255` 两段十进制字节格式，每段范围为 0..255，保留 3 位数字；例如 `000.001` 对应十六进制 `00.01`，`255.255` 对应 `FF.FF`。OTA meta 中 `version` 字段如果存在，必须与固件 `app_desc.version` 完全一致，否则返回 `1711/version_mismatch` 并拒绝写入。
+
+预期：固件大小不能超过 OTA 分区；版本校验和固件校验通过后写 OTA 分区并设置 boot partition。需要自动重启时把 `reboot` 改成 `true`。
 
 存 / 取信息（含条件限制）：
 
@@ -2529,6 +2534,7 @@ start_slideshow 是正式轮播列表配置接口；会重写 `show_control.txt`
 存：
 - start_slideshow 保存 slideshow_config 的 fileNames / interval / random，保存 random 配置，并写入 `show_control.txt`：`{"func":"set_slideshow","sw":1,"interval":...,"random":...,"timestamp":...,"anchor_epoch":...}`。
 - set_slideshow 写入 sw / interval / timestamp / anchor_epoch，并同步写 PhotoPainter:epd_mode=1。
+- 当前版本通过 `TDX_SLIDESHOW_RANDOM_ENABLE=0` 临时禁用 random；协议仍接收 `random:true/false`，但设备会统一强制为 `random=false`，保存到 `slideshow_config.txt`、`show_control.txt`、NVS `slide_random` 和 snapshot 返回状态时也固定为 false。
 - NVS `slide_progress` 保存版本、配置 hash、待显示文件、随机种子、整轮顺序和当前位置。
 - `pending_file` 表示下一次必须完成显示的图片，不表示已经显示成功的图片。
 - EPD 实际返回成功后才计算并提交下一张；NVS 写入并读回校验成功后运行索引才推进。
@@ -3198,6 +3204,16 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 预期：设备保存 WiFi 工作时长配置，并重置工作计时；超时后由 wifi_work_time 模块决定是否发送 CH583 `POWER_OFF`。
 
+EPD 完成低功耗倒计时：
+
+```text
+USER_EPD_DONE_LOW_POWER_ENABLE 默认 1。
+USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 默认 3 秒。
+USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 默认 60 秒。
+```
+
+当 `USER_EPD_DONE_LOW_POWER_ENABLE=1` 时，每次 EPD display task 实际完成一个显示 job 后，都会调用 `ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown()` 请求一次低功耗倒计时。该倒计时允许使用默认 3 秒，不受普通 `set_wifi_work_time` 的 60..3600 秒保存范围限制；它只修改 RAM 中的运行时计时，不写 NVS，不改变 `set_wifi_work_time` 保存值。倒计时到期后，只有当前 `epd_mode=1(SLIDESHOW)` 时才读取下一次轮播剩余时间：剩余时间不大于 `USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS=60` 秒时不关机，并恢复 one-shot 前的运行时目标；剩余时间大于 60 秒时继续执行关机流程。如果当前不是轮播模式，例如 `epd_mode=0(NORMAL)`、`epd_mode=2(DAILY)` 或保留值，则不做轮播剩余时间判断，直接进入现有关机流程。后续仍由 `work_state_task()` 统一判断 OTA busy、EPD busy、slideshow wake timer、LED 关机准备，并最终调用 `ch583_wifi_uart_send_power_off()`。
+
 存 / 取信息（含条件限制）：
 
 ```text
@@ -3209,6 +3225,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 - load_work_state_from_nvs() 读取工作状态 blob。
 - load_work_time_vars_from_app_nvs() 读取兼容字符串 key。
 - work_state_task() 读取 RAM 中计时值；超时后如果 OTA 忙或 EPD task 忙则推迟，只有 OTA 不忙且 EPD 空闲时才先配置 CH583 WAKE_TIMER，再发送 CH583 POWER_OFF。
+- EPD 完成低功耗倒计时开启时，每个 EPD display job 完成后只请求一次运行时倒计时；倒计时到期后，只有 `epd_mode=1(SLIDESHOW)` 才检查下一次轮播剩余时间，如果剩余时间不大于 60 秒，不关机并恢复 one-shot 前的运行时目标；非轮播模式不做该判断，直接进入现有关机流程；下一次 EPD job 完成才会再次请求。
 - 轮播开启时，WAKE_TIMER 优先使用 RTC 轮播的 `next_epoch - now_epoch` 剩余秒数，并扣除开机自动恢复轮播延迟和额外提前量：`remain - (startup_delay_seconds + TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS)`；其中 `startup_delay_seconds = ceil(TDX_SLIDESHOW_STARTUP_DELAY_MS / 1000)`，当前为 10 秒，`TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS` 当前为 20 秒，总提前 30 秒。若当前不是 RTC 轮播或 RTC timing 不可用，则回退使用旧 runtime timing：`runtime_interval - 已走秒数 - 总提前秒数`；再不可用才回退 control 文件中的 interval。若计算出的 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，ESP32 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，只重置 wifi_work_time 运行时计时，从头等待下一次工作超时。
 ```
 
@@ -3391,6 +3408,56 @@ Invoke-RestMethod -Uri "$esp/time?t=123" -Method Get
 - valid 判断以本地时间年份 >= 2026 为准。
 - source=default 表示使用默认兜底时间或启动时保留的有效时间；source=timestamp 表示使用 APP / PC 下发的 timestamp 写入 RTC；source=sntp 表示 SNTP 已成功同步。
 - sntp_synced 只表示本轮启动后是否收到 SNTP 同步回调。
+```
+
+[⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
+
+---
+
+### 7.14 factory_reset：GPIO28 长按清除图片 <span id="sec-07-14"></span>
+
+功能说明：GPIO28 用作本地出厂默认图片清除按键。GPIO28 默认高电平，按下为低电平。设备每 300 ms 检测一次，只有连续低电平达到 `TDX_FACTORY_RESET_HOLD_MS=5000` ms 才触发；5 秒内任意一次采样为高电平，本次按键无效并重新计时。
+
+安全边界：
+
+```text
+只删除图片和轮播状态：
+/data/bin_img/*.bin
+/data/jpg_img/*.jpg
+/data/cast_img/*.bin
+/data/cast_img/*.jpg
+/data/bin_img/slideshow_config.txt
+/data/bin_img/show_control.txt
+/data/cast_img/last_cast.txt
+NVS: slide_progress
+NVS: slide_last
+NVS: slide_random 写回 false
+
+必须保留，不允许清除：
+WiFi 配网
+EPD type
+WiFi 工作时间 / standby 时间
+CH583 BLE MAC
+CH583/CH585 时间备份和其它通信状态
+OTA 状态
+```
+
+运行规则：
+
+```text
+EPD busy 时不检测 GPIO28，不累计按键时间。
+只有 EPD IDLE 时，GPIO28 task 才读取按键。
+触发后先停止轮播，再删除 upload/slideshow 图片、cast/cast2pic 缓存图片和轮播配置。
+长按触发后进入等待松手状态；GPIO28 恢复高电平前不会再次触发。
+默认不自动重启，TDX_FACTORY_RESET_RESTART_AFTER_DONE=0。
+```
+
+关键日志：
+
+```text
+factory reset gpio init pin=28 active=0 check_ms=300 hold_ms=5000
+factory reset button held gpio=28 hold_ms=5100, start clear images
+factory reset done ret=ESP_OK upload_bin_deleted=... upload_jpg_deleted=... cast_bin_deleted=... cast_jpg_deleted=... cfg_deleted=... nvs_ret=ESP_OK
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -3638,7 +3705,7 @@ Connection: keep-alive
 
 ```text
 存：
-- USB cast/upload/cast2pic 写 /data/bin_img 与 /data/jpg_img。
+- USB cast/cast2pic 写 /data/cast_img；USB upload 写 /data/bin_img 与 /data/jpg_img。
 - USB wifi 写 NVS wifi 与 nvs.net80211。
 - USB epd_type 写 PhotoPainter EPD type key。
 - USB slideshow/slideshow_control 写轮播配置文件。
@@ -3730,14 +3797,14 @@ UsbConsoleRouter_Handle()
                │  ├─ UsbConsoleCommon_ExtractBoundary()
                │  ├─ UsbConsoleCommon_MultipartParts()
                │  └─ UsbConsoleCommon_FileNameIsSafe()
-               └─ TdxCastCore_ProcessValidated()
+               └─ TdxCastCore_ProcessValidatedCastDir()
                   ├─ show=true
                   │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
                   └─ save=true
                      └─ CastSaveTask
-                        ├─ save /data/bin_img/<fileName>.bin
-                        ├─ save /data/jpg_img/<fileName>.jpg
-                        └─ record /data/bin_img/last_cast.txt
+                        ├─ save /data/cast_img/<fileName>.bin
+                        ├─ save /data/cast_img/<fileName>.jpg
+                        └─ record /data/cast_img/last_cast.txt
 ```
 
 关键辅助函数：
@@ -3748,12 +3815,12 @@ UsbConsoleCast_SubmitAsync()
 UsbConsoleCast_Process()
 cast_worker_job()
 TdxCastCore_ParseAndValidate()
-TdxCastCore_ProcessValidated()
+TdxCastCore_ProcessValidatedCastDir()
 CastSaveTask()
 ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
 ```
 
-说明：USB cast 与 network cast 共享 `cast_core` 和 `CastSaveTask`。USB 独有部分只保留 HTTP-like 接收、异步 worker 复制 body、以及 USB response 发送；multipart 校验、EPD 显示等待、保存 bin/jpg、记录 last_cast 与 7.1 network cast 共用同一套函数。存在 `show=true` 时会先停止轮播、写 `show_control.txt sw=0`，并读回确认，再进入 EPD 显示。`cast_result result=0` 表示 EPD 显示任务、保存和 last_cast 已成功。
+说明：USB cast 复用 `cast_core` 和 `CastSaveTask`，并通过 `TdxCastCore_ProcessValidatedCastDir()` 保存到 `/data/cast_img`。USB 独有部分只保留 HTTP-like 接收、异步 worker 复制 body、以及 USB response 发送；multipart 校验、EPD 显示等待、保存 bin/jpg、记录 last_cast 仍由 `cast_core` 完成。存在 `show=true` 时会先停止轮播、写 `show_control.txt sw=0`，并读回确认，再进入 EPD 显示。`cast_result result=0` 表示 EPD 显示任务、保存和 last_cast 已成功。
 
 串口发送数据：
 
@@ -3812,12 +3879,13 @@ Content-Type: image/jpeg
 
 ```text
 存：
-- UsbConsoleCast_Process() 调用 TdxCastCore_ParseAndValidate() 和 TdxCastCore_ProcessValidated()。
-- TdxCastCore_ProcessValidated() 先等待 EPD 显示任务完成，再提交 CastSaveTask。
-- CastSaveTask 写入：/data/bin_img/<fileName>.bin。
-- CastSaveTask 写入：/data/jpg_img/<fileName>.jpg。
+- UsbConsoleCast_Process() 调用 TdxCastCore_ParseAndValidate() 和 TdxCastCore_ProcessValidatedCastDir()。
+- TdxCastCore_ProcessValidatedCastDir() 先等待 EPD 显示任务完成，再提交 CastSaveTask。
+- CastSaveTask 写入：/data/cast_img/<fileName>.bin。
+- CastSaveTask 写入：/data/cast_img/<fileName>.jpg。
 - CastSaveTask 使用 <fileName>.<ext>.tmp 临时文件，写完后 rename 成正式文件。
-- CastSaveTask 写入 last cast 记录文件，路径在 /data/bin_img/ 下。
+- CastSaveTask 写入 last cast 记录文件，路径在 /data/cast_img/ 下。
+- 保存和 last_cast 全部成功后，清理 /data/cast_img 中非本次 <fileName> 的旧 .bin/.jpg；last_cast.txt 不删除。
 
 取：
 - USB cast 与 network cast 共用 check_save_space() 做剩余空间检查。
@@ -3901,7 +3969,7 @@ UsbConsoleRouter_Handle()
             ├─ show=true
             │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
             └─ save=true
-               └─ CastSaveTask save /data/bin_img and /data/jpg_img
+               └─ CastSaveTask save /data/cast_img
 ```
 
 关键辅助函数：
@@ -3916,7 +3984,7 @@ CastSaveTask()
 ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
 ```
 
-说明：USB cast2pic 与 network cast2pic 共享 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。`screen=ab` 会先解析成 A/B 两个 image transfer item；存在 `show=true` 时会先停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，然后逐个等待需要显示的 EPD 任务完成，再保存所有需要保存的文件；`cast2pic_result=0` 表示 EPD 显示任务和保存任务已完成。
+说明：USB cast2pic 复用 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`，并给 item 指定保存到 `/data/cast_img`。`screen=ab` 会先解析成 A/B 两个 image transfer item；存在 `show=true` 时会先停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，然后逐个等待需要显示的 EPD 任务完成，再保存所有需要保存的文件；`cast2pic_result=0` 表示 EPD 显示任务和保存任务已完成。
 
 串口发送数据：
 
@@ -4003,8 +4071,9 @@ Content-Type: image/jpeg
 存：
 - UsbConsoleCast2Pic_Process() 解析 A/B 图片组后生成 tdx_image_transfer_item_t。
 - TdxImageTransfer_ProcessItems() 先等待所有 show=true 的 EPD 显示任务完成。
-- CastSaveTask 保存 screen_a/screen_b 对应的 .bin 和 .jpg 到 /data/bin_img 与 /data/jpg_img。
+- CastSaveTask 保存 screen_a/screen_b 对应的 .bin 和 .jpg 到 /data/cast_img。
 - CastSaveTask 使用临时文件写入再 rename，避免半文件覆盖正式文件。
+- 本次 screen 文件全部保存成功后，清理 /data/cast_img 中非本次 screen 名的旧 .bin/.jpg，并删除旧 last_cast.txt，避免它指向已清理文件。
 
 取：
 - 读取 multipart 中重复出现的 fileName/bin_size/image_size/bin/image。
@@ -7786,7 +7855,7 @@ V2 响应可以直接返回 JSON，也可以放在 `payload` 字符串中。中�
   "result": 0,
   "message": "network ready",
   "stage": "192.168.1.88",
-  "version": "3.0.0"
+  "version": "000.001"
 }
 ```
 
@@ -7865,7 +7934,7 @@ V2 写入 payload：
   "result": 0,
   "stage": "192.168.1.88",
   "message": "network ready",
-  "version": "3.0.0"
+  "version": "000.001"
 }
 ```
 
@@ -9461,7 +9530,8 @@ flowchart LR
 
 ```text
 存：
-- 网络/USB 投图链路写 /data/bin_img 与 /data/jpg_img。
+- 网络/USB cast/cast2pic 写 /data/cast_img。
+- 网络/USB upload 写 /data/bin_img 与 /data/jpg_img。
 - OTA 链路写 OTA update partition。
 - CH583 BLE 配网链路写 WiFi NVS。
 
@@ -9500,8 +9570,8 @@ HTTP POST /dataUP
    └─ ServerNetworkStaUpload_Process()
       ├─ show=true
       │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
-      ├─ save /data/bin_img/*.bin
-      ├─ save /data/jpg_img/*.jpg
+      ├─ cast/cast2pic save /data/cast_img/*.bin and *.jpg
+      ├─ upload save /data/bin_img/*.bin and /data/jpg_img/*.jpg
       └─ cast save success
          └─ record last_cast
 ```
@@ -9513,11 +9583,11 @@ HTTP POST /dataUP
 
 ```text
 存：
-- network cast 和 USB cast 共用 TdxCastCore_ProcessValidated()。
+- network/USB cast 使用 TdxCastCore_ProcessValidatedCastDir()。
 - show=true 时先等待 ServerNetworkStaEpdDisplay_QueueToScreenAndWait() 完成。
-- save=true 时提交 CastSaveTask 保存 /data/bin_img/<fileName>.bin 和 /data/jpg_img/<fileName>.jpg。
+- network/USB cast/cast2pic save=true 时提交 CastSaveTask 保存到 /data/cast_img；network/USB upload 仍保存到 /data/bin_img 与 /data/jpg_img。
 - CastSaveTask 使用 <fileName>.<ext>.tmp 临时文件，写完校验大小后 rename 成正式文件。
-- CastSaveTask 写入 last cast 记录文件，路径在 /data/bin_img/ 下。
+- network/USB cast 的 last cast 记录文件写入 /data/cast_img/last_cast.txt。
 
 取：
 - check_save_space() 通过 example_storage_get_free_bytes() 读取剩余空间。
@@ -9551,9 +9621,9 @@ USB Serial/JTAG
    ├─ UsbConsoleHttp_TryParseRequest()
    ├─ UsbConsoleRouter_Handle()
    ├─ UsbConsoleCast_Process()
-   ├─ TdxCastCore_ProcessValidated()
+   ├─ TdxCastCore_ProcessValidatedCastDir()
    ├─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
-   └─ CastSaveTask save /data/bin_img and /data/jpg_img
+   └─ CastSaveTask save /data/cast_img
 ```
 
 
@@ -9563,11 +9633,12 @@ USB Serial/JTAG
 
 ```text
 存：
-- USB cast 在 save=true 时通过 TdxCastCore_ProcessValidated() 提交 CastSaveTask。
-- CastSaveTask 写入：/data/bin_img/<fileName>.bin。
-- CastSaveTask 写入：/data/jpg_img/<fileName>.jpg。
+- USB cast 在 save=true 时通过 TdxCastCore_ProcessValidatedCastDir() 提交 CastSaveTask。
+- CastSaveTask 写入：/data/cast_img/<fileName>.bin。
+- CastSaveTask 写入：/data/cast_img/<fileName>.jpg。
 - CastSaveTask 使用临时文件写入并 rename 成正式文件。
 - func=cast 且 save=true 时，CastSaveTask 写入 last cast 记录文件。
+- 保存和 last cast 记录全部成功后，清理 /data/cast_img 中非本次 <fileName> 的旧 .bin/.jpg。
 
 取：
 - TdxCastCore_ParseAndValidate() 通过 UsbConsoleCommon_ExtractBoundary() 读取 multipart boundary。

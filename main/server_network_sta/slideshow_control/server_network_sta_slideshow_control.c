@@ -445,6 +445,19 @@ static esp_err_t write_control_file(const char *control_path, const slideshow_co
     return written == len ? ESP_OK : ESP_FAIL;
 }
 
+static bool slideshow_control_force_random_config(const char *scope, bool random)
+{
+#if TDX_SLIDESHOW_RANDOM_ENABLE
+    (void)scope;
+    return random;
+#else
+    if (random) {
+        ESP_LOGW(TAG, "%s random disabled temporarily, force random=false", scope);
+    }
+    return false;
+#endif
+}
+
 static esp_err_t parse_set_slideshow_request(const char *body,
                                              const char *control_path,
                                              slideshow_control_t *control)
@@ -473,6 +486,7 @@ static esp_err_t parse_set_slideshow_request(const char *body,
     if (!parse_json_bool_optional(body, "random", &control->random, &control->random_present)) {
         return ESP_ERR_INVALID_ARG;
     }
+    control->random = slideshow_control_force_random_config("set_slideshow", control->random);
     if (find_json_key(body, "datetime") != NULL || find_json_key(body, "timezone") != NULL) {
         return SLIDESHOW_CONTROL_ERR_TIME_DEPRECATED;
     }
@@ -639,6 +653,7 @@ esp_err_t ServerNetworkStaSlideshowControl_ApplyJson(const char *body,
 
     if (!control.random_present) {
         control.random = read_existing_bool(control_path, "random", false);
+        control.random = slideshow_control_force_random_config("saved show_control", control.random);
     }
 
     if (control.sw == 1 && !slideshow_config_has_files(config_path)) {

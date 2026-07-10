@@ -28,7 +28,7 @@ esp_err_t UsbConsoleCast_Process(const usb_console_http_request_t *request,
         return ESP_ERR_NOT_SUPPORTED;
     }
     if (parse_ret == ESP_OK) {
-        (void)TdxCastCore_ProcessValidated(&cast, USB_CONSOLE_BASE_PATH, "usb cast", &result);
+        (void)TdxCastCore_ProcessValidatedCastDir(&cast, USB_CONSOLE_BASE_PATH, "usb cast", &result);
     }
 
     if (result.result == TDX_JSON_RESULT_OK) {

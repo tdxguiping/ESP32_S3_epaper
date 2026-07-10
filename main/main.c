@@ -28,6 +28,7 @@
 #include "debug_output.h"
 #include "epd_display_app.h"
 #include "epd_display_mode.h"
+#include "factory_reset.h"
 #include "file_serving_example_common.h"
 #include "gpio_test.h"
 #include "led_status.h"
@@ -256,6 +257,12 @@ void app_main(void)
                      sizeof(random_value),
                      "false");
     g_slideshow_random_enable = (strcmp(random_value, "true") == 0) ? 1 : 0;
+#if !TDX_SLIDESHOW_RANDOM_ENABLE
+    if (g_slideshow_random_enable) {
+        ESP_LOGW(TAG, "slideshow random disabled temporarily, force random=false");
+    }
+    g_slideshow_random_enable = 0;
+#endif
     app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
                       g_slideshow_random_enable ? "true" : "false");
     ESP_LOGI(TAG, "slideshow random config=%s enable=%u",
@@ -286,6 +293,8 @@ void app_main(void)
     if (storage_ret != ESP_OK) {
         ESP_LOGE(TAG, "storage mount failed ret=%s",
                  esp_err_to_name(storage_ret));
+    } else {
+        ESP_ERROR_CHECK(FactoryReset_Init(base_path));
     }
     // Force the old read_value=0x02 path here: Server Network STA only, then start the HTTP file server.
     // 中文：在这里固定旧工程 read_value=0x02 路径：只进入 Server Network STA，然后启动 HTTP 文件服务器。
