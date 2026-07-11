@@ -382,6 +382,8 @@ extern "C" {
 #define SERVER_REQUIRED_CONTINUE_WORK_TIME_NVS_KEY "work_continue"
 #define WIFI_STANDBY_TIME_S_NVS_KEY "wifi_standby"
 #define CH583_BLE_MAC_NVS_KEY "ch583_ble_mac"
+#define CH583_BLE_VER_NVS_KEY "ch583_ble_ver"
+#define CH583_BLE_VER_DEFAULT 0
 
 // Keep sleep/work-state NVS keys here so BLE, HTTP, and network timers share one saved runtime state.
 #define USER_WORK_STATE_NVS_NAMESPACE "work_state"
@@ -396,7 +398,7 @@ extern "C" {
 
 // After each EPD display job finishes, request one low-power countdown through work_state_task.
 #define USER_EPD_DONE_LOW_POWER_ENABLE 1
-#define USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 3
+#define USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 5
 #define USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 60
 
 /* -------------------------------------------------------------------------- */

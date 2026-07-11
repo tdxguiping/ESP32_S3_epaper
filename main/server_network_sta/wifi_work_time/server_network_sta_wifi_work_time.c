@@ -28,6 +28,7 @@ static bool s_ota_in_progress = false;
 static bool s_one_shot_power_off_countdown_active = false;
 static uint32_t s_one_shot_restore_continue_time = USER_WORK_STATE_DEFAULT_CONTINUE_SECONDS;
 static uint32_t s_one_shot_restore_standby_time = USER_WORK_STATE_DEFAULT_STANDBY_SECONDS;
+static bool s_image_save_in_progress = false;
 
 static void format_epoch_local(int64_t epoch, char *buf, size_t buf_size)
 {
@@ -582,6 +583,17 @@ static void work_state_task(void *arg)
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
                     continue;
                 }
+                if (ServerNetworkStaWifiWorkTime_IsImageSaveInProgress()) {
+                    if (counter == 0) {
+                        ESP_LOGI(TAG,
+                                 "power off postponed because image save busy elapsed=%lu target=%lu standby=%lu",
+                                 (unsigned long)elapsed,
+                                 (unsigned long)server_required_continue_work_time,
+                                 (unsigned long)wifi_standby_time_s);
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
                 if (s_last_power_off_send_tick != 0 &&
                     (now - s_last_power_off_send_tick) < retry_interval_ticks) {
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
@@ -750,6 +762,19 @@ void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t secon
              "one-shot power off countdown requested target=%lu standby=%lu",
              (unsigned long)server_required_continue_work_time,
              (unsigned long)wifi_standby_time_s);
+}
+
+void ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(bool in_progress)
+{
+    bool old_value = __atomic_exchange_n(&s_image_save_in_progress, in_progress, __ATOMIC_ACQ_REL);
+    if (old_value != in_progress) {
+        ESP_LOGI(TAG, "image save in progress=%d", in_progress ? 1 : 0);
+    }
+}
+
+bool ServerNetworkStaWifiWorkTime_IsImageSaveInProgress(void)
+{
+    return __atomic_load_n(&s_image_save_in_progress, __ATOMIC_ACQUIRE);
 }
 
 void ServerNetworkStaWifiWorkTime_SetOtaInProgress(bool in_progress)

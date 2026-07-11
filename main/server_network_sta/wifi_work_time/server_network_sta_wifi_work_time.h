@@ -18,6 +18,8 @@ esp_err_t ServerNetworkStaWifiWorkTime_Init(void);
 esp_err_t ServerNetworkStaWifiWorkTime_SetAndSave(uint32_t seconds);
 void ServerNetworkStaWifiWorkTime_OnNetworkData(void);
 void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t seconds);
+void ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(bool in_progress);
+bool ServerNetworkStaWifiWorkTime_IsImageSaveInProgress(void);
 void ServerNetworkStaWifiWorkTime_SetOtaInProgress(bool in_progress);
 
 #ifdef __cplusplus

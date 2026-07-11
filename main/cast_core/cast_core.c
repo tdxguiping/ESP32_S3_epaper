@@ -17,6 +17,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "server_network_sta_wifi_work_time.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
@@ -502,6 +503,8 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
                                         tdx_cast_core_result_t *result)
 {
     int64_t total_start_us = esp_timer_get_time();
+    esp_err_t ret = ESP_OK;
+    bool save_busy_set = false;
     if (items == NULL || item_count == 0 || base_path == NULL || result == NULL) {
         set_result(result, TDX_JSON_RESULT_UPLOAD_INVALID, "image transfer failed", "invalid_arg");
         return ESP_ERR_INVALID_ARG;
@@ -517,6 +520,19 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
     }
     if (any_show) {
         (void)stop_slideshow_for_cast(base_path);
+    }
+
+    bool any_save = false;
+    for (size_t i = 0; i < item_count; i++) {
+        if (items[i].save) {
+            any_save = true;
+            break;
+        }
+    }
+
+    if (any_save) {
+        ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(true);
+        save_busy_set = true;
     }
 
     for (size_t i = 0; i < item_count; i++) {
@@ -546,7 +562,8 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
                                         display_ret == ESP_ERR_NO_MEM ? "display_no_memory" :
                                         "display_failed";
             set_result(result, display_result, "image transfer failed", display_error);
-            return display_ret;
+            ret = display_ret;
+            goto save_done;
         }
     }
 
@@ -565,11 +582,20 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
                  (unsigned long)elapsed_ms_since(stage_start_us),
                  (unsigned long)elapsed_ms_since(total_start_us));
         if (save_ret != ESP_OK) {
-            return save_ret;
+            ret = save_ret;
+            goto save_done;
         }
     }
 
     (void)cleanup_cast_dir_old_images(base_path, items, item_count);
+
+save_done:
+    if (save_busy_set) {
+        ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(false);
+    }
+    if (ret != ESP_OK) {
+        return ret;
+    }
 
     TdxCastCore_ResultOk(result, items[0].save_name, "ok");
     return ESP_OK;

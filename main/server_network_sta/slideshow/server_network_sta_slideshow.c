@@ -298,6 +298,16 @@ static int64_t slideshow_next_epoch(int64_t anchor_epoch, uint32_t interval, int
     return anchor_epoch + steps * (int64_t)interval;
 }
 
+static int64_t slideshow_next_retry_epoch(int64_t anchor_epoch, uint32_t interval, int64_t now_epoch)
+{
+    if (now_epoch < anchor_epoch) {
+        return anchor_epoch;
+    }
+
+    int64_t steps = (now_epoch - anchor_epoch) / (int64_t)interval + 1;
+    return anchor_epoch + steps * (int64_t)interval;
+}
+
 static void format_epoch_local(int64_t epoch, char *buf, size_t buf_size)
 {
     if (buf == NULL || buf_size == 0) {
@@ -783,7 +793,7 @@ static esp_err_t slideshow_display_loaded_file_and_wait(slideshow_loaded_file_t 
                  loaded->file_name,
                  (unsigned long)display_elapsed);
     } else {
-        ESP_LOGW(TAG, "slideshow display failed file=%s ret=%s, progress unchanged",
+        ESP_LOGW(TAG, "slideshow display failed file=%s ret=%s",
                  loaded->file_name, esp_err_to_name(ret));
     }
     slideshow_loaded_file_free(loaded);
@@ -1613,6 +1623,57 @@ static void slideshow_task(void *arg)
             } else {
                 ESP_LOGE(TAG, "slideshow progress unchanged after display file=%s ret=%s",
                          file_name, esp_err_to_name(save_ret));
+            }
+        } else if (runtime->rtc_enabled) {
+            slideshow_progress_t next;
+            prepare_next_slideshow_progress(&runtime->request, &runtime->progress, &next);
+            esp_err_t save_ret = save_slideshow_progress(&next);
+            char failed_file[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
+            strlcpy(failed_file, file_name, sizeof(failed_file));
+            time_t now_time = 0;
+            time(&now_time);
+            runtime->next_epoch = slideshow_next_retry_epoch(runtime->request.anchor_epoch,
+                                                             runtime->request.interval,
+                                                             (int64_t)now_time);
+            slideshow_begin_rtc_interval(runtime->request.interval, runtime->next_epoch);
+            char now_text[32] = {0};
+            char next_text[32] = {0};
+            format_epoch_local((int64_t)now_time, now_text, sizeof(now_text));
+            format_epoch_local(runtime->next_epoch, next_text, sizeof(next_text));
+            if (save_ret == ESP_OK) {
+                memcpy(&runtime->progress, &next, sizeof(runtime->progress));
+                ESP_LOGW(TAG,
+                         "slideshow rtc display failed, skip current file and retry next at next slot failed=%s next=%s ret=%s now=%lld(%s) next_epoch=%lld(%s) interval=%lu",
+                         failed_file,
+                         runtime->progress.pending_file,
+                         esp_err_to_name(display_ret),
+                         (long long)now_time,
+                         now_text,
+                         (long long)runtime->next_epoch,
+                         next_text,
+                         (unsigned long)runtime->request.interval);
+                if (!s_slideshow_stop) {
+                    esp_err_t preload_ret = slideshow_load_file(runtime->base_path,
+                                                               runtime->progress.pending_file,
+                                                               &loaded,
+                                                               false);
+                    if (preload_ret != ESP_OK) {
+                        ESP_LOGW(TAG, "slideshow preload next after failed display failed file=%s ret=%s",
+                                 runtime->progress.pending_file,
+                                 esp_err_to_name(preload_ret));
+                    }
+                }
+            } else {
+                ESP_LOGE(TAG,
+                         "slideshow display failed and skip progress save failed file=%s display_ret=%s save_ret=%s now=%lld(%s) next_epoch=%lld(%s) interval=%lu",
+                         failed_file,
+                         esp_err_to_name(display_ret),
+                         esp_err_to_name(save_ret),
+                         (long long)now_time,
+                         now_text,
+                         (long long)runtime->next_epoch,
+                         next_text,
+                         (unsigned long)runtime->request.interval);
             }
         }
 

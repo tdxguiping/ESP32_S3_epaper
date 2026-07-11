@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <esp_app_desc.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -103,6 +104,8 @@ static char s_ble_buf[CH583_WIFI_MAX_BLE_MESSAGE_LEN + 1];
 static bool s_ble_activity_active;
 static char s_ble_mac[CH583_WIFI_BLE_MAC_LEN + 1];
 static bool s_ble_mac_loaded;
+static uint8_t s_ble_ver;
+static bool s_ble_ver_loaded;
 static uint8_t s_wifi_provision_status;
 static bool s_wifi_provision_status_valid;
 
@@ -176,11 +179,23 @@ static void ch583_wifi_load_ble_mac_from_nvs(void)
     }
 }
 
+static void ch583_wifi_load_ble_ver_from_nvs(void)
+{
+    if (s_ble_ver_loaded) {
+        return;
+    }
+
+    (void)app_nvs_read_u8(CH583_BLE_VER_NVS_KEY, &s_ble_ver, CH583_BLE_VER_DEFAULT);
+    s_ble_ver_loaded = true;
+    UserDebugOutput_Printf("CH583_PROTO BLE_VER load nvs=%u\r\n", (unsigned int)s_ble_ver);
+}
+
 int ch583_wifi_uart_protocol_init(void)
 {
     if (s_tx_mutex == NULL) {
         s_tx_mutex = xSemaphoreCreateMutex();
     }
+    ch583_wifi_load_ble_ver_from_nvs();
     return s_tx_mutex != NULL ? 0 : -1;
 }
 
@@ -458,6 +473,71 @@ static bool ch583_wifi_parse_size_field(const char *text, const char *prefix, si
 
     *out = (size_t)value;
     return true;
+}
+
+static bool ch583_wifi_parse_u8_dec_arg(const char *arg, uint8_t *out)
+{
+    char *end = NULL;
+    unsigned long value = 0;
+
+    if (arg == NULL || arg[0] == '\0' || out == NULL) {
+        return false;
+    }
+
+    for (const char *p = arg; *p != '\0'; p++) {
+        if (*p < '0' || *p > '9') {
+            return false;
+        }
+    }
+
+    value = strtoul(arg, &end, 10);
+    if (end == arg || *end != '\0' || value > 255UL) {
+        return false;
+    }
+
+    *out = (uint8_t)value;
+    return true;
+}
+
+static bool ch583_wifi_parse_app_version_byte_pair(const char *version, uint8_t *high, uint8_t *low)
+{
+    char *end = NULL;
+    unsigned long high_value = 0;
+    unsigned long low_value = 0;
+
+    if (version == NULL || high == NULL || low == NULL) {
+        return false;
+    }
+
+    high_value = strtoul(version, &end, 10);
+    if (end == version || *end != '.' || high_value > 255UL) {
+        return false;
+    }
+
+    const char *low_text = end + 1;
+    low_value = strtoul(low_text, &end, 10);
+    if (end == low_text || *end != '\0' || low_value > 255UL) {
+        return false;
+    }
+
+    *high = (uint8_t)high_value;
+    *low = (uint8_t)low_value;
+    return true;
+}
+
+static uint16_t ch583_wifi_get_current_wifi_ver(void)
+{
+    const esp_app_desc_t *app = esp_app_get_description();
+    uint8_t high = 0;
+    uint8_t low = 0;
+
+    if (app == NULL || !ch583_wifi_parse_app_version_byte_pair(app->version, &high, &low)) {
+        UserDebugOutput_Printf("CH583_PROTO WIFI_VER app version parse failed version=%s\r\n",
+                               app != NULL ? app->version : "(null)");
+        return 0;
+    }
+
+    return (uint16_t)((((uint16_t)high) << 8) | low);
 }
 
 static bool ch583_wifi_is_upper_hex_string(const char *text, size_t len)
@@ -795,6 +875,38 @@ static void ch583_wifi_handle_ble_mac(const ch583_wifi_frame_t *frame)
     ch583_wifi_send_ack(frame->seq);
 }
 
+static void ch583_wifi_handle_ble_ver(const ch583_wifi_frame_t *frame)
+{
+    uint8_t ble_ver = 0;
+
+    if (frame == NULL) {
+        return;
+    }
+
+    if (frame->part != 1 || frame->total != 1) {
+        ch583_wifi_send_err(frame->seq, "BAD_PART");
+        return;
+    }
+
+    if (!ch583_wifi_parse_u8_dec_arg(frame->arg, &ble_ver)) {
+        ch583_wifi_send_err(frame->seq, "BAD_ARG");
+        return;
+    }
+
+    s_ble_ver = ble_ver;
+    s_ble_ver_loaded = true;
+    esp_err_t nvs_ret = app_nvs_write_u8(CH583_BLE_VER_NVS_KEY, s_ble_ver);
+    if (nvs_ret != ESP_OK) {
+        UserDebugOutput_Printf("W CH583_PROTO BLE_VER nvs save failed value=%u ret=%s\r\n",
+                               (unsigned int)s_ble_ver,
+                               esp_err_to_name(nvs_ret));
+    }
+    UserDebugOutput_Printf("CH583_PROTO BLE_VER saved=%u\r\n", (unsigned int)s_ble_ver);
+    ch583_wifi_send_ack(frame->seq);
+
+    (void)ch583_wifi_uart_send_wifi_ver(ch583_wifi_get_current_wifi_ver());
+}
+
 static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_callback_t ble_data_callback)
 {
     char parse_buf[CH583_WIFI_MAX_FRAME_BODY_LEN + 1];
@@ -838,6 +950,11 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
            (unsigned int)frame.seq,frame.cmd,frame.arg);
 
         ch583_wifi_handle_ble_mac(&frame);
+    } else if (strcmp(frame.cmd, "BLE_VER") == 0) {
+      CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
+           (unsigned int)frame.seq,frame.cmd,frame.arg);
+
+        ch583_wifi_handle_ble_ver(&frame);
     } else if (strcmp(frame.cmd, "BLE_DATA") == 0) {       
       CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
            (unsigned int)frame.seq,frame.cmd,frame.arg);
@@ -981,6 +1098,20 @@ const char *ch583_wifi_uart_get_ble_mac(void)
 {
     ch583_wifi_load_ble_mac_from_nvs();
     return s_ble_mac[0] != '\0' ? s_ble_mac : NULL;
+}
+
+uint8_t ch583_wifi_uart_get_ble_ver(void)
+{
+    ch583_wifi_load_ble_ver_from_nvs();
+    return s_ble_ver;
+}
+
+int ch583_wifi_uart_send_wifi_ver(uint16_t wifi_ver)
+{
+    char arg[8];
+
+    snprintf(arg, sizeof(arg), "%u", (unsigned int)wifi_ver);
+    return ch583_wifi_send_frame("WIFI_VER", arg, 1);
 }
 
 int ch583_wifi_uart_send_wake_timer_on(uint32_t seconds)

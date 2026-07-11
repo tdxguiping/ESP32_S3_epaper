@@ -64,6 +64,7 @@
   - [10.1 通讯基础与帧格式](#sec-10-1)
   - [10.2 SEQ / LEN / PART / CRC / ACK / ERR 校验规则](#sec-10-2)
   - [10.3 BLE_MAC 握手流程](#sec-10-3)
+  - [10.3.1 BLE/WiFi 版本交换与私有广播版本字段](#sec-10-3-1)
   - [10.4 PING / PONG 心跳流程](#sec-10-4)
   - [10.5 BLE_DATA：前端到 WiFi 透传](#sec-10-5)
   - [10.6 WIFI_DATA：WiFi 到前端通知](#sec-10-6)
@@ -2542,7 +2543,7 @@ start_slideshow 是正式轮播列表配置接口；会重写 `show_control.txt`
 - `ServerNetworkStaSlideshow_GetScheduleTiming()` 可读取 RTC 轮播的 now / next / remain；`ServerNetworkStaSlideshow_GetRuntimeTiming()` 只作为非 RTC 兼容状态读取。
 - slideshow_task() 在 EPD 显示成功且下一进度保存成功后，RTC 模式重新计算 `next_epoch`，并打印 `slideshow rtc next ...`。
 - slideshow_task() 在上一张 EPD 显示完成并保存下一进度后，会在剩余 interval 时间内用 PSRAM 预加载下一张 bin 并做 SHA-256 文件名校验；RTC 真实目标时间保持 `next_epoch` 不变，但设备内部会在 `next_epoch - lead_seconds` 时进入 EPD 显示流程，用于抵消 SD / 调度 / EPD 调用链路开销。`lead_seconds` 按当前 EPD type 选择：`EPD_TYPE_1600_1200_133_DKE` 为 1 秒，`EPD_TYPE_1600_1200_133` 为 4 秒，其它屏型使用默认 `TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS=2` 秒。若 PSRAM 预加载失败，已保存的下一进度不变，下一轮会重新读取该图片，不长时间占用内部 RAM，不影响停止和失败不推进的规则。
-- 显示失败、等待超时、NVS 保存失败或显示中途断电均不推进；下次继续当前图片。
+- RTC 轮播显示失败时不立即重试；当前失败图片视为跳过，先保存并切换到下一张 pending_file，再排到下一次 RTC 播放点，等待下一次轮播到来后显示下一张图片。若跳过进度保存失败，则不推进当前 progress，但仍排到下一次 RTC 播放点，避免立即重试。
 - 随机模式按“整轮洗牌”运行，一轮内所有图片各显示一次，不重复、不遗漏。
 
 取：
@@ -3208,11 +3209,11 @@ EPD 完成低功耗倒计时：
 
 ```text
 USER_EPD_DONE_LOW_POWER_ENABLE 默认 1。
-USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 默认 3 秒。
+USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 默认 5 秒。
 USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 默认 60 秒。
 ```
 
-当 `USER_EPD_DONE_LOW_POWER_ENABLE=1` 时，每次 EPD display task 实际完成一个显示 job 后，都会调用 `ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown()` 请求一次低功耗倒计时。该倒计时允许使用默认 3 秒，不受普通 `set_wifi_work_time` 的 60..3600 秒保存范围限制；它只修改 RAM 中的运行时计时，不写 NVS，不改变 `set_wifi_work_time` 保存值。倒计时到期后，只有当前 `epd_mode=1(SLIDESHOW)` 时才读取下一次轮播剩余时间：剩余时间不大于 `USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS=60` 秒时不关机，并恢复 one-shot 前的运行时目标；剩余时间大于 60 秒时继续执行关机流程。如果当前不是轮播模式，例如 `epd_mode=0(NORMAL)`、`epd_mode=2(DAILY)` 或保留值，则不做轮播剩余时间判断，直接进入现有关机流程。后续仍由 `work_state_task()` 统一判断 OTA busy、EPD busy、slideshow wake timer、LED 关机准备，并最终调用 `ch583_wifi_uart_send_power_off()`。
+当 `USER_EPD_DONE_LOW_POWER_ENABLE=1` 时，每次 EPD display task 实际完成一个显示 job 后，都会调用 `ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown()` 请求一次低功耗倒计时。该倒计时允许使用默认 5 秒，不受普通 `set_wifi_work_time` 的 60..3600 秒保存范围限制；它只修改 RAM 中的运行时计时，不写 NVS，不改变 `set_wifi_work_time` 保存值。倒计时到期后，所有 `POWER_OFF` 前都会先检查 cast/upload/cast2pic 图片保存状态；如果 SD 保存或 cleanup 正在进行，只推迟 `POWER_OFF`，不取消关机请求，保存完成后由 `work_state_task()` 下一轮继续关机判断。只有当前 `epd_mode=1(SLIDESHOW)` 时才读取下一次轮播剩余时间：剩余时间不大于 `USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS=60` 秒时不关机，并恢复 one-shot 前的运行时目标；剩余时间大于 60 秒时继续执行关机流程。如果当前不是轮播模式，例如 `epd_mode=0(NORMAL)`、`epd_mode=2(DAILY)` 或保留值，则不做轮播剩余时间判断，直接进入现有关机流程。后续仍由 `work_state_task()` 统一判断 OTA busy、EPD busy、图片保存 busy、slideshow wake timer、LED 关机准备，并最终调用 `ch583_wifi_uart_send_power_off()`。
 
 存 / 取信息（含条件限制）：
 
@@ -3225,6 +3226,7 @@ USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 默认 60 秒。
 - load_work_state_from_nvs() 读取工作状态 blob。
 - load_work_time_vars_from_app_nvs() 读取兼容字符串 key。
 - work_state_task() 读取 RAM 中计时值；超时后如果 OTA 忙或 EPD task 忙则推迟，只有 OTA 不忙且 EPD 空闲时才先配置 CH583 WAKE_TIMER，再发送 CH583 POWER_OFF。
+- TdxImageTransfer_ProcessItems() 在 cast/upload/cast2pic 发现本次需要保存图片时设置 image_save_busy，并覆盖后续 EPD 显示、保存和 cleanup；显示失败、保存成功、保存失败或 cleanup 后都会清除。work_state_task() 在所有 POWER_OFF 前检查 image_save_busy，busy 时不发送 WAKE_TIMER / LED 关闭 / POWER_OFF，只推迟到保存完成后的下一轮继续关机判断。
 - EPD 完成低功耗倒计时开启时，每个 EPD display job 完成后只请求一次运行时倒计时；倒计时到期后，只有 `epd_mode=1(SLIDESHOW)` 才检查下一次轮播剩余时间，如果剩余时间不大于 60 秒，不关机并恢复 one-shot 前的运行时目标；非轮播模式不做该判断，直接进入现有关机流程；下一次 EPD job 完成才会再次请求。
 - 轮播开启时，WAKE_TIMER 优先使用 RTC 轮播的 `next_epoch - now_epoch` 剩余秒数，并扣除开机自动恢复轮播延迟和额外提前量：`remain - (startup_delay_seconds + TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS)`；其中 `startup_delay_seconds = ceil(TDX_SLIDESHOW_STARTUP_DELAY_MS / 1000)`，当前为 10 秒，`TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS` 当前为 20 秒，总提前 30 秒。若当前不是 RTC 轮播或 RTC timing 不可用，则回退使用旧 runtime timing：`runtime_interval - 已走秒数 - 总提前秒数`；再不可用才回退 control 文件中的 interval。若计算出的 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，ESP32 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，只重置 wifi_work_time 运行时计时，从头等待下一次工作超时。
 ```
@@ -5991,12 +5993,14 @@ main/led_status/led_status.c
 CH583 串口通信协议汇总
 ├─ CH583 -> ESP32-C5
 │  ├─ BLE_MAC
+│  ├─ BLE_VER
 │  ├─ PING
 │  └─ BLE_DATA
 ├─ ESP32-C5 -> CH583
 │  ├─ ACK / ERR
 │  ├─ PONG
 │  ├─ WIFI_DATA
+│  ├─ WIFI_VER
 │  ├─ WIFI_PROVISION
 │  ├─ WAKE_TIMER
 │  ├─ POWER_OFF
@@ -6015,11 +6019,14 @@ ch583_wifi_parse_frame()
 ch583_wifi_validate_len_and_part()
 ch583_wifi_handle_frame_body()
 ch583_wifi_handle_ble_mac()
+ch583_wifi_handle_ble_ver()
 ch583_wifi_handle_ble_data()
 ch583_wifi_send_frame()
 ch583_wifi_send_ack()
 ch583_wifi_send_err()
 ch583_wifi_uart_send_wifi_data()
+ch583_wifi_uart_get_ble_ver()
+ch583_wifi_uart_send_wifi_ver()
 ch583_wifi_uart_send_wifi_provision_status()
 ch583_wifi_uart_send_wake_timer_on()
 ch583_wifi_uart_send_wake_timer_off()
@@ -6036,10 +6043,12 @@ ch583_wifi_uart_send_gpio()
 ```text
 存：
 - BLE_MAC 命令收到合法 MAC 后，保存到 PhotoPainter NVS 的 CH583_BLE_MAC_NVS_KEY。
+- BLE_VER 命令收到合法版本后，保存到 RAM 全局缓存和 PhotoPainter NVS 的 CH583_BLE_VER_NVS_KEY；key 不存在时 app_nvs_read_u8() 会写入默认值 0。
 - GPIO / POWER_OFF / WIFI_DATA / WIFI_PROVISION / WAKE_TIMER 等串口命令本身不在 ESP32-C5 侧保存持久化数据；WIFI_PROVISION 和 WAKE_TIMER 由 CH583/CH585 侧校验并保存。
 
 取：
 - ch583_wifi_load_ble_mac_from_nvs() 读取已保存 BLE MAC。
+- ch583_wifi_uart_get_ble_ver() 读取当前 BLE_VER RAM 缓存；启动时从 NVS 加载。
 - UART RX 从环形缓冲中读取 @#...^& 帧并解析。
 ```
 
@@ -6301,6 +6310,113 @@ ACK 正确后，CH583 停止 BLE_MAC，开始 PING/PONG
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-3)
+
+---
+
+### 10.3.1 BLE/WiFi 版本交换与私有广播版本字段 <span id="sec-10-3-1"></span>
+
+该功能用于 CH583/CH585 与 WiFi（ESP32-C5）互相同步固件版本。版本交换是辅助信息，不作为前端 BLE 透传数据的阻塞条件。
+
+组合版本共 3 字节：
+
+```text
+byte0：BLE/CH583/CH585 版本，取 CH583/CH585 当前固件 VER，范围 0..255
+byte1：WiFi 版本高字节
+byte2：WiFi 版本低字节
+WiFi 版本范围 0..65535
+```
+
+CH583/CH585 上报 BLE 版本：
+
+```text
+CMD=BLE_VER
+@#V1|SEQ=<seq>|CMD=BLE_VER|LEN=<len>|PART=1|TOTAL=1|ARG=<ble_ver_dec>|CRC=<crc>^&
+
+ARG=<ble_ver_dec>
+ble_ver_dec 为十进制文本，范围 0..255
+```
+
+WiFi 行为：
+
+```text
+收到合法 BLE_VER 后保存到 RAM 全局缓存 s_ble_ver。
+同时使用 app_nvs_write_u8(CH583_BLE_VER_NVS_KEY) 保存到 PhotoPainter NVS。
+刚启动时 ch583_wifi_uart_protocol_init() 从 NVS 读取 BLE_VER；如果 key 不存在，app_nvs_read_u8() 写入默认值 0。
+收到新的合法 BLE_VER 时，以新值覆盖 RAM 和 NVS。
+如果 BLE_VER 写 NVS 失败，只打印 warning；RAM 缓存仍更新，不阻塞 ACK 和后续 WIFI_VER 上报。
+BLE_VER 保存成功后 ACK，ACK 的 ARG 等于 BLE_VER 的 SEQ。
+```
+
+WiFi 上报 WiFi 版本：
+
+```text
+CMD=WIFI_VER
+@#V1|SEQ=<seq>|CMD=WIFI_VER|LEN=<len>|PART=1|TOTAL=1|ARG=<wifi_ver_dec>|CRC=<crc>^&
+
+ARG=<wifi_ver_dec>
+wifi_ver_dec 为十进制文本，范围 0..65535
+```
+
+当前 ESP32-C5 行为：
+
+```text
+收到合法 BLE_VER 并 ACK 后，立即上报一次 WIFI_VER。
+WIFI_VER 来自当前 app version，按 AAA.BBB 解析为 (AAA << 8) | BBB。
+例如 PROJECT_VER "000.003" 上报 WIFI_VER=3。
+如果 app version 不符合 AAA.BBB 或超出 0..255 字节范围，则回退上报 0 并打印 warning。
+```
+
+CH583/CH585 行为：
+
+```text
+校验 CRC/LEN/PART/TOTAL。
+只接受单包 PART=1,TOTAL=1。
+只接受十进制 WiFi 版本，合法范围 0..65535。
+收到合法 WIFI_VER 后立即回复 ACK。
+组合版本为 {VER, WIFI_VER_H, WIFI_VER_L}。
+立即刷新 BLE 私有广播版本字段。
+设置版本 dirty 标记。
+不在收到 WIFI_VER 时立即写 DataFlash。
+等待 POWER_OFF / LOWPOWER / WiFi 会话结束收尾时统一写 DataFlash。
+复位后读取 DataFlash 中保存的 WiFi 版本高低字节，但 BLE 字节始终使用当前固件 VER。
+```
+
+广播字段规则：
+
+```text
+只修改 TDX BLE advertising data 中的私有版本字段。
+不再把该 3 字节组合版本放入可见广播名。
+字段类型使用 Manufacturer Specific Data。
+字段长度为 3 字节版本内容。
+byte0 = 当前 BLE/CH583/CH585 VER
+byte1 = WiFi 版本高字节
+byte2 = WiFi 版本低字节
+```
+
+边界示例：
+
+```text
+VER=100, WIFI_VER=0     => 64 00 00
+VER=100, WIFI_VER=65535 => 64 FF FF
+WIFI_VER=65536          => ERR,BAD_ARG，不更新广播，不写 DataFlash
+```
+
+`send_base_info_to_mobile()` 返回给前端的 `wifi_info_result.version` 使用：
+
+```text
+<WiFi app version>:<BLE_VER>
+```
+
+示例：
+
+```json
+{
+  "func": "wifi_info_result",
+  "version": "000.003:100"
+}
+```
+
+[⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-3-1)
 
 ---
 
@@ -7972,7 +8088,7 @@ http://<host>/dataUP
 - ble_has_saved_wifi_info() 检查 namespace="wifi" 的 ssid 或 namespace="nvs.net80211" 的 sta.ssid 是否存在。
 - ServerNetworkSta_GetStatus() 读取当前 STA IP 状态。
 - notify_wifi_info_if_ip_ready() 统一判断 GOT_IP；配网任务成功后若第一次没读到 IP，会每 300 ms 复查一次，最多复查 3 次；读到 IP 时必须调用 send_base_info_to_mobile()。
-- send_base_info_to_mobile() 读取 IP、app 描述、running partition 信息，并对 wifi_info_result 发送失败做短重试。
+- send_base_info_to_mobile() 读取 IP、app 描述、CH583/CH585 BLE_VER、running partition 信息，并对 wifi_info_result 发送失败做短重试；version 字段格式为 `<WiFi app version>:<BLE_VER>`。
 ```
 
 连接规则：

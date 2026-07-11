@@ -164,9 +164,11 @@ static bool send_base_info_to_mobile(void)
     char ip_str[sizeof("255.255.255.255")];
     char json_str[384];
     char ssid_str[33] = {0};
+    char ble_ver_str[4];
 
     const esp_app_desc_t *app = esp_app_get_description();
     const esp_partition_t *running = esp_ota_get_running_partition();
+    uint8_t ble_ver = ch583_wifi_uart_get_ble_ver();
 
     esp_netif_ip_info_t ip = {};
     esp_netif_t *esp_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
@@ -187,6 +189,7 @@ static bool send_base_info_to_mobile(void)
     if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
         snprintf(ssid_str, sizeof(ssid_str), "%s", (const char *)ap_info.ssid);
     }
+    snprintf(ble_ver_str, sizeof(ble_ver_str), "%u", (unsigned int)ble_ver);
 
     snprintf(json_str, sizeof(json_str),
              "{\"func\":\"wifi_info_result\","
@@ -194,13 +197,14 @@ static bool send_base_info_to_mobile(void)
              "\"message\":\"wifi info\","
              "\"stage\":\"%s\","
              "\"WiFi\":\"%s\","
-             "\"version\":\"%s\","
+             "\"version\":\"%s:%s\","
              "\"date\":\"%s\","
              "\"running\":\"%s\"}",
              TDX_JSON_RESULT_OK,
              ip_str,
              ssid_str,
              app != NULL ? app->version : "",
+             ble_ver_str,
              app != NULL ? app->date : "",
              running != NULL ? running->label : "");
 
