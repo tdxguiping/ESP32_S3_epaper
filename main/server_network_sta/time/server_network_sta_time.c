@@ -55,6 +55,10 @@ static const char *time_source_to_str(server_network_sta_time_source_t source)
         return "sntp";
     case SERVER_NETWORK_STA_TIME_SOURCE_CH583:
         return "ch583_valid";
+    case SERVER_NETWORK_STA_TIME_SOURCE_CH583_STALE:
+        return "ch583_stale_fallback";
+    case SERVER_NETWORK_STA_TIME_SOURCE_SLIDESHOW_ANCHOR:
+        return "slideshow_anchor_fallback";
     case SERVER_NETWORK_STA_TIME_SOURCE_NONE:
     default:
         return "none";
@@ -72,6 +76,12 @@ static bool is_time_reasonable(time_t now)
     return timeinfo.tm_year >= (TDX_DEFAULT_YEAR - 1900);
 }
 
+static void format_time_strings(time_t now,
+                                char *local_buf,
+                                size_t local_size,
+                                char *utc_buf,
+                                size_t utc_size);
+
 static time_t make_default_epoch_local(void)
 {
     struct tm tm_default = {0};
@@ -85,6 +95,50 @@ static time_t make_default_epoch_local(void)
     tm_default.tm_isdst = 0;
 
     return mktime(&tm_default);
+}
+
+static esp_err_t set_time_source_epoch(int64_t epoch,
+                                       server_network_sta_time_source_t source,
+                                       const char *log_action)
+{
+    char local_buf[32] = {0};
+    char utc_buf[32] = {0};
+
+    if (epoch <= 0 || !is_time_reasonable((time_t)epoch)) {
+        format_time_strings((time_t)epoch, local_buf, sizeof(local_buf), utc_buf, sizeof(utc_buf));
+        ESP_LOGW(TAG,
+                 "%s rejected epoch=%lld local=%s utc=%s",
+                 log_action != NULL ? log_action : "time set",
+                 (long long)epoch,
+                 local_buf,
+                 utc_buf);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    struct timeval tv = {
+        .tv_sec = (time_t)epoch,
+        .tv_usec = 0,
+    };
+    if (settimeofday(&tv, NULL) != 0) {
+        ESP_LOGE(TAG,
+                 "%s failed epoch=%lld source=%s",
+                 log_action != NULL ? log_action : "time set",
+                 (long long)epoch,
+                 time_source_to_str(source));
+        return ESP_FAIL;
+    }
+
+    s_time_source = source;
+    s_last_sync_epoch = epoch;
+    format_time_strings((time_t)epoch, local_buf, sizeof(local_buf), utc_buf, sizeof(utc_buf));
+    ESP_LOGW(TAG,
+             "%s, RTC/system time updated source=%s epoch=%lld local=%s utc=%s",
+             log_action != NULL ? log_action : "time set",
+             time_source_to_str(source),
+             (long long)epoch,
+             local_buf,
+             utc_buf);
+    return ESP_OK;
 }
 
 static void format_time_strings(time_t now,
@@ -256,6 +310,13 @@ bool ServerNetworkStaTime_IsReliableForRtcRestore(void)
            s_time_source == SERVER_NETWORK_STA_TIME_SOURCE_CH583;
 }
 
+bool ServerNetworkStaTime_IsUsableForSlideshowRestore(void)
+{
+    return ServerNetworkStaTime_IsReliableForRtcRestore() ||
+           s_time_source == SERVER_NETWORK_STA_TIME_SOURCE_CH583_STALE ||
+           s_time_source == SERVER_NETWORK_STA_TIME_SOURCE_SLIDESHOW_ANCHOR;
+}
+
 esp_err_t ServerNetworkStaTime_BackupTimestampToCh583(int64_t timestamp, const char *reason)
 {
     if (timestamp <= 0 || !is_time_reasonable((time_t)timestamp)) {
@@ -339,6 +400,13 @@ esp_err_t ServerNetworkStaTime_SetTimestamp(int64_t timestamp)
 esp_err_t ServerNetworkStaTime_SetAppTime(int64_t epoch)
 {
     return ServerNetworkStaTime_SetTimestamp(epoch);
+}
+
+esp_err_t ServerNetworkStaTime_SetSlideshowAnchorFallback(int64_t anchor_epoch)
+{
+    return set_time_source_epoch(anchor_epoch,
+                                 SERVER_NETWORK_STA_TIME_SOURCE_SLIDESHOW_ANCHOR,
+                                 "slideshow anchor fallback accepted");
 }
 
 static bool parse_ch583_datetime(const char *text, time_t *epoch_out)
@@ -446,8 +514,19 @@ esp_err_t ServerNetworkStaTime_OnCh583TimeStatus(const char *status)
     }
 
     if (strncmp(status, "STALE,", 6) == 0) {
-        ESP_LOGW(TAG, "CH583 TIME_STATUS STALE ignored for RTC restore arg=%s", status);
-        return ESP_ERR_INVALID_STATE;
+        time_t epoch = 0;
+        const char *time_text = status + 6;
+        if (!parse_ch583_datetime(time_text, &epoch)) {
+            ESP_LOGW(TAG, "CH583 TIME_STATUS STALE bad time arg=%s", status);
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (s_sntp_synced) {
+            ESP_LOGI(TAG, "CH583 TIME_STATUS STALE ignored because SNTP already synced arg=%s", status);
+            return ESP_OK;
+        }
+        return set_time_source_epoch((int64_t)epoch,
+                                     SERVER_NETWORK_STA_TIME_SOURCE_CH583_STALE,
+                                     "CH583 TIME_STATUS STALE accepted as slideshow fallback");
     }
     if (strcmp(status, "INVALID") == 0) {
         ESP_LOGW(TAG, "CH583 TIME_STATUS INVALID ignored for RTC restore");

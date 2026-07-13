@@ -148,8 +148,8 @@ The full result-code table is in `README_Result_Code.md`; this file keeps featur
 
 ```text
 cast、cast2pic、upload 中的 show 和 save 是两个动作。
-存文件是把 bin/jpg 写到 SD 卡；SD 卡文件保存与 EPD 显示使用同一组 SPI，所以 show=true && save=true 时只能分先后处理，不能并行抢 SPI。
-当前源码通过 TdxSharedSpi 全局递归 mutex 保护 SD/EPD 共用 SPI：EPD 整屏刷新、SDSPI mount、/data 文件读写/删除/扫描、缩略图读取、轮播读取与保存等路径都应先取得该锁。
+存文件是把 bin/jpg 写到 SD 卡；SD 卡文件保存与 EPD 显示使用同一组 SPI，所以 show=true && save=true 时整体流程仍按显示、保存分先后处理。
+当前源码通过 TdxSharedSpi 全局递归 mutex 保护 SD/EPD 共用 SPI：EPD SPI 传输、SDSPI mount、/data 文件读写/删除/扫描、缩略图读取、轮播读取与保存等路径都应先取得该锁；各 EPD 驱动的 BUSY GPIO 等待函数在所有 EPD CS 均为 HIGH 时会临时释放 SPI 锁给 SD 使用，13.3 兴泰和 DKE 驱动在 PON/DRF/POF 等已知安全等待点会先拉高 CS 再释放 SPI，返回 EPD SPI 操作前最多等待 10 秒重新取得锁，超时重启；`R40_TSC -> BUSY -> spiReceiveData()` 等 CS 为 LOW 且后面还要继续收数据的事务中等待仍走旧路径，不释放 SPI 锁。
 这样即使不是同一次 cast/upload 请求，也避免 SD 文件 I/O 与 EPD 刷新同时占用共用 SPI。
 由于 EPD 显示是重点，处理顺序固定为：先处理 EPD 显示，等待本次 EPD 显示任务完成之后，再去存文件到 SD 卡。
 show=true 表示把当前请求中的 bin 数据投递到 EPD 显示任务，并等待本次 EPD 显示任务完成；请求解析校验通过且存在 show=true 时，cast/cast2pic/upload 共用处理会先把 `show_control.txt` 写为 `sw=0`、停止轮播 task，并读回确认 `sw=0`，再进入 EPD 显示和保存流程。
@@ -2548,7 +2548,7 @@ start_slideshow 是正式轮播列表配置接口；会重写 `show_control.txt`
 
 取：
 - ServerNetworkStaSlideshow_StartSavedDelayed() 只用于开机自动恢复轮播：启动位置仍保持在网络初始化之后，但先等待 `TDX_SLIDESHOW_STARTUP_DELAY_MS=10000` 毫秒；等待期间手机 APP 或 USB Serial 的 cast/cast2pic/upload `show=true` 请求优先进入 EPD 显示；延迟结束时如果 EPD task 仍忙，则继续推迟启动。
-- 延迟结束后先重新读取 control；如果 10 秒内 show=true 已把 control 写成 `sw=0`，则跳过自动恢复轮播；如果 EPD task 仍有待显示任务或正在显示，则继续短周期推迟，直到 EPD 空闲后再重新读取 slideshow_config、control 和 `slide_progress` 并决定是否启动。
+- 延迟结束后先重新读取 control；如果 10 秒内 show=true 已把 control 写成 `sw=0`，则跳过自动恢复轮播；如果 EPD task 仍有待显示任务或正在显示，则继续短周期推迟，直到 EPD 空闲后再重新读取 slideshow_config、control 和 `slide_progress` 并决定是否启动。若此时没有 SNTP/APP/CH583 VALID 时间源，会先请求 CH583/CH585 TIME_GET；CH583/CH585 STALE 可作为 fallback 写入 ESP32-C5 RTC/system time，并且仅在 WiFi 未取得 IP 或 SNTP 未同步时让本次启动恢复立即显示当前 pending_file，显示成功后再按 RTC interval 继续；若仍无可用 CH583/CH585 时间，则将 `anchor_epoch` 写入 ESP32-C5 RTC/system time，使当前 pending_file 立即进入 RTC 轮播。
 - 读取 SD 卡中的 control 时严格校验：`sw=1` 必须包含合法 `interval`、`timestamp` 和 `anchor_epoch`；旧格式如 `{"sw":1,"interval":90,"random":false,"run_mode":0}` 视为非法，打印 `legacy control rejected`，不启动轮播，也不回退到 task tick 计时。
 - ServerNetworkStaSlideshow_StartSaved() 仍用于立即启动已保存轮播，不带开机 10 秒延迟。
 - 进度版本、配置 hash、随机模式、排列或文件名不匹配时，从当前配置第一张重建进度。
@@ -2681,7 +2681,7 @@ timestamp 表示第一张图片播放时间，之后每 interval 秒一个播放
 - 超过时间 > 5 秒：按 anchor_epoch + N * interval 自动计算下一个未来播放点，保持和手机 APP 倒计时一致。
 轮播 task 内部 1 秒检查一次 RTC / 系统时间；真实周期仍按 `anchor_epoch + N * interval` 计算 `next_epoch`，但设备内部会按当前 EPD type 在 `next_epoch - lead_seconds` 时提前进入 EPD 显示流程：DKE 13.3 寸为 1 秒，兴泰 13.3 寸为 4 秒，其它屏型默认 2 秒；原来的图片顺序、随机、进度保存和 EPD 显示流程不改。
 返回成功时带 timestamp、time_source、time_diff、anchor_epoch、now_epoch、next_epoch、remain，APP 可用 remain 校验倒计时同步。time_source=sntp 表示使用设备 SNTP 时间；time_source=timestamp 表示 SNTP 未同步，已使用 APP / PC timestamp 写入 RTC。
-开机自动恢复旧 RTC 轮播时，必须先具备可靠时间源：SNTP、APP/PC timestamp，或 CH583/CH585 TIME_STATUS VALID。若当前仍是默认时间或 CH583 返回 STALE/INVALID，则不按旧 anchor_epoch 启动轮播，启动任务会等待可靠时间源，避免用 2026-01-01 默认时间算出错误等待时间。
+开机自动恢复旧 RTC 轮播时优先使用可靠时间源：SNTP、APP/PC timestamp，或 CH583/CH585 TIME_STATUS VALID。若 CH583/CH585 只返回 STALE，则将 STALE 时间写入 ESP32-C5 RTC/system time，作为轮播 fallback 时间源继续启动；只有 WiFi 未取得 IP 或 WiFi 已取得 IP 但 SNTP 未同步时，本次启动恢复才会立即显示当前 pending_file，显示成功后再按 RTC interval 继续。若 CH583/CH585 返回 INVALID 或没有可用时间，启动任务会在短暂等待后读取 show_control 中的 `anchor_epoch`，写入 ESP32-C5 RTC/system time，并立即恢复当前 pending_file 的 RTC 轮播；这样不会因 2026-01-01 默认时间早于旧 anchor_epoch 而长时间等待。
 ```
 
 
@@ -7664,7 +7664,7 @@ TIME_SET 只更新 RAM 并立即 ACK，不立即写 DataFlash。
 DataFlash 保存发生在 WiFi POWER_OFF / LOWPOWER 收尾阶段。
 复位后如果只能读取到 DataFlash 中最后保存的时间，TIME_GET 返回 STALE。
 从未成功 TIME_SET 且没有可用保存值时，TIME_GET 返回 INVALID。
-ESP32-C5 只接受 TIME_STATUS VALID 作为开机恢复 RTC 轮播的备份时间源；STALE / INVALID 只打印，不启动旧 RTC 轮播。
+ESP32-C5 优先接受 TIME_STATUS VALID 作为开机恢复 RTC 轮播的备份时间源；STALE 可作为无 WiFi 轮播 fallback 时间源，INVALID 不写 RTC。
 SNTP 成功后，ESP32-C5 会发送 TIME_SET 给 CH583/CH585，同步最新北京时间。
 APP/PC 请求中带合法 timestamp 时，ESP32-C5 会尽量发送 TIME_SET 给 CH583/CH585；该备份动作不改变原业务逻辑、result 返回码或是否启动轮播。
 APP/PC timestamp 非法但 ESP32-C5 已完成 SNTP 同步时，ESP32-C5 会把当前 SNTP 时间发送给 CH583/CH585。
@@ -7749,7 +7749,7 @@ INVALID
 
 ```text
 VALID   本轮 RTC 未复位，时间由 RTC 差值实时推算，可信；ESP32-C5 可写入 RTC/system time，并允许恢复旧 RTC 轮播。
-STALE   复位后只能返回 DataFlash 中最后保存的备份时间，不保证继续走过离线时长；ESP32-C5 不用它启动旧 RTC 轮播。
+STALE   复位后只能返回 DataFlash 中最后保存的备份时间，不保证继续走过离线时长；ESP32-C5 可将它写入 RTC 作为轮播 fallback，并且仅在 WiFi 未取得 IP 或 SNTP 未同步时，本次启动恢复才立即显示当前 pending_file。
 INVALID 从未成功 TIME_SET，且没有可用备份时间；ESP32-C5 不用它启动旧 RTC 轮播。
 ```
 
@@ -7763,19 +7763,20 @@ Ch583UartApp_Init()
 CH583 -> WiFi CMD=TIME_STATUS
 └─ ServerNetworkStaTime_OnCh583TimeStatus()
    ├─ VALID：写 ESP32-C5 RTC/system time，source=ch583_valid
-   ├─ STALE：打印并忽略
-   └─ INVALID：打印并忽略
+   ├─ STALE：写 ESP32-C5 RTC/system time，source=ch583_stale_fallback，主要用于无 WiFi 轮播恢复
+   └─ INVALID：打印并保留给轮播启动的 anchor_epoch fallback
 ```
 
 开机恢复 RTC 轮播保护：
 
 ```text
 ServerNetworkStaSlideshow_StartSavedDelayed()
-└─ 等待可靠时间源
+└─ 等待可用于轮播恢复的 RTC 时间源
    ├─ source=sntp：允许恢复
    ├─ source=timestamp：允许恢复
    ├─ source=ch583_valid：允许恢复
-   └─ source=default/none 或 TIME_STATUS STALE/INVALID：继续等待，不用旧 anchor_epoch 启动；等待期间每 5 秒补发一次 TIME_GET
+   ├─ source=ch583_stale_fallback：允许恢复，打印 warning
+   └─ source=default/none 且 CH583 无可用时间：短暂等待后写入 show_control.anchor_epoch，source=slideshow_anchor_fallback，并立即恢复当前 pending_file
 ```
 
 关键打印：
@@ -7783,9 +7784,10 @@ ServerNetworkStaSlideshow_StartSavedDelayed()
 ```text
 CH583 TIME_GET request ret=0
 CH583 TIME_STATUS VALID accepted, RTC/system time updated epoch=... local=...
-CH583 TIME_STATUS STALE ignored for RTC restore arg=...
+CH583 TIME_STATUS STALE accepted as slideshow fallback, RTC/system time updated source=ch583_stale_fallback epoch=... local=...
 CH583 TIME_STATUS INVALID ignored for RTC restore
-slideshow startup postponed waiting reliable RTC time source
+slideshow startup waiting usable RTC time source wait=0 fallback_after=3
+slideshow startup fallback to anchor_epoch=... after waiting 3 seconds
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-15)

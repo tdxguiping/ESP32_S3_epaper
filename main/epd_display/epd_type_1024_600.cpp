@@ -5,31 +5,7 @@
 
 void ePaperPort::EPD_Check_Busy_600(uint16_t loop_counter)
 {
-    int16_t i;
-    int64_t start_us = esp_timer_get_time();
-
-    if (loop_counter > 31) {
-        loop_counter = 31;
-    }
-    i = 0;
-    while (1) {
-        int level = Get_BusyIOLevel();
-        if (level) {
-            UserDebugOutput_Printf("Check Busy over\r\n");
-            return;
-        }
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        i++;
-        UserDebugOutput_Printf("$%d.", i);
-
-        if (i > loop_counter) {
-            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
-            ESP_LOGE(TAG, "EPD busy timeout level=%d loops=%ld elapsed_ms=%d",
-                     Get_BusyIOLevel(), (long)i, elapsed_ms);
-            EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
-            return;
-        }
-    }
+    EPD_Check_Busy_WithSharedSpiRelease(loop_counter, "$", "1024x600");
 }
 
 void EpdType1024600_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)

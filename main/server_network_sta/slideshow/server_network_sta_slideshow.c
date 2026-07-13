@@ -20,6 +20,7 @@
 #include "file_serving_example_common.h"
 #include "epd_display_app.h"
 #include "epd_display_mode.h"
+#include "server_network_sta.h"
 #include "server_network_sta_time.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
@@ -61,6 +62,7 @@ typedef struct {
     slideshow_progress_t progress;
     uint32_t initial_delay_seconds;
     bool rtc_enabled;
+    bool force_first_display;
     int64_t next_epoch;
 } slideshow_runtime_t;
 
@@ -87,6 +89,37 @@ static uint32_t s_slideshow_last_display_interval = 0;
 static TickType_t s_slideshow_last_display_start_tick = 0;
 
 static void slideshow_begin_interval(uint32_t interval, TickType_t start_tick);
+
+static bool slideshow_wifi_has_ip(void)
+{
+    server_network_sta_status_t status = {0};
+    if (ServerNetworkSta_GetStatus(&status) != ESP_OK) {
+        return false;
+    }
+    return status.state == SERVER_NETWORK_STA_STATE_GOT_IP && status.ip[0] != '\0';
+}
+
+static bool slideshow_should_force_first_display_for_stale_time(bool *wifi_has_ip,
+                                                                bool *sntp_synced)
+{
+    server_network_sta_time_info_t time_info = {0};
+    bool has_ip = slideshow_wifi_has_ip();
+    bool synced = ServerNetworkStaTime_IsSntpSynced();
+
+    if (wifi_has_ip != NULL) {
+        *wifi_has_ip = has_ip;
+    }
+    if (sntp_synced != NULL) {
+        *sntp_synced = synced;
+    }
+
+    if (ServerNetworkStaTime_GetInfo(&time_info) != ESP_OK ||
+        time_info.source != SERVER_NETWORK_STA_TIME_SOURCE_CH583_STALE) {
+        return false;
+    }
+
+    return !has_ip || !synced;
+}
 
 static bool json_func_equals(const char *body, const char *func)
 {
@@ -1703,7 +1736,8 @@ void ServerNetworkStaSlideshow_Stop(void)
 static esp_err_t start_slideshow_runtime(const char *base_path,
                                          const slideshow_request_t *request,
                                          const slideshow_progress_t *progress,
-                                         bool reset_interval_if_running)
+                                         bool reset_interval_if_running,
+                                         bool force_first_display)
 {
     if (base_path == NULL || request == NULL || progress == NULL ||
         request->file_count == 0 || !slideshow_progress_valid(request, progress)) {
@@ -1731,6 +1765,7 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
     strlcpy(runtime->base_path, base_path, sizeof(runtime->base_path));
     memcpy(&runtime->request, request, sizeof(runtime->request));
     memcpy(&runtime->progress, progress, sizeof(runtime->progress));
+    runtime->force_first_display = force_first_display;
     if (request->anchor_epoch > 0) {
         time_t now_time = 0;
         time(&now_time);
@@ -1738,6 +1773,9 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
         runtime->next_epoch = slideshow_next_epoch(request->anchor_epoch,
                                                    request->interval,
                                                    (int64_t)now_time);
+        if (runtime->force_first_display) {
+            runtime->next_epoch = (int64_t)now_time;
+        }
         char anchor_text[32] = {0};
         char now_text[32] = {0};
         char next_text[32] = {0};
@@ -1745,7 +1783,7 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
         format_epoch_local((int64_t)now_time, now_text, sizeof(now_text));
         format_epoch_local(runtime->next_epoch, next_text, sizeof(next_text));
         ESP_LOGI(TAG,
-                 "slideshow rtc schedule timestamp=%lld anchor=%lld(%s) now=%lld(%s) next=%lld(%s) interval=%lu",
+                 "slideshow rtc schedule timestamp=%lld anchor=%lld(%s) now=%lld(%s) next=%lld(%s) interval=%lu force_first=%d",
                  (long long)request->timestamp,
                  (long long)request->anchor_epoch,
                  anchor_text,
@@ -1753,7 +1791,8 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
                  now_text,
                  (long long)runtime->next_epoch,
                  next_text,
-                 (unsigned long)request->interval);
+                 (unsigned long)request->interval,
+                 runtime->force_first_display ? 1 : 0);
     } else if (reset_interval_if_running && was_running) {
         runtime->initial_delay_seconds = request->interval;
         ESP_LOGI(TAG, "slideshow interval reset new=%lu initial_delay=%lu",
@@ -1796,7 +1835,8 @@ esp_err_t ServerNetworkStaSlideshow_ShowFirst(const char *base_path)
 }
 
 static esp_err_t start_saved_slideshow_with_mode(const char *base_path,
-                                                 bool reset_interval_if_running)
+                                                 bool reset_interval_if_running,
+                                                 bool force_first_display)
 {
     slideshow_request_t *request = (slideshow_request_t *)calloc(1, sizeof(*request));
     if (request == NULL) {
@@ -1829,16 +1869,20 @@ static esp_err_t start_saved_slideshow_with_mode(const char *base_path,
     request->random = random;
     request->timestamp = timestamp;
     request->anchor_epoch = anchor_epoch;
-    if (!ServerNetworkStaTime_IsReliableForRtcRestore()) {
+    if (!ServerNetworkStaTime_IsUsableForSlideshowRestore()) {
         ESP_LOGW(TAG,
-                 "slideshow RTC restore blocked: time source is not reliable yet, wait SNTP/APP timestamp/CH583 VALID");
+                 "slideshow RTC restore blocked: no usable time source yet");
         free(request);
         return ESP_ERR_INVALID_STATE;
     }
     slideshow_progress_t progress;
     ret = load_or_create_slideshow_progress(request, false, &progress);
     if (ret == ESP_OK) {
-        ret = start_slideshow_runtime(base_path, request, &progress, reset_interval_if_running);
+        ret = start_slideshow_runtime(base_path,
+                                      request,
+                                      &progress,
+                                      reset_interval_if_running,
+                                      force_first_display);
     }
     free(request);
     return ret;
@@ -1846,18 +1890,19 @@ static esp_err_t start_saved_slideshow_with_mode(const char *base_path,
 
 esp_err_t ServerNetworkStaSlideshow_StartSaved(const char *base_path)
 {
-    return start_saved_slideshow_with_mode(base_path, false);
+    return start_saved_slideshow_with_mode(base_path, false, false);
 }
 
 esp_err_t ServerNetworkStaSlideshow_StartSavedResetInterval(const char *base_path)
 {
-    return start_saved_slideshow_with_mode(base_path, true);
+    return start_saved_slideshow_with_mode(base_path, true, false);
 }
 
 static void slideshow_startup_delay_task(void *arg)
 {
     slideshow_startup_delay_t *delay = (slideshow_startup_delay_t *)arg;
     uint32_t time_wait_seconds = 0;
+    bool time_get_requested = false;
     if (delay == NULL) {
         s_slideshow_startup_delay_task = NULL;
         vTaskDelete(NULL);
@@ -1871,7 +1916,13 @@ static void slideshow_startup_delay_task(void *arg)
     while (true) {
         uint32_t interval = 0;
         bool random = false;
-        bool enabled = ServerNetworkStaSlideshow_IsSavedEnabled(delay->base_path, &interval, &random);
+        int64_t timestamp = 0;
+        int64_t anchor_epoch = 0;
+        bool enabled = read_slideshow_control_schedule(delay->base_path,
+                                                       &interval,
+                                                       &random,
+                                                       &timestamp,
+                                                       &anchor_epoch);
         if (!enabled) {
             ESP_LOGI(TAG, "slideshow startup skipped because control sw=0");
             break;
@@ -1885,20 +1936,54 @@ static void slideshow_startup_delay_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
-        if (!ServerNetworkStaTime_IsReliableForRtcRestore()) {
-            ESP_LOGI(TAG, "slideshow startup postponed waiting reliable RTC time source");
-            time_wait_seconds++;
-            if ((time_wait_seconds % 5U) == 0U) {
+        if (!ServerNetworkStaTime_IsUsableForSlideshowRestore()) {
+            if (!time_get_requested) {
                 (void)ServerNetworkStaTime_RequestCh583Backup();
+                time_get_requested = true;
             }
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            continue;
+            if (time_wait_seconds >= TDX_SLIDESHOW_STARTUP_TIME_FALLBACK_WAIT_SECONDS) {
+                esp_err_t time_ret = ServerNetworkStaTime_SetSlideshowAnchorFallback(anchor_epoch);
+                if (time_ret == ESP_OK) {
+                    ESP_LOGW(TAG,
+                             "slideshow startup fallback to anchor_epoch=%lld after waiting %lu seconds",
+                             (long long)anchor_epoch,
+                             (unsigned long)time_wait_seconds);
+                } else {
+                    ESP_LOGW(TAG,
+                             "slideshow startup anchor fallback failed anchor=%lld ret=%s",
+                             (long long)anchor_epoch,
+                             esp_err_to_name(time_ret));
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    time_wait_seconds++;
+                    continue;
+                }
+            } else {
+                if (time_wait_seconds == 0 ||
+                    (TDX_SLIDESHOW_STARTUP_TIME_WAIT_LOG_SECONDS > 0 &&
+                     (time_wait_seconds % TDX_SLIDESHOW_STARTUP_TIME_WAIT_LOG_SECONDS) == 0U)) {
+                    ESP_LOGI(TAG,
+                             "slideshow startup waiting usable RTC time source wait=%lu fallback_after=%u",
+                             (unsigned long)time_wait_seconds,
+                             (unsigned int)TDX_SLIDESHOW_STARTUP_TIME_FALLBACK_WAIT_SECONDS);
+                }
+                time_wait_seconds++;
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                continue;
+            }
         }
 
-        ESP_LOGI(TAG, "slideshow startup delay done, start saved slideshow interval=%lu random=%d",
+        bool wifi_has_ip = false;
+        bool sntp_synced = false;
+        bool force_first_display =
+            slideshow_should_force_first_display_for_stale_time(&wifi_has_ip, &sntp_synced);
+
+        ESP_LOGI(TAG, "slideshow startup delay done, start saved slideshow interval=%lu random=%d force_first=%d wifi_ip=%d sntp=%d",
                  (unsigned long)interval,
-                 random ? 1 : 0);
-        esp_err_t ret = ServerNetworkStaSlideshow_StartSaved(delay->base_path);
+                 random ? 1 : 0,
+                 force_first_display ? 1 : 0,
+                 wifi_has_ip ? 1 : 0,
+                 sntp_synced ? 1 : 0);
+        esp_err_t ret = start_saved_slideshow_with_mode(delay->base_path, false, force_first_display);
         ESP_LOGI(TAG, "slideshow startup delayed start ret=%s", esp_err_to_name(ret));
         break;
     }

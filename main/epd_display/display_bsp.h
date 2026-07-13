@@ -271,6 +271,8 @@ class ePaperPort {
     void EpdType16001200_133_DKE_WriteCommandData(EP_Target_t target, uint8_t command, const uint8_t *data, size_t len);
     bool EpdType16001200_133_DKE_WriteFrame(EP_Target_t target, const uint8_t *data, size_t len);
     void EpdType16001200_133_DKE_WaitBusy(const char *step, uint16_t max_loops);
+    void EpdType16001200_133_DKE_WaitBusyLocked(const char *step, uint16_t max_loops);
+    void EpdType16001200_133_DKE_WaitBusyUnlockSpi(const char *step, uint16_t max_loops);
 
     void EpdType1360480_1085_Sleep();
     void EpdType1360480_1085_Init();
@@ -332,6 +334,11 @@ class ePaperPort {
     void setGpioLevel(int pinNumber, uint8_t voltageLevel);
     uint8_t getGpioLevel(int pinNumber);        
     void setPinCs(EP_Target_t target, uint8_t setLevel);
+    void EPD_Check_Busy_WithSharedSpiRelease(uint16_t loop_counter,
+                                             const char *progress_prefix,
+                                             const char *timeout_name);
+    void EPD_Check_Busy_133_Locked(uint16_t loop_counter);
+    void EPD_Check_Busy_133_UnlockSpi(uint16_t loop_counter);
 
     // 4 color 800x480 7.5
     void Epaper_Initial();

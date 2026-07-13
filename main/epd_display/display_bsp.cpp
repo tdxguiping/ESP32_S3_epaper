@@ -7,11 +7,13 @@
 #include <esp_err.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_system.h>
 #include <esp_timer.h>
 #include <esp_rom_sys.h>
 #include <freertos/event_groups.h>
 #include "debug_output.h"
 #include "display_bsp.h"
+#include "tdx_shared_spi.h"
 
 
 uint8_t  EPD_which_one_=1;    // if 1 EPD1 , if 2 EPD2 
@@ -390,6 +392,78 @@ void ePaperPort::EPD_Check_Busy(uint16_t loop_counter) { // If BUSYN=0 then wait
             ESP_LOGE(TAG, "EPD-com busy timeout level=%d loops=%ld elapsed_ms=%d",
                      Get_BusyIOLevel(), (long)i, elapsed_ms);
             EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
+            return;
+        }
+    }
+}
+
+void ePaperPort::EPD_Check_Busy_WithSharedSpiRelease(uint16_t loop_counter,
+                                                     const char *progress_prefix,
+                                                     const char *timeout_name)
+{
+    int cs1_level = getGpioLevel(cs_);
+    int cs2_level = getGpioLevel(cs_2_);
+    int epd2_cs_level = getGpioLevel(EPD2_CS_PIN);
+    bool release_spi = (cs1_level == GPIO_HIGH) &&
+                       (cs2_level == GPIO_HIGH) &&
+                       (epd2_cs_level == GPIO_HIGH);
+    int16_t i = 0;
+    int64_t start_us = esp_timer_get_time();
+
+    if (loop_counter > 31) {
+        loop_counter = 31;
+    }
+
+    ESP_LOGI(TAG, "EPD busy path=%s name=%s loop=%u cs=%d,%d,%d",
+             release_spi ? "unlock_spi" : "locked",
+             timeout_name != nullptr ? timeout_name : "unknown",
+             (unsigned int)loop_counter,
+             cs1_level,
+             cs2_level,
+             epd2_cs_level);
+
+    if (release_spi) {
+        setGpioLevel(cs_, GPIO_HIGH);
+        setGpioLevel(cs_2_, GPIO_HIGH);
+        setGpioLevel(EPD2_CS_PIN, GPIO_HIGH);
+        TdxSharedSpi_Unlock();
+    }
+
+    auto relock_or_restart = [this, release_spi, timeout_name]() -> bool {
+        if (!release_spi) {
+            return true;
+        }
+        esp_err_t lock_ret = TdxSharedSpi_Lock(pdMS_TO_TICKS(10000));
+        if (lock_ret == ESP_OK) {
+            return true;
+        }
+        ESP_LOGE(TAG, "EPD shared SPI relock timeout name=%s ret=%s, restart",
+                 timeout_name != nullptr ? timeout_name : "unknown",
+                 esp_err_to_name(lock_ret));
+        esp_restart();
+        return false;
+    };
+
+    while (1) {
+        int level = Get_BusyIOLevel();
+        if (level) {
+            if (!relock_or_restart()) {
+                return;
+            }
+            UserDebugOutput_Printf("Check Busy over\r\n");
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        i++;
+        UserDebugOutput_Printf("%s%d.", progress_prefix != nullptr ? progress_prefix : "", i);
+
+        if (i > loop_counter) {
+            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
+            ESP_LOGE(TAG, "EPD %s busy timeout level=%d loops=%ld elapsed_ms=%d",
+                     timeout_name != nullptr ? timeout_name : "busy",
+                     Get_BusyIOLevel(), (long)i, elapsed_ms);
+            EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
+            (void)relock_or_restart();
             return;
         }
     }

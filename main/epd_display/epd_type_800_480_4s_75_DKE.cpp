@@ -181,31 +181,7 @@ void ePaperPort::EpdType800480_4S_75_DKE_WaitBusy(const char *step)
 
 void ePaperPort::EPD_Check_Busy_75_2(uint16_t loop_counter)
 {
-    int64_t start_us = esp_timer_get_time();
-    int16_t i = 0;
-
-    if (loop_counter > 31) {
-        loop_counter = 31;
-    }
-
-    while (1) {
-        int level = Get_BusyIOLevel();
-        if (level) {
-            UserDebugOutput_Printf("Check Busy over\r\n");
-            return;
-        }
-        vTaskDelay(pdMS_TO_TICKS(1000)); //  1000ms = 1s
-        i++;
-        UserDebugOutput_Printf("<%d.", i);
-
-        if (i > loop_counter) {
-            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
-            ESP_LOGE(TAG, "EPD DKE busy timeout level=%d loops=%ld elapsed_ms=%d",
-                     Get_BusyIOLevel(), (long)i, elapsed_ms);
-            EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
-            return;
-        }
-    }
+    EPD_Check_Busy_WithSharedSpiRelease(loop_counter, "<", "800x480_4s75_DKE");
 }
 
 void ePaperPort::EpdType800480_4S_75_DKE_UpdateAndSleep()

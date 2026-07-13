@@ -22,11 +22,11 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 
 // Select ESP32-C5 as the only supported board for this project build.
-// 选择 ESP32-C5 作为当前工程唯一支持的板级配置。
 #define USER_BOARD_ESP32C5 1
 
 // Keep old reset markers here so startup display policy can be changed without touching main.c.
 #define ESP_RST_low_power_No_Disp 0xFE
+// Configuration value for ESP RST need Disp EPD; update local references before changing it.
 #define ESP_RST_need_Disp_EPD 0xFD
 
 // Keep large buffer fallback limit here so HTTP and EPD avoid exhausting internal RAM.
@@ -35,6 +35,7 @@ extern "C" {
 // Auto Light-sleep is disabled for reliable CH583 UART, USB, and HTTP receive paths.
 // CPU frequency is controlled by sdkconfig/app_auto_light_sleep_init; keep this at 0.
 #ifndef TDX_AUTO_LIGHT_SLEEP_ENABLE
+// Feature switch for TDX AUTO LIGHT SLEEP ENABLE; set to 1 to enable and 0 to disable.
 #define TDX_AUTO_LIGHT_SLEEP_ENABLE 0
 #endif
 
@@ -44,26 +45,42 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 
 #define TDX_STRINGIFY_INNER(value) #value
+// Configuration value for TDX STRINGIFY; update local references before changing it.
 #define TDX_STRINGIFY(value) TDX_STRINGIFY_INNER(value)
 
 // Keep JSON API result codes centralized so every response follows README_Result_Code.md.
-// 将 JSON API 返回码集中在这里，保证所有响应都按 README_Result_Code.md 统一维护。
 #define TDX_JSON_RESULT_OK 0
+// Public JSON result code for TDX JSON RESULT JSON INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_JSON_INVALID 1001
+// Public JSON result code for TDX JSON RESULT FUNC UNSUPPORTED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_FUNC_UNSUPPORTED 1002
+// Public JSON result code for TDX JSON RESULT FIELD MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_FIELD_MISSING 1003
+// Public JSON result code for TDX JSON RESULT PARAM INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_PARAM_INVALID 1004
+// Public JSON result code for TDX JSON RESULT METHOD UNSUPPORTED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_METHOD_UNSUPPORTED 1005
+// Public JSON result code for TDX JSON RESULT BODY TOO LARGE; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_BODY_TOO_LARGE 1006
+// Public JSON result code for TDX JSON RESULT BUSY; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_BUSY 1007
+// Public JSON result code for TDX JSON RESULT TIMEOUT; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_TIMEOUT 1008
+// Public JSON result code for TDX JSON RESULT INTERNAL ERROR; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_INTERNAL_ERROR 1009
+// Public JSON result code for TDX JSON RESULT JSON TOO LONG; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_JSON_TOO_LONG 1010
+// Public JSON result code for TDX JSON RESULT NO MEMORY; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_NO_MEMORY 1011
+// Public JSON result code for TDX JSON RESULT STORAGE NOT READY; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_STORAGE_NOT_READY 1012
+// Public JSON result code for TDX JSON RESULT STORAGE NO SPACE; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_STORAGE_NO_SPACE 1013
+// Public JSON result code for TDX JSON RESULT NOT FOUND; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_NOT_FOUND 1014
+// Public JSON result code for TDX JSON RESULT PATH UNSAFE; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_PATH_UNSAFE 1015
+// Public JSON result code for TDX JSON RESULT QUEUE FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_QUEUE_FAILED 1016
 
 /* -------------------------------------------------------------------------- */
@@ -71,36 +88,54 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 
 // Keep USB JSON result codes separate so serial transport errors are easy to diagnose.
-// 将 USB JSON 返回码单独分组，便于定位串口传输和路由错误。
 #define TDX_JSON_RESULT_USB_REQUEST_TOO_LARGE 1101
+// Public JSON result code for TDX JSON RESULT USB REQUEST TIMEOUT; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_USB_REQUEST_TIMEOUT 1102
+// Public JSON result code for TDX JSON RESULT USB BAD REQUEST; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_USB_BAD_REQUEST 1103
+// Public JSON result code for TDX JSON RESULT USB ROUTE NOT FOUND; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_USB_ROUTE_NOT_FOUND 1104
+// Public JSON result code for TDX JSON RESULT USB HANDLER FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_USB_HANDLER_FAILED 1105
+// Public JSON result code for TDX JSON RESULT USB ASYNC FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_USB_ASYNC_FAILED 1106
 
 // Keep BLE and CH583 JSON result codes here so BLE_DATA replies share one contract.
-// 将 BLE 和 CH583 JSON 返回码集中在这里，保证 BLE_DATA 回复格式一致。
 #define TDX_JSON_RESULT_BLE_JSON_EMPTY 1201
+// Public JSON result code for TDX JSON RESULT BLE FUNC UNSUPPORTED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_BLE_FUNC_UNSUPPORTED 1202
+// Public JSON result code for TDX JSON RESULT BLE JSON PARSE FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_BLE_JSON_PARSE_FAILED 1203
+// Public JSON result code for TDX JSON RESULT BLE SEND FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_BLE_SEND_FAILED 1204
+// Public JSON result code for TDX JSON RESULT BLE NO SAVED WIFI; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_BLE_NO_SAVED_WIFI 1205
 
 // Keep WiFi JSON result codes here so USB, BLE, and network paths use the same meanings.
-// 将 WiFi JSON 返回码集中在这里，保证 USB、BLE 和网络路径含义一致。
 #define TDX_JSON_RESULT_WIFI_SSID_MISSING 1301
+// Public JSON result code for TDX JSON RESULT WIFI KEY MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_KEY_MISSING 1302
+// Public JSON result code for TDX JSON RESULT WIFI SSID INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_SSID_INVALID 1303
+// Public JSON result code for TDX JSON RESULT WIFI KEY INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_KEY_INVALID 1304
+// Public JSON result code for TDX JSON RESULT WIFI SAVE FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_SAVE_FAILED 1305
+// Public JSON result code for TDX JSON RESULT WIFI CONNECT SUBMIT FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_CONNECT_SUBMIT_FAILED 1306
+// Public JSON result code for TDX JSON RESULT WIFI CONNECT TIMEOUT; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT 1307
+// Public JSON result code for TDX JSON RESULT WIFI AUTH FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_AUTH_FAILED 1308
+// Public JSON result code for TDX JSON RESULT WIFI GOT IP FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_GOT_IP_FAILED 1309
+// Public JSON result code for TDX JSON RESULT WIFI WORK TIME MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_WORK_TIME_MISSING 1351
+// Public JSON result code for TDX JSON RESULT WIFI WORK TIME RANGE; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_WORK_TIME_RANGE 1352
+// Public JSON result code for TDX JSON RESULT WIFI WORK TIME SAVE FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_WORK_TIME_SAVE_FAILED 1353
+// Public JSON result code for TDX JSON RESULT WIFI WORK TIME APPLY FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_WORK_TIME_APPLY_FAILED 1354
 
 /* -------------------------------------------------------------------------- */
@@ -108,62 +143,112 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 
 // Keep image, slideshow, upload, OTA, and EPD result codes here for feature-local response updates.
-// 将图片、轮播、上传、OTA 和 EPD 返回码集中在这里，便于按功能小步修改响应。
 #define TDX_JSON_RESULT_IMAGES_READ_FAILED 1401
+// Public JSON result code for TDX JSON RESULT THUMB NAME INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_THUMB_NAME_INVALID 1402
+// Public JSON result code for TDX JSON RESULT THUMB NOT FOUND; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_THUMB_NOT_FOUND 1403
+// Public JSON result code for TDX JSON RESULT SNAPSHOT BUILD FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SNAPSHOT_BUILD_FAILED 1404
+// Public JSON result code for TDX JSON RESULT BLE MAC EMPTY; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_BLE_MAC_EMPTY 1405
 
+// Public JSON result code for TDX JSON RESULT FILE NAMES MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_FILE_NAMES_MISSING 1501
+// Public JSON result code for TDX JSON RESULT FILE NAME INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_FILE_NAME_INVALID 1502
+// Public JSON result code for TDX JSON RESULT DELETE FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_DELETE_FAILED 1503
+// Public JSON result code for TDX JSON RESULT SLIDESHOW CONFIG SAVE FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED 1504
+// Public JSON result code for TDX JSON RESULT SLIDESHOW START FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_START_FAILED 1505
+// Public JSON result code for TDX JSON RESULT SLIDESHOW RUNTIME FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED 1506
+// Public JSON result code for TDX JSON RESULT SLIDESHOW INTERVAL INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID 1507
+// Public JSON result code for TDX JSON RESULT SLIDESHOW FILE NOT FOUND; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_FILE_NOT_FOUND 1508
+// Public JSON result code for TDX JSON RESULT SLIDESHOW CONTROL SAVE FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED 1509
+// Public JSON result code for TDX JSON RESULT SLIDESHOW TIMESTAMP INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID 1510
+// Public JSON result code for TDX JSON RESULT SLIDESHOW TIMEZONE DEPRECATED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_TIMEZONE_DEPRECATED 1511
+// Public JSON result code for TDX JSON RESULT SLIDESHOW TIME SET FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_TIME_SET_FAILED 1512
+// Public JSON result code for TDX JSON RESULT SLIDESHOW TIME DIFF TOO LARGE; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_TIME_DIFF_TOO_LARGE 1513
 
+// Public JSON result code for TDX JSON RESULT UPLOAD BOUNDARY MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_UPLOAD_BOUNDARY_MISSING 1601
+// Public JSON result code for TDX JSON RESULT UPLOAD FUNC MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_UPLOAD_FUNC_MISSING 1602
+// Public JSON result code for TDX JSON RESULT UPLOAD INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_UPLOAD_INVALID 1603
+// Public JSON result code for TDX JSON RESULT UPLOAD BIN MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_UPLOAD_BIN_MISSING 1604
+// Public JSON result code for TDX JSON RESULT UPLOAD IMAGE MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_UPLOAD_IMAGE_MISSING 1605
+// Public JSON result code for TDX JSON RESULT UPLOAD SIZE MISMATCH; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_UPLOAD_SIZE_MISMATCH 1606
+// Public JSON result code for TDX JSON RESULT SAVE BIN FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SAVE_BIN_FAILED 1607
+// Public JSON result code for TDX JSON RESULT SAVE IMAGE FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SAVE_IMAGE_FAILED 1608
+// Public JSON result code for TDX JSON RESULT DISPLAY QUEUE FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED 1609
+// Public JSON result code for TDX JSON RESULT LAST CAST SAVE FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_LAST_CAST_SAVE_FAILED 1610
+// Public JSON result code for TDX JSON RESULT SAVE REQUIRED FOR LAST CAST; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SAVE_REQUIRED_FOR_LAST_CAST 1611
+// Public JSON result code for TDX JSON RESULT UPLOAD FILE NAME INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_UPLOAD_FILE_NAME_INVALID 1612
+// Public JSON result code for TDX JSON RESULT UPLOAD RAW PATH MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_UPLOAD_RAW_PATH_MISSING 1613
+// Public JSON result code for TDX JSON RESULT UPLOAD RAW PATH INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_UPLOAD_RAW_PATH_INVALID 1614
+// Public JSON result code for TDX JSON RESULT UPLOAD RAW SAVE FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_UPLOAD_RAW_SAVE_FAILED 1615
+// Public JSON result code for TDX JSON RESULT CAST2PIC SCREEN INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_CAST2PIC_SCREEN_INVALID 1616
+// Public JSON result code for TDX JSON RESULT CAST2PIC SCREEN UNSUPPORTED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_CAST2PIC_SCREEN_UNSUPPORTED 1617
 
+// Public JSON result code for TDX JSON RESULT OTA BOUNDARY MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_BOUNDARY_MISSING 1701
+// Public JSON result code for TDX JSON RESULT OTA META MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_META_MISSING 1702
+// Public JSON result code for TDX JSON RESULT OTA META INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_META_INVALID 1703
+// Public JSON result code for TDX JSON RESULT OTA FIRMWARE MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_FIRMWARE_MISSING 1704
+// Public JSON result code for TDX JSON RESULT OTA FIRMWARE SIZE INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_FIRMWARE_SIZE_INVALID 1705
+// Public JSON result code for TDX JSON RESULT OTA BEGIN FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_BEGIN_FAILED 1706
+// Public JSON result code for TDX JSON RESULT OTA WRITE FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_WRITE_FAILED 1707
+// Public JSON result code for TDX JSON RESULT OTA END FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_END_FAILED 1708
+// Public JSON result code for TDX JSON RESULT OTA VERIFY FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_VERIFY_FAILED 1709
+// Public JSON result code for TDX JSON RESULT OTA SET BOOT FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_SET_BOOT_FAILED 1710
+// Public JSON result code for TDX JSON RESULT OTA VERSION MISMATCH; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_VERSION_MISMATCH 1711
+// Public JSON result code for TDX JSON RESULT OTA PARTITION TOO SMALL; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_PARTITION_TOO_SMALL 1712
+// Public JSON result code for TDX JSON RESULT OTA BUSY; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_BUSY 1713
 
+// Public JSON result code for TDX JSON RESULT EPD TYPE INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_EPD_TYPE_INVALID 1801
+// Public JSON result code for TDX JSON RESULT EPD TYPE SAVE FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_EPD_TYPE_SAVE_FAILED 1802
+// Public JSON result code for TDX JSON RESULT EPD TEST DISPLAY FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_EPD_TEST_DISPLAY_FAILED 1803
+// Public JSON result code for TDX JSON RESULT EPD DISPLAY FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_EPD_DISPLAY_FAILED 1804
 
 /* -------------------------------------------------------------------------- */
@@ -171,17 +256,20 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 
 // Keep STA connection debug logs here so WiFi failure checks can be enabled without changing STA logic.
-// 将 STA 连接调试日志开关放在这里，便于不修改 STA 逻辑就排查 WiFi 失败原因。
 #define SERVER_NETWORK_STA_DEBUG_LOG_ENABLE 1
 
 // Keep Server Network STA return codes here so main.c and the STA module share one result contract.
 #define SERVER_NETWORK_STA_OK 1
+// Configuration value for SERVER NETWORK STA CONNECT FAIL; update local references before changing it.
 #define SERVER_NETWORK_STA_CONNECT_FAIL 3
+// Configuration value for SERVER NETWORK STA NO SAVED WIFI; update local references before changing it.
 #define SERVER_NETWORK_STA_NO_SAVED_WIFI 0xA1
 
 // Keep STA wait bits here so future connection policy changes do not require editing the STA implementation.
 #define SERVER_NETWORK_STA_CONNECTED_BIT BIT0
+// Configuration value for SERVER NETWORK STA FAIL BIT; update local references before changing it.
 #define SERVER_NETWORK_STA_FAIL_BIT BIT1
+// Configuration value for SERVER NETWORK STA DISCONNECTED BIT; update local references before changing it.
 #define SERVER_NETWORK_STA_DISCONNECTED_BIT BIT2
 
 // Keep the STA connection timeout configurable from one header for board bring-up tuning.
@@ -197,11 +285,9 @@ extern "C" {
 #define SERVER_NETWORK_STA_TIME_URI "/time"
 
 // Keep the mDNS host name here so board/product naming does not leak into network code.
-// 中文：将 mDNS 主机名集中在这里，避免板级/产品命名散落到网络代码里。
 #define USER_MDNS_HOSTNAME "esp32-c5-photopainter"
 
 // Keep the mDNS instance name here so logs and discovery identify the C5 build correctly.
-// 中文：将 mDNS 实例名集中在这里，确保日志和发现服务正确标识 C5 版本。
 #define USER_MDNS_INSTANCE_NAME "ESP32-C5-WebServer"
 
 /* -------------------------------------------------------------------------- */
@@ -228,8 +314,11 @@ extern "C" {
 
 // Keep /dataUP parser string limits here because they must match the old web page form field sizes.
 #define SERVER_NETWORK_STA_DATAUP_FIELD_NAME_MAX 32
+// Configuration value for SERVER NETWORK STA DATAUP FILE NAME MAX; update local references before changing it.
 #define SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX 96
+// Configuration value for SERVER NETWORK STA DATAUP BASE PATH MAX; update local references before changing it.
 #define SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX 32
+// Configuration value for SERVER NETWORK STA UPLOAD RESULT JSON MAX; update local references before changing it.
 #define SERVER_NETWORK_STA_UPLOAD_RESULT_JSON_MAX 768
 
 // Keep cast save reserve here so SPIFFS writes leave room for temp files and metadata.
@@ -237,6 +326,7 @@ extern "C" {
 
 // Keep the migrated HTTP receive dispatcher limits here so request routing can be tuned without touching parser code.
 #define SERVER_NETWORK_STA_HTTP_HEADER_VALUE_MAX 256
+// Configuration value for SERVER NETWORK STA SMALL JSON BODY MAX; update local references before changing it.
 #define SERVER_NETWORK_STA_SMALL_JSON_BODY_MAX 4096
 
 /* -------------------------------------------------------------------------- */
@@ -244,49 +334,69 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 
 // Keep USB console HTTP-text limits here so the serial entry can be tuned without touching feature modules.
-// 将 USB 串口 HTTP 文本限制放在这里，方便以后不改功能模块就调整串口入口。
 #define USB_CONSOLE_ENABLE 1
+// Buffer or size limit for USB CONSOLE RX BUF SIZE; keep RAM and payload limits aligned.
 #define USB_CONSOLE_RX_BUF_SIZE 4096
+// Buffer or size limit for USB CONSOLE TX BUF SIZE; keep RAM and payload limits aligned.
 #define USB_CONSOLE_TX_BUF_SIZE 1024
+// Configuration value for USB CONSOLE HTTP HEADER MAX; update local references before changing it.
 #define USB_CONSOLE_HTTP_HEADER_MAX 2048
+// Configuration value for USB CONSOLE HTTP PATH MAX; update local references before changing it.
 #define USB_CONSOLE_HTTP_PATH_MAX 128
+// Configuration value for USB CONSOLE HTTP METHOD MAX; update local references before changing it.
 #define USB_CONSOLE_HTTP_METHOD_MAX 8
+// Configuration value for USB CONSOLE HTTP CONTENT TYPE MAX; update local references before changing it.
 #define USB_CONSOLE_HTTP_CONTENT_TYPE_MAX 128
+// Configuration value for USB CONSOLE BASE PATH; update local references before changing it.
 #define USB_CONSOLE_BASE_PATH "/data"
+// Configuration value for USB CONSOLE HTTP BODY MAX; update local references before changing it.
 #define USB_CONSOLE_HTTP_BODY_MAX SERVER_NETWORK_STA_DATAUP_MAX_BODY_SIZE
+// Configuration value for USB CONSOLE HTTP RESPONSE MAX; update local references before changing it.
 #define USB_CONSOLE_HTTP_RESPONSE_MAX 8192
+// Task stack size for USB CONSOLE TASK STACK SIZE; tune with runtime stack high-water data.
 #define USB_CONSOLE_TASK_STACK_SIZE (12 * 1024)
+// FreeRTOS task priority for USB CONSOLE TASK PRIORITY; keep scheduler side effects in mind when changing it.
 #define USB_CONSOLE_TASK_PRIORITY 3
+// Queue length for USB CONSOLE WORKER QUEUE LENGTH; size it for burst traffic without wasting RAM.
 #define USB_CONSOLE_WORKER_QUEUE_LENGTH 4
+// Task stack size for USB CONSOLE WORKER TASK STACK SIZE; tune with runtime stack high-water data.
 #define USB_CONSOLE_WORKER_TASK_STACK_SIZE (8 * 1024)
+// FreeRTOS task priority for USB CONSOLE WORKER TASK PRIORITY; keep scheduler side effects in mind when changing it.
 #define USB_CONSOLE_WORKER_TASK_PRIORITY 4
+// Queue length for CAST SAVE TASK QUEUE LENGTH; size it for burst traffic without wasting RAM.
 #define CAST_SAVE_TASK_QUEUE_LENGTH 2
+// Task stack size for CAST SAVE TASK STACK SIZE; tune with runtime stack high-water data.
 #define CAST_SAVE_TASK_STACK_SIZE (8 * 1024)
+// FreeRTOS task priority for CAST SAVE TASK PRIORITY; keep scheduler side effects in mind when changing it.
 #define CAST_SAVE_TASK_PRIORITY 4
 
 // Use a longer idle USB read wait so the console task does not wake CPU too often without traffic.
-// USB 空闲时使用较长读等待，避免没有数据时频繁唤醒 CPU。
 #define USB_CONSOLE_READ_IDLE_TIMEOUT_MS 1000
 
 // Use a short active USB read wait once a request starts so large multipart bodies are received quickly.
-// 一旦请求开始接收就使用较短读等待，让大 multipart 数据尽快收完。
 #define USB_CONSOLE_READ_ACTIVE_TIMEOUT_MS 1
+// Timing value for USB CONSOLE WRITE TIMEOUT MS; verify related wake, sleep, and retry behavior if it changes.
 #define USB_CONSOLE_WRITE_TIMEOUT_MS 100
+// Timing value for USB CONSOLE REQUEST TIMEOUT MS; verify related wake, sleep, and retry behavior if it changes.
 #define USB_CONSOLE_REQUEST_TIMEOUT_MS 30000
+// Timing value for USB CONSOLE START DELAY MS; verify related wake, sleep, and retry behavior if it changes.
 #define USB_CONSOLE_START_DELAY_MS 3000
+// Configuration value for USB CONSOLE FEATURE PENDING STATUS; update local references before changing it.
 #define USB_CONSOLE_FEATURE_PENDING_STATUS 501
+// Feature switch for USB CONSOLE VERBOSE LOG ENABLE; set to 1 to enable and 0 to disable.
 #define USB_CONSOLE_VERBOSE_LOG_ENABLE 0
+// Configuration value for USB CONSOLE FRAME HEAD; update local references before changing it.
 #define USB_CONSOLE_FRAME_HEAD "@#$\r\n"
+// Configuration value for USB CONSOLE FRAME TAIL; update local references before changing it.
 #define USB_CONSOLE_FRAME_TAIL "\r\n%^&\r\n"
 
 // Log USB receive progress every fixed byte step so serial upload bottlenecks can be located.
-// 按固定字节步进打印 USB 接收进度，便于定位串口上传瓶颈。
 #define USB_CONSOLE_RX_PROGRESS_STEP_BYTES (20 * 1024)
 
 // Keep file save stdio buffering configurable without touching USB feature code.
-// 将文件保存 stdio 缓冲大小集中配置，便于以后优化 SD/FATFS 写入。
 #define USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE (64 * 1024)
 
+// Feature switch for USER USB CONSOLE ANSI COLOR TEST ENABLE; set to 1 to enable and 0 to disable.
 #define USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE 1
 
 /* -------------------------------------------------------------------------- */
@@ -294,13 +404,13 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 
 // Keep OTA upload limits here so the partition size and HTTP body policy can be checked together.
-// 中文：OTA 上传限制集中放在这里，便于同时检查 HTTP body 和 OTA 分区容量。
 #define SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE (6 * 1024 * 1024)
 
 // Reserve multipart header room above the firmware partition size when rejecting oversize OTA bodies early.
-// 中文：提前拒绝超大 OTA body 时，为 multipart 头部和 meta 字段预留这部分空间。
 #define SERVER_NETWORK_STA_OTA_MULTIPART_OVERHEAD_BYTES (64 * 1024)
+// Configuration value for SERVER NETWORK STA OTA BOUNDARY MAX; update local references before changing it.
 #define SERVER_NETWORK_STA_OTA_BOUNDARY_MAX 96
+// Configuration value for SERVER NETWORK STA OTA VERSION MAX; update local references before changing it.
 #define SERVER_NETWORK_STA_OTA_VERSION_MAX 40
 
 // Print OTA low-level multipart and firmware-header details only during OTA parser bring-up.
@@ -315,6 +425,7 @@ extern "C" {
 
 // Keep saved-image listing limits here so JSON response size can be tuned without touching scan logic.
 #define SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX 8192
+// HTTP/USB route string for SERVER NETWORK STA THUMB URI PREFIX; update registered handlers if it changes.
 #define SERVER_NETWORK_STA_THUMB_URI_PREFIX "/thumb/"
 
 // Keep delete request limits here so file removal cannot grow unbounded from one JSON request.
@@ -326,35 +437,58 @@ extern "C" {
 
 // Keep slideshow run modes here so software and future deep-sleep behavior share one switch.
 #define TDX_SLIDESHOW_RUN_MODE_SOFTWARE 0
+// Mode value for TDX SLIDESHOW RUN MODE DEEP SLEEP; keep it consistent with stored/runtime mode decoding.
 #define TDX_SLIDESHOW_RUN_MODE_DEEP_SLEEP 1
 
 // Default to software slideshow so WiFi and HTTP server remain available during playback.
 #ifndef TDX_SLIDESHOW_RUN_MODE
+// Mode value for TDX SLIDESHOW RUN MODE; keep it consistent with stored/runtime mode decoding.
 #define TDX_SLIDESHOW_RUN_MODE TDX_SLIDESHOW_RUN_MODE_SOFTWARE
 #endif
 
 // Keep slideshow limits and state file names here so JSON parsing and saved config stay in sync.
 #define TDX_SLIDESHOW_FILE_NAME_MAX_LEN 48
+// Configuration value for TDX SLIDESHOW MAX FILES; update local references before changing it.
 #define TDX_SLIDESHOW_MAX_FILES 50
+// Timing value for TDX SLIDESHOW INTERVAL MIN SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_INTERVAL_MIN_SECONDS 60
+// Timing value for TDX SLIDESHOW INTERVAL MAX SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_INTERVAL_MAX_SECONDS (7U * 24U * 60U * 60U) // 7 days
+// Timing value for CH583 WAKE TIMER MIN SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define CH583_WAKE_TIMER_MIN_SECONDS 1
+// Timing value for CH583 WAKE TIMER MAX SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define CH583_WAKE_TIMER_MAX_SECONDS TDX_SLIDESHOW_INTERVAL_MAX_SECONDS
+// Configuration value for TDX SLIDESHOW CONFIG FILE; update local references before changing it.
 #define TDX_SLIDESHOW_CONFIG_FILE "slideshow_config.txt"
+// Configuration value for TDX SLIDESHOW CONTROL FILE; update local references before changing it.
 #define TDX_SLIDESHOW_CONTROL_FILE "show_control.txt"
+// Timing value for TDX SLIDESHOW STARTUP DELAY MS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_STARTUP_DELAY_MS 10000
+// Seconds to wait for CH583 time after startup delay before using show_control anchor_epoch as RTC fallback.
+#define TDX_SLIDESHOW_STARTUP_TIME_FALLBACK_WAIT_SECONDS 3
+// Log throttle for startup time-source waiting messages.
+#define TDX_SLIDESHOW_STARTUP_TIME_WAIT_LOG_SECONDS 10
+// Timing value for TDX SLIDESHOW RTC DISPLAY LEAD SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS 2
+// Timing value for TDX SLIDESHOW WAKE EXTRA ADVANCE SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS 20
+// Timing value for TDX SLIDESHOW AFTER DISPLAY WAIT MS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_AFTER_DISPLAY_WAIT_MS 12000
+// Configuration value for TDX SLIDESHOW DEEP SLEEP FLAG VALUE; update local references before changing it.
 #define TDX_SLIDESHOW_DEEP_SLEEP_FLAG_VALUE 0xA5
+// NVS key used by TDX SLIDESHOW NVS FLAG KEY; keep storage compatibility before changing it.
 #define TDX_SLIDESHOW_NVS_FLAG_KEY "slide_ds"
+// NVS key used by TDX SLIDESHOW NVS LAST FILE KEY; keep storage compatibility before changing it.
 #define TDX_SLIDESHOW_NVS_LAST_FILE_KEY "slide_last"
+// NVS key used by TDX SLIDESHOW NVS PROGRESS KEY; keep storage compatibility before changing it.
 #define TDX_SLIDESHOW_NVS_PROGRESS_KEY "slide_progress"
+// NVS key used by TDX SLIDESHOW RANDOM NVS KEY; keep storage compatibility before changing it.
 #define TDX_SLIDESHOW_RANDOM_NVS_KEY "slide_random"
+// Feature switch for TDX SLIDESHOW RANDOM ENABLE; set to 1 to enable and 0 to disable.
 #define TDX_SLIDESHOW_RANDOM_ENABLE 0
 
 /* -------------------------------------------------------------------------- */
-/* 10. Factory Reset Button                                                    */
+/* 10.1 Factory Reset Button                                                  */
 /* -------------------------------------------------------------------------- */
 
 // Enable the GPIO based factory-default image cleanup feature.
@@ -374,31 +508,48 @@ extern "C" {
 /* 11. WiFi Work Time / Sleep Runtime State / NVS Keys                         */
 /* -------------------------------------------------------------------------- */
 
-// Keep WiFi keep-alive limits here so phone commands cannot request an unbounded online window.
-#define SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS 60   // 秒
-#define SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS 3600 // 秒
-#define SERVER_NETWORK_STA_WIFI_WORK_TIME_DEFAULT_SECONDS 300 // 秒
+// Minimum WiFi online time accepted from runtime configuration, in seconds.
+#define SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS 60
+// Maximum WiFi online time accepted from runtime configuration, in seconds.
+#define SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS 3600
+// Default WiFi online time used when no valid saved value exists, in seconds.
+#define SERVER_NETWORK_STA_WIFI_WORK_TIME_DEFAULT_SECONDS 300
 
+// NVS key used by SERVER REQUIRED CONTINUE WORK TIME NVS KEY; keep storage compatibility before changing it.
 #define SERVER_REQUIRED_CONTINUE_WORK_TIME_NVS_KEY "work_continue"
+// NVS key used by WIFI STANDBY TIME S NVS KEY; keep storage compatibility before changing it.
 #define WIFI_STANDBY_TIME_S_NVS_KEY "wifi_standby"
+// NVS key used by CH583 BLE MAC NVS KEY; keep storage compatibility before changing it.
 #define CH583_BLE_MAC_NVS_KEY "ch583_ble_mac"
+// NVS key used by CH583 BLE VER NVS KEY; keep storage compatibility before changing it.
 #define CH583_BLE_VER_NVS_KEY "ch583_ble_ver"
+// Configuration value for CH583 BLE VER DEFAULT; update local references before changing it.
 #define CH583_BLE_VER_DEFAULT 0
 
 // Keep sleep/work-state NVS keys here so BLE, HTTP, and network timers share one saved runtime state.
 #define USER_WORK_STATE_NVS_NAMESPACE "work_state"
+// NVS key used by USER WORK STATE NVS KEY; keep storage compatibility before changing it.
 #define USER_WORK_STATE_NVS_KEY "runtime"
+// Timing value for USER WORK STATE DEFAULT CONTINUE SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_WORK_STATE_DEFAULT_CONTINUE_SECONDS SERVER_NETWORK_STA_WIFI_WORK_TIME_DEFAULT_SECONDS
+// Timing value for USER WORK STATE DEFAULT STANDBY SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_WORK_STATE_DEFAULT_STANDBY_SECONDS 15
+// Timing value for USER WORK STATE MIN CONTINUE SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_WORK_STATE_MIN_CONTINUE_SECONDS SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS
+// Timing value for USER WORK STATE MAX CONTINUE SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_WORK_STATE_MAX_CONTINUE_SECONDS SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS
+// Task stack size for USER WORK STATE TASK STACK SIZE; tune with runtime stack high-water data.
 #define USER_WORK_STATE_TASK_STACK_SIZE (8 * 1024)
+// FreeRTOS task priority for USER WORK STATE TASK PRIORITY; keep scheduler side effects in mind when changing it.
 #define USER_WORK_STATE_TASK_PRIORITY 3
+// Timing value for USER WORK STATE TASK INTERVAL MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_WORK_STATE_TASK_INTERVAL_MS 1000
 
 // After each EPD display job finishes, request one low-power countdown through work_state_task.
 #define USER_EPD_DONE_LOW_POWER_ENABLE 1
+// Timing value for USER EPD DONE LOW POWER DELAY SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 5
+// Timing value for USER EPD DONE LOW POWER SLIDESHOW MIN REMAIN SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 60
 
 /* -------------------------------------------------------------------------- */
@@ -407,6 +558,7 @@ extern "C" {
 
 // Keep BLE optional so board bring-up can disable Bluetooth without editing BLE source files.
 #ifndef USER_BLE_ENABLE
+// Feature switch for USER BLE ENABLE; set to 1 to enable and 0 to disable.
 #define USER_BLE_ENABLE 0
 #endif
 
@@ -416,24 +568,36 @@ extern "C" {
 
 // Keep all migrated BLE identifiers here so future app/protocol changes do not touch user_app.cpp.
 #define TDX_BLE_LOG_TAG "BLE"
+// Configuration value for TDX BLE PROFILE NUM; update local references before changing it.
 #define TDX_BLE_PROFILE_NUM 1
+// Configuration value for TDX BLE PROFILE APP IDX; update local references before changing it.
 #define TDX_BLE_PROFILE_APP_IDX 0
+// Configuration value for TDX BLE APP ID; update local references before changing it.
 #define TDX_BLE_APP_ID 0x56
+// Configuration value for TDX BLE DEVICE NAME; update local references before changing it.
 #define TDX_BLE_DEVICE_NAME "Tdx_6_color"
+// Configuration value for TDX BLE SERVICE INST ID; update local references before changing it.
 #define TDX_BLE_SERVICE_INST_ID 0
+// Configuration value for TDX BLE ATT UUID SIZE; update local references before changing it.
 #define TDX_BLE_ATT_UUID_SIZE 16
+// Configuration value for TDX BLE DATA MAX LEN; update local references before changing it.
 #define TDX_BLE_DATA_MAX_LEN 512
 
 #if USER_BLE_ENABLE
+// Configuration value for TDX BLE TX POWER LOWEST; update local references before changing it.
 #define TDX_BLE_TX_POWER_LOWEST ESP_PWR_LVL_N24
 #else
+// Configuration value for TDX BLE TX POWER LOWEST; update local references before changing it.
 #define TDX_BLE_TX_POWER_LOWEST 0
 #endif
 
 // Keep BLE JSON queue limits here so BLE write parsing can be tuned without touching the GATT callback.
 #define USER_BLE_JSON_BUF_SIZE 1024
+// Queue length for USER BLE WRITE QUEUE LENGTH; size it for burst traffic without wasting RAM.
 #define USER_BLE_WRITE_QUEUE_LENGTH 4
+// Task stack size for USER BLE WRITE TASK STACK SIZE; tune with runtime stack high-water data.
 #define USER_BLE_WRITE_TASK_STACK_SIZE (12 * 1024)
+// FreeRTOS task priority for USER BLE WRITE TASK PRIORITY; keep scheduler side effects in mind when changing it.
 #define USER_BLE_WRITE_TASK_PRIORITY 5
 
 // Keep the original source project's attribute alias visible for protocol mapping checks.
@@ -450,30 +614,46 @@ extern "C" {
 #define USER_CH583_UART_ENABLE 1
 
 // Keep CH583 UART pins and baud rate here so protocol TX and RX always use the same physical port.
-// 将 CH583 串口引脚和波特率集中在这里，保证协议发送和接收使用同一个物理串口。
 #define USER_CH583_UART_PORT UART_NUM_1
+// GPIO assignment for USER CH583 UART TX PIN; update board wiring and dependent drivers if it changes.
 #define USER_CH583_UART_TX_PIN GPIO_NUM_24
+// GPIO assignment for USER CH583 UART RX PIN; update board wiring and dependent drivers if it changes.
 #define USER_CH583_UART_RX_PIN GPIO_NUM_23
+// Configuration value for USER CH583 UART BAUD RATE; update local references before changing it.
 #define USER_CH583_UART_BAUD_RATE 115200
+// Configuration value for CH583 WIFI UART PORT; update local references before changing it.
 #define CH583_WIFI_UART_PORT USER_CH583_UART_PORT
 
 // Keep CH583 UART buffer and task sizes here so receive pressure can be tuned without changing task logic.
 #define USER_CH583_UART_RECEIVE_BUF_SIZE 256
+// Buffer or size limit for USER CH583 UART DRIVER RX BUF SIZE; keep RAM and payload limits aligned.
 #define USER_CH583_UART_DRIVER_RX_BUF_SIZE 8192
+// Buffer or size limit for USER CH583 UART DRIVER TX BUF SIZE; keep RAM and payload limits aligned.
 #define USER_CH583_UART_DRIVER_TX_BUF_SIZE 0
+// Configuration value for USER CH583 UART EVENT QUEUE SIZE; update local references before changing it.
 #define USER_CH583_UART_EVENT_QUEUE_SIZE 20
+// Task stack size for USER CH583 UART EVENT TASK STACK SIZE; tune with runtime stack high-water data.
 #define USER_CH583_UART_EVENT_TASK_STACK_SIZE (8 * 1024)
+// Task stack size for USER CH583 UART RECEIVE TASK STACK SIZE; tune with runtime stack high-water data.
 #define USER_CH583_UART_RECEIVE_TASK_STACK_SIZE (8 * 1024)
+// Configuration value for USER CH583 UART WAKEUP THRESHOLD; update local references before changing it.
 #define USER_CH583_UART_WAKEUP_THRESHOLD 3
 
 // Keep CH583 protocol debug flags here so frame parsing logs can be enabled without editing the copied protocol file.
 #define CH583_WIFI_UART_DEBUG_PRINT_ENABLE 0
+// Feature switch for CH583 WIFI UART DIRECTION PRINT ENABLE; set to 1 to enable and 0 to disable.
 #define CH583_WIFI_UART_DIRECTION_PRINT_ENABLE 1
+// Timing value for CH583 WIFI UART TX SILENCE MS; verify related wake, sleep, and retry behavior if it changes.
 #define CH583_WIFI_UART_TX_SILENCE_MS 10
+// Configuration value for CH583 WIFI UART BAD CRC RETRY MAX; update local references before changing it.
 #define CH583_WIFI_UART_BAD_CRC_RETRY_MAX 5
+// Configuration value for CH583 WIFI NFC JSON MAX LEN; update local references before changing it.
 #define CH583_WIFI_NFC_JSON_MAX_LEN 220
+// Configuration value for CH583 WIFI NFC BASE64URL MAX LEN; update local references before changing it.
 #define CH583_WIFI_NFC_BASE64URL_MAX_LEN 300
+// Feature switch for CH583 WIFI NFC TEST ENABLE; set to 1 to enable and 0 to disable.
 #define CH583_WIFI_NFC_TEST_ENABLE 0
+// Timing value for CH583 WIFI NFC TEST START DELAY SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define CH583_WIFI_NFC_TEST_START_DELAY_SECONDS 5
 
 /* -------------------------------------------------------------------------- */
@@ -483,10 +663,13 @@ extern "C" {
 // SDK console / bootloader logs are still controlled by sdkconfig. These macros
 // only route application logs after UserDebugOutput_Init() is called.
 #define USER_DEBUG_OUTPUT_USB_SERIAL_JTAG 1
+// Configuration value for USER DEBUG OUTPUT UART0; update local references before changing it.
 #define USER_DEBUG_OUTPUT_UART0 2
+// Configuration value for USER DEBUG OUTPUT BOTH; update local references before changing it.
 #define USER_DEBUG_OUTPUT_BOTH 3
 
 #ifndef USER_DEBUG_OUTPUT_TARGET
+// Select where application debug logs are routed after UserDebugOutput_Init() runs.
 #define USER_DEBUG_OUTPUT_TARGET USER_DEBUG_OUTPUT_BOTH
 #endif
 
@@ -498,17 +681,25 @@ extern "C" {
 //    baud = 921600
 
 #define USER_DEBUG_UART_PORT UART_NUM_0
+// GPIO assignment for USER DEBUG UART TX PIN; update board wiring and dependent drivers if it changes.
 #define USER_DEBUG_UART_TX_PIN GPIO_NUM_11
+// GPIO assignment for USER DEBUG UART RX PIN; update board wiring and dependent drivers if it changes.
 #define USER_DEBUG_UART_RX_PIN GPIO_NUM_12
+// Configuration value for USER DEBUG UART BAUD RATE; update local references before changing it.
 #define USER_DEBUG_UART_BAUD_RATE 921600
+// Buffer or size limit for USER DEBUG UART RX BUF SIZE; keep RAM and payload limits aligned.
 #define USER_DEBUG_UART_RX_BUF_SIZE 256
+// Buffer or size limit for USER DEBUG UART TX BUF SIZE; keep RAM and payload limits aligned.
 #define USER_DEBUG_UART_TX_BUF_SIZE 4096
+// Configuration value for USER DEBUG UART LOG LINE MAX; update local references before changing it.
 #define USER_DEBUG_UART_LOG_LINE_MAX 512
 
 #if (USER_DEBUG_OUTPUT_TARGET == USER_DEBUG_OUTPUT_UART0) || \
     (USER_DEBUG_OUTPUT_TARGET == USER_DEBUG_OUTPUT_BOTH)
+// Feature switch for USER DEBUG UART0 ENABLED; set to 1 to enable and 0 to disable.
 #define USER_DEBUG_UART0_ENABLED 1
 #else
+// Feature switch for USER DEBUG UART0 ENABLED; set to 1 to enable and 0 to disable.
 #define USER_DEBUG_UART0_ENABLED 0
 #endif
 
@@ -521,28 +712,41 @@ extern "C" {
 
 // Keep EPD panel geometry here because the copied display driver and network bin size must match.
 #define USER_EPD_WIDTH 1600
+// Configuration value for USER EPD HEIGHT; update local references before changing it.
 #define USER_EPD_HEIGHT 1200
+// Configuration value for USER EPD SCALE MAX WIDTH; update local references before changing it.
 #define USER_EPD_SCALE_MAX_WIDTH 1350
+// Configuration value for USER EPD SCALE MAX HEIGHT; update local references before changing it.
 #define USER_EPD_SCALE_MAX_HEIGHT 1350
+// Configuration value for USER EPD TYPE; update local references before changing it.
 #define USER_EPD_TYPE 2
 
 // Keep EPD SPI pins here so board pin changes do not require editing display_bsp.cpp.
-// 将墨水屏 SPI 引脚集中在这里，后续改板时不用修改 display_bsp.cpp。
 #define USER_EPD_MOSI_PIN GPIO_NUM_1
+// GPIO assignment for USER EPD MISO PIN; update board wiring and dependent drivers if it changes.
 #define USER_EPD_MISO_PIN GPIO_NUM_25
+// GPIO assignment for USER EPD SCK PIN; update board wiring and dependent drivers if it changes.
 #define USER_EPD_SCK_PIN GPIO_NUM_6
+// GPIO assignment for USER EPD DC PIN; update board wiring and dependent drivers if it changes.
 #define USER_EPD_DC_PIN GPIO_NUM_8
+// GPIO assignment for USER EPD CS PIN; update board wiring and dependent drivers if it changes.
 #define USER_EPD_CS_PIN GPIO_NUM_7
+// GPIO assignment for USER EPD CS2 PIN; update board wiring and dependent drivers if it changes.
 #define USER_EPD_CS2_PIN GPIO_NUM_0
+// GPIO assignment for USER EPD RST PIN; update board wiring and dependent drivers if it changes.
 #define USER_EPD_RST_PIN GPIO_NUM_10
+// GPIO assignment for USER EPD BUSY PIN; update board wiring and dependent drivers if it changes.
 #define USER_EPD_BUSY_PIN GPIO_NUM_9
+// Configuration value for USER EPD SPI HOST; update local references before changing it.
 #define USER_EPD_SPI_HOST SPI2_HOST
 
 // Keep the second EPD target mapped to the shared C5 EPD control lines plus CS2.
-// 将第二路墨水屏目标映射到 C5 共用控制线和 CS2，避免使用旧 S3 的独立 EPD2 引脚。
 #define USER_EPD2_DC_PIN USER_EPD_DC_PIN
+// GPIO assignment for USER EPD2 CS PIN; update board wiring and dependent drivers if it changes.
 #define USER_EPD2_CS_PIN USER_EPD_CS2_PIN
+// GPIO assignment for USER EPD2 RST PIN; update board wiring and dependent drivers if it changes.
 #define USER_EPD2_RST_PIN USER_EPD_RST_PIN
+// GPIO assignment for USER EPD2 BUSY PIN; update board wiring and dependent drivers if it changes.
 #define USER_EPD2_BUSY_PIN USER_EPD_BUSY_PIN
 
 /* -------------------------------------------------------------------------- */
@@ -550,11 +754,14 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 
 // Keep SD SPI pins here because the C5 board shares MOSI and CLK with the EPD bus.
-// 将 SD SPI 引脚集中在这里，因为 C5 板上 SD 与墨水屏共用 MOSI 和 CLK。
 #define USER_SD_SPI_MOSI_PIN GPIO_NUM_1
+// GPIO assignment for USER SD SPI MISO PIN; update board wiring and dependent drivers if it changes.
 #define USER_SD_SPI_MISO_PIN GPIO_NUM_25
+// GPIO assignment for USER SD SPI CLK PIN; update board wiring and dependent drivers if it changes.
 #define USER_SD_SPI_CLK_PIN GPIO_NUM_6
+// GPIO assignment for USER SD SPI CS PIN; update board wiring and dependent drivers if it changes.
 #define USER_SD_SPI_CS_PIN GPIO_NUM_26
+// Configuration value for USER SD SPI HOST; update local references before changing it.
 #define USER_SD_SPI_HOST SPI2_HOST
 
 /* -------------------------------------------------------------------------- */
@@ -563,21 +770,34 @@ extern "C" {
 
 // Keep EPD task settings here so display latency and stack pressure can be tuned in one place.
 #define USER_EPD_DISPLAY_QUEUE_LENGTH 2
+// Task stack size for USER EPD DISPLAY TASK STACK SIZE; tune with runtime stack high-water data.
 #define USER_EPD_DISPLAY_TASK_STACK_SIZE (8 * 1024)
+// FreeRTOS task priority for USER EPD DISPLAY TASK PRIORITY; keep scheduler side effects in mind when changing it.
 #define USER_EPD_DISPLAY_TASK_PRIORITY 5
 // Bound synchronous display waits; completion lifetime remains owned by both waiter and EPD task.
 #define USER_EPD_DISPLAY_WAIT_TIMEOUT_MS (5 * 60 * 1000)
 
+// NVS key used by USER EPD TYPE NVS KEY; keep storage compatibility before changing it.
 #define USER_EPD_TYPE_NVS_KEY "epd_type"
+// Configuration value for USER EPD TYPE DEFAULT; update local references before changing it.
 #define USER_EPD_TYPE_DEFAULT 10   // EPD_TYPE_1600_1200_133_DKE = 10,
+// Mode value for USER EPD DISPLAY MODE NORMAL; keep it consistent with stored/runtime mode decoding.
 #define USER_EPD_DISPLAY_MODE_NORMAL 0
+// Mode value for USER EPD DISPLAY MODE SLIDESHOW; keep it consistent with stored/runtime mode decoding.
 #define USER_EPD_DISPLAY_MODE_SLIDESHOW 1
+// Mode value for USER EPD DISPLAY MODE DAILY; keep it consistent with stored/runtime mode decoding.
 #define USER_EPD_DISPLAY_MODE_DAILY 2
+// Mode value for USER EPD DISPLAY MODE DEFAULT; keep it consistent with stored/runtime mode decoding.
 #define USER_EPD_DISPLAY_MODE_DEFAULT USER_EPD_DISPLAY_MODE_NORMAL
+// NVS key used by USER EPD DISPLAY MODE NVS KEY; keep storage compatibility before changing it.
 #define USER_EPD_DISPLAY_MODE_NVS_KEY "epd_mode"
+// Feature switch for USB CONSOLE EPD TYPE DEBUG LOG ENABLE; set to 1 to enable and 0 to disable.
 #define USB_CONSOLE_EPD_TYPE_DEBUG_LOG_ENABLE 1
+// HTTP/USB route string for USB CONSOLE EPD TYPE LIST URI; update registered handlers if it changes.
 #define USB_CONSOLE_EPD_TYPE_LIST_URI "/epd_type_list"
+// HTTP/USB route string for USB CONSOLE EPD TYPE URI; update registered handlers if it changes.
 #define USB_CONSOLE_EPD_TYPE_URI "/epd_type"
+// HTTP/USB route string for USB CONSOLE EPD TEST URI; update registered handlers if it changes.
 #define USB_CONSOLE_EPD_TEST_URI "/epd_test"
 
 /* -------------------------------------------------------------------------- */
@@ -586,26 +806,32 @@ extern "C" {
 
 // Map the copied display driver's colored logs to ESP-IDF logs for this project.
 #ifndef LOG_Blue
+// Display-driver blue log alias mapped to ESP-IDF info logs.
 #define LOG_Blue(fmt, ...) ESP_LOGI("Display", fmt, ##__VA_ARGS__)
 #endif
 
 #ifndef LOG_Purple
+// Display-driver purple log alias mapped to ESP-IDF info logs.
 #define LOG_Purple(fmt, ...) ESP_LOGI("Display", fmt, ##__VA_ARGS__)
 #endif
 
 #ifndef LOG_Cyan
+// Display-driver cyan log alias mapped to ESP-IDF info logs.
 #define LOG_Cyan(fmt, ...) ESP_LOGI("Display", fmt, ##__VA_ARGS__)
 #endif
 
 #ifndef LOG_INFO
+// Display-driver info log alias mapped to ESP-IDF info logs.
 #define LOG_INFO(fmt, ...) ESP_LOGI("Display", fmt, ##__VA_ARGS__)
 #endif
 
 #ifndef LOG_WARN
+// Display-driver warning log alias mapped to ESP-IDF warning logs.
 #define LOG_WARN(fmt, ...) ESP_LOGW("Display", fmt, ##__VA_ARGS__)
 #endif
 
 #ifndef LOG_ERROR
+// Display-driver error log alias mapped to ESP-IDF error logs.
 #define LOG_ERROR(fmt, ...) ESP_LOGE("Display", fmt, ##__VA_ARGS__)
 #endif
 
@@ -615,15 +841,23 @@ extern "C" {
 
 // Enable local ESP32-C5 GPIO test output. GPIO11 toggles at 50% duty; GPIO12 is fixed output.
 #if USER_DEBUG_UART0_ENABLED
+// Disable local GPIO test output while UART0 debug output owns GPIO11/GPIO12.
 #define USER_GPIO_TEST_OUTPUT_ENABLE 0
 #else
+// Enable local GPIO test output when GPIO11/GPIO12 are free.
 #define USER_GPIO_TEST_OUTPUT_ENABLE 1
 #endif
+// GPIO assignment for USER GPIO TEST PIN 11; update board wiring and dependent drivers if it changes.
 #define USER_GPIO_TEST_PIN_11 GPIO_NUM_11
+// GPIO assignment for USER GPIO TEST PIN 12; update board wiring and dependent drivers if it changes.
 #define USER_GPIO_TEST_PIN_12 GPIO_NUM_12
+// Fixed output level driven on GPIO12 during the local GPIO test.
 #define USER_GPIO_TEST_PIN_12_LEVEL 0
+// Toggle period used by the local GPIO11 test output.
 #define USER_GPIO_TEST_PERIOD_MS 500
+// Task stack size for the local GPIO test task.
 #define USER_GPIO_TEST_TASK_STACK_SIZE (2 * 1024)
+// FreeRTOS task priority for the local GPIO test task.
 #define USER_GPIO_TEST_TASK_PRIORITY 1
 
 /* -------------------------------------------------------------------------- */
@@ -634,39 +868,62 @@ extern "C" {
 #define USER_LED_STATUS_ENABLE 1
 
 // Route status LEDs through CH583 GPIO because the ESP32-C5 board has no local LEDs.
-// C5 板载没有本机 LED，状态灯通过 CH583 GPIO 控制。
 #define USER_LED_BACKEND_CH583 1
 
 // Keep CH583 LED pins and active levels here so status behavior can change without touching LED logic.
-// 将 CH583 LED 引脚和有效电平集中在这里，后续调整状态灯不用修改 LED 逻辑。
 #define USER_LED_CH583_GREEN_PORT "PB"
+// GPIO assignment for USER LED CH583 GREEN PIN; update board wiring and dependent drivers if it changes.
 #define USER_LED_CH583_GREEN_PIN 6
+// Configuration value for USER LED CH583 RED PORT; update local references before changing it.
 #define USER_LED_CH583_RED_PORT "PB"
+// GPIO assignment for USER LED CH583 RED PIN; update board wiring and dependent drivers if it changes.
 #define USER_LED_CH583_RED_PIN 5
+// Configuration value for USER LED CH583 ON LEVEL; update local references before changing it.
 #define USER_LED_CH583_ON_LEVEL "LOW"
+// Configuration value for USER LED CH583 OFF LEVEL; update local references before changing it.
 #define USER_LED_CH583_OFF_LEVEL "HIGH"
 
 // CH583 owns the blink clock. Each level adds 600 ms to the LED toggle interval.
 #define USER_LED_BLINK_LEVEL_1_MS 600
+// Timing value for USER LED BLINK LEVEL 2 MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_BLINK_LEVEL_2_MS 1200
+// Timing value for USER LED BLINK LEVEL 3 MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_BLINK_LEVEL_3_MS 1800
+// Timing value for USER LED BLINK LEVEL 4 MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_BLINK_LEVEL_4_MS 2400
+// Timing value for USER LED BLINK LEVEL 5 MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_BLINK_LEVEL_5_MS 3000
+// Timing value for USER LED BLINK LEVEL 6 MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_BLINK_LEVEL_6_MS 3600
+// Timing value for USER LED BLINK LEVEL 7 MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_BLINK_LEVEL_7_MS 4200
+// Timing value for USER LED BLINK LEVEL 8 MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_BLINK_LEVEL_8_MS 4800
+// Timing value for USER LED BLINK LEVEL 9 MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_BLINK_LEVEL_9_MS 5400
+// Timing value for USER LED BLINK LEVEL 10 MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_BLINK_LEVEL_10_MS 6000
+// Timing value for USER LED FAST BLINK MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_FAST_BLINK_MS USER_LED_BLINK_LEVEL_1_MS
+// Timing value for USER LED MID BLINK MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_MID_BLINK_MS USER_LED_BLINK_LEVEL_2_MS
+// Timing value for USER LED SLOW BLINK MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_SLOW_BLINK_MS USER_LED_BLINK_LEVEL_3_MS
+// Timing value for USER LED READY BLINK MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_READY_BLINK_MS USER_LED_BLINK_LEVEL_4_MS
+// Timing value for USER LED WORK BLINK MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_WORK_BLINK_MS USER_LED_BLINK_LEVEL_2_MS
+// Timing value for USER LED ACTIVITY BLINK DELAY MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_ACTIVITY_BLINK_DELAY_MS 300
+// Queue length for USER LED ACTIVITY QUEUE LENGTH; size it for burst traffic without wasting RAM.
 #define USER_LED_ACTIVITY_QUEUE_LENGTH 16
+// Payload-size threshold for treating UART activity as a large transfer in LED status logic.
 #define USER_LED_UART_LARGE_DATA_THRESHOLD 256
+// Timing value for USER LED SUCCESS HOLD MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_SUCCESS_HOLD_MS 1000
+// Task stack size for USER LED STATUS TASK STACK SIZE; tune with runtime stack high-water data.
 #define USER_LED_STATUS_TASK_STACK_SIZE (4 * 1024)
+// FreeRTOS task priority for USER LED STATUS TASK PRIORITY; keep scheduler side effects in mind when changing it.
 #define USER_LED_STATUS_TASK_PRIORITY 3
 
 /* -------------------------------------------------------------------------- */
