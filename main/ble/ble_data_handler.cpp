@@ -543,11 +543,11 @@ static void wifi_connect_task(void *arg)
                 if (ip_ready) {
                     ESP_LOGE(TAG, "WiFi got IP but wifi_info_result send failed");
                 } else {
-                    ESP_LOGW(TAG, "WiFi connect result OK but IP was not ready for wifi_info_result");
+                    ESP_LOGW(TAG, "WiFi connect result OK but network was not ready for wifi_info_result");
                     send_simple_result_with_sender(reply_sender,
                                                    result_func,
                                                    TDX_JSON_RESULT_WIFI_GOT_IP_FAILED,
-                                                   "WiFi did not obtain IP");
+                                                   "WiFi network was not ready");
                 }
             }
         } else if (connect_result == TDX_JSON_RESULT_WIFI_AUTH_FAILED) {

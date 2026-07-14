@@ -50,8 +50,8 @@ typedef struct {
     server_network_retry_type_t retry_type;
     uint32_t wifi_retry_count;
     uint32_t wifi_retry_after_ms;
-    uint32_t service_retry_count;
-    uint32_t service_retry_after_ms;
+    uint32_t http_retry_count;
+    uint32_t http_retry_after_ms;
     uint32_t mdns_retry_count;
     uint32_t mdns_retry_after_ms;
     uint32_t connection_generation;

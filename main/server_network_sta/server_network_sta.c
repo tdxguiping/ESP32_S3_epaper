@@ -96,13 +96,13 @@ static server_network_sta_status_t s_status = {
     .state = SERVER_NETWORK_STA_STATE_IDLE,
     .last_result = TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT,
 };
-static TickType_t s_retry_deadline;
-static TickType_t s_service_retry_deadline;
+static TickType_t s_wifi_retry_deadline;
+static TickType_t s_http_retry_deadline;
 static TickType_t s_mdns_retry_deadline;
 static TickType_t s_ready_stable_deadline;
 static SemaphoreHandle_t s_request_mutex;
 static StaticSemaphore_t s_request_mutex_buffer;
-static wifi_request_slot_t s_request_slots[2];
+static wifi_request_slot_t s_request_slots[SERVER_NETWORK_STA_REQUEST_SLOT_COUNT];
 static uint32_t s_next_request_id;
 static portMUX_TYPE s_init_lock = portMUX_INITIALIZER_UNLOCKED;
 static volatile wifi_manager_init_state_t s_init_state = WIFI_MANAGER_INIT_NONE;
@@ -117,16 +117,6 @@ static esp_event_handler_instance_t s_wifi_event_instance;
 static esp_event_handler_instance_t s_ip_got_event_instance;
 static esp_event_handler_instance_t s_ip_lost_event_instance;
 
-#define SERVER_NETWORK_STA_MANAGER_QUEUE_LENGTH 24
-#define SERVER_NETWORK_STA_MANAGER_STACK_SIZE 6144
-#define SERVER_NETWORK_STA_MANAGER_PRIORITY 5
-#define SERVER_NETWORK_STA_IP_TIMEOUT_MS 10000
-#define SERVER_NETWORK_STA_SERVICE_RETRY_MS 3000
-/* Covers three worst-case authentication attempts plus the first two backoff delays. */
-#define SERVER_NETWORK_STA_CONNECT_STATE_TIMEOUT_MS 45000
-#define SERVER_NETWORK_STA_CONNECT_REQUEST_WAIT_TIMEOUT_MS 45000
-#define SERVER_NETWORK_STA_EXPECTED_DISCONNECT_TIMEOUT_MS 3000
-#define SERVER_NETWORK_STA_READY_STABLE_RESET_MS 30000
 #define SERVER_NETWORK_STA_HARD_AUTH_FAILURE_LIMIT 2
 #define SERVER_NETWORK_STA_TRANSIENT_AUTH_FAILURE_LIMIT 3
 #define SERVER_NETWORK_STA_INVALID_REQUEST_SLOT UINT8_MAX
@@ -233,12 +223,12 @@ static void status_enter_connecting(void)
     s_status.mdns_ready = false;
     s_status.ip[0] = '\0';
     s_status.wifi_retry_after_ms = 0;
-    s_status.service_retry_count = 0;
-    s_status.service_retry_after_ms = 0;
+    s_status.http_retry_count = 0;
+    s_status.http_retry_after_ms = 0;
     s_status.mdns_retry_count = 0;
     s_status.mdns_retry_after_ms = 0;
-    s_retry_deadline = 0;
-    s_service_retry_deadline = 0;
+    s_wifi_retry_deadline = 0;
+    s_http_retry_deadline = 0;
     s_mdns_retry_deadline = 0;
     status_unlock();
 }
@@ -256,12 +246,12 @@ static void status_enter_disconnecting(server_network_sta_disconnect_purpose_t p
     s_status.mdns_ready = false;
     s_status.ip[0] = '\0';
     s_status.wifi_retry_after_ms = 0;
-    s_status.service_retry_count = 0;
-    s_status.service_retry_after_ms = 0;
+    s_status.http_retry_count = 0;
+    s_status.http_retry_after_ms = 0;
     s_status.mdns_retry_count = 0;
     s_status.mdns_retry_after_ms = 0;
-    s_retry_deadline = 0;
-    s_service_retry_deadline = 0;
+    s_wifi_retry_deadline = 0;
+    s_http_retry_deadline = 0;
     s_mdns_retry_deadline = 0;
     status_unlock();
 }
@@ -316,12 +306,12 @@ static void status_clear_retries(void)
     s_status.retry_type = SERVER_NETWORK_RETRY_NONE;
     s_status.wifi_retry_count = 0;
     s_status.wifi_retry_after_ms = 0;
-    s_status.service_retry_count = 0;
-    s_status.service_retry_after_ms = 0;
+    s_status.http_retry_count = 0;
+    s_status.http_retry_after_ms = 0;
     s_status.mdns_retry_count = 0;
     s_status.mdns_retry_after_ms = 0;
-    s_retry_deadline = 0;
-    s_service_retry_deadline = 0;
+    s_wifi_retry_deadline = 0;
+    s_http_retry_deadline = 0;
     s_mdns_retry_deadline = 0;
     status_unlock();
 }
@@ -342,12 +332,12 @@ static void status_enter_wifi_retry(uint32_t retry_count, uint32_t delay_ms,
     s_status.ip[0] = '\0';
     s_status.disconnect_reason = reason;
     s_status.rssi = rssi;
-    s_status.service_retry_count = 0;
-    s_status.service_retry_after_ms = 0;
+    s_status.http_retry_count = 0;
+    s_status.http_retry_after_ms = 0;
     s_status.mdns_retry_count = 0;
     s_status.mdns_retry_after_ms = 0;
-    s_retry_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(delay_ms);
-    s_service_retry_deadline = 0;
+    s_wifi_retry_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(delay_ms);
+    s_http_retry_deadline = 0;
     s_mdns_retry_deadline = 0;
     status_unlock();
 }
@@ -358,10 +348,10 @@ static void status_enter_service_retry(uint32_t retry_count, uint32_t delay_ms)
     s_status.state = SERVER_NETWORK_STA_STATE_RETRY_WAIT;
     s_status.retry_type = SERVER_NETWORK_RETRY_HTTP;
     s_status.disconnect_purpose = SERVER_NETWORK_STA_DISCONNECT_NONE;
-    s_status.service_retry_count = retry_count;
-    s_status.service_retry_after_ms = delay_ms;
+    s_status.http_retry_count = retry_count;
+    s_status.http_retry_after_ms = delay_ms;
     s_status.http_ready = false;
-    s_service_retry_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(delay_ms);
+    s_http_retry_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(delay_ms);
     status_unlock();
 }
 
@@ -391,10 +381,10 @@ static void status_enter_ready(const esp_ip4_addr_t *ip)
     s_status.http_ready = true;
     s_status.mdns_ready = s_mdns_service_started;
     s_status.wifi_retry_after_ms = 0;
-    s_status.service_retry_count = 0;
-    s_status.service_retry_after_ms = 0;
-    s_retry_deadline = 0;
-    s_service_retry_deadline = 0;
+    s_status.http_retry_count = 0;
+    s_status.http_retry_after_ms = 0;
+    s_wifi_retry_deadline = 0;
+    s_http_retry_deadline = 0;
     if (s_mdns_service_started) {
         s_status.retry_type = SERVER_NETWORK_RETRY_NONE;
         s_status.mdns_retry_count = 0;
@@ -419,12 +409,12 @@ static void status_enter_got_ip(const esp_ip4_addr_t *ip)
     s_status.has_ip = true;
     s_status.http_ready = false;
     s_status.wifi_retry_after_ms = 0;
-    s_status.service_retry_count = 0;
-    s_status.service_retry_after_ms = 0;
+    s_status.http_retry_count = 0;
+    s_status.http_retry_after_ms = 0;
     s_status.mdns_retry_count = 0;
     s_status.mdns_retry_after_ms = 0;
-    s_retry_deadline = 0;
-    s_service_retry_deadline = 0;
+    s_wifi_retry_deadline = 0;
+    s_http_retry_deadline = 0;
     s_mdns_retry_deadline = 0;
     if (ip != NULL) {
         snprintf(s_status.ip, sizeof(s_status.ip), IPSTR, IP2STR(ip));
@@ -442,8 +432,8 @@ static void status_enter_terminal(server_network_sta_state_t state, int result,
     s_status.disconnect_purpose = SERVER_NETWORK_STA_DISCONNECT_NONE;
     s_status.wifi_retry_count = 0;
     s_status.wifi_retry_after_ms = 0;
-    s_status.service_retry_count = 0;
-    s_status.service_retry_after_ms = 0;
+    s_status.http_retry_count = 0;
+    s_status.http_retry_after_ms = 0;
     s_status.mdns_retry_count = 0;
     s_status.mdns_retry_after_ms = 0;
     s_status.ap_connected = false;
@@ -454,8 +444,8 @@ static void status_enter_terminal(server_network_sta_state_t state, int result,
     s_status.ip[0] = '\0';
     s_status.disconnect_reason = reason;
     s_status.rssi = rssi;
-    s_retry_deadline = 0;
-    s_service_retry_deadline = 0;
+    s_wifi_retry_deadline = 0;
+    s_http_retry_deadline = 0;
     s_mdns_retry_deadline = 0;
     status_unlock();
 }
@@ -937,7 +927,7 @@ static void server_network_sta_manager_task(void *arg)
     uint8_t pending_request_slot = SERVER_NETWORK_STA_INVALID_REQUEST_SLOT;
     uint32_t pending_request_id = 0;
     wifi_manager_context_t context = {0};
-    uint32_t service_retry_count = 0;
+    uint32_t http_retry_count = 0;
     uint32_t mdns_retry_count = 0;
     TickType_t connection_deadline = 0;
     bool connection_enabled = false;
@@ -953,7 +943,7 @@ static void server_network_sta_manager_task(void *arg)
             state_deadline = connection_deadline;
         } else if (snapshot.state == SERVER_NETWORK_STA_STATE_RETRY_WAIT) {
             state_deadline = snapshot.retry_type == SERVER_NETWORK_RETRY_HTTP
-                                 ? s_service_retry_deadline : s_retry_deadline;
+                                 ? s_http_retry_deadline : s_wifi_retry_deadline;
         }
         if (state_deadline != 0) {
             wait_ticks = (int32_t)(state_deadline - now) > 0 ? state_deadline - now : 0;
@@ -1042,7 +1032,7 @@ static void server_network_sta_manager_task(void *arg)
                         set_wifi_ps(WIFI_PS_NONE, "reconfigure_timeout");
                         status_enter_connecting();
                         ret = esp_wifi_connect();
-                        connection_deadline = now + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_STATE_TIMEOUT_MS);
+                        connection_deadline = now + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_FLOW_TIMEOUT_MS);
                     }
                     if (ret != ESP_OK) {
                         uint32_t retry_count = 0;
@@ -1109,12 +1099,12 @@ static void server_network_sta_manager_task(void *arg)
                         ESP_LOGI(TAG, "Network READY ip=" IPSTR " http=1 mdns=%d",
                                  IP2STR(&ip), s_mdns_service_started ? 1 : 0);
                     } else {
-                        service_retry_count++;
-                        status_enter_service_retry(service_retry_count, SERVER_NETWORK_STA_SERVICE_RETRY_MS);
-                        if (should_log_retry(service_retry_count)) {
+                        http_retry_count++;
+                        status_enter_service_retry(http_retry_count, SERVER_NETWORK_STA_HTTP_RETRY_MS);
+                        if (should_log_retry(http_retry_count)) {
                             ESP_LOGW(TAG, "HTTP service retry=%lu delay_ms=%u ret=%s",
-                                     (unsigned long)service_retry_count,
-                                     SERVER_NETWORK_STA_SERVICE_RETRY_MS,
+                                     (unsigned long)http_retry_count,
+                                     SERVER_NETWORK_STA_HTTP_RETRY_MS,
                                      esp_err_to_name(http_ret));
                         }
                     }
@@ -1127,7 +1117,7 @@ static void server_network_sta_manager_task(void *arg)
                         begin_connection_attempt(&context);
                         ret = esp_wifi_connect();
                     }
-                    connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_STATE_TIMEOUT_MS);
+                    connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_FLOW_TIMEOUT_MS);
                     if (ret != ESP_OK) {
                         uint32_t retry_count = 0;
                         uint32_t delay_ms = next_wifi_retry(&context, false, &retry_count);
@@ -1202,7 +1192,7 @@ static void server_network_sta_manager_task(void *arg)
             status_unlock();
             clear_expected_disconnect(&context);
             reset_connection_health(&context);
-            service_retry_count = 0;
+            http_retry_count = 0;
             mdns_retry_count = 0;
             status_clear_retries();
             status_set_last_result(TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT);
@@ -1264,7 +1254,7 @@ static void server_network_sta_manager_task(void *arg)
                         set_wifi_ps(WIFI_PS_NONE, "connecting");
                         status_enter_connecting();
                         ret = esp_wifi_connect();
-                        connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_STATE_TIMEOUT_MS);
+                        connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_FLOW_TIMEOUT_MS);
                     }
                 }
                 if (ret != ESP_OK) {
@@ -1323,7 +1313,7 @@ static void server_network_sta_manager_task(void *arg)
                 event.ip = current_ip;
             } else {
                 status_enter_waiting_ip();
-                connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_IP_TIMEOUT_MS);
+                connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_AP_OR_IP_TIMEOUT_MS);
                 continue;
             }
         }
@@ -1374,11 +1364,11 @@ static void server_network_sta_manager_task(void *arg)
                 complete_pending_request(&pending_request_slot, &pending_request_id,
                                          SERVER_NETWORK_STA_OK);
             } else {
-                service_retry_count = 1;
-                status_enter_service_retry(service_retry_count, SERVER_NETWORK_STA_SERVICE_RETRY_MS);
+                http_retry_count = 1;
+                status_enter_service_retry(http_retry_count, SERVER_NETWORK_STA_HTTP_RETRY_MS);
                 UserLedStatus_Set(USER_LED_STATE_OPERATION_FAIL);
                 ESP_LOGW(TAG, "HTTP service unavailable retry_ms=%u ret=%s",
-                         SERVER_NETWORK_STA_SERVICE_RETRY_MS, esp_err_to_name(http_ret));
+                         SERVER_NETWORK_STA_HTTP_RETRY_MS, esp_err_to_name(http_ret));
                 complete_pending_request(&pending_request_slot, &pending_request_id,
                                          SERVER_NETWORK_STA_CONNECT_FAIL);
             }
@@ -1452,7 +1442,7 @@ static void server_network_sta_manager_task(void *arg)
                     set_wifi_ps(WIFI_PS_NONE, "connecting");
                     status_enter_connecting();
                     ret = esp_wifi_connect();
-                    connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_STATE_TIMEOUT_MS);
+                    connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_FLOW_TIMEOUT_MS);
                 }
                 if (ret == ESP_OK) {
                     continue;
@@ -1615,12 +1605,12 @@ esp_err_t ServerNetworkSta_GetStatus(server_network_sta_status_t *status)
     status_lock();
     *status = s_status;
     TickType_t now = xTaskGetTickCount();
-    status->wifi_retry_after_ms = s_retry_deadline != 0 &&
-                                  (int32_t)(s_retry_deadline - now) > 0
-                                      ? pdTICKS_TO_MS(s_retry_deadline - now) : 0;
-    status->service_retry_after_ms = s_service_retry_deadline != 0 &&
-                                     (int32_t)(s_service_retry_deadline - now) > 0
-                                         ? pdTICKS_TO_MS(s_service_retry_deadline - now) : 0;
+    status->wifi_retry_after_ms = s_wifi_retry_deadline != 0 &&
+                                  (int32_t)(s_wifi_retry_deadline - now) > 0
+                                      ? pdTICKS_TO_MS(s_wifi_retry_deadline - now) : 0;
+    status->http_retry_after_ms = s_http_retry_deadline != 0 &&
+                                  (int32_t)(s_http_retry_deadline - now) > 0
+                                      ? pdTICKS_TO_MS(s_http_retry_deadline - now) : 0;
     status->mdns_retry_after_ms = s_mdns_retry_deadline != 0 &&
                                   (int32_t)(s_mdns_retry_deadline - now) > 0
                                       ? pdTICKS_TO_MS(s_mdns_retry_deadline - now) : 0;
@@ -1709,7 +1699,7 @@ static uint8_t submit_connect(const char *base_path, bool force_reconnect,
     }
     uint8_t result = SERVER_NETWORK_STA_CONNECT_FAIL;
     BaseType_t received = xSemaphoreTake(s_request_slots[request_slot].semaphore,
-                                         pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_REQUEST_WAIT_TIMEOUT_MS));
+                                         pdMS_TO_TICKS(SERVER_NETWORK_STA_SYNC_REQUEST_TIMEOUT_MS));
     (void)xSemaphoreTake(s_request_mutex, portMAX_DELAY);
     if (received == pdTRUE && s_request_slots[request_slot].request_id == request_id) {
         result = s_request_slots[request_slot].result;
@@ -1720,7 +1710,7 @@ static uint8_t submit_connect(const char *base_path, bool force_reconnect,
     (void)xSemaphoreGive(s_request_mutex);
     if (received != pdTRUE) {
         ESP_LOGW(TAG, "WiFi connect request timeout request_id=%lu timeout_ms=%u",
-                 (unsigned long)request_id, SERVER_NETWORK_STA_CONNECT_REQUEST_WAIT_TIMEOUT_MS);
+                 (unsigned long)request_id, SERVER_NETWORK_STA_SYNC_REQUEST_TIMEOUT_MS);
     }
     return result;
 }

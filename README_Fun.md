@@ -450,11 +450,16 @@ UART0 调试启用时，GPIO11/GPIO12 不再作为 gpio_test 输出脚使用。
 日志相关宏：
 
 ```text
-SERVER_NETWORK_STA_DEBUG_LOG_ENABLE=0
-默认关闭 WiFi STA 连接细节日志；需要排查 STA_START、BSSID、RSSI、esp_wifi_start/connect 返回值时再打开。
+当前代码处于开发调试配置，以下默认值与 tdx_cfg.h 保持一致：
 
-USER_NVS_VERBOSE_LOG_ENABLE=0
-默认关闭 app_nvs 成功读写日志；NVS 打开、读取、写入失败仍按 ESP_LOGW / ESP_LOGE 输出。
+SERVER_NETWORK_STA_DEBUG_LOG_ENABLE=1
+当前默认保留 WiFi STA 连接细节日志，便于排查 STA_START、BSSID、RSSI、WiFi PS、esp_wifi_start/connect 返回值。
+
+SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT=1
+当前开发阶段默认打印明文 WiFi 密码，便于本地配网调试；发布测试和正式版本必须改为 0。
+
+USER_NVS_VERBOSE_LOG_ENABLE=1
+当前默认保留 app_nvs 成功读写日志；如果只需失败日志，发布前建议改为 0。
 
 USER_STORAGE_LIST_ON_STARTUP_ENABLE=0
 默认不在启动时逐项扫描打印 /data 文件树。
@@ -465,8 +470,11 @@ USER_HTTP_FILE_LIST_LOG_ENABLE=0
 USER_HTTP_MULTIPART_DETAIL_LOG_ENABLE=0
 默认关闭 legacy multipart fallback 的 field、boundary、slot 等细节日志；关键保存和错误日志保留。
 
-SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE=0
-默认关闭 OTA multipart boundary、field、firmware header 等底层细节日志；OTA 关键阶段、进度和错误日志保留。
+USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE=1
+当前默认保留 ANSI 颜色测试输出，发布前建议改为 0。
+
+SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE=1
+当前默认保留 OTA multipart boundary、field、firmware header 等底层细节日志；发布前建议改为 0。
 ```
 
 ---
@@ -856,7 +864,7 @@ GET /ping HTTP/1.1
 日志：
 - 当前处于开发阶段，WiFi credential 读取成功时允许明文打印 ssid/password，便于确认配网和 NVS 内容。
 - 保留关键节点：saved WiFi 读取结果、WiFi IP、断开原因、认证累计达到阈值、mDNS ready、HTTP server ready、网络初始化失败。
-- `SERVER_NETWORK_STA_DEBUG_LOG_ENABLE=0` 时关闭 STA_START、BSSID/RSSI、WiFi PS、esp_wifi_start/connect 返回值等细节日志；需要排查连接过程时再打开。
+- 当前 `SERVER_NETWORK_STA_DEBUG_LOG_ENABLE=1`，默认保留 STA_START、BSSID/RSSI、WiFi PS、esp_wifi_start/connect 返回值等细节日志；发布前建议改为 0。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-05)
@@ -1084,7 +1092,7 @@ HTTP POST /ota or /ota_upload
 
 日志：
 - 保留关键节点：detect ota request、max body size、meta raw/parsed、ota write start、版本/分区检查、写入进度、verify、set boot、reboot。
-- firmware 指针、boundary 内容、multipart field、firmware header 等底层细节由 `SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE` 控制，默认关闭。
+- firmware 指针、boundary 内容、multipart field、firmware header 等底层细节由 `SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE` 控制；当前开发配置默认开启，发布前建议关闭。
 - OTA 失败阶段使用 `ESP_LOGE`，可继续返回错误响应的异常使用 `ESP_LOGW` 或 OTA result JSON 表达。
 ```
 

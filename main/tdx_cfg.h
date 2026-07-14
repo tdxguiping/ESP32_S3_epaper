@@ -276,8 +276,33 @@ extern "C" {
 // Configuration value for SERVER NETWORK STA DISCONNECTED BIT; update local references before changing it.
 #define SERVER_NETWORK_STA_DISCONNECTED_BIT BIT2
 
-// Keep the STA connection timeout configurable from one header for board bring-up tuning.
-#define SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS 10000
+// Queue length for the WiFi manager task; size it for event bursts without wasting RAM.
+#define SERVER_NETWORK_STA_MANAGER_QUEUE_LENGTH 24
+// Task stack size for the WiFi manager task; tune with runtime stack high-water data.
+#define SERVER_NETWORK_STA_MANAGER_STACK_SIZE 6144
+// FreeRTOS task priority for the WiFi manager task; keep scheduler side effects in mind when changing it.
+#define SERVER_NETWORK_STA_MANAGER_PRIORITY 5
+
+// Maximum time to wait after STA association for either a usable IP or the next recovery step.
+#define SERVER_NETWORK_STA_AP_OR_IP_TIMEOUT_MS 10000
+
+// Fixed delay before retrying HTTP server startup after the network comes up.
+#define SERVER_NETWORK_STA_HTTP_RETRY_MS 3000
+
+// Number of synchronous request slots shared by legacy callers waiting for a connect result.
+#define SERVER_NETWORK_STA_REQUEST_SLOT_COUNT 2
+
+// Maximum time for one connect-flow attempt, including association, DHCP, and recovery handoff.
+#define SERVER_NETWORK_STA_CONNECT_FLOW_TIMEOUT_MS 45000
+
+// Maximum time a legacy synchronous caller waits for the manager to report a connect result.
+#define SERVER_NETWORK_STA_SYNC_REQUEST_TIMEOUT_MS 45000
+
+// Maximum time to wait for an expected disconnect before escalating to recovery handling.
+#define SERVER_NETWORK_STA_EXPECTED_DISCONNECT_TIMEOUT_MS 3000
+
+// Stable READY window before retry and auth-failure counters are reset.
+#define SERVER_NETWORK_STA_READY_STABLE_RESET_MS 30000
 
 // Use no AP channel preference so routers can change channel without delaying STA discovery.
 #define SERVER_NETWORK_STA_WIFI_CHANNEL_HINT 0
