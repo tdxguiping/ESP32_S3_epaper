@@ -259,7 +259,7 @@ extern "C" {
 #define SERVER_NETWORK_STA_DEBUG_LOG_ENABLE 1
 
 // Development-only: print the WiFi password in plaintext for bring-up debugging.
-// Set to 0 before producing a release image.
+// Keep this enabled only during local WiFi debugging and set it to 0 before release testing.
 #define SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT 1
 
 // Keep Server Network STA return codes here so main.c and the STA module share one result contract.

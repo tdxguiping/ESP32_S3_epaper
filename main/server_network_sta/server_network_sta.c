@@ -43,7 +43,6 @@ typedef enum {
 typedef struct {
     wifi_manager_event_type_t type;
     bool force_reconnect;
-    uint32_t connection_generation;
     uint32_t request_id;
     uint8_t request_slot;
     int reason;
@@ -68,15 +67,6 @@ typedef enum {
 } wifi_manager_init_state_t;
 
 typedef enum {
-    WIFI_MANAGER_DISCONNECT_NONE = 0,
-    WIFI_MANAGER_DISCONNECT_RECONFIGURE,
-    WIFI_MANAGER_DISCONNECT_CONNECT_RECOVERY,
-    WIFI_MANAGER_DISCONNECT_DHCP_RECOVERY,
-    WIFI_MANAGER_DISCONNECT_PROVISIONING,
-    WIFI_MANAGER_DISCONNECT_NO_CONFIG,
-} wifi_manager_disconnect_purpose_t;
-
-typedef enum {
     WIFI_AUTH_FAILURE_NONE = 0,
     WIFI_AUTH_FAILURE_HARD,
     WIFI_AUTH_FAILURE_TRANSIENT,
@@ -86,7 +76,7 @@ typedef struct {
     uint32_t connection_generation;
     uint32_t credential_generation;
     uint32_t disconnect_credential_generation;
-    wifi_manager_disconnect_purpose_t disconnect_purpose;
+    server_network_sta_disconnect_purpose_t disconnect_purpose;
     TickType_t expected_disconnect_deadline;
     bool disconnect_was_online;
     uint32_t wifi_retry_streak;
@@ -118,7 +108,6 @@ static portMUX_TYPE s_init_lock = portMUX_INITIALIZER_UNLOCKED;
 static volatile wifi_manager_init_state_t s_init_state = WIFI_MANAGER_INIT_NONE;
 static atomic_bool s_resync_required;
 static atomic_bool s_provisioning_required;
-static atomic_uint s_active_connection_generation;
 
 static bool s_wifi_stack_ready;
 static bool s_wifi_handlers_registered;
@@ -131,10 +120,11 @@ static esp_event_handler_instance_t s_ip_lost_event_instance;
 #define SERVER_NETWORK_STA_MANAGER_QUEUE_LENGTH 24
 #define SERVER_NETWORK_STA_MANAGER_STACK_SIZE 6144
 #define SERVER_NETWORK_STA_MANAGER_PRIORITY 5
-#define SERVER_NETWORK_STA_IP_TIMEOUT_MS 5000
+#define SERVER_NETWORK_STA_IP_TIMEOUT_MS 10000
 #define SERVER_NETWORK_STA_SERVICE_RETRY_MS 3000
 /* Covers three worst-case authentication attempts plus the first two backoff delays. */
-#define SERVER_NETWORK_STA_CONNECT_WAIT_TIMEOUT_MS 45000
+#define SERVER_NETWORK_STA_CONNECT_STATE_TIMEOUT_MS 45000
+#define SERVER_NETWORK_STA_CONNECT_REQUEST_WAIT_TIMEOUT_MS 45000
 #define SERVER_NETWORK_STA_EXPECTED_DISCONNECT_TIMEOUT_MS 3000
 #define SERVER_NETWORK_STA_READY_STABLE_RESET_MS 30000
 #define SERVER_NETWORK_STA_HARD_AUTH_FAILURE_LIMIT 2
@@ -192,12 +182,50 @@ static void status_set_last_result(int result)
     status_unlock();
 }
 
+static bool state_has_online_service(server_network_sta_state_t state)
+{
+    return state == SERVER_NETWORK_STA_STATE_READY ||
+           state == SERVER_NETWORK_STA_STATE_GOT_IP ||
+           state == SERVER_NETWORK_STA_STATE_STARTING_SERVICES;
+}
+
+static bool state_is_connect_flow(server_network_sta_state_t state)
+{
+    return state == SERVER_NETWORK_STA_STATE_CONNECTING ||
+           state == SERVER_NETWORK_STA_STATE_WAITING_IP;
+}
+
+static bool state_accepts_sta_connected(server_network_sta_state_t state)
+{
+    return state == SERVER_NETWORK_STA_STATE_CONNECTING;
+}
+
+static bool state_accepts_got_ip(server_network_sta_state_t state)
+{
+    return state != SERVER_NETWORK_STA_STATE_DISCONNECTING &&
+           state != SERVER_NETWORK_STA_STATE_AUTH_FAILED &&
+           state != SERVER_NETWORK_STA_STATE_NO_CONFIG &&
+           state != SERVER_NETWORK_STA_STATE_FAILED;
+}
+
+static bool should_ignore_disconnected_event(server_network_sta_state_t state,
+                                             server_network_sta_disconnect_purpose_t purpose)
+{
+    if (purpose != SERVER_NETWORK_STA_DISCONNECT_NONE) {
+        return false;
+    }
+    return state == SERVER_NETWORK_STA_STATE_IDLE ||
+           state == SERVER_NETWORK_STA_STATE_NO_CONFIG ||
+           state == SERVER_NETWORK_STA_STATE_AUTH_FAILED ||
+           state == SERVER_NETWORK_STA_STATE_FAILED;
+}
+
 static void status_enter_connecting(void)
 {
     status_lock();
     s_status.state = SERVER_NETWORK_STA_STATE_CONNECTING;
     s_status.retry_type = SERVER_NETWORK_RETRY_NONE;
-    s_status.disconnect_purpose = WIFI_MANAGER_DISCONNECT_NONE;
+    s_status.disconnect_purpose = SERVER_NETWORK_STA_DISCONNECT_NONE;
     s_status.ap_connected = false;
     s_status.has_ip = false;
     s_status.http_running = example_file_server_is_running();
@@ -215,12 +243,12 @@ static void status_enter_connecting(void)
     status_unlock();
 }
 
-static void status_enter_disconnecting(wifi_manager_disconnect_purpose_t purpose)
+static void status_enter_disconnecting(server_network_sta_disconnect_purpose_t purpose)
 {
     status_lock();
     s_status.state = SERVER_NETWORK_STA_STATE_DISCONNECTING;
     s_status.retry_type = SERVER_NETWORK_RETRY_NONE;
-    s_status.disconnect_purpose = (int)purpose;
+    s_status.disconnect_purpose = purpose;
     s_status.ap_connected = false;
     s_status.has_ip = false;
     s_status.http_running = example_file_server_is_running();
@@ -243,7 +271,7 @@ static void status_enter_waiting_ip(void)
     status_lock();
     s_status.state = SERVER_NETWORK_STA_STATE_WAITING_IP;
     s_status.retry_type = SERVER_NETWORK_RETRY_NONE;
-    s_status.disconnect_purpose = WIFI_MANAGER_DISCONNECT_NONE;
+    s_status.disconnect_purpose = SERVER_NETWORK_STA_DISCONNECT_NONE;
     s_status.ap_connected = true;
     s_status.has_ip = false;
     s_status.http_running = example_file_server_is_running();
@@ -258,7 +286,7 @@ static void status_enter_starting_services(void)
     status_lock();
     s_status.state = SERVER_NETWORK_STA_STATE_STARTING_SERVICES;
     s_status.retry_type = SERVER_NETWORK_RETRY_NONE;
-    s_status.disconnect_purpose = WIFI_MANAGER_DISCONNECT_NONE;
+    s_status.disconnect_purpose = SERVER_NETWORK_STA_DISCONNECT_NONE;
     s_status.ap_connected = true;
     s_status.has_ip = true;
     s_status.http_running = example_file_server_is_running();
@@ -272,7 +300,7 @@ static void status_enter_idle(void)
     status_lock();
     s_status.state = SERVER_NETWORK_STA_STATE_IDLE;
     s_status.retry_type = SERVER_NETWORK_RETRY_NONE;
-    s_status.disconnect_purpose = WIFI_MANAGER_DISCONNECT_NONE;
+    s_status.disconnect_purpose = SERVER_NETWORK_STA_DISCONNECT_NONE;
     s_status.ap_connected = false;
     s_status.has_ip = false;
     s_status.http_running = example_file_server_is_running();
@@ -304,7 +332,7 @@ static void status_enter_wifi_retry(uint32_t retry_count, uint32_t delay_ms,
     status_lock();
     s_status.state = SERVER_NETWORK_STA_STATE_RETRY_WAIT;
     s_status.retry_type = SERVER_NETWORK_RETRY_WIFI;
-    s_status.disconnect_purpose = WIFI_MANAGER_DISCONNECT_NONE;
+    s_status.disconnect_purpose = SERVER_NETWORK_STA_DISCONNECT_NONE;
     s_status.wifi_retry_count = retry_count;
     s_status.wifi_retry_after_ms = delay_ms;
     s_status.ap_connected = false;
@@ -329,7 +357,7 @@ static void status_enter_service_retry(uint32_t retry_count, uint32_t delay_ms)
     status_lock();
     s_status.state = SERVER_NETWORK_STA_STATE_RETRY_WAIT;
     s_status.retry_type = SERVER_NETWORK_RETRY_HTTP;
-    s_status.disconnect_purpose = WIFI_MANAGER_DISCONNECT_NONE;
+    s_status.disconnect_purpose = SERVER_NETWORK_STA_DISCONNECT_NONE;
     s_status.service_retry_count = retry_count;
     s_status.service_retry_after_ms = delay_ms;
     s_status.http_ready = false;
@@ -355,7 +383,7 @@ static void status_enter_ready(const esp_ip4_addr_t *ip)
 {
     status_lock();
     s_status.state = SERVER_NETWORK_STA_STATE_READY;
-    s_status.disconnect_purpose = WIFI_MANAGER_DISCONNECT_NONE;
+    s_status.disconnect_purpose = SERVER_NETWORK_STA_DISCONNECT_NONE;
     s_status.last_result = TDX_JSON_RESULT_OK;
     s_status.ap_connected = true;
     s_status.has_ip = true;
@@ -386,7 +414,7 @@ static void status_enter_got_ip(const esp_ip4_addr_t *ip)
     status_lock();
     s_status.state = SERVER_NETWORK_STA_STATE_GOT_IP;
     s_status.retry_type = SERVER_NETWORK_RETRY_NONE;
-    s_status.disconnect_purpose = WIFI_MANAGER_DISCONNECT_NONE;
+    s_status.disconnect_purpose = SERVER_NETWORK_STA_DISCONNECT_NONE;
     s_status.ap_connected = true;
     s_status.has_ip = true;
     s_status.http_ready = false;
@@ -411,7 +439,7 @@ static void status_enter_terminal(server_network_sta_state_t state, int result,
     s_status.state = state;
     s_status.last_result = result;
     s_status.retry_type = SERVER_NETWORK_RETRY_NONE;
-    s_status.disconnect_purpose = WIFI_MANAGER_DISCONNECT_NONE;
+    s_status.disconnect_purpose = SERVER_NETWORK_STA_DISCONNECT_NONE;
     s_status.wifi_retry_count = 0;
     s_status.wifi_retry_after_ms = 0;
     s_status.service_retry_count = 0;
@@ -502,7 +530,6 @@ static void reset_connection_health(wifi_manager_context_t *context)
 static void begin_connection_attempt(wifi_manager_context_t *context)
 {
     context->connection_generation++;
-    atomic_store(&s_active_connection_generation, context->connection_generation);
     status_lock();
     s_status.connection_generation = context->connection_generation;
     s_status.credential_generation = context->credential_generation;
@@ -531,23 +558,21 @@ static uint32_t next_wifi_retry(wifi_manager_context_t *context, bool disconnect
 
 static void clear_expected_disconnect(wifi_manager_context_t *context)
 {
-    context->disconnect_purpose = WIFI_MANAGER_DISCONNECT_NONE;
+    context->disconnect_purpose = SERVER_NETWORK_STA_DISCONNECT_NONE;
     context->disconnect_credential_generation = 0;
     context->expected_disconnect_deadline = 0;
     context->disconnect_was_online = false;
     status_lock();
-    s_status.disconnect_purpose = WIFI_MANAGER_DISCONNECT_NONE;
+    s_status.disconnect_purpose = SERVER_NETWORK_STA_DISCONNECT_NONE;
     status_unlock();
 }
 
 static esp_err_t start_expected_disconnect(wifi_manager_context_t *context,
-                                           wifi_manager_disconnect_purpose_t purpose)
+                                           server_network_sta_disconnect_purpose_t purpose)
 {
     status_lock();
     context->disconnect_was_online = s_status.has_ip ||
-                                     s_status.state == SERVER_NETWORK_STA_STATE_READY ||
-                                     s_status.state == SERVER_NETWORK_STA_STATE_GOT_IP ||
-                                     s_status.state == SERVER_NETWORK_STA_STATE_STARTING_SERVICES;
+                                     state_has_online_service(s_status.state);
     status_unlock();
     context->disconnect_purpose = purpose;
     context->disconnect_credential_generation = context->credential_generation;
@@ -768,7 +793,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     } else {
         return;
     }
-    event.connection_generation = atomic_load(&s_active_connection_generation);
     post_manager_event(&event);
 }
 
@@ -942,7 +966,7 @@ static void server_network_sta_manager_task(void *arg)
                 wait_ticks = mdns_wait;
             }
         }
-        if (context.disconnect_purpose != WIFI_MANAGER_DISCONNECT_NONE &&
+        if (context.disconnect_purpose != SERVER_NETWORK_STA_DISCONNECT_NONE &&
             context.expected_disconnect_deadline != 0) {
             TickType_t disconnect_wait =
                 (int32_t)(context.expected_disconnect_deadline - now) > 0
@@ -982,9 +1006,9 @@ static void server_network_sta_manager_task(void *arg)
                          SERVER_NETWORK_STA_READY_STABLE_RESET_MS);
                 continue;
             }
-            if (context.disconnect_purpose != WIFI_MANAGER_DISCONNECT_NONE &&
+            if (context.disconnect_purpose != SERVER_NETWORK_STA_DISCONNECT_NONE &&
                 (int32_t)(now - context.expected_disconnect_deadline) >= 0) {
-                wifi_manager_disconnect_purpose_t purpose = context.disconnect_purpose;
+                server_network_sta_disconnect_purpose_t purpose = context.disconnect_purpose;
                 uint32_t disconnect_credential_generation =
                     context.disconnect_credential_generation;
                 clear_expected_disconnect(&context);
@@ -992,7 +1016,7 @@ static void server_network_sta_manager_task(void *arg)
                 bool ap_still_connected = esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
                 if (ap_still_connected) {
                     esp_ip4_addr_t current_ip = {0};
-                    if (purpose != WIFI_MANAGER_DISCONNECT_RECONFIGURE &&
+                    if (purpose != SERVER_NETWORK_STA_DISCONNECT_RECONFIGURE &&
                         physical_link_has_ip(&current_ip)) {
                         atomic_store(&s_resync_required, true);
                         ESP_LOGI(TAG, "WiFi recovered before disconnect timeout");
@@ -1005,7 +1029,7 @@ static void server_network_sta_manager_task(void *arg)
                         continue;
                     }
                 }
-                if (purpose == WIFI_MANAGER_DISCONNECT_RECONFIGURE) {
+                if (purpose == SERVER_NETWORK_STA_DISCONNECT_RECONFIGURE) {
                     if (disconnect_credential_generation != context.credential_generation) {
                         ESP_LOGD(TAG, "Ignore obsolete reconfigure timeout credential_gen=%lu active=%lu",
                                  (unsigned long)disconnect_credential_generation,
@@ -1018,7 +1042,7 @@ static void server_network_sta_manager_task(void *arg)
                         set_wifi_ps(WIFI_PS_NONE, "reconfigure_timeout");
                         status_enter_connecting();
                         ret = esp_wifi_connect();
-                        connection_deadline = now + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS);
+                        connection_deadline = now + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_STATE_TIMEOUT_MS);
                     }
                     if (ret != ESP_OK) {
                         uint32_t retry_count = 0;
@@ -1031,16 +1055,16 @@ static void server_network_sta_manager_task(void *arg)
                                      esp_err_to_name(ret));
                         }
                     }
-                } else if (purpose == WIFI_MANAGER_DISCONNECT_DHCP_RECOVERY ||
-                           purpose == WIFI_MANAGER_DISCONNECT_CONNECT_RECOVERY) {
+                } else if (purpose == SERVER_NETWORK_STA_DISCONNECT_DHCP_RECOVERY ||
+                           purpose == SERVER_NETWORK_STA_DISCONNECT_CONNECT_RECOVERY) {
                     uint32_t retry_count = 0;
                     uint32_t delay_ms = next_wifi_retry(
-                        &context, purpose == WIFI_MANAGER_DISCONNECT_DHCP_RECOVERY,
+                        &context, purpose == SERVER_NETWORK_STA_DISCONNECT_DHCP_RECOVERY,
                         &retry_count);
                     status_enter_wifi_retry(retry_count, delay_ms, -3, 0);
-                } else if (purpose == WIFI_MANAGER_DISCONNECT_PROVISIONING) {
+                } else if (purpose == SERVER_NETWORK_STA_DISCONNECT_PROVISIONING) {
                     status_enter_idle();
-                } else if (purpose == WIFI_MANAGER_DISCONNECT_NO_CONFIG) {
+                } else if (purpose == SERVER_NETWORK_STA_DISCONNECT_NO_CONFIG) {
                     status_enter_terminal(SERVER_NETWORK_STA_STATE_NO_CONFIG,
                                           TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT, 0, 0);
                 }
@@ -1103,7 +1127,7 @@ static void server_network_sta_manager_task(void *arg)
                         begin_connection_attempt(&context);
                         ret = esp_wifi_connect();
                     }
-                    connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS);
+                    connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_STATE_TIMEOUT_MS);
                     if (ret != ESP_OK) {
                         uint32_t retry_count = 0;
                         uint32_t delay_ms = next_wifi_retry(&context, false, &retry_count);
@@ -1121,10 +1145,10 @@ static void server_network_sta_manager_task(void *arg)
                 status_set_last_result(snapshot.state == SERVER_NETWORK_STA_STATE_WAITING_IP
                                            ? TDX_JSON_RESULT_WIFI_GOT_IP_FAILED
                                            : TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT);
-                wifi_manager_disconnect_purpose_t purpose =
+                server_network_sta_disconnect_purpose_t purpose =
                     snapshot.state == SERVER_NETWORK_STA_STATE_WAITING_IP
-                        ? WIFI_MANAGER_DISCONNECT_DHCP_RECOVERY
-                        : WIFI_MANAGER_DISCONNECT_CONNECT_RECOVERY;
+                        ? SERVER_NETWORK_STA_DISCONNECT_DHCP_RECOVERY
+                        : SERVER_NETWORK_STA_DISCONNECT_CONNECT_RECOVERY;
                 esp_err_t disconnect_ret = start_expected_disconnect(&context, purpose);
                 if (disconnect_ret != ESP_OK) {
                     uint32_t retry_count = 0;
@@ -1145,7 +1169,6 @@ static void server_network_sta_manager_task(void *arg)
 
         if (event.type == WIFI_MANAGER_EVENT_RESYNC) {
             esp_ip4_addr_t current_ip = {0};
-            event.connection_generation = context.connection_generation;
             if (connection_enabled && physical_link_has_ip(&current_ip)) {
                 event.type = WIFI_MANAGER_EVENT_GOT_IP;
                 event.ip = current_ip;
@@ -1157,18 +1180,6 @@ static void server_network_sta_manager_task(void *arg)
             } else {
                 continue;
             }
-        }
-
-        if ((event.type == WIFI_MANAGER_EVENT_STA_CONNECTED ||
-             event.type == WIFI_MANAGER_EVENT_GOT_IP ||
-             event.type == WIFI_MANAGER_EVENT_LOST_IP ||
-             event.type == WIFI_MANAGER_EVENT_DISCONNECTED) &&
-            event.connection_generation != context.connection_generation) {
-            ESP_LOGD(TAG, "Ignore stale WiFi event=%d event_gen=%lu active_gen=%lu",
-                     (int)event.type,
-                     (unsigned long)event.connection_generation,
-                     (unsigned long)context.connection_generation);
-            continue;
         }
 
         if (event.type == WIFI_MANAGER_EVENT_CONNECT ||
@@ -1201,7 +1212,7 @@ static void server_network_sta_manager_task(void *arg)
                                       TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT, 0, 0);
                 if (s_wifi_stack_ready) {
                     esp_err_t disconnect_ret = start_expected_disconnect(
-                        &context, WIFI_MANAGER_DISCONNECT_NO_CONFIG);
+                        &context, SERVER_NETWORK_STA_DISCONNECT_NO_CONFIG);
                     if (disconnect_ret != ESP_OK) {
                         status_enter_terminal(SERVER_NETWORK_STA_STATE_NO_CONFIG,
                                               TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT, 0, 0);
@@ -1235,12 +1246,11 @@ static void server_network_sta_manager_task(void *arg)
             } else {
                 wifi_ap_record_t ap = {0};
                 bool connected = esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
-                bool connect_in_progress = snapshot.state == SERVER_NETWORK_STA_STATE_CONNECTING ||
-                                           snapshot.state == SERVER_NETWORK_STA_STATE_WAITING_IP;
+                bool connect_in_progress = state_is_connect_flow(snapshot.state);
                 bool need_disconnect = connected || connect_in_progress;
                 if (need_disconnect) {
                     ret = start_expected_disconnect(&context,
-                                                    WIFI_MANAGER_DISCONNECT_RECONFIGURE);
+                                                    SERVER_NETWORK_STA_DISCONNECT_RECONFIGURE);
                     if (ret == ESP_OK) {
                         ESP_LOGI(TAG, "WiFi reconfigure pending credential_gen=%lu",
                                  (unsigned long)context.credential_generation);
@@ -1254,7 +1264,7 @@ static void server_network_sta_manager_task(void *arg)
                         set_wifi_ps(WIFI_PS_NONE, "connecting");
                         status_enter_connecting();
                         ret = esp_wifi_connect();
-                        connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS);
+                        connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_STATE_TIMEOUT_MS);
                     }
                 }
                 if (ret != ESP_OK) {
@@ -1281,7 +1291,7 @@ static void server_network_sta_manager_task(void *arg)
             connection_enabled = false;
             if (s_wifi_stack_ready) {
                 esp_err_t disconnect_ret = start_expected_disconnect(
-                    &context, WIFI_MANAGER_DISCONNECT_PROVISIONING);
+                    &context, SERVER_NETWORK_STA_DISCONNECT_PROVISIONING);
                 if (disconnect_ret != ESP_OK) {
                     status_enter_idle();
                 }
@@ -1294,7 +1304,12 @@ static void server_network_sta_manager_task(void *arg)
 
         if (event.type == WIFI_MANAGER_EVENT_STA_CONNECTED) {
             if (!connection_enabled ||
-                context.disconnect_purpose != WIFI_MANAGER_DISCONNECT_NONE) {
+                context.disconnect_purpose != SERVER_NETWORK_STA_DISCONNECT_NONE) {
+                continue;
+            }
+            if (!state_accepts_sta_connected(snapshot.state)) {
+                ESP_LOGD(TAG, "Ignore STA_CONNECTED state=%s",
+                         ServerNetworkSta_StateName(snapshot.state));
                 continue;
             }
             esp_ip4_addr_t current_ip = {0};
@@ -1315,7 +1330,12 @@ static void server_network_sta_manager_task(void *arg)
 
         if (event.type == WIFI_MANAGER_EVENT_GOT_IP) {
             if (!connection_enabled ||
-                context.disconnect_purpose != WIFI_MANAGER_DISCONNECT_NONE) {
+                context.disconnect_purpose != SERVER_NETWORK_STA_DISCONNECT_NONE) {
+                continue;
+            }
+            if (!state_accepts_got_ip(snapshot.state)) {
+                ESP_LOGD(TAG, "Ignore GOT_IP state=%s",
+                         ServerNetworkSta_StateName(snapshot.state));
                 continue;
             }
             esp_ip4_addr_t current_ip = {0};
@@ -1380,12 +1400,10 @@ static void server_network_sta_manager_task(void *arg)
             context.ready_stable_deadline = 0;
             status_set_ready_stable_deadline(0);
             esp_err_t disconnect_ret = start_expected_disconnect(
-                &context, WIFI_MANAGER_DISCONNECT_DHCP_RECOVERY);
+                &context, SERVER_NETWORK_STA_DISCONNECT_DHCP_RECOVERY);
             if (disconnect_ret != ESP_OK) {
                 uint32_t retry_count = 0;
-                bool was_online = old_state == SERVER_NETWORK_STA_STATE_READY ||
-                                  old_state == SERVER_NETWORK_STA_STATE_GOT_IP ||
-                                  old_state == SERVER_NETWORK_STA_STATE_STARTING_SERVICES;
+                bool was_online = state_has_online_service(old_state);
                 uint32_t delay_ms = next_wifi_retry(&context, was_online, &retry_count);
                 status_enter_wifi_retry(retry_count, delay_ms, -3, 0);
                 UserLedStatus_Set(USER_LED_STATE_WIFI_CONNECTING);
@@ -1410,12 +1428,17 @@ static void server_network_sta_manager_task(void *arg)
             context.ready_stable_deadline = 0;
             status_set_ready_stable_deadline(0);
 
-            wifi_manager_disconnect_purpose_t purpose = context.disconnect_purpose;
+            server_network_sta_disconnect_purpose_t purpose = context.disconnect_purpose;
             uint32_t disconnect_credential_generation =
                 context.disconnect_credential_generation;
             bool disconnect_was_online = context.disconnect_was_online;
             clear_expected_disconnect(&context);
-            if (purpose == WIFI_MANAGER_DISCONNECT_RECONFIGURE) {
+            if (should_ignore_disconnected_event(old_state, purpose)) {
+                ESP_LOGD(TAG, "Ignore DISCONNECTED state=%s reason=%d",
+                         ServerNetworkSta_StateName(old_state), event.reason);
+                continue;
+            }
+            if (purpose == SERVER_NETWORK_STA_DISCONNECT_RECONFIGURE) {
                 if (disconnect_credential_generation != context.credential_generation) {
                     ESP_LOGD(TAG, "Ignore obsolete reconfigure event credential_gen=%lu active=%lu",
                              (unsigned long)disconnect_credential_generation,
@@ -1429,7 +1452,7 @@ static void server_network_sta_manager_task(void *arg)
                     set_wifi_ps(WIFI_PS_NONE, "connecting");
                     status_enter_connecting();
                     ret = esp_wifi_connect();
-                    connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS);
+                    connection_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_STATE_TIMEOUT_MS);
                 }
                 if (ret == ESP_OK) {
                     continue;
@@ -1444,11 +1467,11 @@ static void server_network_sta_manager_task(void *arg)
                 }
                 continue;
             }
-            if (purpose == WIFI_MANAGER_DISCONNECT_PROVISIONING) {
+            if (purpose == SERVER_NETWORK_STA_DISCONNECT_PROVISIONING) {
                 status_enter_idle();
                 continue;
             }
-            if (purpose == WIFI_MANAGER_DISCONNECT_NO_CONFIG) {
+            if (purpose == SERVER_NETWORK_STA_DISCONNECT_NO_CONFIG) {
                 status_enter_terminal(SERVER_NETWORK_STA_STATE_NO_CONFIG,
                                       TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT, 0, 0);
                 continue;
@@ -1457,10 +1480,7 @@ static void server_network_sta_manager_task(void *arg)
                 continue;
             }
 
-            bool was_ready = disconnect_was_online ||
-                             old_state == SERVER_NETWORK_STA_STATE_READY ||
-                             old_state == SERVER_NETWORK_STA_STATE_GOT_IP ||
-                             old_state == SERVER_NETWORK_STA_STATE_STARTING_SERVICES;
+            bool was_ready = disconnect_was_online || state_has_online_service(old_state);
             wifi_auth_failure_class_t auth_class = classify_auth_failure(event.reason);
             bool auth_limit_reached = false;
             if (auth_class == WIFI_AUTH_FAILURE_HARD) {
@@ -1629,6 +1649,20 @@ const char *ServerNetworkSta_StateName(server_network_sta_state_t state)
     }
 }
 
+const char *ServerNetworkSta_DisconnectPurposeName(
+    server_network_sta_disconnect_purpose_t purpose)
+{
+    switch (purpose) {
+    case SERVER_NETWORK_STA_DISCONNECT_NONE: return "none";
+    case SERVER_NETWORK_STA_DISCONNECT_RECONFIGURE: return "reconfigure";
+    case SERVER_NETWORK_STA_DISCONNECT_CONNECT_RECOVERY: return "connect_recovery";
+    case SERVER_NETWORK_STA_DISCONNECT_DHCP_RECOVERY: return "dhcp_recovery";
+    case SERVER_NETWORK_STA_DISCONNECT_PROVISIONING: return "provisioning";
+    case SERVER_NETWORK_STA_DISCONNECT_NO_CONFIG: return "no_config";
+    default: return "unknown";
+    }
+}
+
 int ServerNetworkSta_GetLastConnectResult(void)
 {
     server_network_sta_status_t status = {0};
@@ -1675,7 +1709,7 @@ static uint8_t submit_connect(const char *base_path, bool force_reconnect,
     }
     uint8_t result = SERVER_NETWORK_STA_CONNECT_FAIL;
     BaseType_t received = xSemaphoreTake(s_request_slots[request_slot].semaphore,
-                                         pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_WAIT_TIMEOUT_MS));
+                                         pdMS_TO_TICKS(SERVER_NETWORK_STA_CONNECT_REQUEST_WAIT_TIMEOUT_MS));
     (void)xSemaphoreTake(s_request_mutex, portMAX_DELAY);
     if (received == pdTRUE && s_request_slots[request_slot].request_id == request_id) {
         result = s_request_slots[request_slot].result;
@@ -1686,7 +1720,7 @@ static uint8_t submit_connect(const char *base_path, bool force_reconnect,
     (void)xSemaphoreGive(s_request_mutex);
     if (received != pdTRUE) {
         ESP_LOGW(TAG, "WiFi connect request timeout request_id=%lu timeout_ms=%u",
-                 (unsigned long)request_id, SERVER_NETWORK_STA_CONNECT_WAIT_TIMEOUT_MS);
+                 (unsigned long)request_id, SERVER_NETWORK_STA_CONNECT_REQUEST_WAIT_TIMEOUT_MS);
     }
     return result;
 }

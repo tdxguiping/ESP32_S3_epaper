@@ -466,15 +466,19 @@ static bool notify_wifi_info_if_ip_ready(json_sender_t reply_sender,
     }
 
     for (int recheck = 1;
-         (!status.has_ip || status.ip[0] == '\0') &&
+         (!(status.state == SERVER_NETWORK_STA_STATE_READY &&
+            status.has_ip &&
+            status.http_ready &&
+            status.ip[0] != '\0')) &&
          allow_recheck &&
          recheck <= WIFI_INFO_IP_READY_RECHECK_COUNT;
          recheck++) {
         ESP_LOGW(TAG,
-                 "wifi_info_result notify waiting for IP reason=%s state=%d last=%d ip=%s recheck=%d/%d",
+                 "wifi_info_result notify waiting for network ready reason=%s state=%d last=%d http_ready=%d ip=%s recheck=%d/%d",
                  reason != NULL ? reason : "<null>",
                  (int)status.state,
                  status.last_result,
+                 status.http_ready ? 1 : 0,
                  status.ip[0] != '\0' ? status.ip : "<empty>",
                  recheck,
                  WIFI_INFO_IP_READY_RECHECK_COUNT);
@@ -489,7 +493,10 @@ static bool notify_wifi_info_if_ip_ready(json_sender_t reply_sender,
         }
     }
 
-    if (status.has_ip && status.ip[0] != '\0') {
+    if (status.state == SERVER_NETWORK_STA_STATE_READY &&
+        status.has_ip &&
+        status.http_ready &&
+        status.ip[0] != '\0') {
         if (ip_ready_out != NULL) {
             *ip_ready_out = true;
         }
@@ -500,10 +507,11 @@ static bool notify_wifi_info_if_ip_ready(json_sender_t reply_sender,
     }
 
     ESP_LOGW(TAG,
-             "wifi_info_result notify no IP reason=%s state=%d last=%d ip=%s",
+             "wifi_info_result notify not ready reason=%s state=%d last=%d http_ready=%d ip=%s",
              reason != NULL ? reason : "<null>",
              (int)status.state,
              status.last_result,
+             status.http_ready ? 1 : 0,
              status.ip[0] != '\0' ? status.ip : "<empty>");
     return false;
 }

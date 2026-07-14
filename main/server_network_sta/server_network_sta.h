@@ -33,6 +33,15 @@ typedef enum {
     SERVER_NETWORK_RETRY_MDNS,
 } server_network_retry_type_t;
 
+typedef enum {
+    SERVER_NETWORK_STA_DISCONNECT_NONE = 0,
+    SERVER_NETWORK_STA_DISCONNECT_RECONFIGURE,
+    SERVER_NETWORK_STA_DISCONNECT_CONNECT_RECOVERY,
+    SERVER_NETWORK_STA_DISCONNECT_DHCP_RECOVERY,
+    SERVER_NETWORK_STA_DISCONNECT_PROVISIONING,
+    SERVER_NETWORK_STA_DISCONNECT_NO_CONFIG,
+} server_network_sta_disconnect_purpose_t;
+
 typedef struct {
     server_network_sta_state_t state;
     int last_result;
@@ -48,7 +57,7 @@ typedef struct {
     uint32_t connection_generation;
     uint32_t credential_generation;
     uint32_t ready_stable_remaining_ms;
-    int disconnect_purpose;
+    server_network_sta_disconnect_purpose_t disconnect_purpose;
     bool ap_connected;
     bool has_ip;
     bool http_running;
@@ -65,6 +74,7 @@ uint8_t User_Network_mode_app_new_credential(const char *base_path);
 int ServerNetworkSta_GetLastConnectResult(void);
 esp_err_t ServerNetworkSta_GetStatus(server_network_sta_status_t *status);
 const char *ServerNetworkSta_StateName(server_network_sta_state_t state);
+const char *ServerNetworkSta_DisconnectPurposeName(server_network_sta_disconnect_purpose_t purpose);
 
 #ifdef __cplusplus
 }

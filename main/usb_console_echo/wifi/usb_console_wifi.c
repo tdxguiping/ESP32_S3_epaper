@@ -79,6 +79,7 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
             "\"mdns_retry_count\":%lu,\"mdns_retry_after_ms\":%lu,"
             "\"last_result\":%d,\"connection_generation\":%lu,"
             "\"credential_generation\":%lu,\"disconnect_purpose\":%d,"
+            "\"disconnect_purpose_name\":\"%s\","
             "\"ready_stable_remaining_ms\":%lu,"
             "\"disconnect_reason\":%d,\"rssi\":%d}",
             ServerNetworkSta_StateName(status.state), (int)status.state,
@@ -96,6 +97,7 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
             (unsigned long)status.connection_generation,
             (unsigned long)status.credential_generation,
             status.disconnect_purpose,
+            ServerNetworkSta_DisconnectPurposeName(status.disconnect_purpose),
             (unsigned long)status.ready_stable_remaining_ms,
             status.disconnect_reason, status.rssi);
     }
