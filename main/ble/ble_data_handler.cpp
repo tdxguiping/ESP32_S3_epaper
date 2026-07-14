@@ -401,7 +401,45 @@ static TaskHandle_t s_wifi_connect_task = NULL;
 static json_sender_t s_wifi_connect_reply_sender = NULL;
 static bool s_wifi_connect_notify_result = false;
 static const char *s_wifi_connect_result_func = NULL;
-static bool s_wifi_connect_force_reconnect = false;
+static bool s_wifi_connect_new_credential = false;
+
+static const char *wifi_stage_from_status(const server_network_sta_status_t& status)
+{
+    switch (status.state) {
+    case SERVER_NETWORK_STA_STATE_READY: return "ready";
+    case SERVER_NETWORK_STA_STATE_CONNECTING: return "connecting";
+    case SERVER_NETWORK_STA_STATE_DISCONNECTING: return "disconnecting";
+    case SERVER_NETWORK_STA_STATE_WAITING_IP: return "waiting_ip";
+    case SERVER_NETWORK_STA_STATE_RETRY_WAIT: return "retry_wait";
+    case SERVER_NETWORK_STA_STATE_GOT_IP: return "got_ip";
+    case SERVER_NETWORK_STA_STATE_STARTING_SERVICES: return "starting_services";
+    case SERVER_NETWORK_STA_STATE_AUTH_FAILED: return "auth_failed";
+    case SERVER_NETWORK_STA_STATE_NO_CONFIG: return "no_wifi";
+    case SERVER_NETWORK_STA_STATE_FAILED: return "error";
+    case SERVER_NETWORK_STA_STATE_IDLE: return "idle";
+    default: return "unknown";
+    }
+}
+
+static uint32_t wifi_retry_after_ms(const server_network_sta_status_t& status)
+{
+    switch (status.retry_type) {
+    case SERVER_NETWORK_RETRY_WIFI: return status.wifi_retry_after_ms;
+    case SERVER_NETWORK_RETRY_HTTP: return status.service_retry_after_ms;
+    case SERVER_NETWORK_RETRY_MDNS: return status.mdns_retry_after_ms;
+    default: return 0;
+    }
+}
+
+static bool wifi_status_is_progressing(const server_network_sta_status_t& status)
+{
+    return status.state == SERVER_NETWORK_STA_STATE_CONNECTING ||
+           status.state == SERVER_NETWORK_STA_STATE_DISCONNECTING ||
+           status.state == SERVER_NETWORK_STA_STATE_WAITING_IP ||
+           status.state == SERVER_NETWORK_STA_STATE_RETRY_WAIT ||
+           status.state == SERVER_NETWORK_STA_STATE_GOT_IP ||
+           status.state == SERVER_NETWORK_STA_STATE_STARTING_SERVICES;
+}
 
 static bool notify_wifi_info_if_ip_ready(json_sender_t reply_sender,
                                          const char *reason,
@@ -428,7 +466,7 @@ static bool notify_wifi_info_if_ip_ready(json_sender_t reply_sender,
     }
 
     for (int recheck = 1;
-         (status.state != SERVER_NETWORK_STA_STATE_GOT_IP || status.ip[0] == '\0') &&
+         (!status.has_ip || status.ip[0] == '\0') &&
          allow_recheck &&
          recheck <= WIFI_INFO_IP_READY_RECHECK_COUNT;
          recheck++) {
@@ -451,7 +489,7 @@ static bool notify_wifi_info_if_ip_ready(json_sender_t reply_sender,
         }
     }
 
-    if (status.state == SERVER_NETWORK_STA_STATE_GOT_IP && status.ip[0] != '\0') {
+    if (status.has_ip && status.ip[0] != '\0') {
         if (ip_ready_out != NULL) {
             *ip_ready_out = true;
         }
@@ -473,9 +511,9 @@ static bool notify_wifi_info_if_ip_ready(json_sender_t reply_sender,
 static void wifi_connect_task(void *arg)
 {
     (void)arg;
-    bool force_reconnect = s_wifi_connect_force_reconnect;
-    uint8_t init_result = force_reconnect
-                              ? ::User_Network_mode_app_init_force("/data")
+    bool new_credential = s_wifi_connect_new_credential;
+    uint8_t init_result = new_credential
+                              ? ::User_Network_mode_app_new_credential("/data")
                               : ::User_Network_mode_app_init("/data");
     int connect_result = ServerNetworkSta_GetLastConnectResult();
     ESP_LOGI(TAG, "BLE/CH583 WiFi connect task finished init=%u connect_result=%d",
@@ -489,7 +527,7 @@ static void wifi_connect_task(void *arg)
     s_wifi_connect_reply_sender = NULL;
     s_wifi_connect_notify_result = false;
     s_wifi_connect_result_func = NULL;
-    s_wifi_connect_force_reconnect = false;
+    s_wifi_connect_new_credential = false;
     if (notify_result && reply_sender != NULL) {
         if (connect_result == TDX_JSON_RESULT_OK) {
             bool ip_ready = false;
@@ -535,7 +573,7 @@ static void wifi_connect_task(void *arg)
 static esp_err_t submit_wifi_connect(json_sender_t reply_sender,
                                      bool notify_result,
                                      const char *result_func,
-                                     bool force_reconnect)
+                                     bool new_credential)
 {
     if (s_wifi_connect_task != NULL) {
         return ESP_ERR_INVALID_STATE;
@@ -543,7 +581,7 @@ static esp_err_t submit_wifi_connect(json_sender_t reply_sender,
     s_wifi_connect_reply_sender = reply_sender;
     s_wifi_connect_notify_result = notify_result;
     s_wifi_connect_result_func = result_func;
-    s_wifi_connect_force_reconnect = force_reconnect;
+    s_wifi_connect_new_credential = new_credential;
     if (xTaskCreate(wifi_connect_task,
                     "ble_wifi_connect",
                     6144,
@@ -553,7 +591,7 @@ static esp_err_t submit_wifi_connect(json_sender_t reply_sender,
         s_wifi_connect_reply_sender = NULL;
         s_wifi_connect_notify_result = false;
         s_wifi_connect_result_func = NULL;
-        s_wifi_connect_force_reconnect = false;
+        s_wifi_connect_new_credential = false;
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
@@ -642,7 +680,6 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
                 return 0;
             }
 
-            ServerNetworkSta_RequestProvisioning();
             esp_err_t submit_ret = submit_wifi_connect(s_active_send_json, true, "wifi_result", true);
             if (submit_ret != ESP_OK) {
                 send_simple_result_with_sender(s_active_send_json,
@@ -708,13 +745,34 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
     cJSON_Delete(root);
     server_network_sta_status_t status = {};
     (void)ServerNetworkSta_GetStatus(&status);
-    if (status.state == SERVER_NETWORK_STA_STATE_GOT_IP && status.ip[0] != '\0')
+    if (status.state == SERVER_NETWORK_STA_STATE_READY &&
+        status.has_ip && status.ip[0] != '\0')
     {
        (void)notify_wifi_info_if_ip_ready(s_active_send_json, "wifi_wakeup_got_ip", false, NULL);
     }
-    else if (status.state == SERVER_NETWORK_STA_STATE_CONNECTING)
+    else if (wifi_status_is_progressing(status))
     {
-        ESP_LOGW(TAG, "WiFi wakeup ignored: connection already in progress");
+        char reply_json[256];
+        snprintf(reply_json, sizeof(reply_json),
+                 "{\"func\":\"wifi_wakeup_result\",\"result\":%d,"
+                 "\"message\":\"WiFi operation in progress\",\"stage\":\"%s\","
+                 "\"state\":\"%s\",\"retry_type\":%d,\"retry_after_ms\":%lu}",
+                 TDX_JSON_RESULT_OK,
+                 wifi_stage_from_status(status),
+                 ServerNetworkSta_StateName(status.state),
+                 (int)status.retry_type,
+                 (unsigned long)wifi_retry_after_ms(status));
+        (void)s_active_send_json(reply_json);
+        ESP_LOGI(TAG, "WiFi wakeup reports existing state=%s retry_ms=%lu",
+                 ServerNetworkSta_StateName(status.state),
+                 (unsigned long)wifi_retry_after_ms(status));
+    }
+    else if (status.state == SERVER_NETWORK_STA_STATE_AUTH_FAILED)
+    {
+        send_simple_result_with_sender(s_active_send_json,
+                                       "wifi_wakeup_result",
+                                       TDX_JSON_RESULT_WIFI_AUTH_FAILED,
+                                       "WiFi authentication failed");
     }
     else if (!ble_has_saved_wifi_info()) {
         ESP_LOGW(TAG, "No saved WiFi credential");

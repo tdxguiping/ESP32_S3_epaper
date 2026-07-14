@@ -37,6 +37,8 @@ bool example_storage_supports_directories(void);
 esp_err_t example_storage_get_free_bytes(const char *base_path, uint64_t *free_bytes);
 
 esp_err_t example_start_file_server(const char *base_path);
+bool example_file_server_is_running(void);
+bool example_file_server_is_ready(void);
 
 #ifdef __cplusplus
 }

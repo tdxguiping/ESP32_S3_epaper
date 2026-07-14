@@ -96,7 +96,8 @@ static bool slideshow_wifi_has_ip(void)
     if (ServerNetworkSta_GetStatus(&status) != ESP_OK) {
         return false;
     }
-    return status.state == SERVER_NETWORK_STA_STATE_GOT_IP && status.ip[0] != '\0';
+    /* Time synchronization only needs an IP; it does not depend on HTTP readiness. */
+    return status.has_ip && status.ip[0] != '\0';
 }
 
 static bool slideshow_should_force_first_display_for_stale_time(bool *wifi_has_ip,

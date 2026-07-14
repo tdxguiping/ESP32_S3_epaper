@@ -276,7 +276,9 @@ main/main.c
    │  └─ 打印短 boot 摘要：reset / flash / RAM / PSRAM / NVS / work state
    ├─ GpioTest_Init()
    ├─ ServerNetworkSta_Init()
-   │  └─ 创建全局 WiFi operation mutex
+   │  ├─ 创建 wifi_manager Task / Queue
+   │  ├─ 创建 status 与同步请求 mutex
+   │  └─ 所有 WiFi 控制命令由 manager 串行执行
    ├─ Ch583UartApp_Init()
    │  └─ ch583_uart/ch583_uart_app.c
    │     ├─ User_UartEventTask()
@@ -694,7 +696,9 @@ Result 定义建议：
 | WiFi 连接事件通知 | `1308` | WiFi 认证失败 |
 | WiFi 连接事件通知 | `1309` | WiFi 获取 IP 失败 |
 
-BLE / CH583 的普通 `wifi` 配网请求先同步确认“配置已保存并已提交 worker”，随后由后台任务通过 `wifi_result` 通知 `1307`（连接超时）、`1308`（认证失败）或 `1309`（已关联但未取得 IP）；`wifi_wakeup` 使用相同分类并通过 `wifi_wakeup_result` 通知。若 STA 已关联但主等待窗口内还没收到 `IP_EVENT_STA_GOT_IP`，会再等待一个短 `GOT_IP` 宽限窗口，避免 DHCP 稍慢时误报 `1309`。配网任务结果为成功时会通过 `notify_wifi_info_if_ip_ready()` 确认 IP；如果第一次没读到 IP，会每 300 ms 复查一次，最多复查 3 次；只要 ESP32-C5 已经读到 STA IP，就必须调用 `send_base_info_to_mobile()` 发送 `wifi_info_result`，发送失败会短重试并打印日志。USB `/wifi` 仍只同步返回保存和 worker 提交结果。
+WiFi、DHCP、HTTP 与 mDNS 由唯一的 `wifi_manager` Task 管理。BLE / CH583 和 USB 的普通 `wifi` 配网请求先保存配置，再通过一个 `NEW_CREDENTIAL` 命令交给 manager；调用者不再先发送 PROVISIONING 后再发送 FORCE_CONNECT。后台结果仍使用 `1307`（连接超时）、`1308`（连续认证失败）和 `1309`（已关联但未取得 IP）。`wifi_wakeup` 会识别 CONNECTING、DISCONNECTING、WAITING_IP、RETRY_WAIT、GOT_IP、STARTING_SERVICES、READY、AUTH_FAILED、NO_CONFIG 和 FAILED；已有连接、主动断线或恢复流程时只返回当前 stage，不重复强制重连。进入 DISCONNECTING 时立即清除旧 IP、HTTP ready 和 mDNS ready。USB `/wifi` 仍只同步返回保存和 worker 提交结果，`wifi_status` 可查询完整状态快照及 last_result、连接/凭据代次、断线目的和 READY 稳定窗口剩余时间。
+
+WiFi 重试间隔固定为 `1000/2000/3000/3500/4000/4500 ms`，第6次以后保持4500 ms。进入 READY 后必须连续稳定30秒才清零连接、抖动和认证累计计数，因此短时间反复掉线会逐级退避；稳定30秒后的第一次掉线仍从1000 ms开始。driver 的 `failure_retry_cnt=0`，不存在第二套 driver 重试。
 
 Mermaid 时序图：
 
@@ -708,15 +712,16 @@ sequenceDiagram
     participant NET as net_data handlers
     APP->>SYS: esp_netif_init() / esp_event_loop_create_default()
     APP->>STA: User_Network_mode_app_init("/data")
-    STA->>STA: server_network_sta_read_saved_wifi()
-    STA->>STA: ServerPort_NetworkSTAInit()
-    STA->>SYS: esp_netif_init() 容错复用
-    STA->>WIFI: esp_wifi_init / set_mode / set_config / start
-    WIFI-->>STA: IP_EVENT_STA_GOT_IP
-    STA->>HTTP: ServerPort_init()
-    HTTP->>HTTP: GET /* 先拦截 /ping
-    HTTP->>NET: server_network_sta_net_data_register_handlers()
-    NET-->>HTTP: POST /dataUP /ota /ota_upload
+    STA->>STA: Queue CONNECT command
+    STA->>WIFI: ensure driver once / set_config / connect
+    WIFI-->>STA: STA_CONNECTED event queued
+    STA->>STA: WAITING_IP
+    WIFI-->>STA: GOT_IP event queued
+    STA->>STA: GOT_IP → STARTING_SERVICES
+    STA->>HTTP: example_start_file_server()
+    HTTP->>NET: register GET /* and POST handlers
+    STA->>STA: HTTP handlers ready → READY
+    STA->>STA: mDNS failure retries independently
 ```
 
 
@@ -733,47 +738,34 @@ WiFi 启动树状时序：
 ```text
 main/main.c
 └─ app_main()
-   ├─ esp_netif_init()
-   ├─ esp_event_loop_create_default()
+   ├─ ServerNetworkSta_Init()
+   │  ├─ 创建 wifi_manager Queue / Task / status mutex
+   │  └─ WiFi/IP callback 只负责非阻塞投递事件
    └─ User_Network_mode_app_init("/data")
-      └─ server_network_sta/server_network_sta.c
-         ├─ server_network_sta_read_saved_wifi()
-         │  ├─ 先读 namespace="wifi" 的 ssid/password
-         │  └─ 再读 namespace="nvs.net80211" 的 sta.ssid/sta.pswd
-         ├─ ServerPort_NetworkSTAInit()
-         │  ├─ esp_netif_init() 容错调用，ESP_ERR_INVALID_STATE 时复用 app_main 初始化结果
-         │  ├─ esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")
-         │  ├─ 必要时 esp_netif_create_default_wifi_sta()
-         │  ├─ esp_wifi_init()
-         │  ├─ esp_event_handler_instance_register(WIFI_EVENT)
-         │  ├─ esp_event_handler_instance_register(IP_EVENT_STA_GOT_IP)
-         │  ├─ esp_wifi_set_mode(WIFI_MODE_STA)
-         │  ├─ esp_wifi_set_config(WIFI_IF_STA)
-         │  ├─ esp_wifi_start()
-         │  └─ xEventGroupWaitBits()
-         ├─ Mdns_init_config()
-         │  ├─ mdns_init()
-         │  ├─ mdns_hostname_set(USER_MDNS_HOSTNAME)
-         │  └─ mdns_instance_name_set(USER_MDNS_INSTANCE_NAME)
-         └─ ServerPort_init()
-            └─ file_server.c
-               └─ example_start_file_server("/data")
+      └─ Queue CONNECT
+         └─ wifi_manager
+            ├─ 读取 wifi:ssid/password，失败时回退 nvs.net80211
+            ├─ ensure_wifi_stack()：driver、netif、handler 只初始化一次
+            ├─ channel hint=0，failure_retry_cnt=0
+            ├─ CONNECTING → WAITING_IP → GOT_IP
+            ├─ STARTING_SERVICES
+            │  ├─ HTTP handler 全部成功后置 ready
+            │  └─ mDNS 失败独立后台重试
+            └─ READY
 ```
 
 事件处理时序：
 
 ```text
 ESP-IDF WiFi/IP event
-└─ server_network_sta_event_handler()
-   ├─ WIFI_EVENT_STA_DISCONNECTED
-   │  ├─ server_network_sta_start_retry_timer()
-   │  └─ esp_wifi_connect()
-   └─ IP_EVENT_STA_GOT_IP
-      ├─ server_network_sta_set_ps()
-      ├─ xEventGroupSetBits(SERVER_NETWORK_STA_CONNECTED_BIT)
-      └─ send_base_info_to_mobile()
-         └─ ble/ble_data_handler.cpp
-            └─ ch583_wifi_uart_send_wifi_data()
+└─ wifi_event_handler()
+   └─ xQueueSend(..., 0)
+      └─ wifi_manager
+         ├─ STA_CONNECTED → WAITING_IP
+         ├─ GOT_IP → STARTING_SERVICES → READY
+         ├─ LOST_IP → expected disconnect(DHCP_RECOVERY) → RETRY_WAIT
+         ├─ DISCONNECTED → purpose/物理链路/当前代次校验
+         └─ 队列满 → atomic resync/provisioning 兜底
 ```
 
 HTTP server 注册时序：
@@ -803,10 +795,11 @@ file_server.c
 HTTP server 内存与生命周期说明：
 
 ```text
-当前工程按 HTTP server 单次启动设计。
-file_server.c 中 server_data 为静态指针，example_start_file_server() 启动成功后持续使用。
-在当前不 stop/restart HTTP server 的流程下，这不是运行期泄漏。
-如果后续支持 WiFi 断开后 stop server、重连后 restart server，需要补充 httpd_stop(server)、free(server_data)、server_data=NULL 的释放路径。
+当前工程按 HTTP server 单实例持续运行设计。
+file_server.c 保存 httpd handle、server_data 和 handlers-ready 状态。
+任何必要 URI 注册失败都会 httpd_stop、释放 server_data、清空 handle 并返回错误。
+http_running 表示 HTTP Task 实例存在；http_ready 表示当前有 IP 且必要 handlers 已完成注册。
+WiFi 断线时 http_running 可以保持 true，但 http_ready 必须为 false；重新取得 IP 后不重复启动实例或注册 handlers。
 ```
 
 auto light sleep / HTTP 接收注意事项：
@@ -857,11 +850,12 @@ GET /ping HTTP/1.1
 取：
 - server_network_sta_read_saved_wifi() 优先读取 namespace="wifi" 的 ssid/password。
 - 读取失败后读取 namespace="nvs.net80211" 的 sta.ssid / sta.pswd blob。
-- IP_EVENT_STA_GOT_IP 后读取当前 IP、AP 信息，并启动 HTTP/mDNS。
+- manager 收到 IP_EVENT_STA_GOT_IP 后校验当前 AP/IP，再推进 GOT_IP、STARTING_SERVICES 和 READY。
+- HTTP handlers 注册失败会独立重试；mDNS 失败不阻止直接通过 IP 使用 HTTP，并在后台独立重试。
 
 日志：
 - 当前处于开发阶段，WiFi credential 读取成功时允许明文打印 ssid/password，便于确认配网和 NVS 内容。
-- 保留关键节点：saved WiFi 读取结果、WiFi IP、断开原因、mDNS ready、HTTP server ready、网络初始化失败。
+- 保留关键节点：saved WiFi 读取结果、WiFi IP、断开原因、认证累计达到阈值、mDNS ready、HTTP server ready、网络初始化失败。
 - `SERVER_NETWORK_STA_DEBUG_LOG_ENABLE=0` 时关闭 STA_START、BSSID/RSSI、WiFi PS、esp_wifi_start/connect 返回值等细节日志；需要排查连接过程时再打开。
 ```
 
@@ -8089,23 +8083,23 @@ http://<host>/dataUP
 取：
 - ble_has_saved_wifi_info() 检查 namespace="wifi" 的 ssid 或 namespace="nvs.net80211" 的 sta.ssid 是否存在。
 - ServerNetworkSta_GetStatus() 读取当前 STA IP 状态。
-- notify_wifi_info_if_ip_ready() 统一判断 GOT_IP；配网任务成功后若第一次没读到 IP，会每 300 ms 复查一次，最多复查 3 次；读到 IP 时必须调用 send_base_info_to_mobile()。
+- notify_wifi_info_if_ip_ready() 统一判断 status.has_ip；配网任务成功后若第一次没读到 IP，会每 300 ms 复查一次，最多复查 3 次；读到 IP 时必须调用 send_base_info_to_mobile()。
 - send_base_info_to_mobile() 读取 IP、app 描述、CH583/CH585 BLE_VER、running partition 信息，并对 wifi_info_result 发送失败做短重试；version 字段格式为 `<WiFi app version>:<BLE_VER>`。
 ```
 
 连接规则：
 
 ```text
-- GOT_IP：wifi_wakeup 不 disconnect、不 stop、不重新连接，直接返回 wifi_info_result 和当前 STA IP。
-- CONNECTING：wifi_wakeup 不创建第二条连接流程，只打印 ESP_LOGW 日志，不发送 WIFI_DATA。
-- IDLE / FAILED：存在保存配置时才提交连接任务。
-- func=wifi 属于显式配网：保存配置后使用 force reconnect 策略；若已有 BLE/CH583 配网任务，先返回 BUSY，避免出现“配置已保存但未应用”。
-- 显式配网会设置 provisioning cancel 标志并唤醒旧的开机连接等待；旧配置不再跑完剩余轮次，新配置取得全局 operation mutex 后立即执行。
-- WiFi 核心层使用全局 operation mutex，统一串行化开机、USB、BLE 和 CH583 连接入口。
-- 正常切换配置优先 disconnect / set_config / connect；仅在驱动仍处于 ESP_ERR_WIFI_STATE 时回退 stop / start。
-- 主动 disconnect 最多等待 100 ms 事件；连接使用 WIFI_FAST_SCAN、单轮 10 秒窗口和最多 2 次事件重试。
-- esp_wifi_connect() 只有 ESP_OK 才表示已启动；ESP_ERR_WIFI_CONN 等所有其它返回立即失败，不再空等完整超时。
-- 不再依赖 WIFI_EVENT_STA_START 发起连接：esp_wifi_start() 返回后统一显式调用一次 esp_wifi_connect()；STA_START 仅记录事件，避免驱动已运行时不重复发事件而造成 bits=0 空等。
+- READY 且 status.has_ip：wifi_wakeup 不重新连接，直接返回 wifi_info_result 和当前 STA IP。
+- CONNECTING / DISCONNECTING / WAITING_IP / RETRY_WAIT / GOT_IP / STARTING_SERVICES：不创建第二条连接流程，返回当前 stage、retry_type 和 retry_after_ms。
+- AUTH_FAILED：返回认证失败；NO_CONFIG：返回 no_wifi；IDLE / FAILED 且存在保存配置时才提交连接任务。
+- func=wifi 属于显式配网：保存配置后只提交一个 NEW_CREDENTIAL 命令；若已有 BLE/CH583 配网任务，先返回 BUSY。
+- WiFi 核心层由唯一 wifi_manager Task 串行化开机、USB、BLE 和 CH583 连接入口。
+- 主动断线使用 disconnect purpose、连接代次、凭据代次和有效期，不使用 manual_disconnect 布尔量或事件计数。
+- 认证失败分为 hard/transient；hard 连续2次、transient 连续3次才进入 AUTH_FAILED。
+- 认证失败未达到阈值时保留当前同步请求并继续重试；达到阈值后返回1308。CONNECTING 超时返回1307，WAITING_IP 超时返回1309。
+- 连接使用 WIFI_FAST_SCAN、channel hint=0、单轮10秒连接窗口；所有重试只由 manager 按1～4.5秒表安排。
+- WiFi driver、netif 和事件 handler 只初始化一次；普通恢复不 stop/restart driver。
 ```
 
 

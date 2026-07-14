@@ -55,6 +55,9 @@ struct file_server_data {
 };
 
 static const char *TAG = "file_server";
+static httpd_handle_t s_file_server;
+static struct file_server_data *s_file_server_data;
+static bool s_file_server_ready;
 
 /* Handler to serve the migrated PhotoPainter index page. */
 /* 用于返回移植过来的 PhotoPainter 首页，后续替换网页入口时只需要改这里。 */
@@ -521,15 +524,16 @@ static esp_err_t delete_post_handler(httpd_req_t *req)
 /* Function to start the file server */
 esp_err_t example_start_file_server(const char *base_path)
 {
-    static struct file_server_data *server_data = NULL;
-
-    if (server_data) {
-        ESP_LOGE(TAG, "File server already started");
+    if (s_file_server != NULL && s_file_server_ready) {
+        return ESP_OK;
+    }
+    if (s_file_server != NULL || s_file_server_data != NULL) {
+        ESP_LOGE(TAG, "File server is in an incomplete state");
         return ESP_ERR_INVALID_STATE;
     }
 
     /* Allocate memory for server data */
-    server_data = calloc(1, sizeof(struct file_server_data));
+    struct file_server_data *server_data = calloc(1, sizeof(struct file_server_data));
     if (!server_data) {
         ESP_LOGE(TAG, "Failed to allocate memory for server data");
         return ESP_ERR_NO_MEM;
@@ -537,7 +541,6 @@ esp_err_t example_start_file_server(const char *base_path)
     strlcpy(server_data->base_path, base_path,
             sizeof(server_data->base_path));
 
-    httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 
     /* Increase HTTP server task stack for multipart upload, cast and OTA handlers. */
@@ -563,12 +566,14 @@ esp_err_t example_start_file_server(const char *base_path)
             (unsigned int)config.max_open_sockets);
 
 
-    if (httpd_start(&server, &config) != ESP_OK) {
+    esp_err_t ret = httpd_start(&s_file_server, &config);
+    if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start file server!");
         free(server_data);
-        server_data = NULL;
-        return ESP_FAIL;
+        s_file_server = NULL;
+        return ret;
     }
+    s_file_server_data = server_data;
 
     /* URI handler for getting uploaded files */
     httpd_uri_t file_download = {
@@ -577,7 +582,10 @@ esp_err_t example_start_file_server(const char *base_path)
         .handler   = download_get_handler,
         .user_ctx  = server_data    // Pass server data as context
     };
-    httpd_register_uri_handler(server, &file_download);
+    ret = httpd_register_uri_handler(s_file_server, &file_download);
+    if (ret != ESP_OK) {
+        goto start_failed;
+    }
 
     /* URI handler for uploading files to server */
     httpd_uri_t file_upload = {
@@ -586,7 +594,10 @@ esp_err_t example_start_file_server(const char *base_path)
         .handler   = upload_post_handler,
         .user_ctx  = server_data    // Pass server data as context
     };
-    httpd_register_uri_handler(server, &file_upload);
+    ret = httpd_register_uri_handler(s_file_server, &file_upload);
+    if (ret != ESP_OK) {
+        goto start_failed;
+    }
 
     /* URI handler for deleting files from server */
     httpd_uri_t file_delete = {
@@ -595,12 +606,37 @@ esp_err_t example_start_file_server(const char *base_path)
         .handler   = delete_post_handler,
         .user_ctx  = server_data    // Pass server data as context
     };
-    httpd_register_uri_handler(server, &file_delete);
-
-    esp_err_t dataup_ret = server_network_sta_net_data_register_handlers(server, server_data->base_path);
-    if (dataup_ret != ESP_OK) {
-        ESP_LOGE(TAG, "dataUP handlers failed ret=%s", esp_err_to_name(dataup_ret));
+    ret = httpd_register_uri_handler(s_file_server, &file_delete);
+    if (ret != ESP_OK) {
+        goto start_failed;
     }
 
+    esp_err_t dataup_ret = server_network_sta_net_data_register_handlers(s_file_server, server_data->base_path);
+    if (dataup_ret != ESP_OK) {
+        ESP_LOGE(TAG, "dataUP handlers failed ret=%s", esp_err_to_name(dataup_ret));
+        ret = dataup_ret;
+        goto start_failed;
+    }
+
+    s_file_server_ready = true;
     return ESP_OK;
+
+start_failed:
+    ESP_LOGE(TAG, "File server handler registration failed ret=%s", esp_err_to_name(ret));
+    (void)httpd_stop(s_file_server);
+    s_file_server = NULL;
+    s_file_server_data = NULL;
+    s_file_server_ready = false;
+    free(server_data);
+    return ret;
+}
+
+bool example_file_server_is_running(void)
+{
+    return s_file_server != NULL;
+}
+
+bool example_file_server_is_ready(void)
+{
+    return s_file_server != NULL && s_file_server_ready;
 }

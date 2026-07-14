@@ -62,6 +62,44 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
     char ssid[33] = {0};
     char password[65] = {0};
 
+    if (request != NULL && response != NULL &&
+        UsbConsoleCommon_JsonFuncEquals(request->body, "wifi_status")) {
+        server_network_sta_status_t status = {0};
+        esp_err_t ret = ServerNetworkSta_GetStatus(&status);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        return UsbConsoleCommon_SetJsonf(
+            response, 200, "OK",
+            "{\"func\":\"wifi_status_result\",\"state\":\"%s\",\"state_id\":%d,"
+            "\"retry_type\":%d,\"ap_connected\":%d,\"has_ip\":%d,\"ip\":\"%s\","
+            "\"http_running\":%d,\"http_ready\":%d,\"mdns_ready\":%d,"
+            "\"wifi_retry_count\":%lu,\"wifi_retry_after_ms\":%lu,"
+            "\"service_retry_count\":%lu,\"service_retry_after_ms\":%lu,"
+            "\"mdns_retry_count\":%lu,\"mdns_retry_after_ms\":%lu,"
+            "\"last_result\":%d,\"connection_generation\":%lu,"
+            "\"credential_generation\":%lu,\"disconnect_purpose\":%d,"
+            "\"ready_stable_remaining_ms\":%lu,"
+            "\"disconnect_reason\":%d,\"rssi\":%d}",
+            ServerNetworkSta_StateName(status.state), (int)status.state,
+            (int)status.retry_type, status.ap_connected ? 1 : 0,
+            status.has_ip ? 1 : 0, status.ip,
+            status.http_running ? 1 : 0, status.http_ready ? 1 : 0,
+            status.mdns_ready ? 1 : 0,
+            (unsigned long)status.wifi_retry_count,
+            (unsigned long)status.wifi_retry_after_ms,
+            (unsigned long)status.service_retry_count,
+            (unsigned long)status.service_retry_after_ms,
+            (unsigned long)status.mdns_retry_count,
+            (unsigned long)status.mdns_retry_after_ms,
+            status.last_result,
+            (unsigned long)status.connection_generation,
+            (unsigned long)status.credential_generation,
+            status.disconnect_purpose,
+            (unsigned long)status.ready_stable_remaining_ms,
+            status.disconnect_reason, status.rssi);
+    }
+
     if (request == NULL || response == NULL ||
         !UsbConsoleCommon_JsonFuncEquals(request->body, "wifi")) {
         return ESP_ERR_NOT_SUPPORTED;
@@ -89,9 +127,9 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
                                          error);
     }
 
-    ESP_LOGI(TAG, "wifi request ssid=%s password=%s body_len=%u",
+    ESP_LOGI(TAG, "wifi request ssid=%s password_len=%u body_len=%u",
              ssid,
-             password,
+             (unsigned int)strlen(password),
              (unsigned int)request->body_len);
 
     esp_err_t old_ret = save_wifi_namespace(ssid, password);
@@ -110,8 +148,6 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
                                          TDX_JSON_RESULT_WIFI_SAVE_FAILED);
     }
 
-    ESP_LOGI(TAG, "wifi saved ssid=%s password=%s", ssid, password);
-    ServerNetworkSta_RequestProvisioning();
     esp_err_t submit_ret = UsbConsoleWorker_SubmitWifiConnect();
     ESP_LOGI(TAG, "wifi connect submit ret=%s", esp_err_to_name(submit_ret));
     if (submit_ret != ESP_OK) {

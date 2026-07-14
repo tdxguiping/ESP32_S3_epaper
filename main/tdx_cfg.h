@@ -258,6 +258,10 @@ extern "C" {
 // Keep STA connection debug logs here so WiFi failure checks can be enabled without changing STA logic.
 #define SERVER_NETWORK_STA_DEBUG_LOG_ENABLE 1
 
+// Development-only: print the WiFi password in plaintext for bring-up debugging.
+// Set to 0 before producing a release image.
+#define SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT 1
+
 // Keep Server Network STA return codes here so main.c and the STA module share one result contract.
 #define SERVER_NETWORK_STA_OK 1
 // Configuration value for SERVER NETWORK STA CONNECT FAIL; update local references before changing it.
@@ -275,8 +279,8 @@ extern "C" {
 // Keep the STA connection timeout configurable from one header for board bring-up tuning.
 #define SERVER_NETWORK_STA_CONNECT_TIMEOUT_MS 10000
 
-// Hint the known AP channel to reduce WiFi scan time without binding to a fixed BSSID.
-#define SERVER_NETWORK_STA_WIFI_CHANNEL_HINT 11
+// Use no AP channel preference so routers can change channel without delaying STA discovery.
+#define SERVER_NETWORK_STA_WIFI_CHANNEL_HINT 0
 
 // Keep the ping URI here so heartbeat routing can change without touching GET resource handlers.
 #define SERVER_NETWORK_STA_PING_URI "/ping"

@@ -300,12 +300,10 @@ void app_main(void)
     // 中文：在这里固定旧工程 read_value=0x02 路径：只进入 Server Network STA，然后启动 HTTP 文件服务器。
     uint8_t network_ret = User_Network_mode_app_init(base_path);
     if (network_ret != SERVER_NETWORK_STA_OK) {
-        UserLedStatus_Set(USER_LED_STATE_WIFI_FAIL);
         ESP_LOGE(TAG, "network init failed ret=0x%02x", network_ret);
         //return;
     }
     else    {
-        UserLedStatus_Set(USER_LED_STATE_SERVER_READY);
         ESP_LOGI(TAG, "network ready ret=0x%02x", network_ret);
     }
 
