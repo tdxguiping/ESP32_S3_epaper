@@ -447,15 +447,10 @@ static esp_err_t write_control_file(const char *control_path, const slideshow_co
 
 static bool slideshow_control_force_random_config(const char *scope, bool random)
 {
-#if TDX_SLIDESHOW_RANDOM_ENABLE
-    (void)scope;
-    return random;
-#else
     if (random) {
-        ESP_LOGW(TAG, "%s random disabled temporarily, force random=false", scope);
+        ESP_LOGW(TAG, "%s random permanently disabled, force random=false", scope);
     }
     return false;
-#endif
 }
 
 static esp_err_t parse_set_slideshow_request(const char *body,

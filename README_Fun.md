@@ -134,9 +134,9 @@ The full result-code table is in `README_Result_Code.md`; this file keeps featur
 | `cast` 图片保存 | `/data/cast_img/<fileName>.bin`，`/data/cast_img/<fileName>.jpg`，`/data/cast_img/last_cast.txt` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename；新 bin/jpg 保存和 last_cast 记录成功后，清理 `/data/cast_img` 中非本次文件名的旧 `.bin/.jpg` | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存并记录 last cast；重启恢复可读取 last cast 和 `/data/cast_img` |
 | `cast2pic` 图片保存 | `screen=a` 保存 `/data/cast_img/screen_b.bin`、`/data/cast_img/screen_b.jpg`；`screen=b` 保存 `/data/cast_img/screen_a.bin`、`/data/cast_img/screen_a.jpg` | 当前源码 `screen` 只接受 `a` 或 `b`，`ab` 明确返回 `1617`；`screen=a -> EPD2 -> screen_b`，`screen=b -> EPD1 -> screen_a`；每组 `fileName/bin_size/image_size/bin/image` 必须完整，并兼容 `fileNameA/bin_sizeA/image_sizeA/binA/imageA`、`fileNameB/bin_sizeB/image_sizeB/binB/imageB`；大小必须匹配；`save=true` 才保存；写入使用 `.tmp`，大小校验通过后 rename；空间不足返回失败；本次需要保存的 screen 文件全部成功后，清理 `/data/cast_img` 中非本次 screen 名的旧 `.bin/.jpg`，并删除旧 `last_cast.txt` 避免指向已清理文件 | `show=true && save=true` 时按 screen 转成 EPD number，等待 EPD 显示任务完成后再保存；保存后从固定 screen 文件名读取；核心处理 result 原值透传到响应 |
 | `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | 字段、文件名安全、大小匹配、目录和剩余空间条件与 cast 类似；主要用于保存，`show=true` 时也可显示 | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存；图片列表、轮播、快照从 jpg/bin 目录取数据 |
-| `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `SERVER_NETWORK_STA_DELETE_MAX_FILES=50` 限制；文件名必须安全；只删除匹配的 bin/jpg；不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度 | 从 JSON `fileNames` 取删除列表；删除前按文件名拼路径 |
+| `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `TDX_DELETE_MAX_FILES=50` 限制；超过上限返回 `1514`，文件名非法返回 `1502`；网络与 USB 入口都先完整校验，校验失败不执行删除；只删除匹配的 bin/jpg；不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度 | 从 JSON `fileNames` 取删除列表；校验通过后按文件名拼路径并删除 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从轮播配置/control 文件读取轮播状态 |
-| `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 待显示状态 | `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=50` 限制；单个名称缓冲区受 `TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48` 限制，实际文件名内容需小于 48 bytes；`interval` 限制在 `60..604800` 秒；配置前应检查文件存在；只有 EPD 实际显示完成且下一进度提交成功后才推进 | 开机自动恢复轮播先延迟 `TDX_SLIDESHOW_STARTUP_DELAY_MS=10000` 毫秒，让 `show=true` 请求优先；延迟结束后若 EPD task 未完成则继续推迟，直到 EPD 空闲后重新读取配置、控制文件和待显示进度；显示失败或中途断电继续当前图片；随机模式保存整轮排列，保证一轮内不重复、不遗漏 |
+| `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 诊断/兼容进度 | `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=50` 限制；单个名称缓冲区受 `TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48` 限制，实际文件名内容需小于 48 bytes；`interval` 限制在 `60..604800` 秒；配置前应检查文件存在；`random` 永久强制为 `false` | 未取得 SNTP 时完全使用原恢复逻辑；启动时已有 SNTP 或运行中首次取得 SNTP 后，按 `fileNames + anchor_epoch + interval` 一次性切换到绝对时间槽，本次开机不再切回旧逻辑 |
 | `wifi_work_time` | `work_state` namespace blob；`PhotoPainter:work_continue/wifi_standby` 字符串兼容键 | HTTP JSON `seconds` 必须在 `60..3600`；内部 `SetAndSave()` 还会 clamp 到最小/最大值；保存 blob 后会读回验证；`seconds=0` 拒绝 | 启动时读取 blob；blob size 不匹配则回退默认值；兼容读取字符串键并解析为 u32 |
 | OTA | OTA update partition；boot partition 选择 | 请求必须被识别为 `/ota` 或 `/ota_upload`；body 不超过 `SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE=6MB`；meta/firmware 字段可解析；固件 magic、app_desc、版本、长度和目标分区大小检查通过；写入成功后才设置 boot partition | 读取 meta JSON、firmware/bin 字段、running partition、next update partition、app desc 和 OTA 状态 |
 | EPD 类型 | `PhotoPainter:epd_type` | 只允许保存 `EpdType_GetConfig(type)` 能找到的合法 type；未变化时跳过写入；非法 type 返回 `ESP_ERR_INVALID_ARG` | 启动读取 `epd_type`；不存在或无效时回退 `USER_EPD_TYPE_DEFAULT`；显示时按当前 type 分发到具体驱动 |
@@ -1748,8 +1748,9 @@ Result 定义建议：
 | `delete_result` | `1501` | `fileNames` 缺失或为空 |
 | `delete_result` | `1502` | 文件名非法 |
 | `delete_result` | `1503` | 删除指定 bin/jpg 文件失败，或指定文件均不存在/未删除 |
+| `delete_result` | `1514` | `fileNames` 超过单次删除上限 50 个；不执行本次删除 |
 
-功能说明：只删除 JSON `fileNames` 指定的图片和缩略图文件。delete 不清理、不修改 `last_cast.txt`、`slideshow_config.txt`、`show_control.txt`，也不清理 NVS 中的轮播进度。
+功能说明：只删除 JSON `fileNames` 指定的图片和缩略图文件。网络入口先完整解析并校验全部名称；超过 50 个返回 `1514`，单个名称非法返回 `1502`，两种情况都不会删除任何文件。delete 不清理、不修改 `last_cast.txt`、`slideshow_config.txt`、`show_control.txt`，也不清理 NVS 中的轮播进度。
 
 Mermaid 时序图：
 
@@ -2537,20 +2538,20 @@ start_slideshow 是正式轮播列表配置接口；会重写 `show_control.txt`
 存：
 - start_slideshow 保存 slideshow_config 的 fileNames / interval / random，保存 random 配置，并写入 `show_control.txt`：`{"func":"set_slideshow","sw":1,"interval":...,"random":...,"timestamp":...,"anchor_epoch":...}`。
 - set_slideshow 写入 sw / interval / timestamp / anchor_epoch，并同步写 PhotoPainter:epd_mode=1。
-- 当前版本通过 `TDX_SLIDESHOW_RANDOM_ENABLE=0` 临时禁用 random；协议仍接收 `random:true/false`，但设备会统一强制为 `random=false`，保存到 `slideshow_config.txt`、`show_control.txt`、NVS `slide_random` 和 snapshot 返回状态时也固定为 false。
-- NVS `slide_progress` 保存版本、配置 hash、待显示文件、随机种子、整轮顺序和当前位置。
-- `pending_file` 表示下一次必须完成显示的图片，不表示已经显示成功的图片。
-- EPD 实际返回成功后才计算并提交下一张；NVS 写入并读回校验成功后运行索引才推进。
-- slideshow_task() 在 RTC 模式下按 `anchor_epoch + N * interval` 计算下一次播放点；EPD 显示耗时计入间隔，等待期间会预加载下一张。
+- `random` 永久禁用；协议仍兼容接收 `random:true/false`，但设备统一强制为 `random=false`，并在 `slideshow_config.txt`、`show_control.txt`、NVS `slide_random` 和 snapshot 中固定保存/返回 false。
+- NVS `slide_progress` 继续保存版本、配置 hash、待显示文件和位置，供诊断及非 SNTP 兼容路径使用；SNTP 已同步时它不再是选图依据，启动时 NVS 读写失败可用 RAM 进度继续绝对时间轮播。
+- SNTP 绝对时间槽公式：`slot=floor((now_epoch-anchor_epoch)/interval)`，`current_index=slot%file_count`，`current_file=fileNames[current_index]`，`next_epoch=anchor_epoch+(slot+1)*interval`。
+- SNTP 已同步且 `now_epoch>=anchor_epoch` 时，当前绝对时间槽始终是选图依据。开机恢复若有效 NVS `pending_file` 正好是当前槽的下一张，表示墨水屏已保留当前槽图片，此时不重复刷新当前图片，而是等待下一绝对播放点；其他情况立即显示当前槽图片。`now_epoch<anchor_epoch` 时等待 `anchor_epoch` 后显示第一张。NVS 只辅助判断当前槽图片是否已在屏幕上，不能改变绝对时间槽选图结果。
+- slideshow_task() 在 SNTP 模式下每次显示前重新核对绝对时间槽；若断电、阻塞或 SNTP 向前/向后校时跨槽，直接切换到当前应显示的图片，不逐张补播。
 - `ServerNetworkStaSlideshow_GetScheduleTiming()` 可读取 RTC 轮播的 now / next / remain；`ServerNetworkStaSlideshow_GetRuntimeTiming()` 只作为非 RTC 兼容状态读取。
-- slideshow_task() 在 EPD 显示成功且下一进度保存成功后，RTC 模式重新计算 `next_epoch`，并打印 `slideshow rtc next ...`。
-- slideshow_task() 在上一张 EPD 显示完成并保存下一进度后，会在剩余 interval 时间内用 PSRAM 预加载下一张 bin 并做 SHA-256 文件名校验；RTC 真实目标时间保持 `next_epoch` 不变，但设备内部会在 `next_epoch - lead_seconds` 时进入 EPD 显示流程，用于抵消 SD / 调度 / EPD 调用链路开销。`lead_seconds` 按当前 EPD type 选择：`EPD_TYPE_1600_1200_133_DKE` 为 1 秒，`EPD_TYPE_1600_1200_133` 为 4 秒，其它屏型使用默认 `TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS=2` 秒。若 PSRAM 预加载失败，已保存的下一进度不变，下一轮会重新读取该图片，不长时间占用内部 RAM，不影响停止和失败不推进的规则。
+- slideshow_task() 在 EPD 显示成功且下一进度保存成功后，SNTP 模式按绝对槽计算下一目标；其他时间源继续使用原 RTC 进度逻辑。
+- slideshow_task() 在上一张 EPD 显示完成并保存下一进度后，会在剩余 interval 时间内用 PSRAM 预加载下一张 bin 并做 SHA-256 文件名校验；RTC 真实目标时间保持 `next_epoch` 不变，但设备内部会在 `next_epoch - lead_seconds` 时进入 EPD 显示流程，用于抵消 SD / 调度 / EPD 调用链路开销。`lead_seconds` 按当前 EPD type 选择：`EPD_TYPE_1600_1200_133_DKE` 为 1 秒，`EPD_TYPE_1600_1200_133` 为 3 秒，其它屏型使用默认 `TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS=2` 秒。若 PSRAM 预加载失败，已保存的下一进度不变，下一轮会重新读取该图片，不长时间占用内部 RAM，不影响停止和失败不推进的规则。
 - RTC 轮播显示失败时不立即重试；当前失败图片视为跳过，先保存并切换到下一张 pending_file，再排到下一次 RTC 播放点，等待下一次轮播到来后显示下一张图片。若跳过进度保存失败，则不推进当前 progress，但仍排到下一次 RTC 播放点，避免立即重试。
-- 随机模式按“整轮洗牌”运行，一轮内所有图片各显示一次，不重复、不遗漏。
+- `lead_seconds` 只用于提前进入 EPD 硬件刷新，目标图片仍按逻辑播放点的绝对槽选择，不使用提前后的时间改变图片索引。
 
 取：
 - ServerNetworkStaSlideshow_StartSavedDelayed() 只用于开机自动恢复轮播：启动位置仍保持在网络初始化之后，但先等待 `TDX_SLIDESHOW_STARTUP_DELAY_MS=10000` 毫秒；等待期间手机 APP 或 USB Serial 的 cast/cast2pic/upload `show=true` 请求优先进入 EPD 显示；延迟结束时如果 EPD task 仍忙，则继续推迟启动。
-- 延迟结束后先重新读取 control；如果 10 秒内 show=true 已把 control 写成 `sw=0`，则跳过自动恢复轮播；如果 EPD task 仍有待显示任务或正在显示，则继续短周期推迟，直到 EPD 空闲后再重新读取 slideshow_config、control 和 `slide_progress` 并决定是否启动。若此时没有 SNTP/APP/CH583 VALID 时间源，会先请求 CH583/CH585 TIME_GET；CH583/CH585 STALE 可作为 fallback 写入 ESP32-C5 RTC/system time，并且仅在 WiFi 未取得 IP 或 SNTP 未同步时让本次启动恢复立即显示当前 pending_file，显示成功后再按 RTC interval 继续；若仍无可用 CH583/CH585 时间，则将 `anchor_epoch` 写入 ESP32-C5 RTC/system time，使当前 pending_file 立即进入 RTC 轮播。
+- 延迟结束后先重新读取 control；如果 `show=true` 已把 control 写成 `sw=0`，则跳过自动恢复；EPD 忙时继续推迟。启动时没有 SNTP 就按原 CH583/CH585、anchor fallback 和 pending_file 逻辑运行，不等待网络时间；运行中首次取得 SNTP 时，等待当前 EPD 操作结束后一次性切换到绝对时间槽。
 - 读取 SD 卡中的 control 时严格校验：`sw=1` 必须包含合法 `interval`、`timestamp` 和 `anchor_epoch`；旧格式如 `{"sw":1,"interval":90,"random":false,"run_mode":0}` 视为非法，打印 `legacy control rejected`，不启动轮播，也不回退到 task tick 计时。
 - ServerNetworkStaSlideshow_StartSaved() 仍用于立即启动已保存轮播，不带开机 10 秒延迟。
 - 进度版本、配置 hash、随机模式、排列或文件名不匹配时，从当前配置第一张重建进度。
@@ -2559,7 +2560,7 @@ start_slideshow 是正式轮播列表配置接口；会重写 `show_control.txt`
 - slideshow_task() 从 SD 读出 bin 后、送 EPD 前，会计算文件内容 SHA-256 的十六进制后 16 位并与 fileName 比对，只打印 `sha256 ok` / `sha256 mismatch` / `sha256 failed` / `skip invalid basename` 诊断日志，不阻止显示、不修改进度；匹配成功用 `ESP_LOGI`，无效 basename 跳过用 `ESP_LOGW`，计算失败或 mismatch 用 `ESP_LOGE`。
 - 轮播日志中 `slideshow rtc ...` / `slide_timer rtc ...` 表示真实 RTC 时间控制；`slideshow rtc wait target=... display_target=... lead=...` 中 `target` 是真实播放点，`display_target` 是提前进入显示流程的时间点，`lead` 是当前 EPD type 实际提前秒数；`slideshow rtc display start file=... position=x/y interval=...` 表示本轮第 x/y 个播放点已进入 EPD 显示；`legacy_tick` 只表示非 RTC 兼容路径或旧状态统计，不能作为新协议轮播判断依据。RTC 模式以真实系统时间计算 remain，不依赖 task tick 延时。
 - `set_slideshow sw=1` 会按新的 timestamp / interval 重算 RTC 播放点；`start_slideshow` 也会用自身 timestamp 写 RTC control 并启动轮播。
-- 极端情况下若 EPD 已完成但提交下一进度前断电，当前图片会重复一次，但绝不会跳图。
+- SNTP 模式下即使旧 `slide_progress` 与当前时间不一致，也会以绝对时间槽结果为准；只有开机恢复时有效 `pending_file` 等于当前槽下一张，才用于避免重复刷新墨水屏已经保留的当前图片。未取得 SNTP 时始终沿用原进度恢复行为，已经切换到 SNTP 模式后即使 WiFi 临时断开也不回退。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -2678,12 +2679,13 @@ SNTP 已同步且差值 <= 5 秒时，接受指令，anchor_epoch=timestamp。
 SNTP 未同步时，设备把 APP / PC 发来的 timestamp 写入 ESP32-C5 RTC / 系统时间，并以此作为本次轮播时间基准；写入失败返回 1512。
 timestamp 表示第一张图片播放时间，之后每 interval 秒一个播放点。
 设备收到 APP / PC 合法 timestamp 后，会尽量通过 CH583/CH585 TIME_SET 备份该时间；即使 SNTP 已同步且 timestamp 与设备当前 SNTP 时间差值超过 5 秒、最终返回 1513 不执行轮播，也会先备份 APP / PC timestamp。若 timestamp 非法但 SNTP 已同步，则备份设备当前 SNTP 时间。
-如果收到命令或设备启动恢复时已经超过 timestamp：
-- 超过时间 <= 5 秒：仍按第一张图片播放点执行，允许立即播放，避免 1 秒轮询和网络/串口延迟导致跳过。
-- 超过时间 > 5 秒：按 anchor_epoch + N * interval 自动计算下一个未来播放点，保持和手机 APP 倒计时一致。
-轮播 task 内部 1 秒检查一次 RTC / 系统时间；真实周期仍按 `anchor_epoch + N * interval` 计算 `next_epoch`，但设备内部会按当前 EPD type 在 `next_epoch - lead_seconds` 时提前进入 EPD 显示流程：DKE 13.3 寸为 1 秒，兴泰 13.3 寸为 4 秒，其它屏型默认 2 秒；原来的图片顺序、随机、进度保存和 EPD 显示流程不改。
+如果收到命令或设备启动恢复时已经超过 timestamp，并且 SNTP 已同步：
+- 使用 `slot=floor((now_epoch-anchor_epoch)/interval)` 计算当前绝对时间槽。
+- 使用 `current_index=slot%file_count` 计算 APP 与 ESP32 此刻共同应显示的图片，不从第一张重新开始。开机恢复时 NVS position 不能改变该选图结果，只在其 `pending_file` 等于当前槽下一张时辅助确认墨水屏已经显示当前图片，并避免重复刷新；否则立即显示当前槽图片。
+- 使用 `next_epoch=anchor_epoch+(slot+1)*interval` 计算下一个逻辑播放点；跨过多个时间槽时直接跳到当前槽，不补播遗漏图片。
+轮播 task 内部 1 秒检查 RTC / 系统时间；设备内部仍按当前 EPD type 在 `next_epoch - lead_seconds` 时提前进入 EPD 显示流程：DKE 13.3 寸为 1 秒，兴泰 13.3 寸为 3 秒，其它屏型默认 2 秒，但图片索引按逻辑 `next_epoch` 对应的槽计算。
 返回成功时带 timestamp、time_source、time_diff、anchor_epoch、now_epoch、next_epoch、remain，APP 可用 remain 校验倒计时同步。time_source=sntp 表示使用设备 SNTP 时间；time_source=timestamp 表示 SNTP 未同步，已使用 APP / PC timestamp 写入 RTC。
-开机自动恢复旧 RTC 轮播时优先使用可靠时间源：SNTP、APP/PC timestamp，或 CH583/CH585 TIME_STATUS VALID。若 CH583/CH585 只返回 STALE，则将 STALE 时间写入 ESP32-C5 RTC/system time，作为轮播 fallback 时间源继续启动；只有 WiFi 未取得 IP 或 WiFi 已取得 IP 但 SNTP 未同步时，本次启动恢复才会立即显示当前 pending_file，显示成功后再按 RTC interval 继续。若 CH583/CH585 返回 INVALID 或没有可用时间，启动任务会在短暂等待后读取 show_control 中的 `anchor_epoch`，写入 ESP32-C5 RTC/system time，并立即恢复当前 pending_file 的 RTC 轮播；这样不会因 2026-01-01 默认时间早于旧 anchor_epoch 而长时间等待。
+开机自动恢复启动点如果 `ServerNetworkStaTime_IsSntpSynced()==true`，则立即启用绝对时间槽；否则仍走原 CH583/CH585、anchor fallback 与 pending_file 路径。轮播等待期间每秒只检查状态、不打印；首次发现 SNTP 成功后切换一次，之后不再回退。
 ```
 
 
@@ -3210,7 +3212,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 EPD 完成低功耗倒计时：
 
 ```text
-USER_EPD_DONE_LOW_POWER_ENABLE 默认 1。
+ 默认 1。
 USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 默认 5 秒。
 USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 默认 60 秒。
 ```
@@ -4197,11 +4199,12 @@ Result 定义建议：
 | `delete_result` | `1501` | `fileNames` 缺失 |
 | `delete_result` | `1502` | 文件名非法 |
 | `delete_result` | `1503` | 删除失败 |
+| `delete_result` | `1514` | `fileNames` 超过单次删除上限 50 个；不执行本次删除 |
 
 功能说明：
 
 ```text
-USB delete 接收 JSON fileNames 数组，只删除对应 bin/jpg 文件，不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度。
+USB delete 接收 JSON fileNames 数组，单次最多 50 个；先完整解析并严格校验整个 `fileNames` 数组，再删除对应 bin/jpg 文件。超过 50 个返回 `1514`，文件名非法返回 `1502`，JSON 结构非法返回 `1001`，校验失败时不执行任何删除。该功能不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度。
 ```
 
 Mermaid 时序图：
@@ -5071,12 +5074,12 @@ Content-Length: 88
 存：
 - USB slideshow 写入轮播列表配置 fileNames / interval / random，并写入 `show_control.txt`：`{"func":"set_slideshow","sw":1,"interval":...,"random":...,"timestamp":...,"anchor_epoch":...}`。
 - USB slideshow_control 的 set_slideshow 写入 sw / interval / timestamp / anchor_epoch，并同步写 PhotoPainter:epd_mode=1。
-- 网络与 USB 共用 NVS `slide_progress` 待显示进度；仅在 EPD 实际完成且进度提交成功后推进。
-- 随机轮播保存完整的本轮排列，一轮内每张图片显示一次。
+- 网络与 USB 共用 NVS `slide_progress`；SNTP 已同步时只把它作为诊断/兼容状态，实际图片由绝对时间槽决定。
+- `random` 永久强制为 false，网络与 USB 都按 fileNames 固定顺序轮播。
 
 取：
-- ServerNetworkStaSlideshow_StartSaved() 启动时读取 slideshow_config、control 和待显示进度；slideshow_control 设置 interval 时使用 ServerNetworkStaSlideshow_StartSavedResetInterval()，旧轮播运行中会按最新 interval 重新计时。
-- slideshow_task() 按配置读取 `/data/bin_img/*.bin`，等待 EPD 完成；失败或断电不推进当前图片。
+- ServerNetworkStaSlideshow_StartSaved() 启动时读取 slideshow_config、control 和待显示进度；已有 SNTP 时按 fileNames / anchor_epoch / interval 覆盖旧图片位置，NVS 失败不阻止 RAM 绝对时间轮播。
+- slideshow_task() 按配置读取 `/data/bin_img/*.bin` 并等待 EPD 完成；未取得 SNTP 时保持原进度行为，运行中首次取得 SNTP 后切换到绝对时间槽并处理前后跨槽。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-09)
@@ -7751,7 +7754,7 @@ INVALID
 
 ```text
 VALID   本轮 RTC 未复位，时间由 RTC 差值实时推算，可信；ESP32-C5 可写入 RTC/system time，并允许恢复旧 RTC 轮播。
-STALE   复位后只能返回 DataFlash 中最后保存的备份时间，不保证继续走过离线时长；ESP32-C5 可将它写入 RTC 作为轮播 fallback，并且仅在 WiFi 未取得 IP 或 SNTP 未同步时，本次启动恢复才立即显示当前 pending_file。
+STALE   复位后只能返回 DataFlash 中最后保存的备份时间，不保证继续走过离线时长；ESP32-C5 仍可按原逻辑将它写入 RTC 作为非 SNTP 轮播 fallback。启动时已有 SNTP 或运行中首次取得 SNTP 后，才使用绝对时间槽覆盖旧 pending_file。
 INVALID 从未成功 TIME_SET，且没有可用备份时间；ESP32-C5 不用它启动旧 RTC 轮播。
 ```
 

@@ -256,6 +256,13 @@ delete_result
 | `1501` | `TDX_JSON_RESULT_FILE_NAMES_MISSING` | `fileNames` 缺失或为空 |
 | `1502` | `TDX_JSON_RESULT_FILE_NAME_INVALID` | 文件名非法 |
 | `1503` | `TDX_JSON_RESULT_DELETE_FAILED` | 删除文件或清理关联状态失败 |
+| `1514` | `TDX_JSON_RESULT_FILE_NAMES_TOO_MANY` | `fileNames` 数量超过单次删除上限 50 个；不执行本次删除 |
+
+`1514` 响应同时返回 `message="too many fileNames"` 和 `maxFiles=50`，供 APP 展示原因并按上限分批提交。当前上限由 `TDX_DELETE_MAX_FILES` 定义：
+
+```json
+{"func":"delete_result","result":1514,"message":"too many fileNames","maxFiles":50}
+```
 
 [⬆ 返回目录](#toc)
 
@@ -450,7 +457,7 @@ get_snapshot_result
 delete_result
 ```
 
-使用规则与网络 HTTP `delete` 一致，详见 [2.6](#sec-02-6)。
+使用规则与网络 HTTP `delete` 一致，详见 [2.6](#sec-02-6)。USB 与网络入口均先完整校验 `fileNames`；超过 50 个时返回 `1514`，不执行本次删除。
 
 [⬆ 返回目录](#toc)
 
@@ -784,6 +791,7 @@ PhotoPainter:epd_mode
 | `1511` | `TDX_JSON_RESULT_SLIDESHOW_TIMEZONE_DEPRECATED` | 旧协议 `timezone` 已废弃；新协议不再接收 `datetime/timezone` |
 | `1512` | `TDX_JSON_RESULT_SLIDESHOW_TIME_SET_FAILED` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
 | `1513` | `TDX_JSON_RESULT_SLIDESHOW_TIME_DIFF_TOO_LARGE` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次轮播指令 |
+| `1514` | `TDX_JSON_RESULT_FILE_NAMES_TOO_MANY` | delete 的 `fileNames` 数量超过单次上限 50 个；不执行本次删除 |
 
 [⬆ 返回目录](#toc)
 

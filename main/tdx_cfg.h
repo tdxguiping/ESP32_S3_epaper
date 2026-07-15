@@ -179,6 +179,8 @@ extern "C" {
 #define TDX_JSON_RESULT_SLIDESHOW_TIME_SET_FAILED 1512
 // Public JSON result code for TDX JSON RESULT SLIDESHOW TIME DIFF TOO LARGE; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_TIME_DIFF_TOO_LARGE 1513
+// Public JSON result code for TDX JSON RESULT FILE NAMES TOO MANY; keep the numeric value stable for clients.
+#define TDX_JSON_RESULT_FILE_NAMES_TOO_MANY 1514
 
 // Public JSON result code for TDX JSON RESULT UPLOAD BOUNDARY MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_UPLOAD_BOUNDARY_MISSING 1601
@@ -458,7 +460,7 @@ extern "C" {
 #define SERVER_NETWORK_STA_THUMB_URI_PREFIX "/thumb/"
 
 // Keep delete request limits here so file removal cannot grow unbounded from one JSON request.
-#define SERVER_NETWORK_STA_DELETE_MAX_FILES 50
+#define TDX_DELETE_MAX_FILES 50
 
 /* -------------------------------------------------------------------------- */
 /* 10. Slideshow                                                               */
@@ -513,9 +515,6 @@ extern "C" {
 #define TDX_SLIDESHOW_NVS_PROGRESS_KEY "slide_progress"
 // NVS key used by TDX SLIDESHOW RANDOM NVS KEY; keep storage compatibility before changing it.
 #define TDX_SLIDESHOW_RANDOM_NVS_KEY "slide_random"
-// Feature switch for TDX SLIDESHOW RANDOM ENABLE; set to 1 to enable and 0 to disable.
-#define TDX_SLIDESHOW_RANDOM_ENABLE 0
-
 /* -------------------------------------------------------------------------- */
 /* 10.1 Factory Reset Button                                                  */
 /* -------------------------------------------------------------------------- */
@@ -575,7 +574,7 @@ extern "C" {
 #define USER_WORK_STATE_TASK_INTERVAL_MS 1000
 
 // After each EPD display job finishes, request one low-power countdown through work_state_task.
-#define USER_EPD_DONE_LOW_POWER_ENABLE 1
+#define USER_EPD_DONE_LOW_POWER_ENABLE   1
 // Timing value for USER EPD DONE LOW POWER DELAY SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 5
 // Timing value for USER EPD DONE LOW POWER SLIDESHOW MIN REMAIN SECONDS; verify related wake, sleep, and retry behavior if it changes.

@@ -75,7 +75,7 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
             "\"retry_type\":%d,\"ap_connected\":%d,\"has_ip\":%d,\"ip\":\"%s\","
             "\"http_running\":%d,\"http_ready\":%d,\"mdns_ready\":%d,"
             "\"wifi_retry_count\":%lu,\"wifi_retry_after_ms\":%lu,"
-            "\"service_retry_count\":%lu,\"service_retry_after_ms\":%lu,"
+            "\"http_retry_count\":%lu,\"http_retry_after_ms\":%lu,"
             "\"mdns_retry_count\":%lu,\"mdns_retry_after_ms\":%lu,"
             "\"last_result\":%d,\"connection_generation\":%lu,"
             "\"credential_generation\":%lu,\"disconnect_purpose\":%d,"
@@ -89,8 +89,8 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
             status.mdns_ready ? 1 : 0,
             (unsigned long)status.wifi_retry_count,
             (unsigned long)status.wifi_retry_after_ms,
-            (unsigned long)status.service_retry_count,
-            (unsigned long)status.service_retry_after_ms,
+            (unsigned long)status.http_retry_count,
+            (unsigned long)status.http_retry_after_ms,
             (unsigned long)status.mdns_retry_count,
             (unsigned long)status.mdns_retry_after_ms,
             status.last_result,

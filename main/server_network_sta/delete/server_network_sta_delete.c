@@ -15,7 +15,7 @@
 static const char *TAG = "server_sta_delete";
 
 typedef struct {
-    char file_names[SERVER_NETWORK_STA_DELETE_MAX_FILES][TDX_SLIDESHOW_FILE_NAME_MAX_LEN];
+    char file_names[TDX_DELETE_MAX_FILES][TDX_SLIDESHOW_FILE_NAME_MAX_LEN];
     size_t file_count;
 } delete_request_t;
 
@@ -79,17 +79,20 @@ typedef enum {
     DELETE_PARSE_OK = 0,
     DELETE_PARSE_MISSING,
     DELETE_PARSE_INVALID_NAME,
+    DELETE_PARSE_TOO_MANY_FILES,
     DELETE_PARSE_INVALID_JSON,
 } delete_parse_result_t;
 
 static delete_parse_result_t parse_file_names(const char *body, delete_request_t *request)
 {
+    if (request != NULL) {
+        memset(request, 0, sizeof(*request));
+    }
+
     const char *pos = find_json_key(body, "fileNames");
     if (pos == NULL || request == NULL) {
         return DELETE_PARSE_MISSING;
     }
-
-    memset(request, 0, sizeof(*request));
     pos += strlen("fileNames") + 2;
     while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
         pos++;
@@ -131,8 +134,11 @@ static delete_parse_result_t parse_file_names(const char *body, delete_request_t
         pos++;
         file_name[len] = '\0';
 
-        if (!file_name_is_safe(file_name) || request->file_count >= SERVER_NETWORK_STA_DELETE_MAX_FILES) {
+        if (!file_name_is_safe(file_name)) {
             return DELETE_PARSE_INVALID_NAME;
+        }
+        if (request->file_count >= TDX_DELETE_MAX_FILES) {
+            return DELETE_PARSE_TOO_MANY_FILES;
         }
         strlcpy(request->file_names[request->file_count], file_name,
                 sizeof(request->file_names[request->file_count]));
@@ -152,6 +158,11 @@ static esp_err_t send_delete_result(httpd_req_t *req, int result, const char *me
         snprintf(json, sizeof(json),
                  "{\"func\":\"delete_result\",\"result\":%d}",
                  TDX_JSON_RESULT_OK);
+    } else if (result == TDX_JSON_RESULT_FILE_NAMES_TOO_MANY) {
+        snprintf(json, sizeof(json),
+                 "{\"func\":\"delete_result\",\"result\":%d,\"message\":\"too many fileNames\",\"maxFiles\":%d}",
+                 result,
+                 TDX_DELETE_MAX_FILES);
     } else {
         snprintf(json, sizeof(json),
                  "{\"func\":\"delete_result\",\"result\":%d,\"message\":\"%s\"}",
@@ -167,11 +178,9 @@ static esp_err_t send_delete_result(httpd_req_t *req, int result, const char *me
 static bool delete_one_path(const char *path)
 {
     if (unlink(path) == 0) {
-        ESP_LOGI(TAG, "delete removed path=%s", path);
         return true;
     }
     if (errno == ENOENT) {
-        ESP_LOGI(TAG, "delete path already missing=%s", path);
         return false;
     }
     ESP_LOGE(TAG, "delete failed path=%s errno=%d", path, errno);
@@ -192,9 +201,16 @@ esp_err_t ServerNetworkStaDelete_ProcessJson(httpd_req_t *req,
     delete_parse_result_t parse_result = parse_file_names(body, &request);
     if (parse_result != DELETE_PARSE_OK) {
         int result = parse_result == DELETE_PARSE_INVALID_NAME ? TDX_JSON_RESULT_FILE_NAME_INVALID :
+                     parse_result == DELETE_PARSE_TOO_MANY_FILES ? TDX_JSON_RESULT_FILE_NAMES_TOO_MANY :
                      parse_result == DELETE_PARSE_INVALID_JSON ? TDX_JSON_RESULT_JSON_INVALID :
                      TDX_JSON_RESULT_FILE_NAMES_MISSING;
-        return send_delete_result(req, result, "delete failed");
+        const char *message = parse_result == DELETE_PARSE_INVALID_NAME ? "invalid fileName" :
+                              parse_result == DELETE_PARSE_TOO_MANY_FILES ? "too many fileNames" :
+                              parse_result == DELETE_PARSE_INVALID_JSON ? "invalid JSON" :
+                              "fileNames missing";
+        ESP_LOGW(TAG, "delete rejected result=%d parse=%d accepted_count=%u max=%d",
+                 result, (int)parse_result, (unsigned int)request.file_count, TDX_DELETE_MAX_FILES);
+        return send_delete_result(req, result, message);
     }
 
     char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
@@ -233,6 +249,8 @@ esp_err_t ServerNetworkStaDelete_ProcessJson(httpd_req_t *req,
     TdxSharedSpi_Unlock();
 
     if (removed_count <= 0) {
+        ESP_LOGW(TAG, "delete failed request_count=%u removed_count=%d",
+                 (unsigned int)request.file_count, removed_count);
         return send_delete_result(req, TDX_JSON_RESULT_DELETE_FAILED, "delete failed");
     }
 

@@ -425,7 +425,7 @@ static uint32_t wifi_retry_after_ms(const server_network_sta_status_t& status)
 {
     switch (status.retry_type) {
     case SERVER_NETWORK_RETRY_WIFI: return status.wifi_retry_after_ms;
-    case SERVER_NETWORK_RETRY_HTTP: return status.service_retry_after_ms;
+    case SERVER_NETWORK_RETRY_HTTP: return status.http_retry_after_ms;
     case SERVER_NETWORK_RETRY_MDNS: return status.mdns_retry_after_ms;
     default: return 0;
     }

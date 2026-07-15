@@ -189,15 +189,10 @@ static int validate_file_names(const char *body)
 
 static bool usb_slideshow_force_random_config(const char *scope, bool random)
 {
-#if TDX_SLIDESHOW_RANDOM_ENABLE
-    (void)scope;
-    return random;
-#else
     if (random) {
-        ESP_LOGW("usb_slideshow", "%s random disabled temporarily, force random=false", scope);
+        ESP_LOGW("usb_slideshow", "%s random permanently disabled, force random=false", scope);
     }
     return false;
-#endif
 }
 
 static bool write_slideshow_config(const char *body, uint32_t interval, bool random)

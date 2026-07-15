@@ -257,12 +257,10 @@ void app_main(void)
                      sizeof(random_value),
                      "false");
     g_slideshow_random_enable = (strcmp(random_value, "true") == 0) ? 1 : 0;
-#if !TDX_SLIDESHOW_RANDOM_ENABLE
     if (g_slideshow_random_enable) {
-        ESP_LOGW(TAG, "slideshow random disabled temporarily, force random=false");
+        ESP_LOGW(TAG, "slideshow random permanently disabled, force random=false");
     }
     g_slideshow_random_enable = 0;
-#endif
     app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
                       g_slideshow_random_enable ? "true" : "false");
     ESP_LOGI(TAG, "slideshow random config=%s enable=%u",

@@ -1,5 +1,7 @@
 #include "usb_console_delete.h"
 
+#include <stdbool.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/unistd.h>
@@ -15,43 +17,97 @@ typedef enum {
     USB_DELETE_PARSE_OK = 0,
     USB_DELETE_PARSE_MISSING_FILE_NAMES,
     USB_DELETE_PARSE_INVALID_FILE_NAME,
+    USB_DELETE_PARSE_TOO_MANY_FILES,
+    USB_DELETE_PARSE_INVALID_JSON,
 } usb_delete_parse_result_t;
+
+typedef struct {
+    char file_names[TDX_DELETE_MAX_FILES][TDX_SLIDESHOW_FILE_NAME_MAX_LEN];
+    size_t file_count;
+} usb_delete_request_t;
 
 static bool delete_file_pair(const char *file_name)
 {
-    char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
+    char bin_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
+    char jpg_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
     bool removed = false;
 
     if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
         return false;
     }
-    snprintf(path, sizeof(path), "%s/bin_img/%s.bin", USB_CONSOLE_BASE_PATH, file_name);
-    removed = (unlink(path) == 0) || removed;
-    snprintf(path, sizeof(path), "%s/jpg_img/%s.jpg", USB_CONSOLE_BASE_PATH, file_name);
-    removed = (unlink(path) == 0) || removed;
+    snprintf(bin_path, sizeof(bin_path), "%s/bin_img/%s.bin", USB_CONSOLE_BASE_PATH, file_name);
+    if (unlink(bin_path) == 0) {
+        removed = true;
+    } else if (errno != ENOENT) {
+        ESP_LOGE(TAG, "delete failed path=%s errno=%d", bin_path, errno);
+    }
+
+    snprintf(jpg_path, sizeof(jpg_path), "%s/jpg_img/%s.jpg", USB_CONSOLE_BASE_PATH, file_name);
+    if (unlink(jpg_path) == 0) {
+        removed = true;
+    } else if (errno != ENOENT) {
+        ESP_LOGE(TAG, "delete failed path=%s errno=%d", jpg_path, errno);
+    }
+
     TdxSharedSpi_Unlock();
     return removed;
 }
 
-static usb_delete_parse_result_t parse_file_names_and_delete(const char *body, int *removed_count)
+static const char *find_json_key(const char *body, const char *key)
 {
-    const char *pos = strstr(body, "\"fileNames\"");
-    if (pos == NULL || removed_count == NULL) {
+    char pattern[64];
+    const char *pos = body;
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    while ((pos = strstr(pos, pattern)) != NULL) {
+        const char *after = pos + strlen(pattern);
+        while (*after == ' ' || *after == '\t' || *after == '\r' || *after == '\n') {
+            after++;
+        }
+        if (*after == ':') {
+            return pos;
+        }
+        pos += strlen(pattern);
+    }
+    return NULL;
+}
+
+static usb_delete_parse_result_t parse_file_names(const char *body, usb_delete_request_t *request)
+{
+    if (request != NULL) {
+        memset(request, 0, sizeof(*request));
+    }
+
+    const char *pos = find_json_key(body, "fileNames");
+    if (pos == NULL || request == NULL) {
         return USB_DELETE_PARSE_MISSING_FILE_NAMES;
     }
-    pos = strchr(pos, '[');
-    if (pos == NULL) {
-        return USB_DELETE_PARSE_MISSING_FILE_NAMES;
+    pos += strlen("fileNames") + 2;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != ':') {
+        return USB_DELETE_PARSE_INVALID_JSON;
+    }
+    pos++;
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos != '[') {
+        return USB_DELETE_PARSE_INVALID_JSON;
     }
     pos++;
 
-    *removed_count = 0;
-    while (*pos != '\0' && *pos != ']') {
+    bool closed = false;
+    while (*pos != '\0') {
         while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n' || *pos == ',') {
             pos++;
         }
-        if (*pos != '"') {
+        if (*pos == ']') {
+            closed = true;
             break;
+        }
+        if (*pos != '"') {
+            return USB_DELETE_PARSE_INVALID_JSON;
         }
         pos++;
         char file_name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
@@ -66,11 +122,19 @@ static usb_delete_parse_result_t parse_file_names_and_delete(const char *body, i
         if (!UsbConsoleCommon_FileNameIsSafe(file_name)) {
             return USB_DELETE_PARSE_INVALID_FILE_NAME;
         }
-        if (delete_file_pair(file_name)) {
-            (*removed_count)++;
+        if (request->file_count >= TDX_DELETE_MAX_FILES) {
+            return USB_DELETE_PARSE_TOO_MANY_FILES;
         }
+        strlcpy(request->file_names[request->file_count], file_name,
+                sizeof(request->file_names[request->file_count]));
+        request->file_count++;
     }
-    return USB_DELETE_PARSE_OK;
+
+    if (!closed) {
+        return USB_DELETE_PARSE_INVALID_JSON;
+    }
+
+    return request->file_count > 0 ? USB_DELETE_PARSE_OK : USB_DELETE_PARSE_MISSING_FILE_NAMES;
 }
 
 esp_err_t UsbConsoleDelete_Handle(const usb_console_http_request_t *request,
@@ -82,24 +146,57 @@ esp_err_t UsbConsoleDelete_Handle(const usb_console_http_request_t *request,
 esp_err_t UsbConsoleDelete_Process(const usb_console_http_request_t *request,
                                   usb_console_http_response_t *response)
 {
-    int removed_count = 0;
+    int removed_name_count = 0;
+    usb_delete_request_t delete_request;
 
     if (request == NULL || response == NULL ||
         !UsbConsoleCommon_JsonFuncEquals(request->body, "delete")) {
         return ESP_ERR_NOT_SUPPORTED;
     }
-    usb_delete_parse_result_t parse_ret = parse_file_names_and_delete(request->body, &removed_count);
-    if (parse_ret != USB_DELETE_PARSE_OK || removed_count <= 0) {
+    usb_delete_parse_result_t parse_ret = parse_file_names(request->body, &delete_request);
+    if (parse_ret != USB_DELETE_PARSE_OK) {
         int result = parse_ret == USB_DELETE_PARSE_MISSING_FILE_NAMES ? TDX_JSON_RESULT_FILE_NAMES_MISSING :
                      parse_ret == USB_DELETE_PARSE_INVALID_FILE_NAME ? TDX_JSON_RESULT_FILE_NAME_INVALID :
-                     TDX_JSON_RESULT_DELETE_FAILED;
-        ESP_LOGW(TAG, "delete failed removed=%d", removed_count);
+                     parse_ret == USB_DELETE_PARSE_INVALID_JSON ? TDX_JSON_RESULT_JSON_INVALID :
+                     TDX_JSON_RESULT_FILE_NAMES_TOO_MANY;
+        const char *message = parse_ret == USB_DELETE_PARSE_INVALID_FILE_NAME ? "invalid fileName" :
+                              parse_ret == USB_DELETE_PARSE_INVALID_JSON ? "invalid JSON" :
+                              parse_ret == USB_DELETE_PARSE_TOO_MANY_FILES ? "too many fileNames" :
+                              "fileNames missing";
+        ESP_LOGW(TAG, "delete rejected result=%d parse=%d accepted_count=%u max=%d",
+                 result, (int)parse_ret, (unsigned int)delete_request.file_count, TDX_DELETE_MAX_FILES);
+        if (result == TDX_JSON_RESULT_FILE_NAMES_TOO_MANY) {
+            return UsbConsoleCommon_SetJsonf(response,
+                                             200,
+                                             "OK",
+                                             "{\"func\":\"delete_result\",\"result\":%d,\"message\":\"too many fileNames\",\"maxFiles\":%d}",
+                                             result,
+                                             TDX_DELETE_MAX_FILES);
+        }
+        return UsbConsoleCommon_SetJsonf(response,
+                                         200,
+                                         "OK",
+                                         "{\"func\":\"delete_result\",\"result\":%d,\"message\":\"%s\"}",
+                                         result,
+                                         message);
+    }
+
+    for (size_t i = 0; i < delete_request.file_count; i++) {
+        if (delete_file_pair(delete_request.file_names[i])) {
+            removed_name_count++;
+        }
+    }
+    if (removed_name_count <= 0) {
+        ESP_LOGW(TAG, "delete failed request_count=%u removed_name_count=%d",
+                 (unsigned int)delete_request.file_count, removed_name_count);
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
                                          "{\"func\":\"delete_result\",\"result\":%d,\"message\":\"delete failed\"}",
-                                         result);
+                                         TDX_JSON_RESULT_DELETE_FAILED);
     }
+    ESP_LOGI(TAG, "delete success request_count=%u removed_name_count=%d",
+             (unsigned int)delete_request.file_count, removed_name_count);
     return UsbConsoleCommon_SetJsonf(response,
                                      200,
                                      "OK",
