@@ -18,6 +18,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "led_status.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 
@@ -725,6 +726,7 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
                                                     &meta);
     if (err != ESP_OK) {
         PowerMode_SetOtaInProgress(false);
+        UserLedStatus_OtaEnd(false);
         int result = s_last_ota_result != TDX_JSON_RESULT_OK ? s_last_ota_result : TDX_JSON_RESULT_INTERNAL_ERROR;
         send_ota_eventf(req, "power_hold_release", TDX_JSON_RESULT_OK, "ota_power_hold_disabled", ESP_OK, NULL);
         send_ota_resultf(req, result, esp_err_to_name(err), err,
@@ -738,6 +740,7 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
                      (unsigned int)firmware_field.len);
     ESP_LOGI(TAG, "process ota body: success result sent reboot=%u", meta.reboot ? 1 : 0);
     if (meta.reboot) {
+        UserLedStatus_OtaEnd(true);
         send_ota_eventf(req, "rebooting", TDX_JSON_RESULT_OK, "rebooting", ESP_OK,
                         ",\"delay_ms\":1000");
         ota_stream_finish(req);
@@ -748,6 +751,7 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
         ESP_LOGI(TAG, "ota reboot skipped by meta");
         send_ota_eventf(req, "reboot_skipped", TDX_JSON_RESULT_OK, "reboot_skipped", ESP_OK, NULL);
         PowerMode_SetOtaInProgress(false);
+        UserLedStatus_OtaEnd(false);
         send_ota_eventf(req, "power_hold_release", TDX_JSON_RESULT_OK, "ota_power_hold_disabled", ESP_OK, NULL);
         return ota_stream_finish(req);
     }

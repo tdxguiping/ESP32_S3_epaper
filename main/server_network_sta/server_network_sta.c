@@ -1096,9 +1096,11 @@ static void server_network_sta_manager_task(void *arg)
                             pdMS_TO_TICKS(SERVER_NETWORK_STA_READY_STABLE_RESET_MS);
                         status_set_ready_stable_deadline(context.ready_stable_deadline);
                         UserLedStatus_Set(USER_LED_STATE_SERVER_READY);
+                        UserLedStatus_SetHttpFailed(false);
                         ESP_LOGI(TAG, "Network READY ip=" IPSTR " http=1 mdns=%d",
                                  IP2STR(&ip), s_mdns_service_started ? 1 : 0);
                     } else {
+                        UserLedStatus_SetHttpFailed(true);
                         http_retry_count++;
                         status_enter_service_retry(http_retry_count, SERVER_NETWORK_STA_HTTP_RETRY_MS);
                         if (should_log_retry(http_retry_count)) {
@@ -1208,7 +1210,7 @@ static void server_network_sta_manager_task(void *arg)
                                               TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT, 0, 0);
                     }
                 }
-                UserLedStatus_Set(USER_LED_STATE_WIFI_FAIL);
+                UserLedStatus_SetWifiNoConfig(true);
                 (void)ch583_wifi_uart_send_wifi_provision_status(0);
                 ESP_LOGW(TAG, "WiFi no saved credential");
                 complete_pending_request(&pending_request_slot, &pending_request_id,
@@ -1221,13 +1223,15 @@ static void server_network_sta_manager_task(void *arg)
                 connection_enabled = false;
                 status_enter_terminal(SERVER_NETWORK_STA_STATE_FAILED,
                                       TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT, 0, 0);
-                UserLedStatus_Set(USER_LED_STATE_WIFI_FAIL);
+                UserLedStatus_SetFatalError(true);
                 ESP_LOGE(TAG, "WiFi stack init failed ret=%s", esp_err_to_name(ret));
                 complete_pending_request(&pending_request_slot, &pending_request_id,
                                          SERVER_NETWORK_STA_CONNECT_FAIL);
                 continue;
             }
             UserLedStatus_Set(USER_LED_STATE_WIFI_CONNECTING);
+            UserLedStatus_SetWifiNoConfig(false);
+            UserLedStatus_SetWifiAuthFailed(false);
             esp_ip4_addr_t current_ip = {0};
             if (!event.force_reconnect && same_active_config(&credential) &&
                 physical_link_has_ip(&current_ip)) {
@@ -1359,6 +1363,7 @@ static void server_network_sta_manager_task(void *arg)
                     pdMS_TO_TICKS(SERVER_NETWORK_STA_READY_STABLE_RESET_MS);
                 status_set_ready_stable_deadline(context.ready_stable_deadline);
                 UserLedStatus_Set(USER_LED_STATE_SERVER_READY);
+                UserLedStatus_SetHttpFailed(false);
                 ESP_LOGI(TAG, "Network READY ip=" IPSTR " http=1 mdns=%d",
                          IP2STR(&verified_ip), s_mdns_service_started ? 1 : 0);
                 complete_pending_request(&pending_request_slot, &pending_request_id,
@@ -1366,7 +1371,7 @@ static void server_network_sta_manager_task(void *arg)
             } else {
                 http_retry_count = 1;
                 status_enter_service_retry(http_retry_count, SERVER_NETWORK_STA_HTTP_RETRY_MS);
-                UserLedStatus_Set(USER_LED_STATE_OPERATION_FAIL);
+                UserLedStatus_SetHttpFailed(true);
                 ESP_LOGW(TAG, "HTTP service unavailable retry_ms=%u ret=%s",
                          SERVER_NETWORK_STA_HTTP_RETRY_MS, esp_err_to_name(http_ret));
                 complete_pending_request(&pending_request_slot, &pending_request_id,
@@ -1492,7 +1497,7 @@ static void server_network_sta_manager_task(void *arg)
                 status_enter_terminal(SERVER_NETWORK_STA_STATE_AUTH_FAILED,
                                       TDX_JSON_RESULT_WIFI_AUTH_FAILED,
                                       event.reason, event.rssi);
-                UserLedStatus_Set(USER_LED_STATE_WIFI_FAIL);
+                UserLedStatus_SetWifiAuthFailed(true);
                 ESP_LOGW(TAG, "WiFi AUTH_FAILED reason=%d(%s) hard=%lu transient=%lu ssid=%s",
                          event.reason, disconnect_reason_name(event.reason),
                          (unsigned long)context.hard_auth_failure_count,

@@ -9,6 +9,7 @@
 
 #include "esp_log.h"
 #include "file_serving_example_common.h"
+#include "led_status.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 
@@ -221,6 +222,7 @@ esp_err_t ServerNetworkStaDelete_ProcessJson(httpd_req_t *req,
 
     esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
     if (lock_ret != ESP_OK) {
+        UserLedStatus_ShowOperationFail();
         return send_delete_result(req, TDX_JSON_RESULT_TIMEOUT, "delete failed");
     }
 
@@ -229,6 +231,7 @@ esp_err_t ServerNetworkStaDelete_ProcessJson(httpd_req_t *req,
         (stat(jpg_dir, &st) != 0 || !S_ISDIR(st.st_mode))) {
         TdxSharedSpi_Unlock();
         ESP_LOGE(TAG, "delete image dirs missing bin=%s jpg=%s", bin_dir, jpg_dir);
+        UserLedStatus_ShowOperationFail();
         return send_delete_result(req, TDX_JSON_RESULT_DELETE_FAILED, "delete failed");
     }
 
@@ -251,10 +254,12 @@ esp_err_t ServerNetworkStaDelete_ProcessJson(httpd_req_t *req,
     if (removed_count <= 0) {
         ESP_LOGW(TAG, "delete failed request_count=%u removed_count=%d",
                  (unsigned int)request.file_count, removed_count);
+        UserLedStatus_ShowOperationFail();
         return send_delete_result(req, TDX_JSON_RESULT_DELETE_FAILED, "delete failed");
     }
 
     ESP_LOGI(TAG, "delete success removed_count=%d request_count=%u",
              removed_count, (unsigned int)request.file_count);
+    UserLedStatus_ShowSuccess();
     return send_delete_result(req, TDX_JSON_RESULT_OK, NULL);
 }

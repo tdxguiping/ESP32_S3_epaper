@@ -14,6 +14,7 @@
 #include "epd_display_app.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "led_status.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
@@ -237,6 +238,7 @@ static void factory_reset_task(void *arg)
                  (int)TDX_FACTORY_RESET_GPIO,
                  (unsigned long)held_ms);
 
+        UserLedStatus_FactoryResetBegin();
         factory_reset_result_t result;
         esp_err_t ret = factory_reset_clear_images(ctx->base_path, &result);
         ESP_LOGW(TAG,
@@ -251,9 +253,12 @@ static void factory_reset_task(void *arg)
 
 #if TDX_FACTORY_RESET_RESTART_AFTER_DONE
         if (ret == ESP_OK) {
+            UserLedStatus_SetRestartPending(true);
+            vTaskDelay(pdMS_TO_TICKS(100));
             esp_restart();
         }
 #endif
+        UserLedStatus_FactoryResetEnd();
     }
 }
 

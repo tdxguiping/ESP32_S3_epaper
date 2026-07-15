@@ -297,6 +297,7 @@ static void restore_work_time_after_one_shot_skip(void)
     s_last_network_data_tick = s_wifi_work_start_tick;
     s_last_power_off_send_tick = 0;
     s_one_shot_power_off_countdown_active = false;
+    UserLedStatus_SetPowerOffPending(false);
 }
 
 static bool should_skip_one_shot_power_off_for_slideshow(void)
@@ -610,12 +611,21 @@ static void work_state_task(void *arg)
                          (unsigned long)elapsed,
                          (unsigned long)server_required_continue_work_time,
                          (unsigned long)wifi_standby_time_s);
+                UserLedStatus_SetPowerOffPending(true);
                 if (!configure_ch583_wake_timer_before_power_off()) {
+                    UserLedStatus_SetPowerOffPending(false);
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
                     continue;
                 }
                 vTaskDelay(pdMS_TO_TICKS(100));
-                UserLedStatus_PreparePowerOff();
+                esp_err_t led_ret = UserLedStatus_PreparePowerOffSync();
+                if (led_ret != ESP_OK) {
+                    UserLedStatus_SetPowerOffPending(false);
+                    ESP_LOGE(TAG, "power off postponed because LED shutdown failed ret=%s",
+                             esp_err_to_name(led_ret));
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
                 vTaskDelay(pdMS_TO_TICKS(100));
                 int power_off_ret = ch583_wifi_uart_send_power_off();
                 if (power_off_ret < 0) {
@@ -757,6 +767,7 @@ void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t secon
     s_last_network_data_tick = s_wifi_work_start_tick;
     s_last_power_off_send_tick = 0;
     s_one_shot_power_off_countdown_active = true;
+    UserLedStatus_SetPowerOffPending(true);
 
     ESP_LOGI(TAG,
              "one-shot power off countdown requested target=%lu standby=%lu",
@@ -847,6 +858,7 @@ esp_err_t ServerNetworkStaWifiWorkTime_SetAndSave(uint32_t seconds)
     s_last_network_data_tick = s_wifi_work_start_tick;
     s_last_power_off_send_tick = 0;
     s_one_shot_power_off_countdown_active = false;
+    UserLedStatus_SetPowerOffPending(false);
 
     ESP_LOGI(TAG, "set work time requested=%lu continue=%lu standby=%lu",
              (unsigned long)seconds,

@@ -3156,7 +3156,7 @@ work_state_task()
    │  └─ ch583_wifi_uart_send_wake_timer_off()
    ├─ 超时后立即发送一次；之后每 20 秒重发一次 WAKE_TIMER / LED 关闭 / POWER_OFF
    ├─ 关机流程中发给 CH583/CH585 的命令之间至少间隔 100ms
-   ├─ UserLedStatus_PreparePowerOff()
+   ├─ UserLedStatus_PreparePowerOffSync()
    └─ ch583_wifi_uart_send_power_off()
 ```
 
@@ -3246,7 +3246,7 @@ work_state_task() 不是只做简单计时。工作时间超时后，它会执�
 1. 先确认 OTA 不忙且 EPD task 空闲；EPD 正在显示或队列仍有待显示任务时不关机。
 2. 读取 slideshow control，决定 WAKE_TIMER ON/OFF。
 3. slideshow 开启时优先读取 RTC schedule timing，使用 `next_epoch - now_epoch` 作为剩余秒数，并额外扣掉 `TDX_SLIDESHOW_STARTUP_DELAY_MS` 换算后的 10 秒和 `TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS=20` 秒；若没有 RTC timing，再回退旧 runtime timing。若剩余 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，不发送 WAKE_TIMER ON/OFF，不发送 POWER_OFF，只重置 wifi_work_time 运行时计时；否则发送 CH583 WAKE_TIMER ON。
-4. 调用 UserLedStatus_PreparePowerOff()，发送 RED/GREEN LED 停止闪烁和关闭指令。
+4. 调用 UserLedStatus_PreparePowerOffSync()，等待 LED Task 停止 RED/GREEN 闪烁并强制关闭后再继续。
 5. 发送 CH583 POWER_OFF。
 
 这些调用会进入 CH583 V1 组帧、UART 写入、调试输出等函数，栈上存在多个局部 buffer。
@@ -6709,7 +6709,7 @@ sequenceDiagram
     participant CH583 as CH583
 
     Work->>Work: 工作时间超时
-    Work->>ESP32: UserLedStatus_PreparePowerOff()
+    Work->>ESP32: UserLedStatus_PreparePowerOffSync()
     ESP32->>CH583: LED_BLINK_STOP GREEN + GPIO PB6 OFF
     Work->>ESP32: ch583_wifi_uart_send_power_off()
     ESP32->>CH583: CMD=POWER_OFF
@@ -6737,7 +6737,7 @@ work_state_task()
 ├─ EPD busy
 │  └─ 不关电，等待 EPD task 完成
 └─ OTA not busy && EPD idle
-   ├─ UserLedStatus_PreparePowerOff()
+   ├─ UserLedStatus_PreparePowerOffSync()
    │  ├─ LED_BLINK_STOP GREEN
    │  └─ GPIO PB6 HIGH，确保 GREEN 关闭
    └─ ch583_wifi_uart_send_power_off()
@@ -6751,7 +6751,7 @@ ServerNetworkStaWifiWorkTime_Init()
 work_state_task()
 ServerNetworkStaWifiWorkTime_OnNetworkData()
 ServerNetworkStaWifiWorkTime_SetOtaInProgress()
-UserLedStatus_PreparePowerOff()
+UserLedStatus_PreparePowerOffSync()
 ch583_wifi_uart_send_power_off()
 ch583_wifi_send_frame()
 ```
@@ -7143,8 +7143,8 @@ ESP32-C5 状态灯使用 10 级、每级增加 600 ms 的翻转间隔：
 |---:|---:|---|
 | 1 | 600 | FAST |
 | 2 | 1200 | MID |
-| 3 | 1800 | SLOW |
-| 4 | 2400 | READY |
+| 3 | 1800 | 预留档位 |
+| 4 | 2400 | SLOW |
 | 5 | 3000 | 预留档位 |
 | 6 | 3600 | 预留档位 |
 | 7 | 4200 | 预留档位 |
@@ -7152,11 +7152,15 @@ ESP32-C5 状态灯使用 10 级、每级增加 600 ms 的翻转间隔：
 | 9 | 5400 | 预留档位 |
 | 10 | 6000 | 预留档位 |
 
-GREEN 独立工作灯规则：
+GREEN 设备状态灯规则：
 
 ```text
-CH583 UART 和 LED 模块初始化后发送 LED_BLINK GREEN,1200。
-GREEN 固定以 1200 ms 翻转间隔持续闪烁，不受 WiFi、网络传输、UART、EPD、成功或失败状态影响。
+LED 模块初始化后 GREEN 常亮，表示设备正在启动。
+WiFi 连接、等待 IP、自动重连和 HTTP 启动期间发送 LED_BLINK GREEN,1200。
+网络和 HTTP 服务 READY 后发送 LED_BLINK GREEN,600，作为正常工作心跳。
+成功操作使 GREEN 常亮 1000 ms，随后恢复最新基础设备状态。
+WiFi、HTTP、存储或严重故障使 GREEN 关闭；OTA 期间 GREEN 常亮。
+关机倒计时期间 GREEN 常亮，真正发送 POWER_OFF 前停止闪烁并强制 PB6 关闭。
 每次调用 ch583_wifi_uart_send_power_off() 前，必须先发送 LED_BLINK_STOP GREEN，再强制 PB6 为关闭电平。
 进入关机流程后 GREEN 保持关闭，不再由后续业务状态启动。
 ```
@@ -7165,9 +7169,11 @@ RED 任务活动灯规则：
 
 ```text
 LED 模块初始化后，先发送 LED_BLINK_STOP RED 并强制 PB5 为关闭电平；RED 默认关闭。
-大网络数据、分片/大 BLE_DATA、大 WIFI_DATA 和 EPD 工作开始时，RED 先通过 GPIO 常亮。
-任务在 300 ms 内完成：RED 直接关闭，期间不发送 LED_BLINK。
-任务超过 300 ms：发送 LED_BLINK RED,600，使用最快的 600 ms 翻转间隔。
+大网络数据、分片/大 BLE_DATA 和大 WIFI_DATA 开始时，RED 先通过 GPIO 常亮。
+NETWORK/UART 任务在 300 ms 内完成：RED 直接关闭，期间不发送 LED_BLINK。
+NETWORK、UART RX、UART TX 任务超过 300 ms：发送 LED_BLINK RED,600。
+EPD 开始刷新后直接发送 LED_BLINK RED,2400，不等待 300 ms。
+EPD 与网络或 UART 同时活动时，EPD 的 2400 ms 慢闪优先。
 最后一个活动任务完成：常亮状态用 GPIO 关闭；闪烁状态发送 LED_BLINK_STOP RED。
 网络、UART RX、UART TX、EPD 分别计数；任务重叠时，只有全部计数归零才关闭 RED。
 大网络数据条件：multipart、OTA 或 body 大于 4096 字节。
@@ -7200,11 +7206,14 @@ led 只能是 RED 或 GREEN，不允许 BOTH。
 ESP32-C5 侧实现：
 
 ```text
-UserLedStatus_Set()
-└─ 通知 UserLedStatus_Task()
-   ├─ 状态变化时发送一次 LED_BLINK / LED_BLINK_STOP
-   ├─ 常亮和关闭继续使用原 CMD=GPIO
-   └─ 不再通过 vTaskDelay() 周期发送 GPIO 翻转
+所有 LED 公共接口
+└─ 向单一 LED event queue 投递事件
+   └─ UserLedStatus_Task()
+      ├─ 保存基础状态、故障、活动计数和临时结果
+      ├─ 按优先级计算最终红绿灯效
+      ├─ 仅在输出变化时发送 LED_BLINK / LED_BLINK_STOP / GPIO
+      ├─ 命令写入失败时每 500 ms 重试，最多重试 3 次
+      └─ 不通过 ESP32 Task 周期发送 GPIO 翻转
 ```
 
 当前仓库只包含 ESP32-C5 的发送接口；CH583 固件还需要实现 PB5/PB6 的独立定时事件以及上述 ACK/ERR 处理。
@@ -9461,100 +9470,115 @@ ServerNetworkStaEpdDisplay_Task()
 
 ## 13. 状态灯 <span id="sec-13"></span>
 
-Mermaid 状态图：
-
-```mermaid
-stateDiagram-v2
-    [*] --> RedOff
-    RedOff --> RedSolid: first ActivityBegin
-    RedSolid --> RedOff: all ActivityEnd before 300ms
-    RedSolid --> RedBlink: activity still active at 300ms
-    RedBlink --> RedOff: all ActivityEnd
-    RedOff --> Shutdown: PreparePowerOff
-    RedSolid --> Shutdown: PreparePowerOff
-    RedBlink --> Shutdown: PreparePowerOff
-```
-
+状态灯严格集中在 `main/led_status/`。系统只创建一个 `UserLedStatus_Task()`；WiFi、HTTP、存储、网络、UART、EPD、OTA、Factory Reset 和关机模块只向 LED event queue 报告事实，不直接控制 PB5/PB6，也不决定闪烁速度。红绿灯的最终状态、优先级、临时保持和恢复全部由 LED Task 统一计算。
 
 相关文件：
 
 ```text
 main/led_status/led_status.c
 main/led_status/led_status.h
+main/tdx_cfg.h
 main/ch583_uart/ch583_wifi_uart_protocol.c
 ```
 
-当前 ESP32-C5 LED 控制方向：
+单 Task 数据流：
 
-```text
-GREEN 独立工作灯
-├─ UserLedStatus_Init()
-│  └─ LED_BLINK GREEN,1200
-└─ UserLedStatus_PreparePowerOff()
-   ├─ LED_BLINK_STOP GREEN
-   └─ GPIO PB6 HIGH，确保关闭
-
-RED 独立活动灯
-├─ UserLedStatus_Init()
-│  ├─ LED_BLINK_STOP RED
-│  └─ GPIO PB5 HIGH，RED 默认关闭
-├─ UserLedStatus_ActivityBegin(source)
-│  ├─ 首个活动：GPIO RED 常亮
-│  └─ 300ms 后仍有活动：LED_BLINK RED,600
-├─ UserLedStatus_ActivityEnd(source)
-│  └─ 全部来源计数归零：关闭 RED / LED_BLINK_STOP RED
-└─ 来源独立计数
-   ├─ NETWORK
-   ├─ UART_RX
-   ├─ UART_TX
-   └─ EPD
-
-常亮/关闭（原协议保持不变）
-└─ set_green()/set_red()
-   └─ set_ch583_led_level()
-      └─ ch583_wifi_uart_send_gpio("PB", pin, "OUT", level)
-
-闪烁（CH583 本地执行翻转）
-├─ ch583_wifi_uart_send_led_blink("RED"/"GREEN", interval_ms)
-└─ ch583_wifi_uart_send_led_blink_stop("RED"/"GREEN")
+```mermaid
+flowchart TD
+    A[WiFi HTTP Storage] --> Q[LED event queue]
+    B[Network UART EPD] --> Q
+    C[OTA Factory Reset Power Off] --> Q
+    Q --> T[UserLedStatus_Task]
+    T --> P[Priority and timer evaluation]
+    P --> D{Output changed?}
+    D -- No --> T
+    D -- Yes --> U[GPIO / LED_BLINK / LED_BLINK_STOP]
+    U --> H[CH583 PB5/PB6]
 ```
 
-调用来源示例：
+闪烁参数表示一次 ON 或 OFF 的翻转间隔，不是完整周期：
+
+| 名称 | 亮灯 | 灭灯 | 完整周期 | 用途 |
+|---|---:|---:|---:|---|
+| 快闪 | 600 ms | 600 ms | 1.2 秒 | READY 心跳、网络/UART 大数据 |
+| 中闪 | 1200 ms | 1200 ms | 2.4 秒 | WiFi/HTTP 启动、HTTP/存储故障、OTA |
+| 慢闪 | 2400 ms | 2400 ms | 4.8 秒 | EPD 刷新、WiFi 配置/认证故障 |
+
+### 13.1 完整状态与灯效表
+
+| 设备状态 | 绿灯 | 红灯 | 具体时间 | 含义 |
+|---|---|---|---|---|
+| 设备关机 | 关闭 | 关闭 | 持续 | POWER_OFF 前已停止闪烁并强制关闭 PB5/PB6 |
+| 设备刚启动 | 常亮 | 关闭 | 启动初始化期间 | CH583 UART 已就绪，系统正在初始化其他模块 |
+| WiFi 正在连接 | 中闪 | 关闭 | 亮 1.2 秒、灭 1.2 秒 | 正在扫描、认证和关联路由器 |
+| 等待 DHCP 分配 IP | 中闪 | 关闭 | 亮 1.2 秒、灭 1.2 秒 | 已关联 AP，正在等待 IP |
+| WiFi 断线自动重连 | 中闪 | 关闭 | 亮 1.2 秒、灭 1.2 秒 | 网络暂时断开，正在自动恢复 |
+| 已取得 IP，HTTP 尚未 READY | 中闪 | 关闭 | 亮 1.2 秒、灭 1.2 秒 | 已有 IP，HTTP Server 或关键接口仍在启动 |
+| 网络和 HTTP 服务 READY | 快闪 | 关闭 | 亮 600 ms、灭 600 ms | 设备正常工作，可使用 ping、cast、upload 等功能 |
+| 短网络/UART 通信 | 保持基础状态 | 短暂常亮 | 最多 300 ms | 短数据任务结束后立即恢复 |
+| 网络大数据传输 | 保持基础状态 | 快闪 | 亮 600 ms、灭 600 ms | cast、cast2pic、upload 或 multipart 数据传输 |
+| UART 大量接收或发送 | 保持基础状态 | 快闪 | 亮 600 ms、灭 600 ms | ESP32-C5 与 CH583 传输较多数据 |
+| EPD 正在刷新 | 保持基础状态 | 慢闪 | 亮 2.4 秒、灭 2.4 秒 | EPD 活动优先于同时发生的网络/UART 活动 |
+| EPD 刷新完成 | 恢复基础状态 | 关闭或恢复其他活动 | 立即恢复 | EPD source 计数归零后重新计算灯效 |
+| 普通操作成功 | 常亮 | 关闭 | 保持 1000 ms | cast、保存、删除或显示成功，之后恢复最新基础状态 |
+| WiFi 没有配置 | 关闭 | 慢闪 | 亮 2.4 秒、灭 2.4 秒 | 没有有效 SSID/密码，需要重新配置 |
+| WiFi 认证失败 | 关闭 | 慢闪 | 亮 2.4 秒、灭 2.4 秒 | 密码、安全方式或连续认证失败 |
+| HTTP Server 启动失败 | 关闭 | 中闪 | 亮 1.2 秒、灭 1.2 秒 | 已有网络但 HTTP 服务无法 READY |
+| 存储不可用 | 关闭 | 中闪 | 亮 1.2 秒、灭 1.2 秒 | SD/SPIFFS 最终无法挂载或存储不可用 |
+| 普通业务操作失败 | 保持基础状态 | 常亮 | 保持 3000 ms | 单次显示、保存、删除等可恢复操作失败 |
+| OTA 升级中 | 常亮 | 中闪 | 红灯亮 1.2 秒、灭 1.2 秒 | 正在写入或校验固件，不允许断电 |
+| Factory Reset 清理中 | 快闪 | 常亮 | 绿灯亮 600 ms、灭 600 ms | 正在清除图片和轮播配置 |
+| 准备关机、倒计时中 | 常亮 | 关闭 | 倒计时期间持续 | EPD 工作完成，等待发送 POWER_OFF |
+| 严重系统错误 | 关闭 | 常亮 | 持续 | 关键模块不可恢复错误 |
+| 即将软件重启 | 关闭 | 常亮 | 保持到重启 | OTA 或 Factory Reset 完成并准备重启 |
+
+### 13.2 状态优先级
+
+多个状态同时存在时，LED Task 按以下顺序选择最终灯效：
 
 ```text
-server_network_sta.c
-└─ UserLedStatus_Set() 仅保留业务状态记录，不再改变 GREEN/RED
-
-server_network_sta_data.c
-├─ 大数据接收前 ActivityBegin(NETWORK)
-└─ 所有成功/失败出口 ActivityEnd(NETWORK)
-
-epd_display_app.cpp
-├─ display refresh start: ActivityBegin(EPD)
-└─ display finished: ActivityEnd(EPD)
-
-ch583_wifi_uart_protocol.c
-├─ 大/分片 BLE_DATA: ActivityBegin/End(UART_RX)
-└─ 大 WIFI_DATA: ActivityBegin/End(UART_TX)
+1. POWER_OFF 锁定或关机倒计时
+2. 严重系统错误 / 即将重启
+3. OTA
+4. Factory Reset
+5. WiFi 无配置或认证失败
+6. HTTP 或存储故障
+7. EPD 刷新
+8. NETWORK / UART 活动
+9. 成功或普通失败临时提示
+10. 基础设备状态
 ```
 
----
+`UserLedStatus_PreparePowerOffSync()` 使用 LED 模块专用 binary semaphore 等待结果。LED Task 只有在 RED/GREEN 的 `LED_BLINK_STOP` 和 PB5/PB6 关闭命令全部成功写入 UART 后，才设置永久关机锁、清除活动和临时结果并返回成功；任何命令写入失败都返回错误，本轮不发送 `POWER_OFF`。进入永久关机锁后，后续普通 LED 事件不能重新点亮 LED。该同步结果确认的是 ESP32 UART 命令写入结果；CH583 的异步 ACK/ERR 仍由现有协议层处理。
 
+### 13.3 活动计数与临时恢复
 
+```text
+NETWORK、UART_RX、UART_TX、EPD 分别使用独立引用计数。
+Activity Begin/End 使用可靠队列投递，保持引用计数成对，不使用可丢弃的普通事件等待时间。
+NETWORK/UART 首个 Begin 后 RED 先常亮；300 ms 后仍活动才改为快闪。
+EPD Begin 后 RED 直接慢闪，不等待 300 ms。
+EPD 只允许通过 ActivityBegin/ActivityEnd 上报，不再由业务状态接口直接修改 EPD 计数。
+EPD 与 NETWORK/UART 重叠时保持 EPD 慢闪；EPD 结束后若数据活动仍存在则恢复快闪。
+成功提示保持 1000 ms；普通失败提示保持 3000 ms。
+临时提示到期后恢复“当前最新”基础状态，不恢复事件发生时的旧快照。
+```
 
-
-存 / 取信息（含条件限制）：
+### 13.4 模块边界与存取信息
 
 ```text
 存：
-- 状态灯模块不写持久化数据。
+- LED 状态、故障标志、活动计数和 deadline 只保存在 RAM。
+- 状态灯模块不写 NVS、SD 或 SPIFFS。
 
 取：
-- UserLedStatus_Task() 读取活动事件队列，按来源计数控制 RED，并用 300ms 延迟决定常亮或闪烁。
-- GREEN 是独立工作灯，初始化后固定 LED_BLINK GREEN,1200，只在 POWER_OFF 前停止并关闭。
-- 常亮/关闭通过原 CH583 GPIO 命令控制 PB5/PB6；闪烁仅下发一次 LED_BLINK，由 CH583 本地定时翻转。
-- 闪烁间隔共 10 级，从 600ms 到 6000ms，每级增加 600ms。
-- LED 状态和串口返回结果不写持久化数据。
+- UserLedStatus_Task() 是唯一状态机和唯一 LED 物理输出者。
+- 普通模块只通过 led_status.h 的公开接口投递事件。
+- 常亮/关闭使用原 CMD=GPIO；闪烁使用 LED_BLINK / LED_BLINK_STOP。
+- CH583 本地执行红绿灯定时翻转，ESP32-C5 不周期发送 GPIO 翻转。
+- LED Task 只在目标输出变化时发送命令，避免重复 UART 流量。
+- 普通灯效命令失败后以 500 ms 间隔最多重试 3 次；重试耗尽只记录一次 warning，等待下一次状态事件。
+- 准备重启使用独立 restart-pending 状态，不与 fatal-error 标志混用。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-13)

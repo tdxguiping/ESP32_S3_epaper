@@ -510,6 +510,9 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
     bool is_small_json = (!is_multipart && remaining <= SERVER_NETWORK_STA_SMALL_JSON_BODY_MAX);
     bool network_led_active = is_network_ota || is_multipart ||
                               remaining > SERVER_NETWORK_STA_SMALL_JSON_BODY_MAX;
+    if (is_network_ota) {
+        UserLedStatus_OtaBegin();
+    }
     if (network_led_active) {
         UserLedStatus_ActivityBegin(USER_LED_ACTIVITY_NETWORK);
     }
@@ -520,6 +523,9 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         }
         if (network_led_active) {
             UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_NETWORK);
+        }
+        if (is_network_ota) {
+            UserLedStatus_OtaEnd(false);
         }
         ESP_LOGE(TAG, "body alloc failed len=%u", (unsigned int)remaining);
         return send_dataup_error_response(req,
@@ -542,6 +548,9 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         }
         if (network_led_active) {
             UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_NETWORK);
+        }
+        if (is_network_ota) {
+            UserLedStatus_OtaEnd(false);
         }
         return ESP_FAIL;
     }
@@ -592,6 +601,9 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
 
     if (network_led_active) {
         UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_NETWORK);
+    }
+    if (is_network_ota) {
+        UserLedStatus_OtaEnd(false);
     }
 
     return resp_ret;

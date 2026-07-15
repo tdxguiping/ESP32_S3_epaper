@@ -289,9 +289,11 @@ void app_main(void)
     const char* base_path = "/data";
     esp_err_t storage_ret = example_mount_storage(base_path);
     if (storage_ret != ESP_OK) {
+        UserLedStatus_SetStorageFailed(true);
         ESP_LOGE(TAG, "storage mount failed ret=%s",
                  esp_err_to_name(storage_ret));
     } else {
+        UserLedStatus_SetStorageFailed(false);
         ESP_ERROR_CHECK(FactoryReset_Init(base_path));
     }
     // Force the old read_value=0x02 path here: Server Network STA only, then start the HTTP file server.

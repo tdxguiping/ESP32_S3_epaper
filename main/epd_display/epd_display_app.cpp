@@ -201,6 +201,9 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
             }
         }
         UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_EPD);
+        if (display_ret != ESP_OK) {
+            UserLedStatus_ShowOperationFail();
+        }
         epd_display_restore_wifi_power_save(restore_wifi_ps, saved_ps);
 
         ESP_LOGI(TAG, "EPD done target=%u type=%u name=%s size=%u total_ms=%lld",

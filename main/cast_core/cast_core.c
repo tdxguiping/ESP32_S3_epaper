@@ -17,6 +17,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "led_status.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
@@ -594,10 +595,12 @@ save_done:
         ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(false);
     }
     if (ret != ESP_OK) {
+        UserLedStatus_ShowOperationFail();
         return ret;
     }
 
     TdxCastCore_ResultOk(result, items[0].save_name, "ok");
+    UserLedStatus_ShowSuccess();
     return ESP_OK;
 }
 

@@ -7,6 +7,7 @@
 #include <sys/unistd.h>
 
 #include "esp_log.h"
+#include "led_status.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 #include "usb_console_common.h"
@@ -189,6 +190,7 @@ esp_err_t UsbConsoleDelete_Process(const usb_console_http_request_t *request,
     if (removed_name_count <= 0) {
         ESP_LOGW(TAG, "delete failed request_count=%u removed_name_count=%d",
                  (unsigned int)delete_request.file_count, removed_name_count);
+        UserLedStatus_ShowOperationFail();
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
@@ -197,6 +199,7 @@ esp_err_t UsbConsoleDelete_Process(const usb_console_http_request_t *request,
     }
     ESP_LOGI(TAG, "delete success request_count=%u removed_name_count=%d",
              (unsigned int)delete_request.file_count, removed_name_count);
+    UserLedStatus_ShowSuccess();
     return UsbConsoleCommon_SetJsonf(response,
                                      200,
                                      "OK",

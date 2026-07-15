@@ -935,20 +935,69 @@ extern "C" {
 #define USER_LED_FAST_BLINK_MS USER_LED_BLINK_LEVEL_1_MS
 // Timing value for USER LED MID BLINK MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_MID_BLINK_MS USER_LED_BLINK_LEVEL_2_MS
-// Timing value for USER LED SLOW BLINK MS; verify related wake, sleep, and retry behavior if it changes.
-#define USER_LED_SLOW_BLINK_MS USER_LED_BLINK_LEVEL_3_MS
-// Timing value for USER LED READY BLINK MS; verify related wake, sleep, and retry behavior if it changes.
-#define USER_LED_READY_BLINK_MS USER_LED_BLINK_LEVEL_4_MS
-// Timing value for USER LED WORK BLINK MS; verify related wake, sleep, and retry behavior if it changes.
-#define USER_LED_WORK_BLINK_MS USER_LED_BLINK_LEVEL_2_MS
+// Slow blink uses a 2400 ms ON/OFF interval, so its full period is 4.8 seconds.
+#define USER_LED_SLOW_BLINK_MS USER_LED_BLINK_LEVEL_4_MS
+// READY heartbeat uses a 600 ms ON/OFF interval, so its full period is 1.2 seconds.
+#define USER_LED_READY_BLINK_MS USER_LED_FAST_BLINK_MS
+// WiFi connecting, waiting for IP, and service startup use the medium interval.
+#define USER_LED_WIFI_CONNECT_BLINK_MS USER_LED_MID_BLINK_MS
+// Network and UART large-data activity use the fast interval.
+#define USER_LED_NETWORK_ACTIVITY_BLINK_MS USER_LED_FAST_BLINK_MS
+// EPD refresh activity uses the slow interval so it remains distinct from data transfer.
+#define USER_LED_EPD_ACTIVITY_BLINK_MS USER_LED_SLOW_BLINK_MS
+// WiFi configuration and authentication faults use the slow interval.
+#define USER_LED_WIFI_ERROR_BLINK_MS USER_LED_SLOW_BLINK_MS
+// HTTP and storage faults use the medium interval.
+#define USER_LED_SERVICE_ERROR_BLINK_MS USER_LED_MID_BLINK_MS
 // Timing value for USER LED ACTIVITY BLINK DELAY MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_ACTIVITY_BLINK_DELAY_MS 300
-// Queue length for USER LED ACTIVITY QUEUE LENGTH; size it for burst traffic without wasting RAM.
-#define USER_LED_ACTIVITY_QUEUE_LENGTH 16
+// Queue length for all LED state, activity, fault, and power-off events.
+#define USER_LED_EVENT_QUEUE_LENGTH 24
 // Payload-size threshold for treating UART activity as a large transfer in LED status logic.
 #define USER_LED_UART_LARGE_DATA_THRESHOLD 256
 // Timing value for USER LED SUCCESS HOLD MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_LED_SUCCESS_HOLD_MS 1000
+// Hold time for a recoverable business operation failure before restoring the active state.
+#define USER_LED_OPERATION_FAIL_HOLD_MS 3000
+// Bound normal LED event posting so LED indication cannot indefinitely block business tasks.
+#define USER_LED_EVENT_POST_WAIT_MS 20
+// Bound the high-priority power-off event insertion into the LED queue.
+#define USER_LED_POWER_OFF_EVENT_POST_WAIT_MS 200
+// Maximum time the power-off caller waits for the LED task to physically turn both LEDs off.
+#define USER_LED_POWER_OFF_ACK_TIMEOUT_MS 2000
+// Delay between bounded retries after a CH583 LED command cannot be written.
+#define USER_LED_APPLY_RETRY_MS 500
+// Limit retries so a persistent UART fault cannot produce continuous LED logs.
+#define USER_LED_APPLY_RETRY_MAX 3
+
+// LED physical modes used only by the LED status module.
+#define USER_LED_MODE_OFF 0
+#define USER_LED_MODE_SOLID 1
+#define USER_LED_MODE_BLINK 2
+#define USER_LED_MODE_UNKNOWN 255
+
+// Events accepted by the single LED status task.
+#define USER_LED_EVENT_SET_STATE 1
+#define USER_LED_EVENT_ACTIVITY_BEGIN 2
+#define USER_LED_EVENT_ACTIVITY_END 3
+#define USER_LED_EVENT_SET_FAULT 4
+#define USER_LED_EVENT_CLEAR_FAULT 5
+#define USER_LED_EVENT_SHOW_SUCCESS 6
+#define USER_LED_EVENT_SHOW_OPERATION_FAIL 7
+#define USER_LED_EVENT_OTA_BEGIN 8
+#define USER_LED_EVENT_OTA_END 9
+#define USER_LED_EVENT_FACTORY_RESET_BEGIN 10
+#define USER_LED_EVENT_FACTORY_RESET_END 11
+#define USER_LED_EVENT_POWER_OFF_PENDING 12
+#define USER_LED_EVENT_PREPARE_POWER_OFF 13
+#define USER_LED_EVENT_RESTART_PENDING 14
+
+// Persistent fault bits evaluated by the LED task in priority order.
+#define USER_LED_FAULT_WIFI_NO_CONFIG (1UL << 0)
+#define USER_LED_FAULT_WIFI_AUTH (1UL << 1)
+#define USER_LED_FAULT_HTTP_SERVICE (1UL << 2)
+#define USER_LED_FAULT_STORAGE (1UL << 3)
+#define USER_LED_FAULT_FATAL (1UL << 4)
 // Task stack size for USER LED STATUS TASK STACK SIZE; tune with runtime stack high-water data.
 #define USER_LED_STATUS_TASK_STACK_SIZE (4 * 1024)
 // FreeRTOS task priority for USER LED STATUS TASK PRIORITY; keep scheduler side effects in mind when changing it.
