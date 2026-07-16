@@ -284,6 +284,8 @@ start_slideshow_result
 | `1506` | `TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED` | 轮播运行时启动失败 |
 | `1507` | `TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID` | 轮播间隔非法 |
 | `1508` | `TDX_JSON_RESULT_SLIDESHOW_FILE_NOT_FOUND` | 轮播文件不存在 |
+| `1515` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING` | `startIndex` 缺失；设备不保存配置、不启动本次轮播 |
+| `1516` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID` | `startIndex` 不是非负整数或 `startIndex >= fileNames` 数量；设备不保存配置、不启动本次轮播 |
 
 [⬆ 返回目录](#toc)
 
@@ -308,6 +310,8 @@ set_slideshow_result
 | `1511` | `TDX_JSON_RESULT_SLIDESHOW_TIMEZONE_DEPRECATED` | 旧协议 `timezone` 已废弃；新协议不再接收 `datetime/timezone` |
 | `1512` | `TDX_JSON_RESULT_SLIDESHOW_TIME_SET_FAILED` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
 | `1513` | `TDX_JSON_RESULT_SLIDESHOW_TIME_DIFF_TOO_LARGE` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次轮播指令 |
+| `1515` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING` | `sw=1` 时已保存的 `slideshow_config.txt` 缺少 `startIndex` |
+| `1516` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID` | `sw=1` 时已保存的 `slideshow_config.txt` 包含非法 `startIndex` |
 
 [⬆ 返回目录](#toc)
 
@@ -678,7 +682,7 @@ PhotoPainter:epd_mode
 示例：
 
 ```json
-{"func":"start_slideshow","fileNames":["26422","26423"],"interval":60,"random":false,"timestamp":1783372200}
+{"func":"start_slideshow","fileNames":["26422","26423"],"interval":60,"random":false,"timestamp":1783372200,"startIndex":0}
 ```
 
 ```json
@@ -792,6 +796,8 @@ PhotoPainter:epd_mode
 | `1512` | `TDX_JSON_RESULT_SLIDESHOW_TIME_SET_FAILED` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
 | `1513` | `TDX_JSON_RESULT_SLIDESHOW_TIME_DIFF_TOO_LARGE` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次轮播指令 |
 | `1514` | `TDX_JSON_RESULT_FILE_NAMES_TOO_MANY` | delete 的 `fileNames` 数量超过单次上限 50 个；不执行本次删除 |
+| `1515` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING` | start_slideshow 的 `startIndex` 缺失，或 set_slideshow 开启时保存的轮播配置缺少 `startIndex` |
+| `1516` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID` | start_slideshow 的 `startIndex` 不是非负整数或超出 `fileNames` 范围，或保存的轮播配置包含非法 `startIndex` |
 
 [⬆ 返回目录](#toc)
 

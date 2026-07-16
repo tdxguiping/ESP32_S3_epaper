@@ -135,6 +135,12 @@ static bool parse_json_u32(const char *body, const char *key, uint32_t *out)
     if (errno != 0 || end_ptr == pos || value > UINT32_MAX) {
         return false;
     }
+    while (*end_ptr == ' ' || *end_ptr == '\t' || *end_ptr == '\r' || *end_ptr == '\n') {
+        end_ptr++;
+    }
+    if (*end_ptr != ',' && *end_ptr != '}') {
+        return false;
+    }
     *out = (uint32_t)value;
     return true;
 }
@@ -383,33 +389,76 @@ static esp_err_t ensure_paths(const char *base_path, char *bin_dir, size_t bin_d
     return ESP_OK;
 }
 
-static bool slideshow_config_has_files(const char *config_path)
+static int validate_slideshow_config(const char *config_path)
 {
+    char *buf = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
+    if (buf == NULL) {
+        return TDX_JSON_RESULT_NO_MEMORY;
+    }
     if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
-        return false;
+        free(buf);
+        return TDX_JSON_RESULT_TIMEOUT;
     }
     FILE *fp = fopen(config_path, "rb");
     if (fp == NULL) {
         TdxSharedSpi_Unlock();
+        free(buf);
         ESP_LOGE(TAG, "set_slideshow config missing: %s", config_path);
-        return false;
+        return TDX_JSON_RESULT_FILE_NAMES_MISSING;
     }
 
-    char buf[256] = {0};
-    size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
+    size_t len = fread(buf, 1, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX - 1, fp);
     fclose(fp);
     TdxSharedSpi_Unlock();
     buf[len] = '\0';
 
     const char *array = strstr(buf, "\"fileNames\"");
     if (array == NULL) {
-        return false;
+        free(buf);
+        return TDX_JSON_RESULT_FILE_NAMES_MISSING;
     }
     array = strchr(array, '[');
     if (array == NULL) {
-        return false;
+        free(buf);
+        return TDX_JSON_RESULT_FILE_NAMES_MISSING;
     }
-    return strchr(array, '"') != NULL;
+    const char *array_end = strchr(array, ']');
+    if (array_end == NULL) {
+        free(buf);
+        return TDX_JSON_RESULT_FILE_NAMES_MISSING;
+    }
+    size_t file_count = 0;
+    for (const char *pos = array; pos < array_end; ++pos) {
+        if (*pos == '"') {
+            file_count++;
+            pos = strchr(pos + 1, '"');
+            if (pos == NULL || pos >= array_end) {
+                file_count = 0;
+                break;
+            }
+        }
+    }
+    if (file_count == 0) {
+        free(buf);
+        return TDX_JSON_RESULT_FILE_NAMES_MISSING;
+    }
+    if (find_json_key(buf, "startIndex") == NULL) {
+        ESP_LOGE(TAG, "set_slideshow rejected: saved config startIndex missing path=%s", config_path);
+        free(buf);
+        return TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING;
+    }
+    uint32_t start_index = 0;
+    if (!parse_json_u32(buf, "startIndex", &start_index) || start_index >= file_count) {
+        ESP_LOGE(TAG,
+                 "set_slideshow rejected: saved config invalid startIndex=%lu count=%u path=%s",
+                 (unsigned long)start_index,
+                 (unsigned int)file_count,
+                 config_path);
+        free(buf);
+        return TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID;
+    }
+    free(buf);
+    return TDX_JSON_RESULT_OK;
 }
 
 static esp_err_t write_control_file(const char *control_path, const slideshow_control_t *control)
@@ -564,6 +613,25 @@ esp_err_t ServerNetworkStaSlideshowControl_ApplyJson(const char *body,
         return ESP_OK;
     }
 
+    if (ensure_paths(base_path, bin_dir, sizeof(bin_dir),
+                     control_path, sizeof(control_path),
+                     config_path, sizeof(config_path)) != ESP_OK) {
+        set_apply_result(result, TDX_JSON_RESULT_STORAGE_NOT_READY, "storage not ready");
+        return ESP_OK;
+    }
+    if (control.sw == 1) {
+        int config_result = validate_slideshow_config(config_path);
+        if (config_result != TDX_JSON_RESULT_OK) {
+            const char *message = config_result == TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING ?
+                                  "saved slideshow startIndex missing" :
+                                  config_result == TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID ?
+                                  "saved slideshow startIndex invalid" :
+                                  "slideshow config invalid";
+            set_apply_result(result, config_result, message);
+            return ESP_OK;
+        }
+    }
+
     bool time_from_sntp = ServerNetworkStaTime_IsSntpSynced();
     int64_t checked_time_diff = 0;
     if (timestamp_reasonable(control.timestamp) && (time_from_sntp || control.sw == 0)) {
@@ -639,21 +707,9 @@ esp_err_t ServerNetworkStaSlideshowControl_ApplyJson(const char *body,
         }
     }
 
-    if (ensure_paths(base_path, bin_dir, sizeof(bin_dir),
-                     control_path, sizeof(control_path),
-                     config_path, sizeof(config_path)) != ESP_OK) {
-        set_apply_result(result, TDX_JSON_RESULT_STORAGE_NOT_READY, "storage not ready");
-        return ESP_OK;
-    }
-
     if (!control.random_present) {
         control.random = read_existing_bool(control_path, "random", false);
         control.random = slideshow_control_force_random_config("saved show_control", control.random);
-    }
-
-    if (control.sw == 1 && !slideshow_config_has_files(config_path)) {
-        set_apply_result(result, TDX_JSON_RESULT_FILE_NAMES_MISSING, "slideshow fileNames missing");
-        return ESP_OK;
     }
 
     if (write_control_file(control_path, &control) != ESP_OK) {

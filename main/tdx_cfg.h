@@ -181,6 +181,10 @@ extern "C" {
 #define TDX_JSON_RESULT_SLIDESHOW_TIME_DIFF_TOO_LARGE 1513
 // Public JSON result code for TDX JSON RESULT FILE NAMES TOO MANY; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_FILE_NAMES_TOO_MANY 1514
+// Public JSON result code for missing slideshow start index; keep the numeric value stable for clients.
+#define TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING 1515
+// Public JSON result code for invalid slideshow start index; keep the numeric value stable for clients.
+#define TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID 1516
 
 // Public JSON result code for TDX JSON RESULT UPLOAD BOUNDARY MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_UPLOAD_BOUNDARY_MISSING 1601

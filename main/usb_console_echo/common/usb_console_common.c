@@ -304,6 +304,7 @@ esp_err_t UsbConsoleCommon_AppendSnapshot(char *json, size_t json_size, size_t *
     int sw = 0;
     uint32_t interval = 0;
     bool random = false;
+    int start_index = -1;
 
     snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, TDX_SLIDESHOW_CONTROL_FILE);
     snprintf(config_path, sizeof(config_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, TDX_SLIDESHOW_CONFIG_FILE);
@@ -338,10 +339,10 @@ esp_err_t UsbConsoleCommon_AppendSnapshot(char *json, size_t json_size, size_t *
         config[len] = '\0';
     }
     TdxSharedSpi_Unlock();
+    int file_count = 0;
     const char *array = find_json_key(config, "fileNames");
     if (array != NULL && (array = strchr(array, '[')) != NULL) {
         array++;
-        int count = 0;
         while (*array != '\0' && *array != ']') {
             while (*array == ' ' || *array == '\t' || *array == '\r' || *array == '\n' || *array == ',') {
                 array++;
@@ -364,10 +365,10 @@ esp_err_t UsbConsoleCommon_AppendSnapshot(char *json, size_t json_size, size_t *
                                                   json_size,
                                                   used,
                                                   "%s\"%s\"",
-                                                  count > 0 ? "," : "",
+                                                  file_count > 0 ? "," : "",
                                                   file_name),
                                     TAG, "append snapshot file failed");
-                count++;
+                file_count++;
             }
         }
     }
@@ -375,12 +376,18 @@ esp_err_t UsbConsoleCommon_AppendSnapshot(char *json, size_t json_size, size_t *
         (void)UsbConsoleCommon_JsonU32(config, "interval", &interval);
     }
     (void)UsbConsoleCommon_JsonBool(config, "random", &random);
+    int parsed_start_index = -1;
+    if (UsbConsoleCommon_JsonInt(config, "startIndex", &parsed_start_index) &&
+        parsed_start_index >= 0 && parsed_start_index < file_count) {
+        start_index = parsed_start_index;
+    }
     return append_format(json,
                          json_size,
                          used,
-                         "],\"interval\":%lu,\"random\":%s}}",
+                         "],\"interval\":%lu,\"random\":%s,\"startIndex\":%d}}",
                          (unsigned long)interval,
-                         random ? "true" : "false");
+                         random ? "true" : "false",
+                         start_index);
 }
 
 bool UsbConsoleCommon_ExtractBoundary(const char *content_type, char *boundary, size_t boundary_size)

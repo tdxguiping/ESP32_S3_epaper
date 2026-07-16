@@ -60,6 +60,12 @@ static bool parse_json_u32(const char *body, const char *key, uint32_t *out)
     if (end_ptr == pos || value > UINT32_MAX) {
         return false;
     }
+    while (*end_ptr == ' ' || *end_ptr == '\t' || *end_ptr == '\r' || *end_ptr == '\n') {
+        end_ptr++;
+    }
+    if (*end_ptr != ',' && *end_ptr != '}') {
+        return false;
+    }
     *out = (uint32_t)value;
     return true;
 }
@@ -145,7 +151,7 @@ static bool parse_json_bool_default(const char *body, const char *key, bool defa
     return default_value;
 }
 
-static int validate_file_names(const char *body)
+static int validate_file_names(const char *body, size_t *file_count, bool check_files)
 {
     const char *pos = body != NULL ? strstr(body, "\"fileNames\"") : NULL;
     if (pos == NULL || (pos = strchr(pos, '[')) == NULL) {
@@ -158,6 +164,9 @@ static int validate_file_names(const char *body)
             pos++;
         }
         if (*pos == ']') {
+            if (count > 0 && file_count != NULL) {
+                *file_count = count;
+            }
             return count > 0 ? TDX_JSON_RESULT_OK : TDX_JSON_RESULT_FILE_NAMES_MISSING;
         }
         if (*pos++ != '"') {
@@ -172,17 +181,19 @@ static int validate_file_names(const char *body)
             len >= TDX_SLIDESHOW_FILE_NAME_MAX_LEN || ++count > TDX_SLIDESHOW_MAX_FILES) {
             return TDX_JSON_RESULT_FILE_NAME_INVALID;
         }
-        char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
-        struct stat st = {0};
-        snprintf(path, sizeof(path), "%s/bin_img/%s.bin", USB_CONSOLE_BASE_PATH, name);
-        if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
-            return TDX_JSON_RESULT_TIMEOUT;
-        }
-        if (stat(path, &st) != 0 || st.st_size <= 0) {
+        if (check_files) {
+            char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
+            struct stat st = {0};
+            snprintf(path, sizeof(path), "%s/bin_img/%s.bin", USB_CONSOLE_BASE_PATH, name);
+            if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+                return TDX_JSON_RESULT_TIMEOUT;
+            }
+            if (stat(path, &st) != 0 || st.st_size <= 0) {
+                TdxSharedSpi_Unlock();
+                return TDX_JSON_RESULT_SLIDESHOW_FILE_NOT_FOUND;
+            }
             TdxSharedSpi_Unlock();
-            return TDX_JSON_RESULT_SLIDESHOW_FILE_NOT_FOUND;
         }
-        TdxSharedSpi_Unlock();
     }
     return TDX_JSON_RESULT_JSON_INVALID;
 }
@@ -195,7 +206,10 @@ static bool usb_slideshow_force_random_config(const char *scope, bool random)
     return false;
 }
 
-static bool write_slideshow_config(const char *body, uint32_t interval, bool random)
+static bool write_slideshow_config(const char *body,
+                                   uint32_t interval,
+                                   bool random,
+                                   uint32_t start_index)
 {
     char config_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
     char *json = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
@@ -212,11 +226,12 @@ static bool write_slideshow_config(const char *body, uint32_t interval, bool ran
     size_t array_len = (size_t)(array_end - array_start + 1);
     int len = snprintf(json,
                        SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX,
-                       "{\"fileNames\":%.*s,\"interval\":%lu,\"random\":%s}",
+                       "{\"fileNames\":%.*s,\"interval\":%lu,\"random\":%s,\"startIndex\":%lu}",
                        (int)array_len,
                        array_start,
                        (unsigned long)interval,
-                       random ? "true" : "false");
+                       random ? "true" : "false",
+                       (unsigned long)start_index);
     if (len < 0 || (size_t)len >= SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX) {
         free(json);
         return false;
@@ -313,6 +328,11 @@ static int apply_start_slideshow_timestamp(int64_t timestamp)
                      (long long)diff);
             return TDX_JSON_RESULT_SLIDESHOW_TIME_DIFF_TOO_LARGE;
         }
+        if (timestamp > (int64_t)now_time) {
+            ESP_LOGI("usb_slideshow",
+                     "start_slideshow future timestamp accepted ahead=%lld; rtc slideshow applies display lead",
+                     (long long)(timestamp - (int64_t)now_time));
+        }
         ESP_LOGI("usb_slideshow",
                  "start_slideshow time source=sntp timestamp=%lld(%s) now=%lld(%s) diff=%lld",
                  (long long)timestamp,
@@ -353,7 +373,43 @@ esp_err_t UsbConsoleSlideshow_Process(const usb_console_http_request_t *request,
         return ESP_ERR_NOT_SUPPORTED;
     }
 
-    int validate_ret = validate_file_names(request->body);
+    size_t file_count = 0;
+    int validate_ret = validate_file_names(request->body, &file_count, false);
+    if (validate_ret != TDX_JSON_RESULT_OK) {
+        return UsbConsoleCommon_SetJsonf(response,
+                                         200,
+                                         "OK",
+                                         "{\"func\":\"start_slideshow_result\",\"result\":%d}",
+                                         validate_ret);
+    }
+
+    if (find_json_key(request->body, "startIndex") == NULL) {
+        ESP_LOGE("usb_slideshow",
+                 "start_slideshow rejected: startIndex missing count=%u",
+                 (unsigned int)file_count);
+        return UsbConsoleCommon_SetJsonf(response,
+                                         200,
+                                         "OK",
+                                         "{\"func\":\"start_slideshow_result\",\"result\":%d,"
+                                         "\"message\":\"startIndex missing\"}",
+                                         TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING);
+    }
+    uint32_t start_index = 0;
+    if (!parse_json_u32(request->body, "startIndex", &start_index) ||
+        start_index >= file_count) {
+        ESP_LOGE("usb_slideshow",
+                 "start_slideshow rejected: invalid startIndex=%lu count=%u",
+                 (unsigned long)start_index,
+                 (unsigned int)file_count);
+        return UsbConsoleCommon_SetJsonf(response,
+                                         200,
+                                         "OK",
+                                         "{\"func\":\"start_slideshow_result\",\"result\":%d,"
+                                         "\"message\":\"invalid startIndex\"}",
+                                         TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID);
+    }
+
+    validate_ret = validate_file_names(request->body, NULL, true);
     if (validate_ret != TDX_JSON_RESULT_OK) {
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
@@ -398,7 +454,7 @@ esp_err_t UsbConsoleSlideshow_Process(const usb_console_http_request_t *request,
                                          time_result);
     }
 
-    if (!write_slideshow_config(request->body, interval, random)) {
+    if (!write_slideshow_config(request->body, interval, random, start_index)) {
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
@@ -437,7 +493,7 @@ esp_err_t UsbConsoleSlideshow_Process(const usb_console_http_request_t *request,
                                          "\"message\":\"save display mode failed\"}",
                                          TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED);
     }
-    esp_err_t start_ret = ServerNetworkStaSlideshow_StartSavedResetInterval(USB_CONSOLE_BASE_PATH);
+    esp_err_t start_ret = ServerNetworkStaSlideshow_StartSavedForNewCommand(USB_CONSOLE_BASE_PATH);
     if (start_ret != ESP_OK) {
         ESP_LOGW("usb_slideshow", "start_slideshow rtc runtime start failed ret=%s",
                  esp_err_to_name(start_ret));
@@ -449,9 +505,10 @@ esp_err_t UsbConsoleSlideshow_Process(const usb_console_http_request_t *request,
                                          TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED);
     }
     ESP_LOGI("usb_slideshow",
-             "start_slideshow saved list and started rtc interval=%lu random=%d timestamp=%lld anchor=%lld",
+             "start_slideshow saved list and started rtc interval=%lu random=%d start_index=%lu timestamp=%lld anchor=%lld",
              (unsigned long)interval,
              random ? 1 : 0,
+             (unsigned long)start_index,
              (long long)timestamp,
              (long long)timestamp);
 

@@ -39,6 +39,7 @@ static const char *TAG = "server_sta_slide";
 typedef struct {
     char file_names[TDX_SLIDESHOW_MAX_FILES][TDX_SLIDESHOW_FILE_NAME_MAX_LEN];
     size_t file_count;
+    size_t start_index;
     uint32_t interval;
     bool random;
     int64_t timestamp;
@@ -235,6 +236,12 @@ static bool parse_json_u32(const char *body, const char *key, uint32_t *out)
     if (errno != 0 || end_ptr == pos || value > UINT32_MAX) {
         return false;
     }
+    while (*end_ptr == ' ' || *end_ptr == '\t' || *end_ptr == '\r' || *end_ptr == '\n') {
+        end_ptr++;
+    }
+    if (*end_ptr != ',' && *end_ptr != '}') {
+        return false;
+    }
     *out = (uint32_t)value;
     return true;
 }
@@ -366,19 +373,21 @@ static bool slideshow_calculate_schedule_position(
     int64_t anchor_epoch,
     uint32_t interval,
     size_t file_count,
+    size_t start_index,
     int64_t now_epoch,
     slideshow_schedule_position_t *position)
 {
     if (position == NULL || anchor_epoch <= 0 ||
         interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS ||
         interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS ||
-        file_count == 0 || now_epoch <= 0) {
+        file_count == 0 || start_index >= file_count || now_epoch <= 0) {
         return false;
     }
 
     memset(position, 0, sizeof(*position));
     if (now_epoch < anchor_epoch) {
         position->started = false;
+        position->current_index = start_index;
         position->slot_start_epoch = anchor_epoch;
         position->next_epoch = anchor_epoch;
         return true;
@@ -400,7 +409,8 @@ static bool slideshow_calculate_schedule_position(
 
     position->started = true;
     position->slot = slot;
-    position->current_index = (size_t)(slot % (uint64_t)file_count);
+    position->current_index =
+        (start_index + (size_t)(slot % (uint64_t)file_count)) % file_count;
     position->slot_start_epoch = current_epoch;
     position->next_epoch = current_epoch + (int64_t)interval;
     return true;
@@ -715,6 +725,17 @@ static esp_err_t start_slideshow_apply_timestamp(slideshow_request_t *request)
                      (long long)diff);
             return TDX_JSON_RESULT_SLIDESHOW_TIME_DIFF_TOO_LARGE;
         }
+        if (request->timestamp > (int64_t)now_time) {
+            uint32_t lead_seconds = slideshow_rtc_display_lead_seconds();
+            int64_t ahead_seconds = request->timestamp - (int64_t)now_time;
+            int64_t wait_seconds = ahead_seconds > (int64_t)lead_seconds ?
+                                   ahead_seconds - (int64_t)lead_seconds : 0;
+            ESP_LOGI(TAG,
+                     "start_slideshow future timestamp accepted ahead=%lld lead=%lu wait_before_display=%lld",
+                     (long long)ahead_seconds,
+                     (unsigned long)lead_seconds,
+                     (long long)wait_seconds);
+        }
         ESP_LOGI(TAG,
                  "start_slideshow time source=sntp timestamp=%lld(%s) now=%lld(%s) diff=%lld",
                  (long long)request->timestamp,
@@ -927,6 +948,10 @@ static uint32_t slideshow_config_hash(const slideshow_request_t *request)
 
     hash = slideshow_hash_byte(hash, (uint8_t)request->file_count);
     hash = slideshow_hash_byte(hash, request->random ? 1U : 0U);
+    uint32_t start_index = (uint32_t)request->start_index;
+    for (size_t i = 0; i < sizeof(start_index); ++i) {
+        hash = slideshow_hash_byte(hash, (uint8_t)(start_index >> (i * 8U)));
+    }
     for (size_t i = 0; i < request->file_count; ++i) {
         const uint8_t *name = (const uint8_t *)request->file_names[i];
         while (*name != 0) {
@@ -950,11 +975,14 @@ static uint32_t slideshow_random_next(uint32_t *state)
     return value;
 }
 
-static void slideshow_build_order(slideshow_progress_t *progress, size_t file_count, bool random)
+static void slideshow_build_order(slideshow_progress_t *progress,
+                                  size_t file_count,
+                                  bool random,
+                                  size_t start_index)
 {
     progress->order_count = (uint8_t)file_count;
     for (size_t i = 0; i < file_count; ++i) {
-        progress->order[i] = (uint8_t)i;
+        progress->order[i] = (uint8_t)(random ? i : (start_index + i) % file_count);
     }
     if (!random || file_count < 2) {
         return;
@@ -969,24 +997,7 @@ static void slideshow_build_order(slideshow_progress_t *progress, size_t file_co
     }
 }
 
-static bool find_file_index(const slideshow_request_t *request,
-                            const char *file_name,
-                            size_t *index_out)
-{
-    if (request == NULL || file_name == NULL || index_out == NULL) {
-        return false;
-    }
-    for (size_t i = 0; i < request->file_count; ++i) {
-        if (strcmp(request->file_names[i], file_name) == 0) {
-            *index_out = i;
-            return true;
-        }
-    }
-    return false;
-}
-
 static void slideshow_init_progress(const slideshow_request_t *request,
-                                    size_t first_index,
                                     slideshow_progress_t *progress)
 {
     memset(progress, 0, sizeof(*progress));
@@ -998,19 +1009,10 @@ static void slideshow_init_progress(const slideshow_request_t *request,
     if (progress->random_seed == 0) {
         progress->random_seed = 1;
     }
-    slideshow_build_order(progress, request->file_count, request->random);
-
-    if (first_index >= request->file_count) {
-        first_index = 0;
-    }
-    for (size_t i = 0; i < request->file_count; ++i) {
-        if (progress->order[i] == first_index) {
-            uint8_t tmp = progress->order[0];
-            progress->order[0] = progress->order[i];
-            progress->order[i] = tmp;
-            break;
-        }
-    }
+    slideshow_build_order(progress,
+                          request->file_count,
+                          request->random,
+                          request->start_index);
     progress->position = 0;
     strlcpy(progress->pending_file,
             request->file_names[progress->order[0]],
@@ -1081,11 +1083,10 @@ static esp_err_t load_or_create_slideshow_progress(const slideshow_request_t *re
     if (loaded_existing != NULL) {
         *loaded_existing = false;
     }
-    esp_err_t progress_read_ret = ESP_ERR_NVS_NOT_FOUND;
     if (!reset) {
-        progress_read_ret = app_nvs_read_blob(TDX_SLIDESHOW_NVS_PROGRESS_KEY,
-                                              progress,
-                                              sizeof(*progress));
+        esp_err_t progress_read_ret = app_nvs_read_blob(TDX_SLIDESHOW_NVS_PROGRESS_KEY,
+                                                        progress,
+                                                        sizeof(*progress));
         if (progress_read_ret == ESP_OK && slideshow_progress_valid(request, progress)) {
             if (loaded_existing != NULL) {
                 *loaded_existing = true;
@@ -1098,21 +1099,7 @@ static esp_err_t load_or_create_slideshow_progress(const slideshow_request_t *re
         }
     }
 
-    size_t first_index = 0;
-    if (!reset && progress_read_ret == ESP_ERR_NVS_NOT_FOUND) {
-        char legacy_file[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
-        size_t legacy_index = 0;
-        if (app_nvs_read_str(TDX_SLIDESHOW_NVS_LAST_FILE_KEY,
-                             legacy_file,
-                             sizeof(legacy_file),
-                             "") == ESP_OK &&
-            find_file_index(request, legacy_file, &legacy_index)) {
-            first_index = legacy_index;
-            ESP_LOGI(TAG, "slideshow migrate legacy pending=%s", legacy_file);
-        }
-    }
-
-    slideshow_init_progress(request, first_index, progress);
+    slideshow_init_progress(request, progress);
     return save_slideshow_progress(progress);
 }
 
@@ -1129,7 +1116,10 @@ static void prepare_next_slideshow_progress(const slideshow_request_t *request,
         if (next->random_seed == 0) {
             next->random_seed = 1;
         }
-        slideshow_build_order(next, request->file_count, request->random);
+        slideshow_build_order(next,
+                              request->file_count,
+                              request->random,
+                              request->start_index);
     }
     strlcpy(next->pending_file,
             request->file_names[next->order[next->position]],
@@ -1187,6 +1177,7 @@ static bool slideshow_sync_sntp_target_to_now(slideshow_runtime_t *runtime,
     if (!slideshow_calculate_schedule_position(runtime->request.anchor_epoch,
                                                 runtime->request.interval,
                                                 runtime->request.file_count,
+                                                runtime->request.start_index,
                                                 (int64_t)now_time,
                                                 &schedule)) {
         ESP_LOGE(TAG, "slideshow SNTP schedule calculation failed reason=%s now=%lld",
@@ -1197,7 +1188,9 @@ static bool slideshow_sync_sntp_target_to_now(slideshow_runtime_t *runtime,
 
     if (!schedule.started) {
         if (runtime->scheduled_slot != 0 || runtime->displayed_slot_valid) {
-            if (!slideshow_progress_select_index(&runtime->request, &runtime->progress, 0)) {
+            if (!slideshow_progress_select_index(&runtime->request,
+                                                 &runtime->progress,
+                                                 runtime->request.start_index)) {
                 return false;
             }
             runtime->scheduled_slot = 0;
@@ -1269,6 +1262,7 @@ static bool slideshow_prepare_next_sntp_progress(slideshow_runtime_t *runtime,
     if (!slideshow_calculate_schedule_position(runtime->request.anchor_epoch,
                                                 runtime->request.interval,
                                                 runtime->request.file_count,
+                                                runtime->request.start_index,
                                                 (int64_t)now_time,
                                                 &schedule)) {
         return false;
@@ -1278,7 +1272,10 @@ static bool slideshow_prepare_next_sntp_progress(slideshow_runtime_t *runtime,
     if (schedule.started && schedule.slot > runtime->scheduled_slot) {
         next_slot = schedule.slot;
     }
-    size_t next_index = (size_t)(next_slot % (uint64_t)runtime->request.file_count);
+    size_t next_index =
+        (runtime->request.start_index +
+         (size_t)(next_slot % (uint64_t)runtime->request.file_count)) %
+        runtime->request.file_count;
     memcpy(next, &runtime->progress, sizeof(*next));
     if (!slideshow_progress_select_index(&runtime->request, next, next_index)) {
         return false;
@@ -1306,6 +1303,7 @@ static bool slideshow_enable_sntp_schedule_if_ready(slideshow_runtime_t *runtime
     if (!slideshow_calculate_schedule_position(runtime->request.anchor_epoch,
                                                 runtime->request.interval,
                                                 runtime->request.file_count,
+                                                runtime->request.start_index,
                                                 (int64_t)now_time,
                                                 &schedule) ||
         !slideshow_progress_select_index(&runtime->request,
@@ -1598,6 +1596,23 @@ static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_req
     }
     request->random = slideshow_force_random_config("saved slideshow_config",
                                                     parse_json_bool_default(json, "random", false));
+    uint32_t parsed_start_index = 0;
+    if (find_json_key(json, "startIndex") == NULL) {
+        ESP_LOGE(TAG, "slideshow config invalid: startIndex missing path=%s", config_path);
+        free(json);
+        return TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING;
+    }
+    if (!parse_json_u32(json, "startIndex", &parsed_start_index) ||
+        parsed_start_index >= request->file_count) {
+        ESP_LOGE(TAG,
+                 "slideshow config invalid: startIndex=%lu count=%u path=%s",
+                 (unsigned long)parsed_start_index,
+                 (unsigned int)request->file_count,
+                 config_path);
+        free(json);
+        return TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID;
+    }
+    request->start_index = (size_t)parsed_start_index;
     free(json);
     return ESP_OK;
 }
@@ -1838,10 +1853,11 @@ static void slideshow_task(void *arg)
         return;
     }
 
-    ESP_LOGI(TAG, "slideshow task start count=%u interval=%lu random=%d index=%u",
+    ESP_LOGI(TAG, "slideshow task start count=%u interval=%lu random=%d start_index=%u pending_index=%u",
              (unsigned int)runtime->request.file_count,
              (unsigned long)runtime->request.interval,
              runtime->request.random ? 1 : 0,
+             (unsigned int)runtime->request.start_index,
              (unsigned int)runtime->progress.order[runtime->progress.position]);
 
     slideshow_loaded_file_t loaded = {0};
@@ -2188,14 +2204,18 @@ esp_err_t ServerNetworkStaSlideshow_ShowFirst(const char *base_path)
         free(request);
         return ret;
     }
-    ret = display_slideshow_file_and_wait(base_path, request->file_names[0], 0, NULL);
+    ret = display_slideshow_file_and_wait(base_path,
+                                          request->file_names[request->start_index],
+                                          0,
+                                          NULL);
     free(request);
     return ret;
 }
 
 static esp_err_t start_saved_slideshow_with_mode(const char *base_path,
                                                  bool reset_interval_if_running,
-                                                 bool force_first_display)
+                                                 bool force_first_display,
+                                                 bool reset_progress)
 {
     slideshow_request_t *request = (slideshow_request_t *)calloc(1, sizeof(*request));
     if (request == NULL) {
@@ -2237,7 +2257,7 @@ static esp_err_t start_saved_slideshow_with_mode(const char *base_path,
     slideshow_progress_t progress;
     bool progress_loaded_existing = false;
     ret = load_or_create_slideshow_progress(request,
-                                            false,
+                                            reset_progress,
                                             &progress,
                                             &progress_loaded_existing);
     bool sntp_schedule_enabled = false;
@@ -2245,7 +2265,7 @@ static esp_err_t start_saved_slideshow_with_mode(const char *base_path,
     bool current_slot_already_displayed = false;
     bool sntp_synced = ServerNetworkStaTime_IsSntpSynced();
     if (ret != ESP_OK && sntp_synced) {
-        slideshow_init_progress(request, 0, &progress);
+        slideshow_init_progress(request, &progress);
         ESP_LOGW(TAG,
                  "slideshow SNTP restore continue with RAM progress after NVS load/save failed ret=%s",
                  esp_err_to_name(ret));
@@ -2258,6 +2278,7 @@ static esp_err_t start_saved_slideshow_with_mode(const char *base_path,
         if (!slideshow_calculate_schedule_position(request->anchor_epoch,
                                                     request->interval,
                                                     request->file_count,
+                                                    request->start_index,
                                                     (int64_t)now_time,
                                                     &schedule)) {
             ESP_LOGE(TAG, "slideshow SNTP restore position calculation failed now=%lld",
@@ -2289,7 +2310,8 @@ static esp_err_t start_saved_slideshow_with_mode(const char *base_path,
                              (current_slot_already_displayed ? 1U : 0U);
             force_first_display = schedule.started && !current_slot_already_displayed;
             ESP_LOGI(TAG,
-                     "slideshow SNTP restore slot=%llu current_index=%u current_file=%s pending_index=%u pending_file=%s now=%lld slot_start=%lld next=%lld current_displayed=%d action=%s",
+                     "slideshow SNTP restore start_index=%u slot=%llu current_index=%u current_file=%s pending_index=%u pending_file=%s now=%lld slot_start=%lld next=%lld current_displayed=%d action=%s",
+                     (unsigned int)request->start_index,
                      (unsigned long long)schedule.slot,
                      (unsigned int)schedule.current_index,
                      request->file_names[schedule.current_index],
@@ -2321,12 +2343,17 @@ static esp_err_t start_saved_slideshow_with_mode(const char *base_path,
 
 esp_err_t ServerNetworkStaSlideshow_StartSaved(const char *base_path)
 {
-    return start_saved_slideshow_with_mode(base_path, false, false);
+    return start_saved_slideshow_with_mode(base_path, false, false, false);
 }
 
 esp_err_t ServerNetworkStaSlideshow_StartSavedResetInterval(const char *base_path)
 {
-    return start_saved_slideshow_with_mode(base_path, true, false);
+    return start_saved_slideshow_with_mode(base_path, true, false, false);
+}
+
+esp_err_t ServerNetworkStaSlideshow_StartSavedForNewCommand(const char *base_path)
+{
+    return start_saved_slideshow_with_mode(base_path, true, false, true);
 }
 
 static void slideshow_startup_delay_task(void *arg)
@@ -2414,7 +2441,10 @@ static void slideshow_startup_delay_task(void *arg)
                  force_first_display ? 1 : 0,
                  wifi_has_ip ? 1 : 0,
                  sntp_synced ? 1 : 0);
-        esp_err_t ret = start_saved_slideshow_with_mode(delay->base_path, false, force_first_display);
+        esp_err_t ret = start_saved_slideshow_with_mode(delay->base_path,
+                                                        false,
+                                                        force_first_display,
+                                                        false);
         ESP_LOGI(TAG, "slideshow startup delayed start ret=%s", esp_err_to_name(ret));
         break;
     }
@@ -2483,8 +2513,10 @@ static esp_err_t save_slideshow_config(const char *bin_dir, const slideshow_requ
     }
 
     written = snprintf(json + used, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX - used,
-                       "],\"interval\":%lu,\"random\":%s}",
-                       (unsigned long)request->interval, request->random ? "true" : "false");
+                       "],\"interval\":%lu,\"random\":%s,\"startIndex\":%u}",
+                       (unsigned long)request->interval,
+                       request->random ? "true" : "false",
+                       (unsigned int)request->start_index);
     if (written < 0 || used + (size_t)written >= SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX) {
         free(json);
         return ESP_FAIL;
@@ -2507,6 +2539,22 @@ static esp_err_t parse_start_slideshow_request(const char *body, slideshow_reque
     if (!parse_file_names(body, request)) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (find_json_key(body, "startIndex") == NULL) {
+        ESP_LOGE(TAG,
+                 "start_slideshow rejected: startIndex missing count=%u",
+                 (unsigned int)request->file_count);
+        return TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING;
+    }
+    uint32_t parsed_start_index = 0;
+    if (!parse_json_u32(body, "startIndex", &parsed_start_index) ||
+        parsed_start_index >= request->file_count) {
+        ESP_LOGE(TAG,
+                 "start_slideshow rejected: invalid startIndex=%lu count=%u",
+                 (unsigned long)parsed_start_index,
+                 (unsigned int)request->file_count);
+        return TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID;
+    }
+    request->start_index = (size_t)parsed_start_index;
     if (!parse_json_u32(body, "interval", &request->interval) ||
         request->interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS ||
         request->interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
@@ -2539,6 +2587,12 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
     }
     if (ret == ESP_ERR_INVALID_SIZE) {
         return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID, "invalid interval");
+    }
+    if (ret == TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING) {
+        return send_start_slideshow_result(req, ret, "startIndex missing");
+    }
+    if (ret == TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID) {
+        return send_start_slideshow_result(req, ret, "invalid startIndex");
     }
     if (ret == TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID) {
         if (ServerNetworkStaTime_IsSntpSynced()) {
@@ -2588,8 +2642,10 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
                                                   request.random ? "true" : "false");
     g_slideshow_random_enable = request.random ? 1 : 0;
     ESP_LOGI(TAG,
-             "start_slideshow saved list count=%u rtc_interval=%lu random=%d rtc_timestamp=%lld rtc_anchor=%lld random_save_ret=%s",
+             "start_slideshow saved list count=%u start_index=%u first_file=%s rtc_interval=%lu random=%d rtc_timestamp=%lld rtc_anchor=%lld random_save_ret=%s",
              (unsigned int)request.file_count,
+             (unsigned int)request.start_index,
+             request.file_names[request.start_index],
              (unsigned long)request.interval,
              request.random ? 1 : 0,
              (long long)request.timestamp,
@@ -2608,7 +2664,7 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
                                            "save display mode failed");
     }
 
-    esp_err_t start_ret = ServerNetworkStaSlideshow_StartSavedResetInterval(base_path);
+    esp_err_t start_ret = ServerNetworkStaSlideshow_StartSavedForNewCommand(base_path);
     if (start_ret != ESP_OK) {
         ESP_LOGW(TAG, "start_slideshow rtc runtime start failed ret=%s",
                  esp_err_to_name(start_ret));
@@ -2617,9 +2673,10 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
                                            "start slideshow runtime failed");
     }
     ESP_LOGI(TAG,
-             "start_slideshow saved list and started rtc slideshow interval=%lu random=%d timestamp=%lld anchor=%lld",
+             "start_slideshow saved list and started rtc slideshow interval=%lu random=%d start_index=%u timestamp=%lld anchor=%lld",
              (unsigned long)request.interval,
              request.random ? 1 : 0,
+             (unsigned int)request.start_index,
              (long long)request.timestamp,
              (long long)request.anchor_epoch);
 

@@ -136,7 +136,7 @@ The full result-code table is in `README_Result_Code.md`; this file keeps featur
 | `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | 字段、文件名安全、大小匹配、目录和剩余空间条件与 cast 类似；主要用于保存，`show=true` 时也可显示 | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存；图片列表、轮播、快照从 jpg/bin 目录取数据 |
 | `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `TDX_DELETE_MAX_FILES=50` 限制；超过上限返回 `1514`，文件名非法返回 `1502`；网络与 USB 入口都先完整校验，校验失败不执行删除；只删除匹配的 bin/jpg；不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度 | 从 JSON `fileNames` 取删除列表；校验通过后按文件名拼路径并删除 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从轮播配置/control 文件读取轮播状态 |
-| `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 诊断/兼容进度 | `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=50` 限制；单个名称缓冲区受 `TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48` 限制，实际文件名内容需小于 48 bytes；`interval` 限制在 `60..604800` 秒；配置前应检查文件存在；`random` 永久强制为 `false` | 未取得 SNTP 时完全使用原恢复逻辑；启动时已有 SNTP 或运行中首次取得 SNTP 后，按 `fileNames + anchor_epoch + interval` 一次性切换到绝对时间槽，本次开机不再切回旧逻辑 |
+| `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 诊断/兼容进度 | `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=50` 限制；`startIndex` 必填且满足 `0 <= startIndex < file_count`；单个名称缓冲区受 `TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48` 限制；`interval` 限制在 `60..604800` 秒；`random` 永久强制为 `false` | 不兼容缺少 `startIndex` 的旧轮播协议/配置；启动时已有 SNTP 或运行中首次取得 SNTP 后，按 `fileNames + startIndex + anchor_epoch + interval` 使用绝对时间槽 |
 | `wifi_work_time` | `work_state` namespace blob；`PhotoPainter:work_continue/wifi_standby` 字符串兼容键 | HTTP JSON `seconds` 必须在 `60..3600`；内部 `SetAndSave()` 还会 clamp 到最小/最大值；保存 blob 后会读回验证；`seconds=0` 拒绝 | 启动时读取 blob；blob size 不匹配则回退默认值；兼容读取字符串键并解析为 u32 |
 | OTA | OTA update partition；boot partition 选择 | 请求必须被识别为 `/ota` 或 `/ota_upload`；body 不超过 `SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE=6MB`；meta/firmware 字段可解析；固件 magic、app_desc、版本、长度和目标分区大小检查通过；写入成功后才设置 boot partition | 读取 meta JSON、firmware/bin 字段、running partition、next update partition、app desc 和 OTA 状态 |
 | EPD 类型 | `PhotoPainter:epd_type` | 只允许保存 `EpdType_GetConfig(type)` 能找到的合法 type；未变化时跳过写入；非法 type 返回 `ESP_ERR_INVALID_ARG` | 启动读取 `epd_type`；不存在或无效时回退 `USER_EPD_TYPE_DEFAULT`；显示时按当前 type 分发到具体驱动 |
@@ -2409,6 +2409,8 @@ Result 定义建议：
 | `start_slideshow_result` | `1510` | `timestamp` 缺失、不是整数、不是秒级 Unix 时间戳，或时间范围不合理 |
 | `start_slideshow_result` | `1512` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
 | `start_slideshow_result` | `1513` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次指令 |
+| `start_slideshow_result` | `1515` | `startIndex` 缺失；设备不执行本次指令 |
+| `start_slideshow_result` | `1516` | `startIndex` 不是非负整数或 `startIndex >= fileNames` 数量；设备不执行本次指令 |
 
 功能说明：`start_slideshow` 用于下发并保存轮播图片列表、轮播顺序、随机模式和默认 interval，并在同一条命令中使用 `timestamp` 写入标准 RTC control、强制 `sw=1`、启动 RTC 轮播。它等价于“原 start_slideshow 列表配置功能 + set_slideshow 的 sw=1/interval/random/timestamp 启动功能”。
 
@@ -2422,12 +2424,12 @@ sequenceDiagram
     participant FILE as slideshow config/control
     participant TASK as slideshow_task
     participant EPD as EPD Display Queue
-    APP->>DATAUP: start_slideshow fileNames/interval/random
+    APP->>DATAUP: start_slideshow fileNames/interval/random/timestamp/startIndex
     DATAUP->>SS: process_small_json_request()
     SS->>SS: validate timestamp and check/set RTC
-    SS->>FILE: save slideshow_config fileNames/interval/random
+    SS->>FILE: save slideshow_config fileNames/interval/random/startIndex
     SS->>FILE: write show_control sw=1 interval/random/timestamp/anchor_epoch
-    SS->>TASK: ServerNetworkStaSlideshow_StartSavedResetInterval()
+    SS->>TASK: ServerNetworkStaSlideshow_StartSavedForNewCommand()
     SS-->>APP: start_slideshow_result result=0
 ```
 
@@ -2451,7 +2453,7 @@ HTTP small JSON start_slideshow
          ├─ save_slideshow_config()
          ├─ save random config
          ├─ write show_control sw=1 interval/random/timestamp/anchor_epoch
-         └─ ServerNetworkStaSlideshow_StartSavedResetInterval()
+         └─ ServerNetworkStaSlideshow_StartSavedForNewCommand()
 
 main/main.c
 └─ ServerNetworkStaSlideshow_StartSavedDelayed("/data")
@@ -2475,6 +2477,7 @@ server_network_sta_slideshow.c
 ├─ ServerNetworkStaSlideshow_ShowFirst()
 ├─ ServerNetworkStaSlideshow_StartSaved()
 ├─ ServerNetworkStaSlideshow_StartSavedResetInterval()
+├─ ServerNetworkStaSlideshow_StartSavedForNewCommand()
 ├─ ServerNetworkStaSlideshow_StartSavedDelayed()
 ├─ ServerNetworkStaSlideshow_GetRuntimeTiming()
 ├─ ServerNetworkStaSlideshow_Stop()
@@ -2489,7 +2492,8 @@ V2 协议资料拆分：
   "fileNames": ["26422", "26423"],
   "interval": 60,
   "random": false,
-  "timestamp": 1783372200
+  "timestamp": 1783372200,
+  "startIndex": 0
 }
 ```
 
@@ -2498,8 +2502,9 @@ V2 协议资料拆分：
 ```text
 fileNames 轮播文件顺序；最多 50 个，文件必须已存在于 /data/bin_img
 interval 默认轮播间隔，单位秒，固件校验 60..604800
-random=true 表示随机轮播；random=false 按 fileNames 顺序轮播
-timestamp 必填；秒级 Unix 时间戳，用作第一张图片目标播放时间，同时写入 show_control.timestamp 和 anchor_epoch
+random 字段保留，但设备始终强制为 false，并按 fileNames 顺序轮播
+timestamp 必填；秒级 Unix 时间戳，用作 `fileNames[startIndex]` 起始图片的目标播放时间，同时写入 show_control.timestamp 和 anchor_epoch
+startIndex 必填；从 0 开始，必须小于 fileNames 数量；表示 timestamp 对应的起始图片
 ```
 
 
@@ -2515,6 +2520,7 @@ $body = @{
   interval = 60
   random = $false
   timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  startIndex = 0
 } | ConvertTo-Json -Depth 4
 
 Invoke-RestMethod -Uri "$esp/dataUP" `
@@ -2523,7 +2529,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
   -Body $body
 ```
 
-预期：设备保存轮播列表、interval 和 random，重写 `show_control.txt` 为标准 RTC control，强制 `sw=1`，并按 `timestamp` 启动 RTC 轮播。
+预期：设备保存轮播列表、interval、random 和 startIndex，从 `fileNames[startIndex]` 建立第 0 个绝对时间槽，重写 `show_control.txt` 为标准 RTC control，并按 `timestamp` 启动 RTC 轮播。缺少 startIndex 返回 1515，startIndex 非法返回 1516，均不执行本次指令。
 
 当前实现：
 
@@ -2536,12 +2542,14 @@ start_slideshow 是正式轮播列表配置接口；会重写 `show_control.txt`
 
 ```text
 存：
-- start_slideshow 保存 slideshow_config 的 fileNames / interval / random，保存 random 配置，并写入 `show_control.txt`：`{"func":"set_slideshow","sw":1,"interval":...,"random":...,"timestamp":...,"anchor_epoch":...}`。
+- start_slideshow 严格要求合法 startIndex，保存 slideshow_config 的 fileNames / interval / random / startIndex，保存 random 配置，并写入 `show_control.txt`：`{"func":"set_slideshow","sw":1,"interval":...,"random":...,"timestamp":...,"anchor_epoch":...}`。旧字段 `index` 不兼容；缺少 startIndex 时拒绝启动，不默认补 0。
 - set_slideshow 写入 sw / interval / timestamp / anchor_epoch，并同步写 PhotoPainter:epd_mode=1。
 - `random` 永久禁用；协议仍兼容接收 `random:true/false`，但设备统一强制为 `random=false`，并在 `slideshow_config.txt`、`show_control.txt`、NVS `slide_random` 和 snapshot 中固定保存/返回 false。
 - NVS `slide_progress` 继续保存版本、配置 hash、待显示文件和位置，供诊断及非 SNTP 兼容路径使用；SNTP 已同步时它不再是选图依据，启动时 NVS 读写失败可用 RAM 进度继续绝对时间轮播。
-- SNTP 绝对时间槽公式：`slot=floor((now_epoch-anchor_epoch)/interval)`，`current_index=slot%file_count`，`current_file=fileNames[current_index]`，`next_epoch=anchor_epoch+(slot+1)*interval`。
-- SNTP 已同步且 `now_epoch>=anchor_epoch` 时，当前绝对时间槽始终是选图依据。开机恢复若有效 NVS `pending_file` 正好是当前槽的下一张，表示墨水屏已保留当前槽图片，此时不重复刷新当前图片，而是等待下一绝对播放点；其他情况立即显示当前槽图片。`now_epoch<anchor_epoch` 时等待 `anchor_epoch` 后显示第一张。NVS 只辅助判断当前槽图片是否已在屏幕上，不能改变绝对时间槽选图结果。
+- SNTP 绝对时间槽公式：`slot=floor((now_epoch-anchor_epoch)/interval)`，`current_index=(startIndex+(slot%file_count))%file_count`，`current_file=fileNames[current_index]`，`next_epoch=anchor_epoch+(slot+1)*interval`。
+- 当 `fileNames` 只有一张时，合法值只能是 `startIndex=0`；每个绝对时间槽都映射到同一张图片，因此设备仍会按 interval 到点重复刷新该图片。其他 startIndex 返回 1516。
+- SNTP 已同步且 `now_epoch>=anchor_epoch` 时，当前绝对时间槽始终是选图依据。开机恢复若有效 NVS `pending_file` 正好是当前槽的下一张，表示墨水屏已保留当前槽图片，此时不重复刷新当前图片，而是等待下一绝对播放点；其他情况立即显示当前槽图片。`now_epoch<anchor_epoch` 时，以 `anchor_epoch - lead_seconds` 作为进入 EPD 刷新流程的时间点。NVS 只辅助判断当前槽图片是否已在屏幕上，不能改变绝对时间槽选图结果。
+- SNTP 时间下允许 timestamp 与当前时间相差不超过 5 秒。若 timestamp 在未来，设备接受指令，但仍遵守 RTC 播放点：只有当前时间到达 `timestamp - lead_seconds` 才进入起始图片的 EPD 刷新流程；若该提前点已经到达则立即进入。比如 timestamp 领先 5 秒、lead=3 秒时等待约 2 秒；timestamp 领先 2 秒、lead=3 秒时立即进入。这样不会因强制提前显示而破坏 APP 与 ESP32 共用的绝对时间基准，也不会因少量传输或校时误差拒绝正常指令。
 - slideshow_task() 在 SNTP 模式下每次显示前重新核对绝对时间槽；若断电、阻塞或 SNTP 向前/向后校时跨槽，直接切换到当前应显示的图片，不逐张补播。
 - `ServerNetworkStaSlideshow_GetScheduleTiming()` 可读取 RTC 轮播的 now / next / remain；`ServerNetworkStaSlideshow_GetRuntimeTiming()` 只作为非 RTC 兼容状态读取。
 - slideshow_task() 在 EPD 显示成功且下一进度保存成功后，SNTP 模式按绝对槽计算下一目标；其他时间源继续使用原 RTC 进度逻辑。
@@ -2554,8 +2562,7 @@ start_slideshow 是正式轮播列表配置接口；会重写 `show_control.txt`
 - 延迟结束后先重新读取 control；如果 `show=true` 已把 control 写成 `sw=0`，则跳过自动恢复；EPD 忙时继续推迟。启动时没有 SNTP 就按原 CH583/CH585、anchor fallback 和 pending_file 逻辑运行，不等待网络时间；运行中首次取得 SNTP 时，等待当前 EPD 操作结束后一次性切换到绝对时间槽。
 - 读取 SD 卡中的 control 时严格校验：`sw=1` 必须包含合法 `interval`、`timestamp` 和 `anchor_epoch`；旧格式如 `{"sw":1,"interval":90,"random":false,"run_mode":0}` 视为非法，打印 `legacy control rejected`，不启动轮播，也不回退到 task tick 计时。
 - ServerNetworkStaSlideshow_StartSaved() 仍用于立即启动已保存轮播，不带开机 10 秒延迟。
-- 进度版本、配置 hash、随机模式、排列或文件名不匹配时，从当前配置第一张重建进度。
-- 兼容旧 `slide_last`：首次升级时将旧文件名迁移为新的待显示进度。
+- startIndex 会加入配置 hash；进度版本、配置 hash、随机模式、排列或文件名不匹配时，从 `fileNames[startIndex]` 重建进度。
 - slideshow_task() 读取 `/data/bin_img/*.bin`，等待 EPD 真正完成后再提交下一进度；如果读文件前、读文件后或送 EPD 前收到停止请求，则放弃本张显示并退出。
 - slideshow_task() 从 SD 读出 bin 后、送 EPD 前，会计算文件内容 SHA-256 的十六进制后 16 位并与 fileName 比对，只打印 `sha256 ok` / `sha256 mismatch` / `sha256 failed` / `skip invalid basename` 诊断日志，不阻止显示、不修改进度；匹配成功用 `ESP_LOGI`，无效 basename 跳过用 `ESP_LOGW`，计算失败或 mismatch 用 `ESP_LOGE`。
 - 轮播日志中 `slideshow rtc ...` / `slide_timer rtc ...` 表示真实 RTC 时间控制；`slideshow rtc wait target=... display_target=... lead=...` 中 `target` 是真实播放点，`display_target` 是提前进入显示流程的时间点，`lead` 是当前 EPD type 实际提前秒数；`slideshow rtc display start file=... position=x/y interval=...` 表示本轮第 x/y 个播放点已进入 EPD 显示；`legacy_tick` 只表示非 RTC 兼容路径或旧状态统计，不能作为新协议轮播判断依据。RTC 模式以真实系统时间计算 remain，不依赖 task tick 延时。
@@ -2576,6 +2583,8 @@ Result 定义建议：
 | `set_slideshow_result` | `0` | 轮播控制设置成功 |
 | `set_slideshow_result` | `1012` | SD 卡 / 存储未就绪 |
 | `set_slideshow_result` | `1004` | `sw` / `interval` / `random` 参数非法 |
+| `set_slideshow_result` | `1515` | `sw=1` 时已保存的轮播配置缺少 `startIndex` |
+| `set_slideshow_result` | `1516` | `sw=1` 时已保存的轮播配置包含非法 `startIndex` |
 | `set_slideshow_result` | `1501` | 开启轮播时还没有保存过轮播列表 |
 | `set_slideshow_result` | `1506` | 开启轮播时运行时启动失败 |
 | `set_slideshow_result` | `1507` | `interval` 非法 |
@@ -2663,11 +2672,12 @@ sw=1 开启轮播
 sw=0 关闭轮播
 interval 轮播间隔，单位秒
 interval 允许范围 60..604800；sw=0 时可省略，省略时沿用已有控制文件或默认最小值
-random=true 表示随机轮播；random=false 按列表顺序轮播；省略时沿用已有 control 的 random
+random 字段保留，但设备始终强制为 false 并按列表顺序轮播；省略时也不会启用随机模式
 control.interval / control.random 是 set_slideshow 写入控制文件的配置值；轮播 task 实际使用的是启动/恢复后复制到 runtime 的 RAM 值。
-timestamp 第一张图片的目标播放时间，秒级标准 Unix 时间戳，含义是从 1970-01-01 00:00:00 UTC 到当前时间的秒数
+timestamp 保存的 `fileNames[startIndex]` 起始图片目标播放时间，秒级标准 Unix 时间戳
 旧 datetime/timezone 已删除；新请求中不再发送 timezone
 anchor_epoch 等于 timestamp，用于后续按 interval 计算播放点
+startIndex 不由 set_slideshow 修改；始终沿用 slideshow_config.txt 中 start_slideshow 保存的必填起始索引
 ```
 
 RTC 同步规则：
@@ -2676,12 +2686,13 @@ RTC 同步规则：
 sw=1 时如果 SNTP 已同步，设备使用 SNTP 当前时间，不用 APP / PC 的 timestamp 修 RTC；同时比较 abs(now_epoch - timestamp)。
 SNTP 已同步且差值 > 5 秒时，返回 1513，不写控制文件，不停止/启动轮播，不执行本次指令；返回中带 timestamp、now_epoch、time_diff，方便 APP / PC 知道差几秒。
 SNTP 已同步且差值 <= 5 秒时，接受指令，anchor_epoch=timestamp。
+若 timestamp 在未来，设备不会无条件提前显示；进入起始图片 EPD 刷新的时间点为 `timestamp-lead_seconds`。该时间点已经到达时立即进入，否则等待到该时间点。
 SNTP 未同步时，设备把 APP / PC 发来的 timestamp 写入 ESP32-C5 RTC / 系统时间，并以此作为本次轮播时间基准；写入失败返回 1512。
-timestamp 表示第一张图片播放时间，之后每 interval 秒一个播放点。
+timestamp 表示 `fileNames[startIndex]` 起始图片播放时间，之后每 interval 秒一个播放点。
 设备收到 APP / PC 合法 timestamp 后，会尽量通过 CH583/CH585 TIME_SET 备份该时间；即使 SNTP 已同步且 timestamp 与设备当前 SNTP 时间差值超过 5 秒、最终返回 1513 不执行轮播，也会先备份 APP / PC timestamp。若 timestamp 非法但 SNTP 已同步，则备份设备当前 SNTP 时间。
 如果收到命令或设备启动恢复时已经超过 timestamp，并且 SNTP 已同步：
 - 使用 `slot=floor((now_epoch-anchor_epoch)/interval)` 计算当前绝对时间槽。
-- 使用 `current_index=slot%file_count` 计算 APP 与 ESP32 此刻共同应显示的图片，不从第一张重新开始。开机恢复时 NVS position 不能改变该选图结果，只在其 `pending_file` 等于当前槽下一张时辅助确认墨水屏已经显示当前图片，并避免重复刷新；否则立即显示当前槽图片。
+- 使用 `current_index=(startIndex+(slot%file_count))%file_count` 计算 APP 与 ESP32 此刻共同应显示的图片。开机恢复时 NVS position 不能改变该选图结果，只在其 `pending_file` 等于当前槽下一张时辅助确认墨水屏已经显示当前图片，并避免重复刷新；否则立即显示当前槽图片。
 - 使用 `next_epoch=anchor_epoch+(slot+1)*interval` 计算下一个逻辑播放点；跨过多个时间槽时直接跳到当前槽，不补播遗漏图片。
 轮播 task 内部 1 秒检查 RTC / 系统时间；设备内部仍按当前 EPD type 在 `next_epoch - lead_seconds` 时提前进入 EPD 显示流程：DKE 13.3 寸为 1 秒，兴泰 13.3 寸为 3 秒，其它屏型默认 2 秒，但图片索引按逻辑 `next_epoch` 对应的槽计算。
 返回成功时带 timestamp、time_source、time_diff、anchor_epoch、now_epoch、next_epoch、remain，APP 可用 remain 校验倒计时同步。time_source=sntp 表示使用设备 SNTP 时间；time_source=timestamp 表示 SNTP 未同步，已使用 APP / PC timestamp 写入 RTC。
@@ -2836,22 +2847,24 @@ V2 协议资料拆分：
     "sw": 1,
     "fileNames": ["26422", "26423"],
     "interval": 60,
-    "random": false
+    "random": false,
+    "startIndex": 0
   }
 }
 ```
 
-V2 说明：如果设备未设置过轮播，建议返回 `{"sw":0,"fileNames":[],"interval":0,"random":false}`。
+V2 说明：如果设备未设置过轮播，返回的 `startIndex=-1` 表示没有合法的新协议轮播配置；合法配置返回保存的起始 startIndex。
 
 RTC 轮播字段：
 
 ```text
-timestamp     set_slideshow sw=1 写入的第一张图片播放时间，秒级 Unix 时间戳。
+timestamp     set_slideshow sw=1 写入的起始槽播放时间，该槽图片由 slideshow_config.startIndex 决定。
 anchor_epoch  等于 timestamp，用于按 interval 计算后续播放点。
 now_epoch     设备当前 RTC / 系统 Unix 秒。
 next_epoch    当前运行中下一次轮播播放点；未运行或非 RTC 轮播为 0。
 remain        next_epoch - now_epoch，单位秒；APP 可用于同步倒计时。
 time_synced   SNTP 是否已完成同步。
+startIndex    start_slideshow 保存的起始图片索引；缺少或非法配置返回 -1。
 ```
 
 
@@ -4988,6 +5001,8 @@ Result 定义建议：
 | `start_slideshow_result` | `1510` | `timestamp` 缺失、不是整数、不是秒级 Unix 时间戳，或时间范围不合理 |
 | `start_slideshow_result` | `1512` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
 | `start_slideshow_result` | `1513` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次指令 |
+| `start_slideshow_result` | `1515` | `startIndex` 缺失；设备不执行本次指令 |
+| `start_slideshow_result` | `1516` | `startIndex` 不是非负整数或 `startIndex >= fileNames` 数量；设备不执行本次指令 |
 
 功能说明：
 
@@ -5008,11 +5023,11 @@ sequenceDiagram
     PC->>Router: POST /slideshow JSON
     Router->>Slide: UsbConsoleSlideshow_Handle()
     Slide->>Slide: UsbConsoleSlideshow_Process()
-    Slide->>Slide: validate fileNames/interval/random/timestamp
+    Slide->>Slide: validate fileNames/interval/random/timestamp/startIndex
     Slide->>Slide: check/set RTC
     Slide->>Slide: save slideshow_config
     Slide->>Slide: write show_control sw=1 interval/random/timestamp/anchor_epoch
-    Slide->>ServerSlide: ServerNetworkStaSlideshow_StartSavedResetInterval()
+    Slide->>ServerSlide: ServerNetworkStaSlideshow_StartSavedForNewCommand()
     Slide-->>PC: start_slideshow_result JSON
 ```
 
@@ -5031,11 +5046,11 @@ UsbConsoleRouter_Handle()
 └─ /slideshow
    └─ UsbConsoleSlideshow_Handle()
       └─ UsbConsoleSlideshow_Process()
-         ├─ validate fileNames / interval / timestamp
+         ├─ validate fileNames / interval / timestamp / startIndex
          ├─ check/set RTC
          ├─ write slideshow_config
          ├─ write show_control sw=1 interval/random/timestamp/anchor_epoch
-         ├─ ServerNetworkStaSlideshow_StartSavedResetInterval()
+         ├─ ServerNetworkStaSlideshow_StartSavedForNewCommand()
          └─ response start_slideshow_result
 ```
 
@@ -5047,6 +5062,7 @@ UsbConsoleSlideshow_Process()
 EpdDisplayMode_SetBySlideshowSwitch()
 ServerNetworkStaSlideshow_StartSaved()
 ServerNetworkStaSlideshow_StartSavedResetInterval()
+ServerNetworkStaSlideshow_StartSavedForNewCommand()
 ServerNetworkStaSlideshow_Stop()
 ```
 
@@ -5061,7 +5077,7 @@ Host: usb
 Content-Type: application/json
 Content-Length: 88
 
-{"func":"start_slideshow","fileNames":["26422","screen_a"],"interval":60,"random":false,"timestamp":1783372200}
+{"func":"start_slideshow","fileNames":["26422","screen_a"],"interval":60,"random":false,"timestamp":1783372200,"startIndex":0}
 %^&
 ```
 
@@ -5072,13 +5088,13 @@ Content-Length: 88
 
 ```text
 存：
-- USB slideshow 写入轮播列表配置 fileNames / interval / random，并写入 `show_control.txt`：`{"func":"set_slideshow","sw":1,"interval":...,"random":...,"timestamp":...,"anchor_epoch":...}`。
+- USB slideshow 严格要求 startIndex，写入轮播列表配置 fileNames / interval / random / startIndex，并写入 `show_control.txt`：`{"func":"set_slideshow","sw":1,"interval":...,"random":...,"timestamp":...,"anchor_epoch":...}`。
 - USB slideshow_control 的 set_slideshow 写入 sw / interval / timestamp / anchor_epoch，并同步写 PhotoPainter:epd_mode=1。
 - 网络与 USB 共用 NVS `slide_progress`；SNTP 已同步时只把它作为诊断/兼容状态，实际图片由绝对时间槽决定。
 - `random` 永久强制为 false，网络与 USB 都按 fileNames 固定顺序轮播。
 
 取：
-- ServerNetworkStaSlideshow_StartSaved() 启动时读取 slideshow_config、control 和待显示进度；已有 SNTP 时按 fileNames / anchor_epoch / interval 覆盖旧图片位置，NVS 失败不阻止 RAM 绝对时间轮播。
+- ServerNetworkStaSlideshow_StartSaved() 启动时严格读取带合法 startIndex 的 slideshow_config、control 和待显示进度；已有 SNTP 时按 fileNames / startIndex / anchor_epoch / interval 覆盖旧图片位置，NVS 失败不阻止 RAM 绝对时间轮播。
 - slideshow_task() 按配置读取 `/data/bin_img/*.bin` 并等待 EPD 完成；未取得 SNTP 时保持原进度行为，运行中首次取得 SNTP 后切换到绝对时间槽并处理前后跨槽。
 ```
 

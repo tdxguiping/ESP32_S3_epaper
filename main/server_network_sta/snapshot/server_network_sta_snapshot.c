@@ -22,6 +22,7 @@ static const char *TAG = "server_sta_snap";
 
 typedef struct {
     int sw;
+    int start_index;
     uint32_t interval;
     bool random;
     int64_t timestamp;
@@ -339,6 +340,7 @@ static void read_slideshow_state(const char *base_path, snapshot_slideshow_t *sl
     char control_buf[512];
 
     memset(slideshow, 0, sizeof(*slideshow));
+    slideshow->start_index = -1;
     snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", base_path);
     snprintf(config_path, sizeof(config_path), "%s/%s", bin_dir, TDX_SLIDESHOW_CONFIG_FILE);
     snprintf(control_path, sizeof(control_path), "%s/%s", bin_dir, TDX_SLIDESHOW_CONTROL_FILE);
@@ -347,6 +349,12 @@ static void read_slideshow_state(const char *base_path, snapshot_slideshow_t *sl
         parse_slideshow_file_names(config_buf, slideshow);
         parse_json_u32(config_buf, "interval", &slideshow->interval);
         parse_json_bool(config_buf, "random", &slideshow->random);
+        int parsed_start_index = -1;
+        if (parse_json_int(config_buf, "startIndex", &parsed_start_index) &&
+            parsed_start_index >= 0 &&
+            (size_t)parsed_start_index < slideshow->file_count) {
+            slideshow->start_index = parsed_start_index;
+        }
     }
 
     if (read_text_file(control_path, control_buf, sizeof(control_buf))) {
@@ -511,11 +519,12 @@ static esp_err_t append_slideshow_json(char *json, size_t json_size, size_t *use
     return append_format(json,
                          json_size,
                          used,
-                         "],\"interval\":%lu,\"random\":%s,"
+                         "],\"interval\":%lu,\"random\":%s,\"startIndex\":%d,"
                          "\"timestamp\":%lld,\"anchor_epoch\":%lld,\"now_epoch\":%lld,"
                          "\"next_epoch\":%lld,\"remain\":%lu,\"time_synced\":%s}}",
                          (unsigned long)slideshow->interval,
                          slideshow->random ? "true" : "false",
+                         slideshow->start_index,
                          (long long)slideshow->timestamp,
                          (long long)slideshow->anchor_epoch,
                          (long long)slideshow->now_epoch,
