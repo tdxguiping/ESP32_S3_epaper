@@ -11,6 +11,7 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "epd_display_app.h"
 #include "file_serving_example_common.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -18,6 +19,7 @@
 #include "network_ota_upload.h"
 #include "server_network_sta_cast2pic.h"
 #include "server_network_sta_cast.h"
+#include "server_network_sta_dataup_async.h"
 #include "server_network_sta_delete.h"
 #include "server_network_sta_saved_images.h"
 #include "server_network_sta_slideshow.h"
@@ -135,6 +137,7 @@ static bool read_request_body_to_buffer(httpd_req_t *req, char *body, size_t bod
 
 static esp_err_t send_json_response(httpd_req_t *req, const char *json)
 {
+    ESP_LOGI(TAG, "network small JSON response: %s", json != NULL ? json : "{}");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, json != NULL ? json : "{}");
 }
@@ -460,7 +463,32 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
              content_type[0] ? content_type : "<none>");
 
     bool is_network_ota = NetworkOtaUpload_IsOtaRequest(req, content_type);
-    if (strstr(content_type, "multipart/form-data") != NULL && s_upload_mutex != NULL) {
+    bool is_multipart = (strstr(content_type, "multipart/form-data") != NULL);
+    server_network_sta_dataup_async_state_t async_state = ServerNetworkStaDataupAsync_GetState();
+    bool epd_busy = ServerNetworkStaEpdDisplay_IsBusy();
+    if (!is_network_ota && is_multipart &&
+        (epd_busy || async_state != SERVER_NETWORK_STA_DATAUP_ASYNC_IDLE)) {
+        const char *message = epd_busy ? "epd_busy" : ServerNetworkStaDataupAsync_StateName(async_state);
+        int result = async_state == SERVER_NETWORK_STA_DATAUP_ASYNC_TIMEOUT ?
+                     TDX_JSON_RESULT_TIMEOUT : TDX_JSON_RESULT_BUSY;
+        char busy_json[112];
+        snprintf(busy_json,
+                 sizeof(busy_json),
+                 "{\"func\":\"dataup_result\",\"result\":%d,\"message\":\"%s\",\"error\":\"%s\"}",
+                 result,
+                 message,
+                 message);
+        ESP_LOGW(TAG, "HTTP data multipart rejected uri=%s len=%u reason=%s epd=%d async=%s",
+                 uri != NULL ? uri : "<null>",
+                 (unsigned int)remaining,
+                 message,
+                 epd_busy ? 1 : 0,
+                 ServerNetworkStaDataupAsync_StateName(async_state));
+        httpd_resp_set_hdr(req, "Connection", "close");
+        return send_json_response(req, busy_json);
+    }
+
+    if (is_multipart && s_upload_mutex != NULL) {
         if (xSemaphoreTake(s_upload_mutex, 0) != pdTRUE) {
             ESP_LOGW(TAG, "HTTP upload busy uri=%s len=%u",
                      uri != NULL ? uri : "<null>", (unsigned int)remaining);
@@ -506,7 +534,6 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
                                           "body_too_large");
     }
 
-    bool is_multipart = (strstr(content_type, "multipart/form-data") != NULL);
     bool is_small_json = (!is_multipart && remaining <= SERVER_NETWORK_STA_SMALL_JSON_BODY_MAX);
     bool network_led_active = is_network_ota || is_multipart ||
                               remaining > SERVER_NETWORK_STA_SMALL_JSON_BODY_MAX;
@@ -556,6 +583,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
     }
 
     esp_err_t resp_ret = ESP_FAIL;
+    bool body_taken = false;
     if (is_network_ota) {
         ESP_LOGI(TAG, "HTTP data dispatch=ota uri=%s len=%u",
                  uri != NULL ? uri : "<null>", (unsigned int)remaining);
@@ -566,12 +594,12 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         resp_ret = process_small_json_request(req, body, remaining);
     } else if (is_multipart) {
         ESP_LOGI(TAG, "HTTP data dispatch=multipart len=%u", (unsigned int)remaining);
-        resp_ret = ServerNetworkStaCast2Pic_Process(req, body, remaining, content_type, s_base_path);
+        resp_ret = ServerNetworkStaCast2Pic_Process(req, body, remaining, content_type, s_base_path, &body_taken);
         if (resp_ret == ESP_ERR_NOT_SUPPORTED) {
-            resp_ret = ServerNetworkStaCast_Process(req, body, remaining, content_type, s_base_path);
+            resp_ret = ServerNetworkStaCast_Process(req, body, remaining, content_type, s_base_path, &body_taken);
         }
         if (resp_ret == ESP_ERR_NOT_SUPPORTED) {
-            resp_ret = ServerNetworkStaUpload_Process(req, body, remaining, content_type, s_base_path);
+            resp_ret = ServerNetworkStaUpload_Process(req, body, remaining, content_type, s_base_path, &body_taken);
         }
         if (resp_ret == ESP_ERR_NOT_SUPPORTED) {
             ESP_LOGI(TAG, "HTTP data multipart fallback uri=%s",
@@ -590,7 +618,9 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         resp_ret = send_invalid_json_response(req, "get_saved_images");
     }
 
-    heap_caps_free(body);
+    if (!body_taken) {
+        heap_caps_free(body);
+    }
     if (is_network_ota) {
         log_heap_watermark("body_free");
     }
@@ -606,6 +636,10 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         UserLedStatus_OtaEnd(false);
     }
 
+    ESP_LOGI(TAG, "HTTP data handler done uri=%s len=%u ret=%s",
+             uri != NULL ? uri : "<null>",
+             (unsigned int)remaining,
+             esp_err_to_name(resp_ret));
     return resp_ret;
 }
 
@@ -613,6 +647,11 @@ esp_err_t server_network_sta_net_data_register_handlers(httpd_handle_t server, c
 {
     strlcpy(s_base_path, base_path, sizeof(s_base_path));
     (void)NetworkOtaUpload_MarkCurrentAppValidIfPending();
+    esp_err_t async_ret = ServerNetworkStaDataupAsync_Init();
+    if (async_ret != ESP_OK) {
+        ESP_LOGE(TAG, "net handlers: dataup async init failed ret=%s", esp_err_to_name(async_ret));
+        return async_ret;
+    }
     if (s_upload_mutex == NULL) {
         s_upload_mutex = xSemaphoreCreateMutex();
         if (s_upload_mutex == NULL) {

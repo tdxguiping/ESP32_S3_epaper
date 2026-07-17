@@ -7,13 +7,15 @@
 #include <errno.h>
 
 #include "cast_core.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "server_network_sta_dataup_async.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_cast2pic";
 
 #define CAST2PIC_MAX_IMAGES 1
-
 typedef struct {
     bool present;
     const char *data;
@@ -37,6 +39,18 @@ typedef struct {
     cast2pic_image_t images[CAST2PIC_MAX_IMAGES];
     size_t image_count;
 } cast2pic_meta_t;
+
+typedef struct {
+    char *body;
+    size_t body_len;
+    char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
+    cast2pic_meta_t meta;
+} cast2pic_async_job_t;
+
+static uint32_t elapsed_ms_since(int64_t start_us)
+{
+    return (uint32_t)((esp_timer_get_time() - start_us) / 1000);
+}
 
 static const char *find_bytes(const char *haystack, size_t haystack_len, const char *needle, size_t needle_len)
 {
@@ -184,6 +198,14 @@ static esp_err_t send_cast2pic_result(httpd_req_t *req, const char *result)
             result_code = TDX_JSON_RESULT_CAST2PIC_SCREEN_INVALID;
         } else if (strcmp(result, "display_request_failed") == 0 || strcmp(result, "display_queue_failed") == 0) {
             result_code = TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED;
+        } else if (strcmp(result, "epd_busy") == 0) {
+            result_code = TDX_JSON_RESULT_BUSY;
+        } else if (strcmp(result, "async_busy") == 0) {
+            result_code = TDX_JSON_RESULT_BUSY;
+        } else if (strcmp(result, "async_timeout") == 0) {
+            result_code = TDX_JSON_RESULT_TIMEOUT;
+        } else if (strcmp(result, "async_start_failed") == 0) {
+            result_code = TDX_JSON_RESULT_NO_MEMORY;
         } else if (strcmp(result, "storage_not_ready") == 0) {
             result_code = TDX_JSON_RESULT_STORAGE_NOT_READY;
         } else if (strcmp(result, "storage_not_enough") == 0) {
@@ -293,6 +315,69 @@ static esp_err_t process_cast2pic_items(const char *base_path, const cast2pic_me
         copy_cast2pic_part(&meta->images[i].image_part, &items[i].image_part);
     }
     return TdxImageTransfer_ProcessItems(items, count, base_path, "network cast2pic", result);
+}
+
+static void cast2pic_async_process(void *arg)
+{
+    cast2pic_async_job_t *job = (cast2pic_async_job_t *)arg;
+    int64_t start_us = esp_timer_get_time();
+    tdx_cast_core_result_t result = {0};
+
+    if (job == NULL) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "cast2pic async process start screen=%s show=%d save=%d",
+             job->meta.screen,
+             job->meta.show ? 1 : 0,
+             job->meta.save ? 1 : 0);
+    (void)process_cast2pic_items(job->base_path, &job->meta, &result);
+    ESP_LOGI(TAG, "cast2pic async process done result=%d error=%s elapsed_ms=%lu",
+             result.result,
+             result.error[0] ? result.error : "",
+             (unsigned long)elapsed_ms_since(start_us));
+}
+
+static void cast2pic_async_cleanup(void *arg)
+{
+    cast2pic_async_job_t *job = (cast2pic_async_job_t *)arg;
+    if (job == NULL) {
+        return;
+    }
+    heap_caps_free(job->body);
+    free(job);
+}
+
+static esp_err_t start_cast2pic_async(char *body,
+                                      size_t body_len,
+                                      const char *base_path,
+                                      const cast2pic_meta_t *meta)
+{
+    if (body == NULL || base_path == NULL || meta == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    cast2pic_async_job_t *job = (cast2pic_async_job_t *)calloc(1, sizeof(*job));
+    if (job == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    job->body = body;
+    job->body_len = body_len;
+    job->meta = *meta;
+    snprintf(job->base_path, sizeof(job->base_path), "%s", base_path);
+
+    esp_err_t submit_ret = ServerNetworkStaDataupAsync_Submit("cast2pic",
+                                                              cast2pic_async_process,
+                                                              cast2pic_async_cleanup,
+                                                              job);
+    if (submit_ret != ESP_OK) {
+        free(job);
+        return submit_ret;
+    }
+
+    ESP_LOGI(TAG, "cast2pic async accepted screen=%s body=%u",
+             meta->screen,
+             (unsigned int)body_len);
+    return ESP_OK;
 }
 
 static void assign_text_part(cast2pic_meta_t *meta, const char *name, const multipart_part_t *part)
@@ -465,10 +550,11 @@ static const char *validate_cast2pic_meta(const cast2pic_meta_t *meta)
 }
 
 esp_err_t ServerNetworkStaCast2Pic_Process(httpd_req_t *req,
-                                           const char *body,
+                                           char *body,
                                            size_t body_len,
                                            const char *content_type,
-                                           const char *base_path)
+                                           const char *base_path,
+                                           bool *body_taken)
 {
     char boundary[SERVER_NETWORK_STA_OTA_BOUNDARY_MAX] = {0};
     cast2pic_meta_t meta = {
@@ -494,6 +580,25 @@ esp_err_t ServerNetworkStaCast2Pic_Process(httpd_req_t *req,
     const char *validate_error = validate_cast2pic_meta(&meta);
     if (validate_error != NULL) {
         return send_cast2pic_result(req, validate_error);
+    }
+
+    if (meta.show) {
+        esp_err_t async_ret = start_cast2pic_async(body, body_len, base_path, &meta);
+        if (async_ret != ESP_OK) {
+            ESP_LOGW(TAG, "cast2pic async start failed screen=%s ret=%s",
+                     meta.screen, esp_err_to_name(async_ret));
+            return send_cast2pic_result(req,
+                                        async_ret == ESP_ERR_TIMEOUT ? "async_timeout" :
+                                        async_ret == ESP_ERR_INVALID_STATE ? "async_busy" :
+                                        "async_start_failed");
+        }
+        if (body_taken != NULL) {
+            *body_taken = true;
+        }
+        esp_err_t resp_ret = send_cast2pic_result(req, "ok");
+        ESP_LOGI(TAG, "cast2pic async response done screen=%s ret=%s",
+                 meta.screen, esp_err_to_name(resp_ret));
+        return resp_ret;
     }
 
     tdx_cast_core_result_t result = {0};

@@ -549,6 +549,7 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
         snprintf(error_json, sizeof(error_json),
                  "{\"func\":\"get_snapshot_result\",\"result\":%d,\"message\":\"snapshot allocation failed\"}",
                  TDX_JSON_RESULT_NO_MEMORY);
+        ESP_LOGI(TAG, "get_snapshot response: %s", error_json);
         httpd_resp_set_type(req, "application/json");
         return httpd_resp_sendstr(req, error_json);
     }
@@ -576,6 +577,7 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
                                    : TDX_JSON_RESULT_SNAPSHOT_BUILD_FAILED,
                  image_read_failed ? "image list read failed" : "snapshot build failed");
         free(json);
+        ESP_LOGI(TAG, "get_snapshot response: %s", error_json);
         httpd_resp_set_type(req, "application/json");
         return httpd_resp_sendstr(req, error_json);
     }
@@ -584,6 +586,7 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
              (unsigned int)used,
              slideshow.sw,
              (unsigned int)slideshow.file_count);
+    ESP_LOGI(TAG, "get_snapshot response: %s", json);
     httpd_resp_set_type(req, "application/json");
     ret = httpd_resp_sendstr(req, json);
     free(json);

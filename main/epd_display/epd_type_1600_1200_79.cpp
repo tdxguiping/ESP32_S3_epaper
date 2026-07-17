@@ -2,7 +2,9 @@
 #include "display_bsp.h"
 #include "debug_output.h"
 #include "epd_type_1600_1200_common.h"
+#include "esp_system.h"
 #include "esp_timer.h"
+#include "tdx_shared_spi.h"
 
 namespace {
 const unsigned char PSR_V_79[2] = {	0xDF, 0x6B};
@@ -33,6 +35,64 @@ const unsigned char TFT_VCOM_POWER_V_79[1] = {	0x02};
 void ePaperPort::EPD_Check_Busy_79(uint16_t loop_counter)
 {
     EPD_Check_Busy_WithSharedSpiRelease(loop_counter, "~", "1600x1200_79");
+}
+
+void ePaperPort::EPD_Check_Busy_79_UnlockSpi(uint16_t loop_counter)
+{
+    int16_t i = 0;
+    int64_t start_us = esp_timer_get_time();
+    int cs1_level = getGpioLevel(cs_);
+    int cs2_level = getGpioLevel(cs_2_);
+    int epd2_cs_level = getGpioLevel(EPD2_CS_PIN);
+
+    if (loop_counter > 45) {
+        loop_counter = 45;
+    }
+
+    ESP_LOGI(TAG, "EPD busy path=unlock_spi name=1600x1200_79 loop=%u cs=%d,%d,%d",
+             (unsigned int)loop_counter,
+             cs1_level,
+             cs2_level,
+             epd2_cs_level);
+
+    setGpioLevel(cs_, GPIO_HIGH);
+    setGpioLevel(cs_2_, GPIO_HIGH);
+    setGpioLevel(EPD2_CS_PIN, GPIO_HIGH);
+    TdxSharedSpi_Unlock();
+
+    auto relock_or_restart = [this]() -> bool {
+        esp_err_t lock_ret = TdxSharedSpi_Lock(pdMS_TO_TICKS(10000));
+        if (lock_ret == ESP_OK) {
+            return true;
+        }
+        ESP_LOGE(TAG, "EPD shared SPI relock timeout name=1600x1200_79 ret=%s, restart",
+                 esp_err_to_name(lock_ret));
+        esp_restart();
+        return false;
+    };
+
+    while (1) {
+        int level = Get_BusyIOLevel();
+        if (level) {
+            if (!relock_or_restart()) {
+                return;
+            }
+            UserDebugOutput_Printf("Check Busy over\r\n");
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        i++;
+        UserDebugOutput_Printf("~%d.", i);
+
+        if (i > loop_counter) {
+            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
+            ESP_LOGE(TAG, "EPD 1600x1200_79 busy timeout level=%d loops=%ld elapsed_ms=%d",
+                     Get_BusyIOLevel(), (long)i, elapsed_ms);
+            EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
+            (void)relock_or_restart();
+            return;
+        }
+    }
 }
 
 void EpdType16001200_79_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)
@@ -205,11 +265,11 @@ void ePaperPort::EpdType16001200_79_NT61522_Init()
 
 
     EPD_Reset();  
-    EPD_Check_Busy_79(2);
+    EPD_Check_Busy_79_UnlockSpi(2);
 
     NT61522_ReadTemperature();    
     EPD_Reset();  
-    EPD_Check_Busy_79(2);
+    EPD_Check_Busy_79_UnlockSpi(2);
 
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmit(AN_TM, AN_TM_V_79, sizeof(AN_TM_V_79));
@@ -304,7 +364,7 @@ void ePaperPort::EpdType16001200_79_NT61522_Display()
 	spiTransmitCommand(PON);
 	delayms(30);
     UserDebugOutput_Printf("---1---\r\n");
-	EPD_Check_Busy_79(2);
+	EPD_Check_Busy_79_UnlockSpi(2);
 	setPinCsAll(GPIO_HIGH);
 
 	setPinCsAll(GPIO_LOW);
@@ -312,14 +372,14 @@ void ePaperPort::EpdType16001200_79_NT61522_Display()
 	spiTransmit(DRF, DRF_V_79, sizeof(DRF_V_79));
 	delayms(30);
     UserDebugOutput_Printf("---2---\r\n");
-	EPD_Check_Busy_79(31);
+	EPD_Check_Busy_79_UnlockSpi(41);
 	setPinCsAll(GPIO_HIGH);
 
 	setPinCsAll(GPIO_LOW);
 	spiTransmit(POF, POF_V_79, sizeof(POF_V_79));
 	delayms(30);
     UserDebugOutput_Printf("---3---\r\n");
-	EPD_Check_Busy_79(2);
+	EPD_Check_Busy_79_UnlockSpi(15);
 	setPinCsAll(GPIO_HIGH);
     ESP_LOGI(TAG, "EPD 1600x1200 7.9 refresh done");
 
@@ -369,7 +429,7 @@ void ePaperPort::EpdType16001200_79_NT61522_InitDisplay()
 	spiReceiveData(&dataBuff[0], 2);
 	setPinCs(TARGET_MASTER,GPIO_HIGH);
 	delayms(30);
-	EPD_Check_Busy_79(2);
+	EPD_Check_Busy_79_UnlockSpi(2);
 	
 
     //Temptr[0] =  WHT20_Temp+10;
@@ -558,7 +618,7 @@ uint8_t ePaperPort::NT61522_ReadTemperature() {
     EPD_Check_Busy_79(2);
     spiReceiveData(&Temptr[0], 2);
     setPinCs(TARGET_MASTER, 1);
-    EPD_Check_Busy_79(2);
+    EPD_Check_Busy_79_UnlockSpi(2);
 
     Temptr[0] = Temptr[0] > 50 ? 48 : Temptr[0];
     return Temptr[0];

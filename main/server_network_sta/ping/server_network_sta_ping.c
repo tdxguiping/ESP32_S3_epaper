@@ -29,6 +29,7 @@ esp_err_t ServerNetworkStaPing_ProcessGet(httpd_req_t *req)
     // Handle ping before SD-card and file lookups so heartbeat stays fast and independent.
     /* 中文：优先处理 ping，不依赖 SD 卡和文件查找，保证心跳响应快速独立。 */
     ServerNetworkStaWifiWorkTime_OnNetworkData();
+    ESP_LOGI(TAG, "ping received uri=%s", req->uri);
 
     char ble_mac[13] = {0};
     char json[160] = {0};
@@ -48,7 +49,7 @@ esp_err_t ServerNetworkStaPing_ProcessGet(httpd_req_t *req)
                  epd_state,
                  ble_mac);
     }
-    ESP_LOGD(TAG, "ping request uri=%s method=GET EPD=%s Ble_MAC=%s", req->uri, epd_state, ble_mac);
+    ESP_LOGI(TAG, "ping response json=%s", json);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Connection", "close");
     esp_err_t ret = httpd_resp_sendstr(req, json);

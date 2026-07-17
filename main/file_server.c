@@ -235,6 +235,9 @@ static const char* get_path_from_uri(char *dest, const char *base_path, const ch
 /* Handler to download a file kept on the server */
 static esp_err_t download_get_handler(httpd_req_t *req)
 {
+    if (req != NULL && strncmp(req->uri, SERVER_NETWORK_STA_PING_URI, strlen(SERVER_NETWORK_STA_PING_URI)) == 0) {
+        ESP_LOGI(TAG, "HTTP GET ping handler enter uri=%s", req->uri);
+    }
     ServerNetworkStaWifiWorkTime_OnNetworkData();
     char filepath[FILE_PATH_MAX];
     FILE *fd = NULL;

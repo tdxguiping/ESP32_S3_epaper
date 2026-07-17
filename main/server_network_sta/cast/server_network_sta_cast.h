@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "esp_err.h"
@@ -10,10 +11,11 @@ extern "C" {
 #endif
 
 esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
-                                       const char *body,
+                                       char *body,
                                        size_t body_len,
                                        const char *content_type,
-                                       const char *base_path);
+                                       const char *base_path,
+                                       bool *body_taken);
 
 #ifdef __cplusplus
 }

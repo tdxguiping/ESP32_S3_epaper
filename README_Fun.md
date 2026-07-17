@@ -149,16 +149,17 @@ The full result-code table is in `README_Result_Code.md`; this file keeps featur
 ```text
 cast、cast2pic、upload 中的 show 和 save 是两个动作。
 存文件是把 bin/jpg 写到 SD 卡；SD 卡文件保存与 EPD 显示使用同一组 SPI，所以 show=true && save=true 时整体流程仍按显示、保存分先后处理。
-当前源码通过 TdxSharedSpi 全局递归 mutex 保护 SD/EPD 共用 SPI：EPD SPI 传输、SDSPI mount、/data 文件读写/删除/扫描、缩略图读取、轮播读取与保存等路径都应先取得该锁；各 EPD 驱动的 BUSY GPIO 等待函数在所有 EPD CS 均为 HIGH 时会临时释放 SPI 锁给 SD 使用，13.3 兴泰和 DKE 驱动在 PON/DRF/POF 等已知安全等待点会先拉高 CS 再释放 SPI，返回 EPD SPI 操作前最多等待 10 秒重新取得锁，超时重启；`R40_TSC -> BUSY -> spiReceiveData()` 等 CS 为 LOW 且后面还要继续收数据的事务中等待仍走旧路径，不释放 SPI 锁。
+当前源码通过 TdxSharedSpi 全局递归 mutex 保护 SD/EPD 共用 SPI：EPD SPI 传输、SDSPI mount、/data 文件读写/删除/扫描、缩略图读取、轮播读取与保存等路径都应先取得该锁；各 EPD 驱动的 BUSY GPIO 等待函数在所有 EPD CS 均为 HIGH 时会临时释放 SPI 锁给 SD 使用，13.3 兴泰、13.3 DKE 和 7.9 兴泰驱动在 PON/DRF/POF 等已知安全等待点会先拉高 CS 再释放 SPI，返回 EPD SPI 操作前最多等待 10 秒重新取得锁，超时重启；`R40_TSC -> BUSY -> spiReceiveData()` 等 CS 为 LOW 且后面还要继续收数据的事务中等待仍走旧路径，不释放 SPI 锁。
 这样即使不是同一次 cast/upload 请求，也避免 SD 文件 I/O 与 EPD 刷新同时占用共用 SPI。
+网络 /dataUP 的 multipart 入口在 EPD 正忙或已有 show=true 后台投图任务未完成时，会在读取大 body 和分配 PSRAM 前直接返回 busy/timeout JSON，并关闭本次 HTTP 连接；后台任务 busy 超过 50 秒时返回 `dataup_result/1008 async_timeout`。
 由于 EPD 显示是重点，处理顺序固定为：先处理 EPD 显示，等待本次 EPD 显示任务完成之后，再去存文件到 SD 卡。
-show=true 表示把当前请求中的 bin 数据投递到 EPD 显示任务，并等待本次 EPD 显示任务完成；请求解析校验通过且存在 show=true 时，cast/cast2pic/upload 共用处理会先把 `show_control.txt` 写为 `sw=0`、停止轮播 task，并读回确认 `sw=0`，再进入 EPD 显示和保存流程。
+网络 cast/cast2pic/upload 请求解析校验通过且存在 show=true 时，HTTP handler 只返回接收成功 JSON 后立即结束；EPD 显示、SD 保存、last_cast/screen 文件记录和旧文件清理由固定的 `dataup_async_worker` 队列任务继续执行，同一时刻只允许一个网络 show=true 后台任务，不再返回第二个最终结果 JSON。后台任务仍会先把 `show_control.txt` 写为 `sw=0`、停止轮播 task，并读回确认 `sw=0`，再进入 EPD 显示和保存流程。
 同步等待受 USER_EPD_DISPLAY_WAIT_TIMEOUT_MS 限制；调用方超时后 completion 仍由 EPD 任务持有，任务完成后再安全释放。
 显示驱动的尺寸错误、buffer 分配失败、SPI 帧写入失败或 BUSY 超时会返回失败，不再把“驱动函数已经返回”等同于显示成功。
 save=true 表示把 bin/jpg 保存到 SD。
 测试时仍要分别判断 display result 和 save result。
 注意：network cast 是例外，当前源码要求 save=true；save=false 会直接返回 save_required_for_last_cast。
-network cast 的执行顺序是 show=true 时先等待 EPD 显示任务完成，然后保存 bin/jpg，最后记录 last_cast。
+network cast 的后台执行顺序是 show=true 时先等待 EPD 显示任务完成，然后保存 bin/jpg，最后记录 last_cast。
 ```
 
 ## 调试日志与敏感信息约定 <span id="sec-debug-log"></span>
@@ -1374,13 +1375,13 @@ sequenceDiagram
     DATAUP->>CAST: receive_data_redirect_handler route
     CAST->>CORE: parse multipart and validate fields
     CAST-->>APP: {func:cast_received,result:0,fileName}
+    CAST-->>DATAUP: HTTP handler done
     alt show=true
         CORE->>CORE: stop_slideshow_for_cast() and confirm sw=0
         CORE->>EPD: ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
     end
     CORE->>SAVE: submit save task and wait result
     SAVE->>SAVE: write bin/jpg and record last_cast
-    CAST-->>APP: {func:cast_result,result:<code>,message}
 ```
 
 相关文件：
@@ -1405,17 +1406,18 @@ HTTP multipart /dataUP
       │  ├─ UsbConsoleCommon_FileNameIsSafe()
       │  └─ validate bin_size/image_size/save/show
       ├─ send cast_received chunk
-      ├─ TdxCastCore_ProcessValidatedCastDir()
-      │  ├─ show=true
-      │  │  ├─ stop_slideshow_for_cast() 并确认 sw=0
-      │  │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
-      │  └─ save=true
-      │     └─ CastSaveTask
-      │        ├─ check_save_space()
-      │        ├─ save /data/cast_img/<fileName>.bin
-      │        ├─ save /data/cast_img/<fileName>.jpg
-      │        └─ record /data/cast_img/last_cast.txt
-      └─ send cast_result chunk
+      ├─ finish HTTP response
+      └─ dataup_async_worker
+         └─ TdxCastCore_ProcessValidatedCastDir()
+            ├─ show=true
+            │  ├─ stop_slideshow_for_cast() 并确认 sw=0
+            │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
+            └─ save=true
+               └─ CastSaveTask
+                  ├─ check_save_space()
+                  ├─ save /data/cast_img/<fileName>.bin
+                  ├─ save /data/cast_img/<fileName>.jpg
+                  └─ record /data/cast_img/last_cast.txt
 ```
 
 关键辅助函数：
@@ -1424,6 +1426,7 @@ HTTP multipart /dataUP
 server_network_sta_cast.c
 ├─ send_cast_received()
 ├─ send_cast_result()
+├─ cast_async_process()
 └─ ServerNetworkStaCast_Process()
 
 cast_core.c
@@ -1434,7 +1437,7 @@ cast_core.c
 └─ record_last_cast()
 ```
 
-说明：network cast 和 USB cast 都复用 `cast_core`，并通过 `TdxCastCore_ProcessValidatedCastDir()` 指定保存到 `/data/cast_img`。EPD 显示使用已有的 `ServerNetworkStaEpdDisplay` task，保存使用统一的 `CastSaveTask`。network cast 正常成功时使用 `application/x-ndjson` 两阶段返回：multipart 解析和字段校验通过后先返回 `cast_received`；EPD 显示、bin/jpg 保存和 last_cast 记录完成后再返回 `cast_result`。`show=true && save=true` 时先调用 `stop_slideshow_for_cast()` 停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再通过 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 等待 EPD 显示任务完成，最后提交保存任务。`cast_result result=0` 表示 EPD 显示任务已完成、bin/jpg 保存成功、last_cast 写入成功。
+说明：network cast 和 USB cast 都复用 `cast_core`，并通过 `TdxCastCore_ProcessValidatedCastDir()` 指定保存到 `/data/cast_img`。EPD 显示使用已有的 `ServerNetworkStaEpdDisplay` task，保存使用统一的 `CastSaveTask`。network cast 在 `show=true` 时解析和字段校验通过后只返回 `cast_received`，随后结束 HTTP handler；EPD 显示、bin/jpg 保存和 last_cast 记录由固定的 `dataup_async_worker` 调用 `cast_async_process()` 后台执行，不再返回 `cast_result` 第二个 JSON。`show=true && save=true` 时后台先调用 `stop_slideshow_for_cast()` 停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再通过 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 等待 EPD 显示任务完成，最后提交保存任务。`show=false` 的 network cast 仍可走同步处理并返回最终结果。
 
 V2 协议资料拆分：
 
@@ -1469,7 +1472,6 @@ image      缩略图 jpg 文件
 
 ```text
 {"func":"cast_received","result":0,"fileName":"26422"}
-{"func":"cast_result","result":0,"message":"saved"}
 ```
 
 V2 说明：`cast` 成功后应记录最后一次投图，设备重启或 OTA 后优先显示该图片。
@@ -1510,13 +1512,13 @@ curl.exe -X POST "$esp/dataUP" `
   -F "image=@$jpg;type=image/jpeg"
 ```
 
-预期：设备返回 `cast_result`，`result=0` 表示成功；如果 `show=true`，返回前已经等待本次 EPD 显示任务完成。`save=false` 会返回失败，不作为“只显示不保存”的 cast 用法。
+预期：`show=true` 时设备返回 `cast_received` 后立即结束 HTTP 响应，EPD 显示和保存由后台继续执行；`save=false` 会返回失败，不作为“只显示不保存”的 cast 用法。
 
 存 / 取信息（含条件限制）：
 
 ```text
 存：
-- TdxCastCore_ProcessValidatedCastDir() 先等待 EPD 显示任务完成，再提交 CastSaveTask。
+- show=true 时 dataup_async_worker 调用 cast_async_process()，后台先等待 EPD 显示任务完成，再提交 CastSaveTask。
 - show=true 停止轮播并写入 show_control.txt sw=0 后，同步写 PhotoPainter:epd_mode=0。
 - CastSaveTask 写入：/data/cast_img/<fileName>.bin。
 - CastSaveTask 写入：/data/cast_img/<fileName>.jpg。
@@ -1526,7 +1528,7 @@ curl.exe -X POST "$esp/dataUP" `
 
 取：
 - check_save_space() 通过 example_storage_get_free_bytes() 读取剩余空间。
-- 显示时下发已收到的 bin 数据到 EPD 显示任务；保存和显示串行，cast_result=0 等 EPD 显示任务、保存与 last_cast 成功。
+- 显示时下发已收到的 bin 数据到 EPD 显示任务；后台保存和显示串行执行，网络 HTTP 不再等待最终结果 JSON。
 - 重启恢复时可读取 last cast 记录。
 ```
 
@@ -1577,6 +1579,8 @@ sequenceDiagram
     APP->>DATAUP: multipart func=cast2pic screen=a/b
     DATAUP->>C2P: route by func
     C2P->>C2P: parse fileName/bin/image or A/B suffix fields
+    C2P-->>APP: {func:cast2pic_result,result:0}
+    C2P-->>DATAUP: HTTP handler done
     C2P->>CORE: build one image transfer item
     alt show=true
         CORE->>EPD: ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
@@ -1609,14 +1613,15 @@ HTTP multipart /dataUP
       ├─ assign_image_part()
       ├─ validate_cast2pic_meta()
       ├─ screen_to_epd_number()
-      ├─ build tdx_image_transfer_item_t
-      ├─ TdxImageTransfer_ProcessItems()
-      │  ├─ show=true
-      │  │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
-      │  └─ save=true
-      │     └─ CastSaveTask
-      │        └─ save /data/cast_img/screen_a/screen_b .bin and .jpg
-      └─ send_cast2pic_result()
+      ├─ send_cast2pic_result()
+      └─ dataup_async_worker
+         ├─ build tdx_image_transfer_item_t
+         └─ TdxImageTransfer_ProcessItems()
+            ├─ show=true
+            │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
+            └─ save=true
+               └─ CastSaveTask
+                  └─ save /data/cast_img/screen_a/screen_b .bin and .jpg
 ```
 
 关键辅助函数：
@@ -1630,6 +1635,7 @@ server_network_sta_cast2pic.c
 ├─ validate_cast2pic_meta()
 ├─ screen_to_epd_number()
 ├─ process_cast2pic_items()
+├─ cast2pic_async_process()
 ├─ send_cast2pic_core_result()
 └─ ServerNetworkStaCast2Pic_Process()
 
@@ -1638,7 +1644,7 @@ cast_core.c
 └─ CastSaveTask()
 ```
 
-说明：network cast2pic 和 USB cast2pic 都复用 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`，并给 image transfer item 指定保存到 `/data/cast_img`。`show` 和 `save` 是独立动作：存在 `show=true` 时先停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再等待 EPD 显示任务完成；`save=true` 时再提交保存任务；`show=false` 不显示，`save=false` 不保存。`cast2pic_result=0` 表示需要显示的 EPD 任务已完成、需要保存的文件已保存完成。
+说明：network cast2pic 和 USB cast2pic 都复用 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`，并给 image transfer item 指定保存到 `/data/cast_img`。network cast2pic 在 `show=true` 时解析和字段校验通过后先返回 `cast2pic_result=0` 并结束 HTTP handler；EPD 显示和保存由固定的 `dataup_async_worker` 调用 `cast2pic_async_process()` 后台执行，不再返回第二个最终结果。`show` 和 `save` 是独立动作：后台存在 `show=true` 时先停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再等待 EPD 显示任务完成；`save=true` 时再提交保存任务；`show=false` 不显示，`save=false` 不保存。`show=false` 的 network cast2pic 仍同步返回最终结果。
 
 当前源码协议资料拆分（以 `server_network_sta_cast2pic.c` 为准）：
 
@@ -2941,6 +2947,8 @@ sequenceDiagram
     APP->>DATAUP: multipart func=upload
     DATAUP->>UP: route by func
     UP->>CORE: parse and validate fields/file sizes
+    UP-->>APP: upload result
+    UP-->>DATAUP: HTTP handler done
     alt show=true
         CORE->>EPD: ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
     end
@@ -2948,7 +2956,6 @@ sequenceDiagram
         CORE->>SAVE: submit save task and wait result
         SAVE->>SAVE: save bin and jpg
     end
-    UP-->>APP: upload result
 ```
 
 相关文件：
@@ -2970,14 +2977,15 @@ HTTP multipart /dataUP
       │  ├─ UsbConsoleCommon_ExtractBoundary()
       │  ├─ UsbConsoleCommon_MultipartParts()
       │  └─ UsbConsoleCommon_FileNameIsSafe()
-      ├─ TdxImageTransfer_ProcessItems()
-      │  ├─ show=true
-      │  │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
-      │  └─ save=true
-      │     └─ CastSaveTask
-      │        ├─ save /data/bin_img/<fileName>.bin
-      │        └─ save /data/jpg_img/<fileName>.jpg
-      └─ httpd_resp_sendstr()
+      ├─ httpd_resp_sendstr()
+      └─ dataup_async_worker
+         └─ TdxImageTransfer_ProcessItems()
+            ├─ show=true
+            │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
+            └─ save=true
+               └─ CastSaveTask
+                  ├─ save /data/bin_img/<fileName>.bin
+                  └─ save /data/jpg_img/<fileName>.jpg
 ```
 
 关键辅助函数：
@@ -2985,6 +2993,7 @@ HTTP multipart /dataUP
 ```text
 server_network_sta_upload.c
 ├─ send_upload_result()
+├─ upload_async_process()
 └─ ServerNetworkStaUpload_Process()
 
 cast_core.c
@@ -2993,7 +3002,7 @@ cast_core.c
 └─ CastSaveTask()
 ```
 
-说明：network upload 与 USB upload 共享 `TdxImageTransfer_ParseSingle()`、`TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。存在 `show=true` 时先停止轮播、写 `show_control.txt sw=0` 并读回确认，再等待 EPD 显示任务完成；`save=true` 时再提交保存任务；`upload_result=0` 表示需要保存的文件已保存完成、需要显示的 EPD 任务已完成。
+说明：network upload 与 USB upload 共享 `TdxImageTransfer_ParseSingle()`、`TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。network upload 在 `show=true` 时解析和字段校验通过后先返回 `upload_result=0` 并结束 HTTP handler；EPD 显示和保存由固定的 `dataup_async_worker` 调用 `upload_async_process()` 后台执行。后台存在 `show=true` 时先停止轮播、写 `show_control.txt sw=0` 并读回确认，再等待 EPD 显示任务完成；`save=true` 时再提交保存任务。`show=false` 的 network upload 仍同步返回最终结果。
 
 成功或失败返回 JSON 会包含 `fileName`、`bin_file`、`image_file`、`save`、`show`、`error` 字段；成功时 `message="upload success"` 且 `error="no error"`。
 
@@ -3070,7 +3079,7 @@ curl.exe -X POST "$esp/dataUP" `
 取：
 - 读取 multipart 字段 func/fileName/bin_size/image_size/save/show/bin/image。
 - 写入前读取存储剩余空间。
-- show=true 时读取上传数据并等待 EPD 显示任务完成。
+- show=true 时读取上传数据后先返回 upload_result，后台再等待 EPD 显示任务完成并保存。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)

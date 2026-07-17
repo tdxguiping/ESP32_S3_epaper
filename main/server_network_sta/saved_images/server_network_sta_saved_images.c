@@ -79,16 +79,18 @@ static esp_err_t send_saved_images_error(httpd_req_t *req)
     snprintf(json, sizeof(json),
              "{\"func\":\"get_saved_images_result\",\"result\":%d,\"message\":\"read saved images failed\"}",
              TDX_JSON_RESULT_IMAGES_READ_FAILED);
+    ESP_LOGI(TAG, "get_saved_images response: %s", json);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, json);
 }
 
 static esp_err_t send_saved_images_empty(httpd_req_t *req)
 {
+    const char *json = "{\"func\":\"get_saved_images_result\",\"result\":0,\"images\":[]}";
     ESP_LOGI(TAG, "get_saved_images empty result");
+    ESP_LOGI(TAG, "get_saved_images response: %s", json);
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_sendstr(req,
-                              "{\"func\":\"get_saved_images_result\",\"result\":0,\"images\":[]}");
+    return httpd_resp_sendstr(req, json);
 }
 
 esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
@@ -189,6 +191,7 @@ esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
     snprintf(json + used, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX - used, "]}");
 
     ESP_LOGI(TAG, "get_saved_images result count=%d", count);
+    ESP_LOGI(TAG, "get_saved_images response: %s", json);
     httpd_resp_set_type(req, "application/json");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
@@ -202,6 +205,7 @@ static esp_err_t send_thumbnail_error(httpd_req_t *req, const char *status, int 
              "{\"func\":\"thumb_result\",\"result\":%d,\"message\":\"%s\"}",
              result,
              message);
+    ESP_LOGI(TAG, "thumbnail error response: %s", json);
     httpd_resp_set_status(req, status);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, json);

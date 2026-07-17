@@ -416,6 +416,7 @@ class ePaperPort {
     void EPD_Check_Busy_75_3(uint16_t loop_counter);
     void EPD_Check_Busy_600(uint16_t loop_counter);
     void EPD_Check_Busy_79(uint16_t loop_counter);
+    void EPD_Check_Busy_79_UnlockSpi(uint16_t loop_counter);
     void EPD_Check_Busy_1085(uint16_t loop_counter);
     void EPD_Check_Busy_1085_3c(uint16_t loop_counter);
     void EPD_Check_Busy_133(uint16_t loop_counter);
