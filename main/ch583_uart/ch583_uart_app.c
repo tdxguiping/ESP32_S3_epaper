@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "ch583_uart";
@@ -152,6 +153,7 @@ esp_err_t Ch583UartApp_Init(void)
 #if USER_CH583_UART_ENABLE
     if (s_ch583_uart_started) {
         ESP_LOGW(TAG, "CH583 UART already started");
+        ServerNetworkStaWifiWorkTime_OnCh583Initialized();
         return ESP_OK;
     }
 
@@ -237,6 +239,7 @@ esp_err_t Ch583UartApp_Init(void)
     (void)ch583_wifi_uart_get_ble_mac();
 
     s_ch583_uart_started = true;
+    ServerNetworkStaWifiWorkTime_OnCh583Initialized();
     ESP_LOGI(TAG, "CH583 UART started port=%d tx=%d rx=%d baud=%d rx_buf=%d tx_buf=%d event_queue=%d",
              USER_CH583_UART_PORT,
              USER_CH583_UART_TX_PIN,
@@ -247,6 +250,7 @@ esp_err_t Ch583UartApp_Init(void)
              USER_CH583_UART_EVENT_QUEUE_SIZE);
     return ESP_OK;
 #else
+    ServerNetworkStaWifiWorkTime_OnCh583Initialized();
     ESP_LOGI(TAG, "CH583 UART disabled by USER_CH583_UART_ENABLE=0");
     return ESP_OK;
 #endif

@@ -484,6 +484,26 @@ static void handle_event(const user_led_event_t *event)
     if (event == NULL) {
         return;
     }
+    if (event->type == USER_LED_EVENT_CANCEL_POWER_OFF) {
+        bool lock_was_active = s_shutdown_pending;
+        s_shutdown_pending = false;
+        s_power_off_pending = false;
+        bool restored = apply_effect();
+        s_power_off_result = restored ? ESP_OK : ESP_FAIL;
+        if (lock_was_active) {
+            if (restored) {
+                ESP_LOGI(TAG, "power-off lock canceled, base LED effect restored");
+            } else {
+                ESP_LOGE(TAG, "power-off lock canceled but base LED effect restore failed");
+            }
+        }
+        if (s_power_off_done != NULL) {
+            if (xSemaphoreGive(s_power_off_done) != pdTRUE) {
+                ESP_LOGW(TAG, "power-off cancel result semaphore already full");
+            }
+        }
+        return;
+    }
     if (event->type == USER_LED_EVENT_PREPARE_POWER_OFF) {
         bool all_off = force_all_leds_off();
         s_power_off_result = all_off ? ESP_OK : ESP_FAIL;
@@ -815,6 +835,38 @@ esp_err_t UserLedStatus_PreparePowerOffSync(void)
     }
     if (s_power_off_result != ESP_OK) {
         ESP_LOGE(TAG, "prepare power off LED shutdown failed ret=%s",
+                 esp_err_to_name(s_power_off_result));
+    }
+    return s_power_off_result;
+#else
+    return ESP_OK;
+#endif
+}
+
+esp_err_t UserLedStatus_CancelPowerOffSync(void)
+{
+#if USER_LED_STATUS_ENABLE
+    if (s_led_event_queue == NULL || s_led_task == NULL || s_power_off_done == NULL) {
+        ESP_LOGE(TAG, "cancel power off failed because LED task is not ready");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    (void)xSemaphoreTake(s_power_off_done, 0);
+    s_power_off_result = ESP_FAIL;
+    user_led_event_t event = {
+        .type = USER_LED_EVENT_CANCEL_POWER_OFF,
+    };
+    if (!post_event(&event, true)) {
+        ESP_LOGE(TAG, "cancel power off event post failed");
+        return ESP_ERR_TIMEOUT;
+    }
+    if (xSemaphoreTake(s_power_off_done,
+                       pdMS_TO_TICKS(USER_LED_POWER_OFF_ACK_TIMEOUT_MS)) != pdTRUE) {
+        ESP_LOGE(TAG, "cancel power off LED acknowledgement timeout");
+        return ESP_ERR_TIMEOUT;
+    }
+    if (s_power_off_result != ESP_OK) {
+        ESP_LOGE(TAG, "cancel power off LED restore failed ret=%s",
                  esp_err_to_name(s_power_off_result));
     }
     return s_power_off_result;

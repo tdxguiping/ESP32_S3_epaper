@@ -770,14 +770,20 @@ static void ch583_wifi_reset_ble_join(void)
     s_ble_len = 0;
 }
 
-static void ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame, ch583_wifi_ble_data_callback_t ble_data_callback)
+static bool ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame,
+                                       ch583_wifi_ble_data_callback_t ble_data_callback)
 {
+    if (frame == NULL) {
+        return false;
+    }
+
     if (frame->total == 1) {
         bool activity_active = frame->arg_len >= USER_LED_UART_LARGE_DATA_THRESHOLD;
         CH583_WIFI_DEBUG_PRINTF("CH583_PROTO ble single seq=%u len=%u data=%s\r\n",
                (unsigned int)frame->seq,
                (unsigned int)frame->arg_len,
                frame->arg);
+        ServerNetworkStaWifiWorkTime_OnCh583Activity();
         ch583_wifi_send_ack(frame->seq);
         if (activity_active) {
             UserLedStatus_ActivityBegin(USER_LED_ACTIVITY_UART_RX);
@@ -789,7 +795,7 @@ static void ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame, ch583_wi
         if (activity_active) {
             UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_UART_RX);
         }
-        return;
+        return true;
     }
 
     if (frame->part == 1) {
@@ -813,7 +819,7 @@ static void ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame, ch583_wi
                (unsigned int)s_ble_total);
         ch583_wifi_reset_ble_join();
         ch583_wifi_send_err(frame->seq, "BAD_PART");
-        return;
+        return false;
     }
 
     if (s_ble_len + frame->arg_len > CH583_WIFI_MAX_BLE_MESSAGE_LEN) {
@@ -824,9 +830,10 @@ static void ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame, ch583_wi
                (unsigned int)sizeof(s_ble_buf));
         ch583_wifi_reset_ble_join();
         ch583_wifi_send_err(frame->seq, "BAD_LEN");
-        return;
+        return false;
     }
 
+    ServerNetworkStaWifiWorkTime_OnCh583Activity();
     memcpy(&s_ble_buf[s_ble_len], frame->arg, frame->arg_len);
     s_ble_len += frame->arg_len;
     s_ble_buf[s_ble_len] = '\0';
@@ -843,6 +850,7 @@ static void ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame, ch583_wi
         }
         ch583_wifi_reset_ble_join();
     }
+    return true;
 }
 
 static void ch583_wifi_handle_ble_mac(const ch583_wifi_frame_t *frame)
@@ -866,6 +874,7 @@ static void ch583_wifi_handle_ble_mac(const ch583_wifi_frame_t *frame)
         return;
     }
 
+    ServerNetworkStaWifiWorkTime_OnCh583Activity();
     // Save the last CH583 BLE MAC so later WiFi logic can identify the frontend path.
     memcpy(s_ble_mac, frame->arg, CH583_WIFI_BLE_MAC_LEN);
     s_ble_mac[CH583_WIFI_BLE_MAC_LEN] = '\0';
@@ -893,6 +902,7 @@ static void ch583_wifi_handle_ble_ver(const ch583_wifi_frame_t *frame)
         return;
     }
 
+    ServerNetworkStaWifiWorkTime_OnCh583Activity();
     s_ble_ver = ble_ver;
     s_ble_ver_loaded = true;
     esp_err_t nvs_ret = app_nvs_write_u8(CH583_BLE_VER_NVS_KEY, s_ble_ver);
@@ -958,9 +968,10 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
     } else if (strcmp(frame.cmd, "BLE_DATA") == 0) {       
       CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
            (unsigned int)frame.seq,frame.cmd,frame.arg);
-        ch583_wifi_handle_ble_data(&frame, ble_data_callback);
-
-        ServerNetworkStaWifiWorkTime_OnNetworkData();  // standdy reset
+        if (ch583_wifi_handle_ble_data(&frame, ble_data_callback)) {
+            // Preserve the original full work timer reset only for accepted BLE data.
+            ServerNetworkStaWifiWorkTime_OnNetworkData();
+        }
     } else if (strcmp(frame.cmd, "ACK") == 0 ||
                strcmp(frame.cmd, "ERR") == 0 ||
                strcmp(frame.cmd, "PONG") == 0 ||

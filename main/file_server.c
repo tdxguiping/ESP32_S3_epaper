@@ -59,11 +59,31 @@ static httpd_handle_t s_file_server;
 static struct file_server_data *s_file_server_data;
 static bool s_file_server_ready;
 
+// Refresh the HTTP power hold only after a directory-list response chunk is accepted.
+static esp_err_t directory_send_chunk(httpd_req_t *req, const char *data, size_t length)
+{
+    esp_err_t ret = httpd_resp_send_chunk(req, data, length);
+    if (ret == ESP_OK && data != NULL && length > 0) {
+        ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
+    }
+    return ret;
+}
+
+// Keep directory-list activity tracking local to the file server module.
+static esp_err_t directory_send_string_chunk(httpd_req_t *req, const char *text)
+{
+    esp_err_t ret = httpd_resp_sendstr_chunk(req, text);
+    if (ret == ESP_OK && text != NULL) {
+        ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
+    }
+    return ret;
+}
+
 /* Handler to serve the migrated PhotoPainter index page. */
 /* 用于返回移植过来的 PhotoPainter 首页，后续替换网页入口时只需要改这里。 */
 static esp_err_t index_html_get_handler(httpd_req_t *req)
 {
-    ServerNetworkStaWifiWorkTime_OnNetworkData();
+    ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
     // Serve the old project's embedded index.html so Server Network STA opens the PhotoPainter web UI directly.
     // 返回旧项目内嵌的 index.html，让 Server Network STA 打开时直接进入 PhotoPainter 网页界面。
     httpd_resp_set_type(req, "text/html");
@@ -75,7 +95,7 @@ static esp_err_t index_html_get_handler(httpd_req_t *req)
  * This can be overridden by uploading file with same name */
 static esp_err_t favicon_get_handler(httpd_req_t *req)
 {
-    ServerNetworkStaWifiWorkTime_OnNetworkData();
+    ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
     extern const unsigned char favicon_ico_start[] asm("_binary_favicon_ico_start");
     extern const unsigned char favicon_ico_end[]   asm("_binary_favicon_ico_end");
     const size_t favicon_ico_size = (favicon_ico_end - favicon_ico_start);
@@ -118,7 +138,7 @@ static esp_err_t http_resp_dir_html(httpd_req_t *req, const char *dirpath)
     }
 
     /* Send HTML file header */
-    httpd_resp_sendstr_chunk(req, "<!DOCTYPE html><html><body>");
+    directory_send_string_chunk(req, "<!DOCTYPE html><html><body>");
 
     /* Get handle to embedded file upload script */
     extern const unsigned char upload_script_start[] asm("_binary_upload_script_html_start");
@@ -126,10 +146,10 @@ static esp_err_t http_resp_dir_html(httpd_req_t *req, const char *dirpath)
     const size_t upload_script_size = (upload_script_end - upload_script_start);
 
     /* Add file upload form and script which on execution sends a POST request to /upload */
-    httpd_resp_send_chunk(req, (const char *)upload_script_start, upload_script_size);
+    directory_send_chunk(req, (const char *)upload_script_start, upload_script_size);
 
     /* Send file-list table definition and column labels */
-    httpd_resp_sendstr_chunk(req,
+    directory_send_string_chunk(req,
         "<table class=\"fixed\" border=\"1\">"
         "<col width=\"800px\" /><col width=\"300px\" /><col width=\"300px\" /><col width=\"100px\" />"
         "<thead><tr><th>Name</th><th>Type</th><th>Size (Bytes)</th><th>Delete</th></tr></thead>"
@@ -150,36 +170,36 @@ static esp_err_t http_resp_dir_html(httpd_req_t *req, const char *dirpath)
 #endif
 
         /* Send chunk of HTML file containing table entries with file name and size */
-        httpd_resp_sendstr_chunk(req, "<tr><td><a href=\"");
-        httpd_resp_sendstr_chunk(req, req->uri);
-        httpd_resp_sendstr_chunk(req, entry->d_name);
+        directory_send_string_chunk(req, "<tr><td><a href=\"");
+        directory_send_string_chunk(req, req->uri);
+        directory_send_string_chunk(req, entry->d_name);
         if (entry->d_type == DT_DIR) {
-            httpd_resp_sendstr_chunk(req, "/");
+            directory_send_string_chunk(req, "/");
         }
-        httpd_resp_sendstr_chunk(req, "\">");
-        httpd_resp_sendstr_chunk(req, entry->d_name);
-        httpd_resp_sendstr_chunk(req, "</a></td><td>");
-        httpd_resp_sendstr_chunk(req, entrytype);
-        httpd_resp_sendstr_chunk(req, "</td><td>");
-        httpd_resp_sendstr_chunk(req, entrysize);
-        httpd_resp_sendstr_chunk(req, "</td><td>");
-        httpd_resp_sendstr_chunk(req, "<form method=\"post\" action=\"/delete");
-        httpd_resp_sendstr_chunk(req, req->uri);
-        httpd_resp_sendstr_chunk(req, entry->d_name);
-        httpd_resp_sendstr_chunk(req, "\"><button type=\"submit\">Delete</button></form>");
-        httpd_resp_sendstr_chunk(req, "</td></tr>\n");
+        directory_send_string_chunk(req, "\">");
+        directory_send_string_chunk(req, entry->d_name);
+        directory_send_string_chunk(req, "</a></td><td>");
+        directory_send_string_chunk(req, entrytype);
+        directory_send_string_chunk(req, "</td><td>");
+        directory_send_string_chunk(req, entrysize);
+        directory_send_string_chunk(req, "</td><td>");
+        directory_send_string_chunk(req, "<form method=\"post\" action=\"/delete");
+        directory_send_string_chunk(req, req->uri);
+        directory_send_string_chunk(req, entry->d_name);
+        directory_send_string_chunk(req, "\"><button type=\"submit\">Delete</button></form>");
+        directory_send_string_chunk(req, "</td></tr>\n");
     }
     closedir(dir);
     TdxSharedSpi_Unlock();
 
     /* Finish the file list table */
-    httpd_resp_sendstr_chunk(req, "</tbody></table>");
+    directory_send_string_chunk(req, "</tbody></table>");
 
     /* Send remaining chunk of HTML file to complete it */
-    httpd_resp_sendstr_chunk(req, "</body></html>");
+    directory_send_string_chunk(req, "</body></html>");
 
     /* Send empty chunk to signal HTTP response completion */
-    httpd_resp_sendstr_chunk(req, NULL);
+    directory_send_string_chunk(req, NULL);
     return ESP_OK;
 }
 
@@ -238,7 +258,7 @@ static esp_err_t download_get_handler(httpd_req_t *req)
     if (req != NULL && strncmp(req->uri, SERVER_NETWORK_STA_PING_URI, strlen(SERVER_NETWORK_STA_PING_URI)) == 0) {
         ESP_LOGI(TAG, "HTTP GET ping handler enter uri=%s", req->uri);
     }
-    ServerNetworkStaWifiWorkTime_OnNetworkData();
+    ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
     char filepath[FILE_PATH_MAX];
     FILE *fd = NULL;
     struct stat file_stat;
@@ -330,6 +350,7 @@ static esp_err_t download_get_handler(httpd_req_t *req)
                 httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to send file");
                return ESP_FAIL;
            }
+            ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
         }
 
         /* Keep looping till the whole file is sent */
@@ -351,7 +372,7 @@ static esp_err_t download_get_handler(httpd_req_t *req)
 /* Handler to upload a file onto the server */
 static esp_err_t upload_post_handler(httpd_req_t *req)
 {
-    ServerNetworkStaWifiWorkTime_OnNetworkData();
+    ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
     char filepath[FILE_PATH_MAX];
     FILE *fd = NULL;
     struct stat file_stat;
@@ -436,6 +457,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to receive file");
             return ESP_FAIL;
         }
+        ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
 
         /* Write buffer content to file on storage */
         if (received && (received != fwrite(buf, 1, received, fd))) {
@@ -474,7 +496,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
 /* Handler to delete a file from the server */
 static esp_err_t delete_post_handler(httpd_req_t *req)
 {
-    ServerNetworkStaWifiWorkTime_OnNetworkData();
+    ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
     char filepath[FILE_PATH_MAX];
     struct stat file_stat;
 

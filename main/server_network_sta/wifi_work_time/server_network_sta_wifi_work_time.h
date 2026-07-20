@@ -17,10 +17,14 @@ esp_err_t ServerNetworkStaWifiWorkTime_ProcessJson(httpd_req_t *req,
 esp_err_t ServerNetworkStaWifiWorkTime_Init(void);
 esp_err_t ServerNetworkStaWifiWorkTime_SetAndSave(uint32_t seconds);
 void ServerNetworkStaWifiWorkTime_OnNetworkData(void);
+void ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity(void);
+void ServerNetworkStaWifiWorkTime_OnCh583Activity(void);
+void ServerNetworkStaWifiWorkTime_OnCh583Initialized(void);
 void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t seconds);
 void ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(bool in_progress);
 bool ServerNetworkStaWifiWorkTime_IsImageSaveInProgress(void);
-void ServerNetworkStaWifiWorkTime_SetOtaInProgress(bool in_progress);
+void ServerNetworkStaWifiWorkTime_SetOtaWriteInProgress(bool in_progress);
+void ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress(bool in_progress);
 
 #ifdef __cplusplus
 }

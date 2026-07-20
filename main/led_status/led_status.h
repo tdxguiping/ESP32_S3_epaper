@@ -53,6 +53,8 @@ void UserLedStatus_SetRestartPending(bool active);
 void UserLedStatus_SetPowerOffPending(bool active);
 // Wait until the LED task has stopped both blink engines and forced PB5/PB6 off.
 esp_err_t UserLedStatus_PreparePowerOffSync(void);
+// Release a prepared power-off lock and restore the current base LED effect.
+esp_err_t UserLedStatus_CancelPowerOffSync(void);
 // Compatibility wrapper for older callers that do not consume the synchronous result.
 void UserLedStatus_PreparePowerOff(void);
 

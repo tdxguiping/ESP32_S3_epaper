@@ -487,6 +487,8 @@ extern "C" {
 #define TDX_SLIDESHOW_MAX_FILES 50
 // Timing value for TDX SLIDESHOW INTERVAL MIN SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_INTERVAL_MIN_SECONDS 60
+// Minimum computed CH583 wake interval required before slideshow power-off is allowed.
+#define TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS 20
 // Timing value for TDX SLIDESHOW INTERVAL MAX SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_INTERVAL_MAX_SECONDS (7U * 24U * 60U * 60U) // 7 days
 // Timing value for CH583 WAKE TIMER MIN SECONDS; verify related wake, sleep, and retry behavior if it changes.
@@ -542,6 +544,8 @@ extern "C" {
 
 // Minimum WiFi online time accepted from runtime configuration, in seconds.
 #define SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS 60
+// Minimum WiFi online time accepted by the network HTTP and USB interfaces, in seconds.
+#define SERVER_NETWORK_STA_WIFI_WORK_TIME_NETWORK_USB_MIN_SECONDS 0
 // Maximum WiFi online time accepted from runtime configuration, in seconds.
 #define SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS 3600
 // Default WiFi online time used when no valid saved value exists, in seconds.
@@ -567,7 +571,7 @@ extern "C" {
 // Timing value for USER WORK STATE DEFAULT STANDBY SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_WORK_STATE_DEFAULT_STANDBY_SECONDS 15
 // Timing value for USER WORK STATE MIN CONTINUE SECONDS; verify related wake, sleep, and retry behavior if it changes.
-#define USER_WORK_STATE_MIN_CONTINUE_SECONDS SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS
+#define USER_WORK_STATE_MIN_CONTINUE_SECONDS SERVER_NETWORK_STA_WIFI_WORK_TIME_NETWORK_USB_MIN_SECONDS
 // Timing value for USER WORK STATE MAX CONTINUE SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_WORK_STATE_MAX_CONTINUE_SECONDS SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS
 // Task stack size for USER WORK STATE TASK STACK SIZE; tune with runtime stack high-water data.
@@ -576,9 +580,22 @@ extern "C" {
 #define USER_WORK_STATE_TASK_PRIORITY 3
 // Timing value for USER WORK STATE TASK INTERVAL MS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_WORK_STATE_TASK_INTERVAL_MS 1000
+// Hold WiFi power for this many seconds after the most recent HTTP network activity.
+#define USER_WORK_STATE_HTTP_ACTIVITY_HOLD_SECONDS 20
+// Hold WiFi power after CH583 startup or validated business activity.
+#define USER_WORK_STATE_CH583_ACTIVITY_HOLD_SECONDS 20
+// OTA hold bits keep receive and flash-write lifetimes independent.
+#define USER_WORK_STATE_OTA_HOLD_WRITE_BIT   (1UL << 0)
+#define USER_WORK_STATE_OTA_HOLD_RECEIVE_BIT (1UL << 1)
+// Guard-log bits ensure short power-off holds produce one useful log without per-second noise.
+#define USER_WORK_STATE_GUARD_LOG_HTTP_BIT (1UL << 0)
+#define USER_WORK_STATE_GUARD_LOG_CH583_BIT (1UL << 1)
+// Runtime state bits keep startup and LED power-off cancellation guards centralized.
+#define USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT (1UL << 0)
+#define USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT    (1UL << 1)
 
 // After each EPD display job finishes, request one low-power countdown through work_state_task.
-#define USER_EPD_DONE_LOW_POWER_ENABLE   1
+#define USER_EPD_DONE_LOW_POWER_ENABLE   0
 // Timing value for USER EPD DONE LOW POWER DELAY SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 5
 // Timing value for USER EPD DONE LOW POWER SLIDESHOW MIN REMAIN SECONDS; verify related wake, sleep, and retry behavior if it changes.
@@ -995,6 +1012,8 @@ extern "C" {
 #define USER_LED_EVENT_POWER_OFF_PENDING 12
 #define USER_LED_EVENT_PREPARE_POWER_OFF 13
 #define USER_LED_EVENT_RESTART_PENDING 14
+// Cancel a prepared power-off lock when the final guard detects new work.
+#define USER_LED_EVENT_CANCEL_POWER_OFF 15
 
 // Persistent fault bits evaluated by the LED task in priority order.
 #define USER_LED_FAULT_WIFI_NO_CONFIG (1UL << 0)

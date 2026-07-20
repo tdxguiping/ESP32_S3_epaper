@@ -130,6 +130,7 @@ static bool read_request_body_to_buffer(httpd_req_t *req, char *body, size_t bod
             return false;
         }
         received_total += received;
+        ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
     }
     body[body_len] = '\0';
     return true;
@@ -456,7 +457,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
     bool upload_mutex_locked = false;
 
     get_request_header_value(req, "Content-Type", content_type, sizeof(content_type));
-    ServerNetworkStaWifiWorkTime_OnNetworkData();
+    ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
     log_request_headers(req);
     ESP_LOGI(TAG, "HTTP data enter uri=%s len=%u type=%s",
              uri != NULL ? uri : "<null>", (unsigned int)remaining,
@@ -493,7 +494,11 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
             ESP_LOGW(TAG, "HTTP upload busy uri=%s len=%u",
                      uri != NULL ? uri : "<null>", (unsigned int)remaining);
             if (is_network_ota) {
-                return NetworkOtaUpload_SendErrorAndFinish(req, "upload_busy", "upload_busy", ESP_ERR_TIMEOUT);
+                esp_err_t ret = NetworkOtaUpload_SendErrorAndFinish(req,
+                                                                    "upload_busy",
+                                                                    "upload_busy",
+                                                                    ESP_ERR_TIMEOUT);
+                return ret;
             }
             return send_json_response(req,
                                       "{\"func\":\"dataup_result\",\"result\":1007,\"message\":\"upload_busy\",\"error\":\"upload_busy\"}");
@@ -504,6 +509,9 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
                  uri != NULL ? uri : "<null>");
 #endif
     }
+    if (is_network_ota) {
+        ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress(true);
+    }
 
     if (remaining == 0) {
         if (upload_mutex_locked) {
@@ -511,7 +519,12 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         }
         ESP_LOGW(TAG, "HTTP data empty uri=%s", uri != NULL ? uri : "<null>");
         if (is_network_ota) {
-            return NetworkOtaUpload_SendErrorAndFinish(req, "empty_body", "empty_body", ESP_ERR_INVALID_SIZE);
+            esp_err_t ret = NetworkOtaUpload_SendErrorAndFinish(req,
+                                                                "empty_body",
+                                                                "empty_body",
+                                                                ESP_ERR_INVALID_SIZE);
+            ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress(false);
+            return ret;
         }
         return send_invalid_json_response(req, "get_saved_images");
     }
@@ -525,7 +538,12 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
                  uri != NULL ? uri : "<null>", (unsigned int)remaining,
                  (unsigned int)request_body_max);
         if (is_network_ota) {
-            return NetworkOtaUpload_SendErrorAndFinish(req, "body_too_large", "body_too_large", ESP_ERR_INVALID_SIZE);
+            esp_err_t ret = NetworkOtaUpload_SendErrorAndFinish(req,
+                                                                "body_too_large",
+                                                                "body_too_large",
+                                                                ESP_ERR_INVALID_SIZE);
+            ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress(false);
+            return ret;
         }
         return send_dataup_error_response(req,
                                           "413 Content Too Large",
@@ -555,11 +573,15 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
             UserLedStatus_OtaEnd(false);
         }
         ESP_LOGE(TAG, "body alloc failed len=%u", (unsigned int)remaining);
-        return send_dataup_error_response(req,
-                                          HTTPD_500,
-                                          TDX_JSON_RESULT_NO_MEMORY,
-                                          "no memory",
-                                          "no_memory");
+        esp_err_t ret = send_dataup_error_response(req,
+                                                   HTTPD_500,
+                                                   TDX_JSON_RESULT_NO_MEMORY,
+                                                   "no memory",
+                                                   "no_memory");
+        if (is_network_ota) {
+            ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress(false);
+        }
+        return ret;
     }
     if (is_network_ota) {
         log_heap_watermark("body_alloc");
@@ -578,6 +600,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
         }
         if (is_network_ota) {
             UserLedStatus_OtaEnd(false);
+            ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress(false);
         }
         return ESP_FAIL;
     }
@@ -634,6 +657,7 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
     }
     if (is_network_ota) {
         UserLedStatus_OtaEnd(false);
+        ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress(false);
     }
 
     ESP_LOGI(TAG, "HTTP data handler done uri=%s len=%u ret=%s",

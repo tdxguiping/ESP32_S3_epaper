@@ -48,9 +48,9 @@ typedef struct {
     bool reboot;
 } ota_upload_meta_t;
 
-static void PowerMode_SetOtaInProgress(bool in_progress)
+static void PowerMode_SetOtaWriteInProgress(bool in_progress)
 {
-    ServerNetworkStaWifiWorkTime_SetOtaInProgress(in_progress);
+    ServerNetworkStaWifiWorkTime_SetOtaWriteInProgress(in_progress);
 }
 
 static const esp_app_desc_t *get_firmware_app_desc(const uint8_t *firmware, size_t firmware_len)
@@ -292,8 +292,8 @@ static bool parse_meta_json(const char *json, size_t json_len, ota_upload_meta_t
     if (cJSON_IsNumber(firmware_size) && firmware_size->valuedouble > 0) {
         meta->firmware_size = (size_t)firmware_size->valuedouble;
     }
-    if (cJSON_IsBool(reboot)) {
-        meta->reboot = cJSON_IsTrue(reboot);
+    if (cJSON_IsBool(reboot) && !cJSON_IsTrue(reboot)) {
+        ESP_LOGW(TAG, "meta reboot=false ignored because successful OTA must restart");
     }
 
     cJSON_Delete(root);
@@ -718,14 +718,14 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
                     ",\"firmware_size\":%u",
                     (unsigned int)firmware_field.len);
 
-    PowerMode_SetOtaInProgress(true);
+    PowerMode_SetOtaWriteInProgress(true);
     send_ota_eventf(req, "power_hold", TDX_JSON_RESULT_OK, "ota_power_hold_enabled", ESP_OK, NULL);
     esp_err_t err = write_firmware_to_ota_partition(req,
                                                     (const uint8_t *)firmware_field.data,
                                                     firmware_field.len,
                                                     &meta);
     if (err != ESP_OK) {
-        PowerMode_SetOtaInProgress(false);
+        PowerMode_SetOtaWriteInProgress(false);
         UserLedStatus_OtaEnd(false);
         int result = s_last_ota_result != TDX_JSON_RESULT_OK ? s_last_ota_result : TDX_JSON_RESULT_INTERNAL_ERROR;
         send_ota_eventf(req, "power_hold_release", TDX_JSON_RESULT_OK, "ota_power_hold_disabled", ESP_OK, NULL);
@@ -739,22 +739,13 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
                      meta.reboot ? 1 : 0,
                      (unsigned int)firmware_field.len);
     ESP_LOGI(TAG, "process ota body: success result sent reboot=%u", meta.reboot ? 1 : 0);
-    if (meta.reboot) {
-        UserLedStatus_OtaEnd(true);
-        send_ota_eventf(req, "rebooting", TDX_JSON_RESULT_OK, "rebooting", ESP_OK,
-                        ",\"delay_ms\":1000");
-        ota_stream_finish(req);
-        ESP_LOGI(TAG, "ota reboot scheduled after response");
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        esp_restart();
-    } else {
-        ESP_LOGI(TAG, "ota reboot skipped by meta");
-        send_ota_eventf(req, "reboot_skipped", TDX_JSON_RESULT_OK, "reboot_skipped", ESP_OK, NULL);
-        PowerMode_SetOtaInProgress(false);
-        UserLedStatus_OtaEnd(false);
-        send_ota_eventf(req, "power_hold_release", TDX_JSON_RESULT_OK, "ota_power_hold_disabled", ESP_OK, NULL);
-        return ota_stream_finish(req);
-    }
+    UserLedStatus_OtaEnd(true);
+    send_ota_eventf(req, "rebooting", TDX_JSON_RESULT_OK, "rebooting", ESP_OK,
+                    ",\"delay_ms\":1000");
+    ota_stream_finish(req);
+    ESP_LOGI(TAG, "ota reboot scheduled after response");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
     return ESP_OK;
 }
 

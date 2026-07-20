@@ -137,8 +137,8 @@ The full result-code table is in `README_Result_Code.md`; this file keeps featur
 | `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `TDX_DELETE_MAX_FILES=50` 限制；超过上限返回 `1514`，文件名非法返回 `1502`；网络与 USB 入口都先完整校验，校验失败不执行删除；只删除匹配的 bin/jpg；不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度 | 从 JSON `fileNames` 取删除列表；校验通过后按文件名拼路径并删除 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从轮播配置/control 文件读取轮播状态 |
 | `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 诊断/兼容进度 | `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=50` 限制；`startIndex` 必填且满足 `0 <= startIndex < file_count`；单个名称缓冲区受 `TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48` 限制；`interval` 限制在 `60..604800` 秒；`random` 永久强制为 `false` | 不兼容缺少 `startIndex` 的旧轮播协议/配置；启动时已有 SNTP 或运行中首次取得 SNTP 后，按 `fileNames + startIndex + anchor_epoch + interval` 使用绝对时间槽 |
-| `wifi_work_time` | `work_state` namespace blob；`PhotoPainter:work_continue/wifi_standby` 字符串兼容键 | HTTP JSON `seconds` 必须在 `60..3600`；内部 `SetAndSave()` 还会 clamp 到最小/最大值；保存 blob 后会读回验证；`seconds=0` 拒绝 | 启动时读取 blob；blob size 不匹配则回退默认值；兼容读取字符串键并解析为 u32 |
-| OTA | OTA update partition；boot partition 选择 | 请求必须被识别为 `/ota` 或 `/ota_upload`；body 不超过 `SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE=6MB`；meta/firmware 字段可解析；固件 magic、app_desc、版本、长度和目标分区大小检查通过；写入成功后才设置 boot partition | 读取 meta JSON、firmware/bin 字段、running partition、next update partition、app desc 和 OTA 状态 |
+| `wifi_work_time` | `work_state` namespace blob；`PhotoPainter:work_continue/wifi_standby` 字符串兼容键 | 网络 HTTP 与 USB JSON 只接受 `seconds=0..3600`，旧字段 `time` 返回参数非法；BLE/CH583 继续保持原有协议和 `60..3600` 范围；内部 `SetAndSave()` clamp 到 `0..3600`；保存 blob 后会读回验证 | 启动时读取 blob；blob size 不匹配则回退默认值；兼容读取字符串键并解析为 u32；CH583 UART 初始化完成前由 startup-pending guard 禁止关机，初始化完成及后续合法业务活动刷新 RAM 中的 20 秒 CH583 保护；HTTP 使用独立的 20 秒保护，不写 NVS |
+| OTA | OTA update partition；boot partition 选择 | 请求必须被识别为 `/ota` 或 `/ota_upload`；body 不超过 `SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE=6MB`；meta/firmware 字段可解析；固件 magic、app_desc、版本、长度和目标分区大小检查通过；写入成功后才设置 boot partition；成功后固定自动复位 | 读取 meta JSON、firmware/bin 字段、running partition、next update partition、app desc 和 OTA 状态；OTA 接收与写入使用独立 power hold，任一阶段进行中都不发送 `POWER_OFF` |
 | EPD 类型 | `PhotoPainter:epd_type` | 只允许保存 `EpdType_GetConfig(type)` 能找到的合法 type；未变化时跳过写入；非法 type 返回 `ESP_ERR_INVALID_ARG` | 启动读取 `epd_type`；不存在或无效时回退 `USER_EPD_TYPE_DEFAULT`；显示时按当前 type 分发到具体驱动 |
 | EPD 显示队列 | RAM 队列 `s_epd_display_queue` | 队列长度受 `USER_EPD_DISPLAY_QUEUE_LENGTH=2` 限制；入队前需要分配/复制 display buffer；显示数据大小应匹配当前屏幕 `display_size`；队列满或内存不足则失败 | `ServerNetworkStaEpdDisplay_Task()` 从队列取 buffer，根据 EPD type 调用具体驱动 |
 | CH583 BLE MAC | `PhotoPainter:ch583_ble_mac` | 收到合法 `BLE_MAC` 帧并解析出 MAC 后保存；保存前需通过 CH583 帧校验 | `/ping` 或 base info 读取保存的 BLE MAC 用于返回给前端 |
@@ -2043,10 +2043,8 @@ sequenceDiagram
     OTA->>OTA: parse meta and firmware
     OTA->>PART: esp_ota_begin/write/end
     OTA->>BOOT: esp_ota_set_boot_partition
-    alt reboot=true
-        OTA->>BOOT: esp_restart()
-    end
     OTA-->>APP: ota result
+    OTA->>BOOT: esp_restart()
 ```
 
 相关文件：
@@ -2068,7 +2066,7 @@ receive_data_redirect_handler()
    ├─ extract_multipart_field("meta")
    ├─ parse_meta_json()
    ├─ extract_multipart_field("firmware" or "bin")
-   ├─ PowerMode_SetOtaInProgress(true)
+   ├─ PowerMode_SetOtaWriteInProgress(true)
    ├─ write_firmware_to_ota_partition()
    │  ├─ validate image header magic
    │  ├─ get_firmware_app_desc()
@@ -2077,8 +2075,7 @@ receive_data_redirect_handler()
    │  ├─ esp_ota_write()
    │  ├─ esp_ota_end()
    │  └─ esp_ota_set_boot_partition()
-   └─ reboot=true
-      └─ esp_restart()
+   └─ esp_restart()
 ```
 
 关键辅助函数：
@@ -2110,12 +2107,12 @@ OTA 写分区时会分块 esp_ota_write()，但 HTTP 接收阶段不是 streamin
 Powershell 测试用例：
 
 ```powershell
-# ota：上传固件到 /ota。reboot=false 时便于先观察返回结果。
+# ota：上传固件到 /ota；成功后设备固定自动复位。
 $esp = "http://192.168.1.104"
 $fw = "H:\AI2\ESP32-S3-PhotoPainter-main\01_Example\xiaozhi-esp32\build\xiaozhi.bin"
 $size = (Get-Item $fw).Length
 $version = "000.001"
-$meta = '{"func":"ota","version":"' + $version + '","firmware_size":' + $size + ',"reboot":false}'
+$meta = '{"func":"ota","version":"' + $version + '","firmware_size":' + $size + ',"reboot":true}'
 
 curl.exe -X POST "$esp/ota" `
   -F "meta=$meta" `
@@ -2131,7 +2128,7 @@ curl.exe -X POST "$esp/ota_upload" `
 
 版本规则：固件版本号使用 `000.000`..`255.255` 两段十进制字节格式，每段范围为 0..255，保留 3 位数字；例如 `000.001` 对应十六进制 `00.01`，`255.255` 对应 `FF.FF`。OTA meta 中 `version` 字段如果存在，必须与固件 `app_desc.version` 完全一致，否则返回 `1711/version_mismatch` 并拒绝写入。
 
-预期：固件大小不能超过 OTA 分区；版本校验和固件校验通过后写 OTA 分区并设置 boot partition。需要自动重启时把 `reboot` 改成 `true`。
+预期：固件大小不能超过 OTA 分区；版本校验和固件校验通过后写 OTA 分区、设置 boot partition、发送成功结果，并在约 1 秒后自动复位。`reboot` 缺失时默认按 `true`；即使请求传入 `reboot=false`，设备也会打印警告并忽略该值，成功 OTA 必须复位。
 
 存 / 取信息（含条件限制）：
 
@@ -2139,7 +2136,7 @@ curl.exe -X POST "$esp/ota_upload" `
 存：
 - esp_ota_write() 写入 OTA update partition。
 - esp_ota_set_boot_partition() 保存下次启动分区选择。
-- OTA 期间会设置 WiFi 工作时间模块的 OTA busy 状态，避免超时 POWER_OFF。
+- OTA HTTP body 接收与固件写入分别设置 WiFi 工作时间模块的 receive/write power hold；任一 hold 有效时都禁止超时 `POWER_OFF`。
 
 取：
 - 读取 multipart meta JSON、firmware/bin 字段。
@@ -2159,7 +2156,7 @@ Result 定义建议：
 | `ping_result` | `0` | 连通性检查成功 |
 | `ping_result` | `1405` | `Ble_MAC` 为空；是否作为失败需按前端匹配逻辑决定 |
 
-功能说明：用于 App/PC 判断设备 HTTP 服务是否可用，通过 `Ble_MAC` 防止缓存 IP 指向错误设备，并通过 `EPD` 字段告知当前 EPD display task 是忙碌还是空闲。网络 ping 匹配 `/ping` 路径，并允许携带 query/hash 后缀，例如 `/ping?t=123`。网络 ping 响应会设置 `Connection: close`，避免 App/PC 的 keep-alive 长时间占用 HTTP socket。
+功能说明：用于 App/PC 判断设备 HTTP 服务是否可用，通过 `Ble_MAC` 防止缓存 IP 指向错误设备，并通过 `EPD` 字段告知当前 EPD display task 是忙碌还是空闲。网络 ping 匹配 `/ping` 路径，并允许携带 query/hash 后缀，例如 `/ping?t=123`。每次有效网络 `/ping` 都调用 `ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()`，从当前时刻重新产生 20 秒 HTTP 关机保护，但不重置完整 `wifi_work_time`、不写 NVS。网络 ping 响应会设置 `Connection: close`，避免 App/PC 的 keep-alive 长时间占用 HTTP socket。
 
 Mermaid 时序图：
 
@@ -2171,7 +2168,7 @@ sequenceDiagram
     participant MAC as CH583 BLE MAC cache
     APP->>HTTP: GET /ping
     HTTP->>PING: route ping request
-    PING->>PING: ServerNetworkStaWifiWorkTime_OnNetworkData()
+    PING->>PING: ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()
     PING->>MAC: get_ble_mac_no_colon()
     PING->>PING: ServerNetworkStaEpdDisplay_IsBusy()
     PING-->>APP: ping_result + EPD + Ble_MAC
@@ -2191,7 +2188,7 @@ main/epd_display/epd_display_app.h
 ```text
 HTTP GET /ping
 └─ ServerNetworkStaPing_ProcessGet()
-   ├─ ServerNetworkStaWifiWorkTime_OnNetworkData()
+   ├─ ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()
    ├─ get_ble_mac_no_colon()
    ├─ ServerNetworkStaEpdDisplay_IsBusy()
    ├─ httpd_resp_set_hdr(Connection: close)
@@ -3093,20 +3090,21 @@ Result 定义建议：
 | 返回 | result | 说明 |
 |---|---|---|
 | `set_wifi_work_time_result` | `0` | WiFi 工作时间设置成功 |
-| `set_wifi_work_time_result` | `1351` | `seconds` / `time` 缺失 |
+| `set_wifi_work_time_result` | `1004` | 网络 HTTP 请求包含已停用的旧字段 `time` |
+| `set_wifi_work_time_result` | `1351` | 网络 HTTP 的 `seconds` 缺失或不是有效整数 |
 | `set_wifi_work_time_result` | `1352` | 工作时间超出允许范围 |
 | `set_wifi_work_time_result` | `1353` | NVS 保存失败 |
 | `set_wifi_work_time_result` | `1354` | 运行时应用失败 |
 
 `1354` 的当前实际路径是 WiFi 工作状态任务尚未初始化，无法应用新的运行时计时参数；NVS 写入失败仍返回 `1353`。
 
-功能说明：设置 WiFi 保持工作时间；超时后如 OTA 不忙且 EPD task 空闲，则通过 CH583 `POWER_OFF` 关闭 WiFi 电源或进入低功耗流程；如果 EPD 正在显示或队列仍有待显示任务，则继续推迟，避免 EPD 显示不完整。
+功能说明：设置 WiFi 保持工作时间；网络 HTTP 与 USB 的 `seconds` 允许范围为 `0..3600`，并严格要求十进制整数，`1.5`、`1800abc` 等格式拒绝。CH583 UART 初始化完成前由 startup-pending guard 禁止关机；初始化完成后产生新的 20 秒 CH583 保护。工作时间超时后，还必须满足最近一次 HTTP 网络活动和 CH583 合法业务活动都已过去至少 20 秒、OTA 接收与写入都不忙、EPD task 空闲且图片保存不忙，才通过 CH583 `POWER_OFF` 关闭 WiFi 电源或进入低功耗流程。HTTP 与 CH583 活动保护使用独立 RAM 时间戳，不重置保存值、不写 NVS；网络 `/ping`、长文件上传、普通文件下载、目录列表和缩略图分块发送持续刷新 HTTP 保护，合法 `BLE_MAC`、`BLE_VER`、单帧和每个有效 `BLE_DATA` 分片刷新 CH583 保护。CH583 UART `PING/PONG`、`ACK/ERR` 和状态回复不刷新保护。LED 关机准备完成后、真正发送 `POWER_OFF` 前会再次检查工作计时及 HTTP、CH583、OTA、EPD 和图片保存保护；发现新任务就取消本次关机，取消失败时持续优先重试，成功解除 LED 永久关机锁前不进入普通保护或新的关机流程。HTTP 与 CH583 保护分别在每个连续保护周期只打印一次推迟日志，避免每秒刷屏。
 
 Mermaid 时序图：
 
 ```mermaid
 sequenceDiagram
-    participant APP as App/PC/BLE
+    participant APP as App/PC
     participant DATAUP as POST /dataUP JSON
     participant WT as ServerNetworkStaWifiWorkTime_ProcessJson
     participant TIMER as work_state_task
@@ -3118,13 +3116,13 @@ sequenceDiagram
     loop periodic check
         TIMER->>WT: compare elapsed and required time
     end
-    alt timeout and OTA not busy and EPD idle
+    alt timeout and HTTP/CH583 idle 20s and OTA not busy and EPD/image idle
         TIMER->>TIMER: read slideshow control sw/interval
         alt slideshow sw=1
             TIMER->>TIMER: read slideshow runtime interval elapsed
-            alt remaining interval >= TDX_SLIDESHOW_INTERVAL_MIN_SECONDS
+            alt remaining interval >= TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS
                 WT->>CH583: WAKE_TIMER ON,<remaining interval>
-            else remaining interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS
+            else remaining interval < TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS
                 WT->>WT: reset wifi_work_time counter, skip POWER_OFF
             end
         else slideshow sw=0
@@ -3146,9 +3144,16 @@ main/server_network_sta/wifi_work_time/server_network_sta_wifi_work_time.h
 ```text
 main/main.c
 └─ ServerNetworkStaWifiWorkTime_Init()
+   ├─ set CH583 startup-pending guard before work_state_task
    ├─ load_work_state_from_nvs()
    ├─ load_work_time_vars_from_app_nvs()
    └─ xTaskCreate(work_state_task)
+
+main/main.c
+└─ Ch583UartApp_Init()
+   └─ ServerNetworkStaWifiWorkTime_OnCh583Initialized()
+      ├─ clear CH583 startup-pending guard
+      └─ start a fresh 20-second CH583 activity hold
 
 HTTP small JSON set_wifi_work_time
 └─ receive_data_redirect_handler()
@@ -3160,24 +3165,35 @@ HTTP small JSON set_wifi_work_time
             └─ save_work_time_vars_to_app_nvs()
 
 work_state_task()
+├─ LED cancel pending
+│  └─ retry UserLedStatus_CancelPowerOffSync() before all ordinary guards
+├─ CH583 startup pending
+│  └─ postpone POWER_OFF until CH583 UART initialization completes
 ├─ update_working_time_seconds()
 ├─ elapsed <= server_required_continue_work_time
 │  └─ keep running
-├─ elapsed > server_required_continue_work_time && OTA busy
+├─ elapsed > server_required_continue_work_time && OTA receive/write busy
 │  └─ ignored during OTA
 ├─ elapsed > server_required_continue_work_time && EPD busy
 │  └─ postpone POWER_OFF until EPD task completes
-└─ elapsed > server_required_continue_work_time && OTA not busy && EPD idle
+├─ elapsed > server_required_continue_work_time && image save busy
+│  └─ postpone POWER_OFF until save and cleanup complete
+├─ elapsed > server_required_continue_work_time && last HTTP activity < 20 seconds
+│  └─ postpone POWER_OFF until 20 seconds after the latest HTTP activity
+├─ elapsed > server_required_continue_work_time && last CH583 initialization/business activity < 20 seconds
+│  └─ postpone POWER_OFF until 20 seconds after the latest CH583 activity
+└─ elapsed > server_required_continue_work_time && all guards idle
    ├─ ServerNetworkStaSlideshow_IsSavedEnabled("/data")
    ├─ sw=1
    │  ├─ ServerNetworkStaSlideshow_GetRuntimeTiming()
    │  ├─ runtime 正在等待 interval 时，wake_interval = max(runtime_interval - elapsed - startup_delay_seconds, 1)
-   │  ├─ wake_interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS 时，重置 wifi_work_time 运行时计时并跳过 POWER_OFF
-   │  └─ wake_interval >= TDX_SLIDESHOW_INTERVAL_MIN_SECONDS 时，ch583_wifi_uart_send_wake_timer_on(wake_interval)
+   │  ├─ wake_interval < TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS 时，重置 wifi_work_time 运行时计时并跳过 POWER_OFF；保留本次尝试时间，按 20 秒节流后再评估
+   │  └─ wake_interval >= TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS 时，ch583_wifi_uart_send_wake_timer_on(wake_interval)
    ├─ sw=0 / control missing / parse failed
    │  └─ ch583_wifi_uart_send_wake_timer_off()
    ├─ 超时后立即发送一次；之后每 20 秒重发一次 WAKE_TIMER / LED 关闭 / POWER_OFF
    ├─ 关机流程中发给 CH583/CH585 的命令之间至少间隔 100ms
+   ├─ WAKE_TIMER 检查允许继续关机后，设置 LED power-off pending
    ├─ UserLedStatus_PreparePowerOffSync()
    └─ ch583_wifi_uart_send_power_off()
 ```
@@ -3188,9 +3204,13 @@ work_state_task()
 server_network_sta_wifi_work_time.c
 ├─ ServerNetworkStaWifiWorkTime_Init()
 ├─ ServerNetworkStaWifiWorkTime_OnNetworkData()
+├─ ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()
+├─ ServerNetworkStaWifiWorkTime_OnCh583Activity()
+├─ ServerNetworkStaWifiWorkTime_OnCh583Initialized()
 ├─ ServerNetworkStaWifiWorkTime_ProcessJson()
 ├─ ServerNetworkStaWifiWorkTime_SetAndSave()
-├─ ServerNetworkStaWifiWorkTime_SetOtaInProgress()
+├─ ServerNetworkStaWifiWorkTime_SetOtaWriteInProgress()
+├─ ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress()
 ├─ configure_ch583_wake_timer_before_power_off()
 └─ work_state_task()
 ```
@@ -3207,7 +3227,7 @@ V2 协议资料拆分：
 字段说明：
 
 ```text
-seconds WiFi 工作时长，单位秒，允许范围 60..3600；兼容字段 `time`，二选一。
+seconds WiFi 工作时长，单位秒，网络 HTTP 只接受该字段和严格十进制整数，允许范围 0..3600；旧字段 `time` 不再支持并返回参数非法。
 网络 JSON 的 `func` 判断支持空格、CRLF 和 PowerShell `ConvertTo-Json` 输出格式。
 ```
 
@@ -3229,7 +3249,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
   -Body $body
 ```
 
-预期：设备保存 WiFi 工作时长配置，并重置工作计时；超时后由 wifi_work_time 模块决定是否发送 CH583 `POWER_OFF`。
+预期：设备保存 WiFi 工作时长配置，并重置工作计时；请求本身更新 HTTP 活动时间，最后一次 HTTP 活动后的 20 秒内不关机；超时后由 wifi_work_time 模块结合 CH583、OTA、EPD、图片保存和轮播保护决定是否发送 CH583 `POWER_OFF`。
 
 EPD 完成低功耗倒计时：
 
@@ -3239,7 +3259,7 @@ USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 默认 5 秒。
 USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 默认 60 秒。
 ```
 
-当 `USER_EPD_DONE_LOW_POWER_ENABLE=1` 时，每次 EPD display task 实际完成一个显示 job 后，都会调用 `ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown()` 请求一次低功耗倒计时。该倒计时允许使用默认 5 秒，不受普通 `set_wifi_work_time` 的 60..3600 秒保存范围限制；它只修改 RAM 中的运行时计时，不写 NVS，不改变 `set_wifi_work_time` 保存值。倒计时到期后，所有 `POWER_OFF` 前都会先检查 cast/upload/cast2pic 图片保存状态；如果 SD 保存或 cleanup 正在进行，只推迟 `POWER_OFF`，不取消关机请求，保存完成后由 `work_state_task()` 下一轮继续关机判断。只有当前 `epd_mode=1(SLIDESHOW)` 时才读取下一次轮播剩余时间：剩余时间不大于 `USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS=60` 秒时不关机，并恢复 one-shot 前的运行时目标；剩余时间大于 60 秒时继续执行关机流程。如果当前不是轮播模式，例如 `epd_mode=0(NORMAL)`、`epd_mode=2(DAILY)` 或保留值，则不做轮播剩余时间判断，直接进入现有关机流程。后续仍由 `work_state_task()` 统一判断 OTA busy、EPD busy、图片保存 busy、slideshow wake timer、LED 关机准备，并最终调用 `ch583_wifi_uart_send_power_off()`。
+当 `USER_EPD_DONE_LOW_POWER_ENABLE=1` 时，每次 EPD display task 实际完成一个显示 job 后，都会调用 `ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown()` 请求一次低功耗倒计时。该倒计时允许使用默认 5 秒，不依赖普通 `set_wifi_work_time` 的 `0..3600` 秒保存值；它只修改 RAM 中的运行时计时，不写 NVS，不改变 `set_wifi_work_time` 保存值。倒计时到期后，所有 `POWER_OFF` 前都会先检查 cast/upload/cast2pic 图片保存状态；如果 SD 保存或 cleanup 正在进行，只推迟 `POWER_OFF`，不取消关机请求，保存完成后由 `work_state_task()` 下一轮继续关机判断。只有当前 `epd_mode=1(SLIDESHOW)` 时才读取下一次轮播剩余时间：剩余时间不大于 `USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS=60` 秒时不关机，并恢复 one-shot 前的运行时目标；剩余时间大于 60 秒时继续执行关机流程。如果当前不是轮播模式，例如 `epd_mode=0(NORMAL)`、`epd_mode=2(DAILY)` 或保留值，则不做轮播剩余时间判断，直接进入现有关机流程。后续仍由 `work_state_task()` 统一判断 HTTP/CH583 活动保护、OTA receive/write busy、EPD busy、图片保存 busy、slideshow wake timer、LED 关机准备，并最终调用 `ch583_wifi_uart_send_power_off()`。
 
 存 / 取信息（含条件限制）：
 
@@ -3251,10 +3271,15 @@ USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 默认 60 秒。
 取：
 - load_work_state_from_nvs() 读取工作状态 blob。
 - load_work_time_vars_from_app_nvs() 读取兼容字符串 key。
-- work_state_task() 读取 RAM 中计时值；超时后如果 OTA 忙或 EPD task 忙则推迟，只有 OTA 不忙且 EPD 空闲时才先配置 CH583 WAKE_TIMER，再发送 CH583 POWER_OFF。
+- `seconds=0` 时 `server_required_continue_work_time` 与 `wifi_standby_time_s` 都按 0 保存和恢复，不再把 standby 的 0 替换为默认 15。
+- work_state_task() 读取 RAM 中计时值；CH583 UART 初始化完成前禁止关机；超时后如果最近一次 HTTP 或 CH583 初始化完成/合法业务活动不足 20 秒、OTA 接收/写入忙、EPD task 忙或图片保存忙则推迟；所有保护解除后才先配置 CH583 WAKE_TIMER，再发送 CH583 POWER_OFF。
+- ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity() 只记录 HTTP 活动 tick；请求入口、每次成功接收 HTTP body 数据块以及长文件、目录列表、缩略图成功发送数据块时刷新，20 秒保护只在 RAM 中生效，不重置保存的完整工作时间。原 ServerNetworkStaWifiWorkTime_OnNetworkData() 继续供 BLE/CH583、EPD 等原调用方使用。
+- wifi_work_time 初始化时设置 CH583 startup-pending guard；该 guard 不受 20 秒超时限制，CH583 UART 初始化完成前禁止进入关机流程。`ServerNetworkStaWifiWorkTime_OnCh583Initialized()` 清除 startup-pending guard，并从初始化完成时开始新的 20 秒 CH583 活动保护。
+- ServerNetworkStaWifiWorkTime_OnCh583Activity() 只记录 CH583 活动 tick；合法 BLE_MAC、BLE_VER、单帧及每个有效 BLE_DATA 分片刷新。PING/PONG、ACK/ERR、GPIO_VALUE、TIME_STATUS、NFC_STATUS 不刷新。
+- LED 关机准备完成后立即执行 final guard；若工作计时已被 USB/BLE 等活动重置，或此时出现 HTTP、CH583、OTA、EPD、图片保存活动，则设置 LED cancel-pending 状态并调用 `UserLedStatus_CancelPowerOffSync()`。取消失败时，`work_state_task()` 后续每轮都优先重试，成功解除 LED 永久关机锁前不进入普通活动保护或新的关机流程。
 - TdxImageTransfer_ProcessItems() 在 cast/upload/cast2pic 发现本次需要保存图片时设置 image_save_busy，并覆盖后续 EPD 显示、保存和 cleanup；显示失败、保存成功、保存失败或 cleanup 后都会清除。work_state_task() 在所有 POWER_OFF 前检查 image_save_busy，busy 时不发送 WAKE_TIMER / LED 关闭 / POWER_OFF，只推迟到保存完成后的下一轮继续关机判断。
 - EPD 完成低功耗倒计时开启时，每个 EPD display job 完成后只请求一次运行时倒计时；倒计时到期后，只有 `epd_mode=1(SLIDESHOW)` 才检查下一次轮播剩余时间，如果剩余时间不大于 60 秒，不关机并恢复 one-shot 前的运行时目标；非轮播模式不做该判断，直接进入现有关机流程；下一次 EPD job 完成才会再次请求。
-- 轮播开启时，WAKE_TIMER 优先使用 RTC 轮播的 `next_epoch - now_epoch` 剩余秒数，并扣除开机自动恢复轮播延迟和额外提前量：`remain - (startup_delay_seconds + TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS)`；其中 `startup_delay_seconds = ceil(TDX_SLIDESHOW_STARTUP_DELAY_MS / 1000)`，当前为 10 秒，`TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS` 当前为 20 秒，总提前 30 秒。若当前不是 RTC 轮播或 RTC timing 不可用，则回退使用旧 runtime timing：`runtime_interval - 已走秒数 - 总提前秒数`；再不可用才回退 control 文件中的 interval。若计算出的 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，ESP32 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，只重置 wifi_work_time 运行时计时，从头等待下一次工作超时。
+- 轮播开启时，WAKE_TIMER 优先使用 RTC 轮播的 `next_epoch - now_epoch` 剩余秒数，并扣除开机自动恢复轮播延迟和额外提前量：`remain - (startup_delay_seconds + TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS)`；其中 `startup_delay_seconds = ceil(TDX_SLIDESHOW_STARTUP_DELAY_MS / 1000)`，当前为 10 秒，`TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS` 当前为 20 秒，总提前 30 秒。若当前不是 RTC 轮播或 RTC timing 不可用，则回退使用旧 runtime timing：`runtime_interval - 已走秒数 - 总提前秒数`；再不可用才回退 control 文件中的 interval。若计算出的 wake_interval 小于 `TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS=20`，ESP32 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，只重置 wifi_work_time 运行时计时并保留本次关机尝试时间，确保 `seconds=0` 时仍按 20 秒节流后再评估；该分支不会设置 LED power-off pending，避免 LED 反复关闭和恢复。轮播配置自身的最小间隔仍由 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60` 控制。
 ```
 
 work_state 栈大小要求：
@@ -3265,10 +3290,10 @@ USER_WORK_STATE_TASK_STACK_SIZE 默认使用 8 * 1024。
 
 原因：
 work_state_task() 不是只做简单计时。工作时间超时后，它会执行关机前完整链路：
-1. 先确认 OTA 不忙且 EPD task 空闲；EPD 正在显示或队列仍有待显示任务时不关机。
+1. 先确认 CH583 UART 已初始化完成、最近一次 HTTP 与 CH583 初始化完成/合法业务活动都已过去 20 秒、OTA receive/write hold 均已解除、EPD task 空闲且图片保存不忙；任一保护条件不满足时不关机。
 2. 读取 slideshow control，决定 WAKE_TIMER ON/OFF。
-3. slideshow 开启时优先读取 RTC schedule timing，使用 `next_epoch - now_epoch` 作为剩余秒数，并额外扣掉 `TDX_SLIDESHOW_STARTUP_DELAY_MS` 换算后的 10 秒和 `TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS=20` 秒；若没有 RTC timing，再回退旧 runtime timing。若剩余 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，不发送 WAKE_TIMER ON/OFF，不发送 POWER_OFF，只重置 wifi_work_time 运行时计时；否则发送 CH583 WAKE_TIMER ON。
-4. 调用 UserLedStatus_PreparePowerOffSync()，等待 LED Task 停止 RED/GREEN 闪烁并强制关闭后再继续。
+3. slideshow 开启时优先读取 RTC schedule timing，使用 `next_epoch - now_epoch` 作为剩余秒数，并额外扣掉 `TDX_SLIDESHOW_STARTUP_DELAY_MS` 换算后的 10 秒和 `TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS=20` 秒；若没有 RTC timing，再回退旧 runtime timing。若剩余 wake_interval 小于 `TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS=20`，不发送 WAKE_TIMER ON/OFF、不设置 LED power-off pending、不发送 POWER_OFF，只重置 wifi_work_time 运行时计时并保留 20 秒关机重试节流；否则发送 CH583 WAKE_TIMER ON。
+4. 调用 `UserLedStatus_PreparePowerOffSync()`，等待 LED Task 停止 RED/GREEN 闪烁并强制关闭后，再执行 final guard；若出现新任务则通过 `UserLedStatus_CancelPowerOffSync()` 解除关机锁并恢复基础灯效。
 5. 发送 CH583 POWER_OFF。
 
 这些调用会进入 CH583 V1 组帧、UART 写入、调试输出等函数，栈上存在多个局部 buffer。
@@ -5707,7 +5732,8 @@ Result 定义建议：
 | 返回 | result | 说明 |
 |---|---|---|
 | `set_wifi_work_time_result` | `0` | USB 工作时间设置成功 |
-| `set_wifi_work_time_result` | `1351` | `seconds` / `time` 缺失 |
+| `set_wifi_work_time_result` | `1004` | USB 请求包含已停用的旧字段 `time` |
+| `set_wifi_work_time_result` | `1351` | `seconds` 缺失或不是有效无符号整数 |
 | `set_wifi_work_time_result` | `1352` | 工作时间超出范围 |
 | `set_wifi_work_time_result` | `1353` | 保存失败 |
 | `set_wifi_work_time_result` | `1354` | 应用失败 |
@@ -5715,7 +5741,7 @@ Result 定义建议：
 功能说明：
 
 ```text
-USB wifi_work_time 接口用于设置 WiFi 继续工作时长，最终由 server_network_sta/wifi_work_time 模块计时，超时后可通过 CH583 POWER_OFF 关闭 WiFi 电源。
+USB wifi_work_time 接口只接受严格十进制整数 `seconds=0..3600`，旧字段 `time` 返回参数非法，`1.5`、`1800abc` 等格式返回 `1351`。设置值最终由 server_network_sta/wifi_work_time 模块计时，超时后可通过 CH583 POWER_OFF 关闭 WiFi 电源。USB 请求不属于 HTTP 网络活动，不产生额外的 20 秒 HTTP 活动保护。
 ```
 
 Mermaid 时序图：
@@ -5788,6 +5814,14 @@ Content-Length: 43
 ```
 
 预期：返回 `set_wifi_work_time_result`；`result=0` 表示工作时间已经保存并重置计时。
+
+旧字段不再支持：
+
+```json
+{"func":"set_wifi_work_time","time":300}
+```
+
+网络 HTTP 与 USB 收到旧字段 `time` 时返回 `TDX_JSON_RESULT_PARAM_INVALID=1004`。BLE/CH583 协议不在本次修改范围内，继续保持原有兼容行为。
 
 
 存 / 取信息（含条件限制）：
@@ -6275,6 +6309,7 @@ sequenceDiagram
     CH583->>CH583: CH583 固件侧拉高 PB8，唤醒 WiFi 电源
     loop 每 2 秒
         CH583->>ESP32: CMD=BLE_MAC, ARG=<12位BLE MAC>
+        ESP32->>ESP32: 刷新 CH583 20 秒关机保护
         ESP32->>ESP32: 保存 BLE MAC 到 NVS
         ESP32-->>CH583: CMD=ACK, ARG=<BLE_MAC seq>
     end
@@ -6300,6 +6335,7 @@ CH583
       │  ├─ 校验 PART=1/TOTAL=1
       │  ├─ 校验 LEN=12
       │  ├─ 校验 12 位大写 HEX MAC
+      │  ├─ ServerNetworkStaWifiWorkTime_OnCh583Activity()
       │  ├─ app_nvs_write_str(CH583_BLE_MAC_NVS_KEY)
       │  └─ ch583_wifi_send_ack(frame->seq)
       └─ 后续 /ping 可返回 Ble_MAC
@@ -6322,7 +6358,7 @@ CMD=BLE_MAC
 ARG=<mac>
 mac：CH583 自身 BLE MAC，12 位大写 HEX，不带冒号
 CH583 每 2 秒发送一次 BLE_MAC
-WiFi 收到后必须 ACK
+WiFi 收到合法 BLE_MAC 后刷新 20 秒 CH583 关机保护并必须 ACK
 ACK 的 ARG 必须等于 BLE_MAC 的 SEQ
 ACK 正确后，CH583 停止 BLE_MAC，开始 PING/PONG
 ```
@@ -6333,6 +6369,7 @@ ACK 正确后，CH583 停止 BLE_MAC，开始 PING/PONG
 ```text
 存：
 - ch583_wifi_handle_ble_mac() 将合法 BLE MAC 写入 PhotoPainter NVS 的 CH583_BLE_MAC_NVS_KEY。
+- 合法 BLE_MAC 在保存和 ACK 前调用 ServerNetworkStaWifiWorkTime_OnCh583Activity()，只刷新 RAM 中的 20 秒保护。
 
 取：
 - 读取 BLE_MAC 帧 ARG。
@@ -6374,6 +6411,7 @@ WiFi 行为：
 刚启动时 ch583_wifi_uart_protocol_init() 从 NVS 读取 BLE_VER；如果 key 不存在，app_nvs_read_u8() 写入默认值 0。
 收到新的合法 BLE_VER 时，以新值覆盖 RAM 和 NVS。
 如果 BLE_VER 写 NVS 失败，只打印 warning；RAM 缓存仍更新，不阻塞 ACK 和后续 WIFI_VER 上报。
+收到合法 BLE_VER 后调用 ServerNetworkStaWifiWorkTime_OnCh583Activity()，从当前时刻刷新 RAM 中的 20 秒 CH583 关机保护；不重置保存值、不写 wifi_work_time NVS。
 BLE_VER 保存成功后 ACK，ACK 的 ARG 等于 BLE_VER 的 SEQ。
 ```
 
@@ -6506,6 +6544,7 @@ BLE_MAC 握手成功后，CH583 每 2 秒发送一次 PING
 WiFi 收到后立即回复 PONG
 PONG 的 ARG 必须等于对应 PING 的 SEQ
 如果 CH583 连续多次没有收到合法 PONG，则关闭 WiFi 电源并进入低功耗
+UART PING/PONG 是持续心跳，不刷新 CH583 20 秒关机保护
 ```
 
 
@@ -6514,6 +6553,7 @@ PONG 的 ARG 必须等于对应 PING 的 SEQ
 ```text
 存：
 - PING/PONG 心跳不写持久化数据。
+- PING/PONG 不调用 ServerNetworkStaWifiWorkTime_OnCh583Activity()，避免心跳永久阻止关机。
 
 取：
 - 读取 PING 帧 SEQ，PONG 的 ARG 返回对应 PING SEQ。
@@ -6536,6 +6576,7 @@ sequenceDiagram
 
     Phone->>CH583: BLE write JSON
     CH583->>ESP32: CMD=BLE_DATA, ARG=<frontend_data>
+    ESP32->>ESP32: 刷新 CH583 20 秒关机保护
     ESP32->>ESP32: ACK 当前 BLE_DATA 帧
     ESP32->>BLE: Ch583Uart_HandleBleDataText(ARG)
     BLE->>BLE: User_HandleWifiJsonTextFromCh583(ARG)
@@ -6559,8 +6600,8 @@ Phone BLE write
       └─ ESP32-C5 ch583_wifi_handle_frame_body()
          ├─ CMD == BLE_DATA
          ├─ ch583_wifi_handle_ble_data()
-         │  ├─ 单包：ch583_wifi_send_ack(frame->seq)
-         │  ├─ 多包：按 PART/TOTAL 重组
+         │  ├─ 单包：刷新 CH583 保护后 ACK
+         │  ├─ 多包：按 PART/TOTAL 重组，每个有效分片刷新 CH583 保护
          │  └─ 重组完成后回调 ble_data_callback()
          └─ Ch583Uart_HandleBleDataText()
             └─ User_HandleWifiJsonTextFromCh583()
@@ -6589,6 +6630,8 @@ CH583 不修改 frontend_data
 每包最大 ARG 长度 300 字节
 超过 300 字节时，CH583 自动分包
 ESP32-C5 侧重组后，把 ARG 原文交给 JSON 业务层
+合法单包和每个顺序正确、长度合法的分片都刷新 20 秒 CH583 关机保护
+乱序、重复、超长或其他非法分片不刷新保护
 ```
 
 对应业务 JSON 示例：
@@ -6613,6 +6656,7 @@ ESP32-C5 侧重组后，把 ARG 原文交给 JSON 业务层
 ```text
 存：
 - BLE_DATA 透传层不直接存储。
+- BLE_DATA 的 CH583 保护只保存在 RAM 中，不写 NVS；原 OnNetworkData() 完整工作计时重置行为保持不变。
 - 如果 ARG 是 wifi JSON，下游 ble_data_handler 会保存 WiFi 配置到 NVS。
 - 如果 ARG 是 set_wifi_work_time，下游会保存工作时间到 NVS。
 
@@ -6757,16 +6801,25 @@ main/ch583_uart/ch583_wifi_uart_protocol.h
 work_state_task()
 ├─ update_working_time_seconds()
 ├─ 判断 working_time > server_required_continue_work_time
-├─ OTA busy
+├─ HTTP 活动保护不足 20 秒
+│  └─ 不关电
+├─ CH583 UART 初始化未完成，或初始化完成/合法业务活动保护不足 20 秒
+│  └─ 不关电
+├─ OTA receive/write busy
 │  └─ 不关电
 ├─ EPD busy
 │  └─ 不关电，等待 EPD task 完成
-└─ OTA not busy && EPD idle
+├─ image save busy
+│  └─ 不关电，等待图片保存和 cleanup 完成
+└─ HTTP/CH583/OTA/EPD/image-save guards all idle
    ├─ UserLedStatus_PreparePowerOffSync()
    │  ├─ LED_BLINK_STOP GREEN
    │  └─ GPIO PB6 HIGH，确保 GREEN 关闭
-   └─ ch583_wifi_uart_send_power_off()
-      └─ ch583_wifi_send_frame("POWER_OFF", "")
+   ├─ final guard 发现新任务
+   │  └─ UserLedStatus_CancelPowerOffSync()
+   └─ final guard 仍为空闲
+      └─ ch583_wifi_uart_send_power_off()
+         └─ ch583_wifi_send_frame("POWER_OFF", "")
 ```
 
 关键辅助函数：
@@ -6775,8 +6828,12 @@ work_state_task()
 ServerNetworkStaWifiWorkTime_Init()
 work_state_task()
 ServerNetworkStaWifiWorkTime_OnNetworkData()
-ServerNetworkStaWifiWorkTime_SetOtaInProgress()
+ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()
+ServerNetworkStaWifiWorkTime_OnCh583Activity()
+ServerNetworkStaWifiWorkTime_SetOtaWriteInProgress()
+ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress()
 UserLedStatus_PreparePowerOffSync()
+UserLedStatus_CancelPowerOffSync()
 ch583_wifi_uart_send_power_off()
 ch583_wifi_send_frame()
 ```
@@ -6787,8 +6844,8 @@ ch583_wifi_send_frame()
 CMD=POWER_OFF
 ARG 为空
 WiFi 任务完成后，如果允许 CH583 关闭 WiFi 电源，ESP32-C5 发送 POWER_OFF
-CH583 收到并校验通过后回复 ACK，然后由 CH583 固件侧拉低 PB8、关闭 WiFi 电源并进入低功耗。ESP32 当前源码只负责发送 `POWER_OFF` 帧，不直接操作 PB8。发送前需要确认 OTA 不忙且 EPD task 空闲；EPD 显示未完成时继续推迟，避免关电导致显示不完整。
-轮播开启时，如果关电前计算出的 WAKE_TIMER wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`，ESP32-C5 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，而是重置 wifi_work_time 运行时计时，从头等待下一次工作超时。
+CH583 收到并校验通过后回复 ACK，然后由 CH583 固件侧拉低 PB8、关闭 WiFi 电源并进入低功耗。ESP32 当前源码只负责发送 `POWER_OFF` 帧，不直接操作 PB8。发送前需要确认 CH583 UART 已初始化完成、最近一次 HTTP 与 CH583 初始化完成/合法业务活动都已过去 20 秒、OTA receive/write hold 均已解除、EPD task 空闲、图片保存不忙且工作计时没有被 USB/BLE 等新活动重置。LED 关机准备完成后的 final guard 若发现新的 HTTP、CH583 或其他受保护任务，会设置 LED cancel-pending 状态；取消失败时后续每轮优先重试，成功解除 LED 关机锁并恢复基础灯效前不进入普通保护或新的关机流程。
+轮播开启时，如果关电前计算出的 WAKE_TIMER wake_interval 小于 `TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS=20`，ESP32-C5 不发送 WAKE_TIMER ON/OFF、不设置 LED power-off pending，也不发送 POWER_OFF；系统重置 wifi_work_time 运行时计时，但保留本次关机尝试时间，至少等待现有 20 秒重试间隔后再评估。该阈值只控制关机决策，不改变轮播配置的最小间隔 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`。
 ```
 
 
@@ -7187,7 +7244,7 @@ WiFi 连接、等待 IP、自动重连和 HTTP 启动期间发送 LED_BLINK GREE
 WiFi、HTTP、存储或严重故障使 GREEN 关闭；OTA 期间 GREEN 常亮。
 关机倒计时期间 GREEN 常亮，真正发送 POWER_OFF 前停止闪烁并强制 PB6 关闭。
 每次调用 ch583_wifi_uart_send_power_off() 前，必须先发送 LED_BLINK_STOP GREEN，再强制 PB6 为关闭电平。
-进入关机流程后 GREEN 保持关闭，不再由后续业务状态启动。
+LED 关机准备成功后 GREEN 保持关闭；如果 final guard 发现新任务并取消本次关机，则同步解除关机锁并恢复当前基础灯效。
 ```
 
 RED 任务活动灯规则：
@@ -7316,15 +7373,15 @@ ESP32-C5 侧使用：
 work_state_task() 工作时间到期、OTA 不忙且 EPD 空闲时：
 ├─ 读取 slideshow control
 ├─ sw=1：优先读取 RTC schedule timing，再回退 runtime timing，并扣除总提前秒数 30 秒后计算 wake_interval
-│  ├─ wake_interval >= TDX_SLIDESHOW_INTERVAL_MIN_SECONDS：ch583_wifi_uart_send_wake_timer_on(wake_interval)
-│  └─ wake_interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS：不发送 WAKE_TIMER ON/OFF，不发送 POWER_OFF，只重置 wifi_work_time 运行时计时
+│  ├─ wake_interval >= TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS：ch583_wifi_uart_send_wake_timer_on(wake_interval)
+│  └─ wake_interval < TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS：不发送 WAKE_TIMER ON/OFF、不设置 LED power-off pending、不发送 POWER_OFF；重置运行时计时并保留 20 秒重试节流
 ├─ sw=0：ch583_wifi_uart_send_wake_timer_off()
 ├─ 超时后立即发送一次；之后每 20 秒重发一次 WAKE_TIMER / LED 关闭 / POWER_OFF
 ├─ 关机流程中发给 CH583/CH585 的命令之间至少间隔 100ms
 └─ 然后继续 ch583_wifi_uart_send_power_off()
 ```
 
-`WAKE_TIMER` 配置失败只打印 warning，不阻止后续 `POWER_OFF`；这样 CH583/CH585 固件暂未支持新命令时，也不会破坏原有关机链路。轮播开启且 wake_interval 小于 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60` 时，不调用 `ch583_wifi_uart_send_wake_timer_off()`，而是重置 wifi_work_time 运行时计时并跳过本次 `POWER_OFF`。超时后关机流程按 20 秒节流重发，但 EPD busy 时不发送 WAKE_TIMER / LED 关闭 / POWER_OFF，等 EPD task 完成后再进入关机流程，避免刷屏中途断电。
+`WAKE_TIMER` 配置失败只打印 warning，不阻止后续 `POWER_OFF`；这样 CH583/CH585 固件暂未支持新命令时，也不会破坏原有关机链路。轮播开启且 wake_interval 小于 `TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS=20` 时，不调用 `ch583_wifi_uart_send_wake_timer_off()`，不设置 LED power-off pending，而是重置 wifi_work_time 运行时计时、保留本次关机尝试时间并跳过本次 `POWER_OFF`；即使 `seconds=0`，也至少等待现有 20 秒重试间隔后再评估。该20秒阈值不改变轮播配置最小间隔 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`。CH583 UART 初始化尚未完成、HTTP 或 CH583 合法业务活动保护不足 20 秒、OTA receive/write busy、EPD busy 或图片保存 busy 时均不发送 WAKE_TIMER、LED 关闭或 `POWER_OFF`，所有保护解除后再进入关机流程。
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-12)
 
@@ -9574,7 +9631,7 @@ flowchart TD
 10. 基础设备状态
 ```
 
-`UserLedStatus_PreparePowerOffSync()` 使用 LED 模块专用 binary semaphore 等待结果。LED Task 只有在 RED/GREEN 的 `LED_BLINK_STOP` 和 PB5/PB6 关闭命令全部成功写入 UART 后，才设置永久关机锁、清除活动和临时结果并返回成功；任何命令写入失败都返回错误，本轮不发送 `POWER_OFF`。进入永久关机锁后，后续普通 LED 事件不能重新点亮 LED。该同步结果确认的是 ESP32 UART 命令写入结果；CH583 的异步 ACK/ERR 仍由现有协议层处理。
+`UserLedStatus_PreparePowerOffSync()` 使用 LED 模块专用 binary semaphore 等待结果。LED Task 只有在 RED/GREEN 的 `LED_BLINK_STOP` 和 PB5/PB6 关闭命令全部成功写入 UART 后，才设置永久关机锁、清除活动和临时结果并返回成功；任何命令写入失败都返回错误，本轮不发送 `POWER_OFF`。进入永久关机锁后，普通 LED 事件不能重新点亮 LED；如果 wifi_work_time final guard 发现新任务，`UserLedStatus_CancelPowerOffSync()` 会通过同一 LED Task 同步解除关机锁并恢复当前基础灯效。该同步结果确认的是 ESP32 UART 命令写入结果；CH583 的异步 ACK/ERR 仍由现有协议层处理。
 
 ### 13.3 活动计数与临时恢复
 
@@ -9916,7 +9973,7 @@ HTTP POST /ota or /ota_upload
 存：
 - esp_ota_write() 写入 OTA update partition。
 - esp_ota_set_boot_partition() 保存下次启动分区选择。
-- OTA 期间会设置 WiFi 工作时间模块的 OTA busy 状态，避免超时 POWER_OFF。
+- OTA HTTP body 接收与固件写入分别设置 WiFi 工作时间模块的 receive/write power hold；任一 hold 有效时都禁止超时 `POWER_OFF`。
 
 取：
 - 读取 multipart meta JSON、firmware/bin 字段。

@@ -374,7 +374,7 @@ OTA 使用 `1701~1713`，详见 [6.8](#sec-06-8)。
 set_wifi_work_time_result
 ```
 
-`wifi_work_time` 使用 `1351~1354`，详见 [6.4](#sec-06-4)。
+网络 HTTP `wifi_work_time` 只接受 `seconds=0..3600`，使用 `1351~1354`；旧字段 `time` 返回通用参数非法 `1004`。详见 [6.4](#sec-06-4)。
 
 [⬆ 返回目录](#toc)
 
@@ -524,7 +524,7 @@ USB WiFi 使用 `1301~1306`，详见 [6.4](#sec-06-4)。
 set_wifi_work_time_result
 ```
 
-USB WiFi 工作时间使用 `1351~1354`，详见 [6.4](#sec-06-4)。
+USB WiFi 工作时间只接受 `seconds=0..3600`，使用 `1351~1354`；旧字段 `time` 返回通用参数非法 `1004`。详见 [6.4](#sec-06-4)。
 
 [⬆ 返回目录](#toc)
 
@@ -757,7 +757,7 @@ PhotoPainter:epd_mode
 | `1307` | `TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT` | WiFi 连接超时 |
 | `1308` | `TDX_JSON_RESULT_WIFI_AUTH_FAILED` | WiFi 认证失败 |
 | `1309` | `TDX_JSON_RESULT_WIFI_GOT_IP_FAILED` | WiFi 获取 IP 失败 |
-| `1351` | `TDX_JSON_RESULT_WIFI_WORK_TIME_MISSING` | `seconds` / `time` 缺失 |
+| `1351` | `TDX_JSON_RESULT_WIFI_WORK_TIME_MISSING` | 网络 HTTP / USB 的 `seconds` 缺失或无效；BLE / CH583 入口仍按原协议兼容 `seconds` / `time` |
 | `1352` | `TDX_JSON_RESULT_WIFI_WORK_TIME_RANGE` | 工作时间超出范围 |
 | `1353` | `TDX_JSON_RESULT_WIFI_WORK_TIME_SAVE_FAILED` | 工作时间保存失败 |
 | `1354` | `TDX_JSON_RESULT_WIFI_WORK_TIME_APPLY_FAILED` | 工作时间应用失败 |

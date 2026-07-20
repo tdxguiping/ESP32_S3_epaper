@@ -24,7 +24,13 @@ static TickType_t s_wifi_work_start_tick = 0;
 static TickType_t s_last_network_data_tick = 0;
 static TickType_t s_last_power_off_send_tick = 0;
 static TaskHandle_t s_work_state_task = NULL;
-static bool s_ota_in_progress = false;
+static uint32_t s_ota_hold_flags = 0;
+// Zero means no HTTP activity has been recorded; nonzero stores the FreeRTOS tick plus one.
+static uint32_t s_last_http_activity_tick_encoded = 0;
+// Keep CH583 startup and validated business activity independent from HTTP activity.
+static uint32_t s_last_ch583_activity_tick_encoded = 0;
+static uint32_t s_guard_log_flags = 0;
+static uint32_t s_runtime_state_flags = 0;
 static bool s_one_shot_power_off_countdown_active = false;
 static uint32_t s_one_shot_restore_continue_time = USER_WORK_STATE_DEFAULT_CONTINUE_SECONDS;
 static uint32_t s_one_shot_restore_standby_time = USER_WORK_STATE_DEFAULT_STANDBY_SECONDS;
@@ -99,9 +105,7 @@ static void apply_work_state_blob(const user_work_state_nvs_blob_t *blob)
     sleep_time = blob->sleep_time_value;
     working_time = 0;
     server_required_continue_work_time = clamp_continue_seconds(blob->server_required_continue_work_time_value);
-    wifi_standby_time_s = blob->wifi_standby_time_s_value != 0 ?
-                          blob->wifi_standby_time_s_value :
-                          USER_WORK_STATE_DEFAULT_STANDBY_SECONDS;
+    wifi_standby_time_s = blob->wifi_standby_time_s_value;
 
     s_wifi_work_start_tick = xTaskGetTickCount();
     s_last_network_data_tick = s_wifi_work_start_tick;
@@ -245,8 +249,7 @@ static void load_work_time_vars_from_app_nvs(void)
                          value,
                          sizeof(value),
                          default_value) == ESP_OK &&
-        parse_app_nvs_u32(value, &parsed) &&
-        parsed != 0) {
+        parse_app_nvs_u32(value, &parsed)) {
         wifi_standby_time_s = parsed;
     }
 
@@ -263,6 +266,42 @@ static uint32_t update_working_time_seconds(void)
     }
     working_time = (uint32_t)(((now - s_wifi_work_start_tick) * portTICK_PERIOD_MS) / 1000U);
     return working_time;
+}
+
+static uint32_t http_activity_hold_remaining_seconds(TickType_t now)
+{
+    uint32_t encoded_tick = __atomic_load_n(&s_last_http_activity_tick_encoded, __ATOMIC_ACQUIRE);
+    if (encoded_tick == 0) {
+        return 0;
+    }
+
+    TickType_t last_tick = (TickType_t)(encoded_tick - 1U);
+    TickType_t hold_ticks = pdMS_TO_TICKS(USER_WORK_STATE_HTTP_ACTIVITY_HOLD_SECONDS * 1000U);
+    TickType_t elapsed_ticks = now - last_tick;
+    if (elapsed_ticks >= hold_ticks) {
+        return 0;
+    }
+
+    uint32_t remaining_ms = (uint32_t)((hold_ticks - elapsed_ticks) * portTICK_PERIOD_MS);
+    return (remaining_ms + 999U) / 1000U;
+}
+
+static uint32_t ch583_activity_hold_remaining_seconds(TickType_t now)
+{
+    uint32_t encoded_tick = __atomic_load_n(&s_last_ch583_activity_tick_encoded, __ATOMIC_ACQUIRE);
+    if (encoded_tick == 0) {
+        return 0;
+    }
+
+    TickType_t last_tick = (TickType_t)(encoded_tick - 1U);
+    TickType_t hold_ticks = pdMS_TO_TICKS(USER_WORK_STATE_CH583_ACTIVITY_HOLD_SECONDS * 1000U);
+    TickType_t elapsed_ticks = now - last_tick;
+    if (elapsed_ticks >= hold_ticks) {
+        return 0;
+    }
+
+    uint32_t remaining_ms = (uint32_t)((hold_ticks - elapsed_ticks) * portTICK_PERIOD_MS);
+    return (remaining_ms + 999U) / 1000U;
 }
 
 //调用   ServerNetworkStaWifiWorkTime_OnNetworkData  从头计
@@ -285,7 +324,6 @@ static void reset_work_time_counter_for_slideshow_short_interval(void)
 {
     s_wifi_work_start_tick = xTaskGetTickCount();
     working_time = 0;
-    s_last_power_off_send_tick = 0;
 }
 
 static void restore_work_time_after_one_shot_skip(void)
@@ -431,12 +469,12 @@ static bool configure_ch583_wake_timer_before_power_off(void)
         wake_interval = wake_interval > wake_advance ? wake_interval - wake_advance : 1U;
 
         if (!s_one_shot_power_off_countdown_active &&
-            wake_interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS) {
+            wake_interval < TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS) {
             reset_work_time_counter_for_slideshow_short_interval();
             ESP_LOGI(TAG,
                      "slideshow wake interval too short, skip power off wake_interval=%lu min=%lu saved_interval=%lu elapsed=%lu startup_delay=%lu extra_advance=%lu wake_advance=%lu",
                      (unsigned long)wake_interval,
-                     (unsigned long)TDX_SLIDESHOW_INTERVAL_MIN_SECONDS,
+                     (unsigned long)TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS,
                      (unsigned long)interval,
                      (unsigned long)runtime_elapsed,
                      (unsigned long)startup_delay,
@@ -466,6 +504,26 @@ static bool configure_ch583_wake_timer_before_power_off(void)
     return true;
 }
 
+static bool retry_pending_led_power_off_cancel(void)
+{
+    uint32_t runtime_flags = __atomic_load_n(&s_runtime_state_flags, __ATOMIC_ACQUIRE);
+    if ((runtime_flags & USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT) == 0) {
+        return true;
+    }
+
+    esp_err_t cancel_ret = UserLedStatus_CancelPowerOffSync();
+    if (cancel_ret != ESP_OK) {
+        return false;
+    }
+
+    (void)__atomic_fetch_and(&s_runtime_state_flags,
+                             ~USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT,
+                             __ATOMIC_ACQ_REL);
+    UserLedStatus_SetPowerOffPending(false);
+    ESP_LOGI(TAG, "pending LED power-off cancellation completed");
+    return true;
+}
+
 static void work_state_task(void *arg)
 {
     uint8_t counter = 0;
@@ -476,6 +534,17 @@ static void work_state_task(void *arg)
     (void)arg;
 
     while (true) {
+        if (!retry_pending_led_power_off_cancel()) {
+            vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+            continue;
+        }
+
+        uint32_t runtime_flags = __atomic_load_n(&s_runtime_state_flags, __ATOMIC_ACQUIRE);
+        if ((runtime_flags & USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT) != 0) {
+            vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+            continue;
+        }
+
         uint32_t elapsed = update_working_time_seconds();
         uint32_t clamped_continue_time = s_one_shot_power_off_countdown_active ?
                                          server_required_continue_work_time :
@@ -562,13 +631,15 @@ static void work_state_task(void *arg)
 
 
         if (elapsed > server_required_continue_work_time) {
-            if (s_ota_in_progress) {
+            uint32_t ota_hold_flags = __atomic_load_n(&s_ota_hold_flags, __ATOMIC_ACQUIRE);
+            if (ota_hold_flags != 0) {
                 if (counter == 0) {
                     ESP_LOGI(TAG,
-                             "working_time timeout ignored during OTA elapsed=%lu target=%lu standby=%lu",
+                             "working_time timeout ignored during OTA elapsed=%lu target=%lu standby=%lu hold=0x%lx",
                              (unsigned long)elapsed,
                              (unsigned long)server_required_continue_work_time,
-                             (unsigned long)wifi_standby_time_s);
+                             (unsigned long)wifi_standby_time_s,
+                             (unsigned long)ota_hold_flags);
                 }
             } else {
                 TickType_t now = xTaskGetTickCount();
@@ -595,6 +666,42 @@ static void work_state_task(void *arg)
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
                     continue;
                 }
+                uint32_t http_hold_remaining = http_activity_hold_remaining_seconds(now);
+                if (http_hold_remaining > 0) {
+                    uint32_t old_log_flags = __atomic_fetch_or(&s_guard_log_flags,
+                                                               USER_WORK_STATE_GUARD_LOG_HTTP_BIT,
+                                                               __ATOMIC_ACQ_REL);
+                    if ((old_log_flags & USER_WORK_STATE_GUARD_LOG_HTTP_BIT) == 0) {
+                        ESP_LOGI(TAG,
+                                 "power off postponed by HTTP activity remaining=%lu elapsed=%lu target=%lu",
+                                 (unsigned long)http_hold_remaining,
+                                 (unsigned long)elapsed,
+                                 (unsigned long)server_required_continue_work_time);
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
+                (void)__atomic_fetch_and(&s_guard_log_flags,
+                                         ~USER_WORK_STATE_GUARD_LOG_HTTP_BIT,
+                                         __ATOMIC_ACQ_REL);
+                uint32_t ch583_hold_remaining = ch583_activity_hold_remaining_seconds(now);
+                if (ch583_hold_remaining > 0) {
+                    uint32_t old_log_flags = __atomic_fetch_or(&s_guard_log_flags,
+                                                               USER_WORK_STATE_GUARD_LOG_CH583_BIT,
+                                                               __ATOMIC_ACQ_REL);
+                    if ((old_log_flags & USER_WORK_STATE_GUARD_LOG_CH583_BIT) == 0) {
+                        ESP_LOGI(TAG,
+                                 "power off postponed by CH583 activity remaining=%lu elapsed=%lu target=%lu",
+                                 (unsigned long)ch583_hold_remaining,
+                                 (unsigned long)elapsed,
+                                 (unsigned long)server_required_continue_work_time);
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
+                (void)__atomic_fetch_and(&s_guard_log_flags,
+                                         ~USER_WORK_STATE_GUARD_LOG_CH583_BIT,
+                                         __ATOMIC_ACQ_REL);
                 if (s_last_power_off_send_tick != 0 &&
                     (now - s_last_power_off_send_tick) < retry_interval_ticks) {
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
@@ -607,16 +714,15 @@ static void work_state_task(void *arg)
                     continue;
                 }
                 ESP_LOGI(TAG,
-                         "working_time timeout, send CH583 power off elapsed=%lu target=%lu standby=%lu",
+                         "working_time timeout, evaluate CH583 power off elapsed=%lu target=%lu standby=%lu",
                          (unsigned long)elapsed,
                          (unsigned long)server_required_continue_work_time,
                          (unsigned long)wifi_standby_time_s);
-                UserLedStatus_SetPowerOffPending(true);
                 if (!configure_ch583_wake_timer_before_power_off()) {
-                    UserLedStatus_SetPowerOffPending(false);
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
                     continue;
                 }
+                UserLedStatus_SetPowerOffPending(true);
                 vTaskDelay(pdMS_TO_TICKS(100));
                 esp_err_t led_ret = UserLedStatus_PreparePowerOffSync();
                 if (led_ret != ESP_OK) {
@@ -627,6 +733,48 @@ static void work_state_task(void *arg)
                     continue;
                 }
                 vTaskDelay(pdMS_TO_TICKS(100));
+                uint32_t final_ota_hold_flags = __atomic_load_n(&s_ota_hold_flags, __ATOMIC_ACQUIRE);
+                bool final_epd_busy = ServerNetworkStaEpdDisplay_IsBusy();
+                bool final_image_save_busy = ServerNetworkStaWifiWorkTime_IsImageSaveInProgress();
+                TickType_t final_now = xTaskGetTickCount();
+                uint32_t final_http_hold_remaining = http_activity_hold_remaining_seconds(final_now);
+                uint32_t final_ch583_hold_remaining = ch583_activity_hold_remaining_seconds(final_now);
+                uint32_t final_elapsed = update_working_time_seconds();
+                bool final_timer_active = final_elapsed <= server_required_continue_work_time;
+                if (final_timer_active ||
+                    final_ota_hold_flags != 0 ||
+                    final_epd_busy ||
+                    final_image_save_busy ||
+                    final_http_hold_remaining > 0 ||
+                    final_ch583_hold_remaining > 0) {
+                    ESP_LOGI(TAG,
+                             "power off canceled by final guard timer=%d ota=0x%lx epd=%d image_save=%d http_remaining=%lu ch583_remaining=%lu",
+                             final_timer_active ? 1 : 0,
+                             (unsigned long)final_ota_hold_flags,
+                             final_epd_busy ? 1 : 0,
+                             final_image_save_busy ? 1 : 0,
+                             (unsigned long)final_http_hold_remaining,
+                             (unsigned long)final_ch583_hold_remaining);
+                    if (final_http_hold_remaining > 0) {
+                        (void)__atomic_fetch_or(&s_guard_log_flags,
+                                                USER_WORK_STATE_GUARD_LOG_HTTP_BIT,
+                                                __ATOMIC_ACQ_REL);
+                    }
+                    if (final_ch583_hold_remaining > 0) {
+                        (void)__atomic_fetch_or(&s_guard_log_flags,
+                                                USER_WORK_STATE_GUARD_LOG_CH583_BIT,
+                                                __ATOMIC_ACQ_REL);
+                    }
+                    (void)__atomic_fetch_or(&s_runtime_state_flags,
+                                            USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT,
+                                            __ATOMIC_ACQ_REL);
+                    if (!retry_pending_led_power_off_cancel()) {
+                        ESP_LOGE(TAG, "final guard failed to release LED power-off lock, retry scheduled");
+                    }
+                    s_last_power_off_send_tick = 0;
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
                 int power_off_ret = ch583_wifi_uart_send_power_off();
                 if (power_off_ret < 0) {
                     ESP_LOGW(TAG, "CH583 power off command failed ret=%d", power_off_ret);
@@ -634,6 +782,10 @@ static void work_state_task(void *arg)
             }
         } else {
             s_last_power_off_send_tick = 0;
+            (void)__atomic_fetch_and(&s_guard_log_flags,
+                                     ~(USER_WORK_STATE_GUARD_LOG_HTTP_BIT |
+                                       USER_WORK_STATE_GUARD_LOG_CH583_BIT),
+                                     __ATOMIC_ACQ_REL);
         }
 
         vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
@@ -708,10 +860,20 @@ static bool parse_json_int(const char *body, const char *key, int *out)
     while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
         pos++;
     }
+    if ((*pos == '-' && (pos[1] < '0' || pos[1] > '9')) ||
+        (*pos != '-' && (*pos < '0' || *pos > '9'))) {
+        return false;
+    }
 
     errno = 0;
     value = strtol(pos, &end_ptr, 10);
     if (errno != 0 || end_ptr == pos || value < INT32_MIN || value > INT32_MAX) {
+        return false;
+    }
+    while (*end_ptr == ' ' || *end_ptr == '\t' || *end_ptr == '\r' || *end_ptr == '\n') {
+        end_ptr++;
+    }
+    if (*end_ptr != ',' && *end_ptr != '}') {
         return false;
     }
     *out = (int)value;
@@ -747,6 +909,41 @@ void ServerNetworkStaWifiWorkTime_OnNetworkData(void)
         ESP_LOGI(TAG, "activity reset working_time continue=%lu elapsed_ms=%u",
                  (unsigned long)server_required_continue_work_time,
                  (unsigned int)((s_last_network_data_tick - s_wifi_work_start_tick) * portTICK_PERIOD_MS));
+    }
+}
+
+void ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity(void)
+{
+    TickType_t now = xTaskGetTickCount();
+    uint32_t encoded_tick = (uint32_t)now + 1U;
+    if (encoded_tick == 0) {
+        encoded_tick = 1U;
+    }
+    __atomic_store_n(&s_last_http_activity_tick_encoded, encoded_tick, __ATOMIC_RELEASE);
+    s_last_power_off_send_tick = 0;
+}
+
+void ServerNetworkStaWifiWorkTime_OnCh583Activity(void)
+{
+    TickType_t now = xTaskGetTickCount();
+    uint32_t encoded_tick = (uint32_t)now + 1U;
+    if (encoded_tick == 0) {
+        encoded_tick = 1U;
+    }
+    __atomic_store_n(&s_last_ch583_activity_tick_encoded, encoded_tick, __ATOMIC_RELEASE);
+    s_last_power_off_send_tick = 0;
+}
+
+void ServerNetworkStaWifiWorkTime_OnCh583Initialized(void)
+{
+    // Record the timed hold before releasing the startup guard so shutdown cannot race initialization.
+    ServerNetworkStaWifiWorkTime_OnCh583Activity();
+    uint32_t old_flags = __atomic_fetch_and(&s_runtime_state_flags,
+                                            ~USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT,
+                                            __ATOMIC_ACQ_REL);
+    if ((old_flags & USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT) != 0) {
+        ESP_LOGI(TAG, "CH583 startup guard released, activity hold started seconds=%u",
+                 (unsigned int)USER_WORK_STATE_CH583_ACTIVITY_HOLD_SECONDS);
     }
 }
 
@@ -788,10 +985,36 @@ bool ServerNetworkStaWifiWorkTime_IsImageSaveInProgress(void)
     return __atomic_load_n(&s_image_save_in_progress, __ATOMIC_ACQUIRE);
 }
 
-void ServerNetworkStaWifiWorkTime_SetOtaInProgress(bool in_progress)
+void ServerNetworkStaWifiWorkTime_SetOtaWriteInProgress(bool in_progress)
 {
-    s_ota_in_progress = in_progress;
-    ESP_LOGI(TAG, "ota in progress=%d", in_progress ? 1 : 0);
+    if (in_progress) {
+        (void)__atomic_fetch_or(&s_ota_hold_flags,
+                                USER_WORK_STATE_OTA_HOLD_WRITE_BIT,
+                                __ATOMIC_ACQ_REL);
+    } else {
+        (void)__atomic_fetch_and(&s_ota_hold_flags,
+                                 ~USER_WORK_STATE_OTA_HOLD_WRITE_BIT,
+                                 __ATOMIC_ACQ_REL);
+    }
+    ESP_LOGI(TAG, "ota write in progress=%d hold=0x%lx",
+             in_progress ? 1 : 0,
+             (unsigned long)__atomic_load_n(&s_ota_hold_flags, __ATOMIC_ACQUIRE));
+}
+
+void ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress(bool in_progress)
+{
+    if (in_progress) {
+        (void)__atomic_fetch_or(&s_ota_hold_flags,
+                                USER_WORK_STATE_OTA_HOLD_RECEIVE_BIT,
+                                __ATOMIC_ACQ_REL);
+    } else {
+        (void)__atomic_fetch_and(&s_ota_hold_flags,
+                                 ~USER_WORK_STATE_OTA_HOLD_RECEIVE_BIT,
+                                 __ATOMIC_ACQ_REL);
+    }
+    ESP_LOGI(TAG, "ota receive in progress=%d hold=0x%lx",
+             in_progress ? 1 : 0,
+             (unsigned long)__atomic_load_n(&s_ota_hold_flags, __ATOMIC_ACQUIRE));
 }
 
 esp_err_t ServerNetworkStaWifiWorkTime_Init(void)
@@ -802,6 +1025,10 @@ esp_err_t ServerNetworkStaWifiWorkTime_Init(void)
     s_wifi_work_start_tick = xTaskGetTickCount();
     s_last_network_data_tick = s_wifi_work_start_tick;
     s_last_power_off_send_tick = 0;
+    (void)__atomic_fetch_or(&s_runtime_state_flags,
+                            USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT,
+                            __ATOMIC_ACQ_REL);
+    ESP_LOGI(TAG, "CH583 startup guard active until UART initialization completes");
 
     esp_err_t ret = load_work_state_from_nvs(&blob, &stored_size);
     if (ret == ESP_OK) {
@@ -843,9 +1070,6 @@ esp_err_t ServerNetworkStaWifiWorkTime_Init(void)
 
 esp_err_t ServerNetworkStaWifiWorkTime_SetAndSave(uint32_t seconds)
 {
-    if (seconds == 0) {
-        return ESP_ERR_INVALID_ARG;
-    }
     if (s_work_state_task == NULL) {
         ESP_LOGE(TAG, "set work time apply failed because work_state task is not ready");
         return ESP_ERR_INVALID_STATE;
@@ -885,14 +1109,20 @@ esp_err_t ServerNetworkStaWifiWorkTime_ProcessJson(httpd_req_t *req,
     }
 
     int seconds = 0;
-    if (!parse_json_int(body, "seconds", &seconds) &&
-        !parse_json_int(body, "time", &seconds)) {
+    if (find_json_key(body, "time") != NULL) {
+        ESP_LOGW(TAG, "set_wifi_work_time legacy time field is not supported body=%s",
+                 body != NULL ? body : "<null>");
+        return send_wifi_work_time_result(req,
+                                          TDX_JSON_RESULT_PARAM_INVALID,
+                                          "time field is not supported");
+    }
+    if (!parse_json_int(body, "seconds", &seconds)) {
         ESP_LOGW(TAG, "set_wifi_work_time invalid seconds body=%s", body != NULL ? body : "<null>");
         return send_wifi_work_time_result(req,
                                           TDX_JSON_RESULT_WIFI_WORK_TIME_MISSING,
                                           "set wifi work time failed");
     }
-    if (seconds < SERVER_NETWORK_STA_WIFI_WORK_TIME_MIN_SECONDS ||
+    if (seconds < SERVER_NETWORK_STA_WIFI_WORK_TIME_NETWORK_USB_MIN_SECONDS ||
         seconds > SERVER_NETWORK_STA_WIFI_WORK_TIME_MAX_SECONDS) {
         ESP_LOGW(TAG, "set_wifi_work_time seconds out of range seconds=%d body=%s",
                  seconds, body != NULL ? body : "<null>");

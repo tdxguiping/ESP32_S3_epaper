@@ -9,6 +9,7 @@
 
 #include "esp_log.h"
 #include "file_serving_example_common.h"
+#include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 
@@ -257,6 +258,7 @@ esp_err_t ServerNetworkStaSavedImages_SendThumbnail(httpd_req_t *req,
             httpd_resp_sendstr_chunk(req, NULL);
             return ESP_FAIL;
         }
+        ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
     }
 
     fclose(fp);

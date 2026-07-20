@@ -572,7 +572,7 @@ esp_err_t ServerNetworkStaTime_ProcessGet(httpd_req_t *req)
         return ESP_ERR_NOT_SUPPORTED;
     }
 
-    ServerNetworkStaWifiWorkTime_OnNetworkData();
+    ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
 
     server_network_sta_time_info_t info = {0};
     esp_err_t ret = ServerNetworkStaTime_GetInfo(&info);
