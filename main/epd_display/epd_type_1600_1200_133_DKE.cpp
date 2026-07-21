@@ -1,5 +1,7 @@
 #include "epd_type_1600_1200_133_DKE.h"
 
+#include <cstring>
+
 #include "display_bsp.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -13,7 +15,11 @@ constexpr size_t kDkeFrameSize = kDkeImageSize / 2U;
 // English: Use a small SPI chunk because PSRAM source data may need a temporary DMA TX buffer.
 // 中文：使用小 SPI 分包，因为 PSRAM 源数据可能需要临时 DMA TX buffer。
 constexpr size_t kDkeSpiChunkSize = 4092U;
-constexpr uint16_t kDkeBusyMaxLoops = 3000U;
+constexpr uint32_t kDkeResetBusyTimeoutMs = 2000U;
+constexpr uint32_t kDkePonBusyTimeoutMs = 10000U;
+constexpr uint32_t kDkeDrfBusyTimeoutMs = 60000U;
+constexpr uint32_t kDkePofBusyTimeoutMs = 10000U;
+constexpr uint32_t kDkeBusyPollMs = 10U;
 
 constexpr uint8_t kCmdAnTm = 0x74;
 constexpr uint8_t kCmdCmd66 = 0xF0;
@@ -47,29 +53,57 @@ constexpr uint8_t kTftVcomPower[] = {0x02};
 constexpr uint8_t kDcdc[] = {0x44, 0x54, 0x00};
 constexpr uint8_t kPll[] = {0x08};
 constexpr uint8_t kDslp[] = {0xA5};
+
+void LogBusyDone(const char *step, uint32_t polls, int64_t start_us)
+{
+    int64_t elapsed_ms = (esp_timer_get_time() - start_us) / 1000;
+    if (step != nullptr && std::strcmp(step, "DRF") == 0) {
+        ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE busy done step=%s polls=%lu elapsed_ms=%lld",
+                 step, (unsigned long)polls, (long long)elapsed_ms);
+    } else {
+        ESP_LOGD(kTag, "EPD 1600x1200 13.3 DKE busy done step=%s polls=%lu elapsed_ms=%lld",
+                 step != nullptr ? step : "unknown",
+                 (unsigned long)polls,
+                 (long long)elapsed_ms);
+    }
+}
 }
 
 void EpdType16001200_133_DKE_Display(ePaperPort &epd,
                                      const uint8_t *display_buf,
                                      size_t display_size)
 {
+    int64_t start_us = esp_timer_get_time();
     if (display_buf == nullptr || display_size != kDkeImageSize) {
         ESP_LOGE(kTag, "EPD 1600x1200 13.3 DKE rejected input=%u expected=%u",
                  (unsigned int)display_size,
                  (unsigned int)kDkeImageSize);
+        EpdType_ReportDisplayFailure(ESP_ERR_INVALID_SIZE);
         return;
     }
 
     ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE display start size=%u",
              (unsigned int)display_size);
-    epd.EpdType16001200_133_DKE_Init();
+    esp_err_t ret = epd.EpdType16001200_133_DKE_Init();
+    if (ret != ESP_OK) {
+        EpdType_ReportDisplayFailure(ret);
+        ESP_LOGE(kTag, "EPD 1600x1200 13.3 DKE display failed step=init ret=%s total_ms=%lld",
+                 esp_err_to_name(ret),
+                 (long long)((esp_timer_get_time() - start_us) / 1000));
+        return;
+    }
     if (!epd.EpdType16001200_133_DKE_NT61522_DisplayNet(display_buf, display_size)) {
         ESP_LOGE(kTag, "EPD 1600x1200 13.3 DKE display abort because frame write failed");
         EpdType_ReportDisplayFailure(ESP_FAIL);
         return;
     }
-    epd.EpdType16001200_133_DKE_Update();
-    ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE display done");
+    ret = epd.EpdType16001200_133_DKE_Update();
+    if (ret != ESP_OK) {
+        EpdType_ReportDisplayFailure(ret);
+        return;
+    }
+    ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE display done result=ESP_OK total_ms=%lld",
+             (long long)((esp_timer_get_time() - start_us) / 1000));
 }
 
 void ePaperPort::EpdType16001200_133_DKE_Sleep()
@@ -77,16 +111,20 @@ void ePaperPort::EpdType16001200_133_DKE_Sleep()
     ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE sleep");
     EpdType16001200_133_DKE_WriteCommandData(TARGET_BOTH, R07_DSLP, kDslp, sizeof(kDslp));
     delay_ms(100);
-    Set_Power(0);
 }
 
-void ePaperPort::EpdType16001200_133_DKE_Init()
+esp_err_t ePaperPort::EpdType16001200_133_DKE_Init()
 {
     int64_t start_us = esp_timer_get_time();
     ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE init start");
 
     EPD_Reset();
-    EpdType16001200_133_DKE_WaitBusyUnlockSpi("reset", 100);//  kDkeBusyMaxLoops
+    esp_err_t ret = EpdType16001200_133_DKE_WaitBusyUnlockSpi("reset",
+                                                              kDkeResetBusyTimeoutMs);
+    if (ret != ESP_OK) {
+        EpdType_ReportDisplayFailure(ret);
+        return ret;
+    }
 
     EpdType16001200_133_DKE_WriteCommandData(TARGET_MASTER, kCmdAnTm, kAnTm, sizeof(kAnTm));
     EpdType16001200_133_DKE_WriteCommandData(TARGET_BOTH, kCmdCmd66, kCmd66, sizeof(kCmd66));
@@ -112,6 +150,7 @@ void ePaperPort::EpdType16001200_133_DKE_Init()
 
     ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE init done elapsed_ms=%lld",
              (long long)((esp_timer_get_time() - start_us) / 1000));
+    return ESP_OK;
 }
 
 void ePaperPort::EpdType16001200_133_DKE_Display()
@@ -127,9 +166,13 @@ void ePaperPort::EpdType16001200_133_DKE_Display()
     ReleaseDispBuffer();
     if (!write_ok) {
         ESP_LOGE(kTag, "EPD 1600x1200 13.3 DKE display buffer write failed");
+        EpdType_ReportDisplayFailure(ESP_FAIL);
         return;
     }
-    EpdType16001200_133_DKE_Update();
+    esp_err_t ret = EpdType16001200_133_DKE_Update();
+    if (ret != ESP_OK) {
+        EpdType_ReportDisplayFailure(ret);
+    }
 }
 
 bool ePaperPort::EpdType16001200_133_DKE_NT61522_DisplayNet(const uint8_t *imageData,
@@ -158,30 +201,44 @@ bool ePaperPort::EpdType16001200_133_DKE_NT61522_DisplayNet(const uint8_t *image
     return true;
 }
 
-void ePaperPort::EpdType16001200_133_DKE_Update()
+esp_err_t ePaperPort::EpdType16001200_133_DKE_Update()
 {
     int64_t start_us = esp_timer_get_time();
     ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE update start");
+    esp_err_t ret = ESP_OK;
 
     setPinCs(TARGET_BOTH, GPIO_LOW);
     spiTransmitCommand(R04_PON);
     setPinCs(TARGET_BOTH, GPIO_HIGH);
-    EpdType16001200_133_DKE_WaitBusyUnlockSpi("PON", kDkeBusyMaxLoops);
-    ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE PON done");
+    ret = EpdType16001200_133_DKE_WaitBusyUnlockSpi("PON", kDkePonBusyTimeoutMs);
+    if (ret != ESP_OK) {
+        goto power_off;
+    }
 
     delay_ms(30);
     EpdType16001200_133_DKE_WriteCommandData(TARGET_BOTH, R12_DRF, kDrf, sizeof(kDrf));
-    EpdType16001200_133_DKE_WaitBusyUnlockSpi("DRF", kDkeBusyMaxLoops);
-    ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE DRF done");
+    ret = EpdType16001200_133_DKE_WaitBusyUnlockSpi("DRF", kDkeDrfBusyTimeoutMs);
+    if (ret != ESP_OK) {
+        goto power_off;
+    }
 
     delay_ms(30);
-    EpdType16001200_133_DKE_WriteCommandData(TARGET_BOTH, R02_POF, kPof, sizeof(kPof));
-    EpdType16001200_133_DKE_WaitBusyUnlockSpi("POF", kDkeBusyMaxLoops);
-    delay_ms(1000);
-    Set_Power(0);
 
-    ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE update done elapsed_ms=%lld",
-             (long long)((esp_timer_get_time() - start_us) / 1000));
+power_off:
+    EpdType16001200_133_DKE_WriteCommandData(TARGET_BOTH, R02_POF, kPof, sizeof(kPof));
+    {
+        esp_err_t power_off_ret =
+            EpdType16001200_133_DKE_WaitBusyUnlockSpi("POF", kDkePofBusyTimeoutMs);
+        if (ret == ESP_OK) {
+            ret = power_off_ret;
+        }
+    }
+    delay_ms(1000);
+    if (ret == ESP_OK) {
+        ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE update done result=ESP_OK elapsed_ms=%lld",
+                 (long long)((esp_timer_get_time() - start_us) / 1000));
+    }
+    return ret;
 }
 
 void ePaperPort::EpdType16001200_133_DKE_WriteCommandData(EP_Target_t target,
@@ -233,7 +290,8 @@ bool ePaperPort::EpdType16001200_133_DKE_WriteFrame(EP_Target_t target,
     return true;
 }
 
-void ePaperPort::EpdType16001200_133_DKE_WaitBusy(const char *step, uint16_t max_loops)
+esp_err_t ePaperPort::EpdType16001200_133_DKE_WaitBusy(const char *step,
+                                                       uint32_t timeout_ms)
 {
     int cs1_level = getGpioLevel(cs_);
     int cs2_level = getGpioLevel(cs_2_);
@@ -243,66 +301,71 @@ void ePaperPort::EpdType16001200_133_DKE_WaitBusy(const char *step, uint16_t max
                   (epd2_cs_level == GPIO_LOW);
 
     if (cs_low) {
-        EpdType16001200_133_DKE_WaitBusyLocked(step, max_loops);
-    } else {
-        EpdType16001200_133_DKE_WaitBusyUnlockSpi(step, max_loops);
+        return EpdType16001200_133_DKE_WaitBusyLocked(step, timeout_ms);
     }
+    return EpdType16001200_133_DKE_WaitBusyUnlockSpi(step, timeout_ms);
 }
 
-void ePaperPort::EpdType16001200_133_DKE_WaitBusyLocked(const char *step, uint16_t max_loops)
+esp_err_t ePaperPort::EpdType16001200_133_DKE_WaitBusyLocked(const char *step,
+                                                             uint32_t timeout_ms)
 {
     int64_t start_us = esp_timer_get_time();
     int cs1_level = getGpioLevel(cs_);
     int cs2_level = getGpioLevel(cs_2_);
     int epd2_cs_level = getGpioLevel(EPD2_CS_PIN);
 
-    ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE busy path=locked step=%s cs=%d,%d,%d",
+    ESP_LOGD(kTag, "EPD 1600x1200 13.3 DKE busy path=locked step=%s cs=%d,%d,%d",
              step != nullptr ? step : "unknown",
              cs1_level,
              cs2_level,
              epd2_cs_level);
 
-    for (uint16_t i = 0; i <= max_loops; ++i) {
+    uint32_t polls = 0;
+    while ((uint64_t)(esp_timer_get_time() - start_us) <
+           (uint64_t)timeout_ms * 1000ULL) {
         if (Get_BusyIOLevel()) {
-            ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE busy done step=%s loops=%u elapsed_ms=%lld",
-                     step != nullptr ? step : "unknown",
-                     (unsigned int)i,
-                     (long long)((esp_timer_get_time() - start_us) / 1000));
-            return;
+            LogBusyDone(step, polls, start_us);
+            return ESP_OK;
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        ++polls;
+        vTaskDelay(pdMS_TO_TICKS(kDkeBusyPollMs));
+    }
+    if (Get_BusyIOLevel()) {
+        LogBusyDone(step, polls, start_us);
+        return ESP_OK;
     }
 
-    ESP_LOGE(kTag, "EPD 1600x1200 13.3 DKE busy timeout step=%s level=%d loops=%u elapsed_ms=%lld",
+    ESP_LOGE(kTag, "EPD 1600x1200 13.3 DKE busy timeout step=%s level=%d timeout_ms=%lu elapsed_ms=%lld",
              step != nullptr ? step : "unknown",
              Get_BusyIOLevel(),
-             (unsigned int)max_loops,
+             (unsigned long)timeout_ms,
              (long long)((esp_timer_get_time() - start_us) / 1000));
-    EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
+    return ESP_ERR_TIMEOUT;
 }
 
-void ePaperPort::EpdType16001200_133_DKE_WaitBusyUnlockSpi(const char *step, uint16_t max_loops)
+esp_err_t ePaperPort::EpdType16001200_133_DKE_WaitBusyUnlockSpi(const char *step,
+                                                                uint32_t timeout_ms)
 {
     int64_t start_us = esp_timer_get_time();
     int cs1_level = getGpioLevel(cs_);
     int cs2_level = getGpioLevel(cs_2_);
     int epd2_cs_level = getGpioLevel(EPD2_CS_PIN);
 
-    ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE busy path=unlock_spi step=%s cs=%d,%d,%d",
+    ESP_LOGD(kTag, "EPD 1600x1200 13.3 DKE busy path=unlock_spi step=%s cs=%d,%d,%d",
              step != nullptr ? step : "unknown",
              cs1_level,
              cs2_level,
              epd2_cs_level);
 
-    auto relock_or_restart = [step]() -> bool {
+    auto relock_or_restart = [step]() -> esp_err_t {
         esp_err_t lock_ret = TdxSharedSpi_Lock(pdMS_TO_TICKS(10000));
         if (lock_ret == ESP_OK) {
-            return true;
+            return ESP_OK;
         }
         ESP_LOGE(kTag, "EPD 1600x1200 13.3 DKE shared SPI relock timeout step=%s ret=%s, restart",
                  step != nullptr ? step : "unknown", esp_err_to_name(lock_ret));
         esp_restart();
-        return false;
+        return lock_ret;
     };
 
     setGpioLevel(cs_, GPIO_HIGH);
@@ -310,25 +373,34 @@ void ePaperPort::EpdType16001200_133_DKE_WaitBusyUnlockSpi(const char *step, uin
     setGpioLevel(EPD2_CS_PIN, GPIO_HIGH);
     TdxSharedSpi_Unlock();
 
-    for (uint16_t i = 0; i <= max_loops; ++i) {
+    esp_err_t wait_ret = ESP_ERR_TIMEOUT;
+    uint32_t polls = 0;
+    while ((uint64_t)(esp_timer_get_time() - start_us) <
+           (uint64_t)timeout_ms * 1000ULL) {
         if (Get_BusyIOLevel()) {
-            if (!relock_or_restart()) {
-                return;
-            }
-            ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE busy done step=%s loops=%u elapsed_ms=%lld",
-                     step != nullptr ? step : "unknown",
-                     (unsigned int)i,
-                     (long long)((esp_timer_get_time() - start_us) / 1000));
-            return;
+            wait_ret = ESP_OK;
+            break;
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        ++polls;
+        vTaskDelay(pdMS_TO_TICKS(kDkeBusyPollMs));
+    }
+    if (wait_ret != ESP_OK && Get_BusyIOLevel()) {
+        wait_ret = ESP_OK;
     }
 
-    ESP_LOGE(kTag, "EPD 1600x1200 13.3 DKE busy timeout step=%s level=%d loops=%u elapsed_ms=%lld",
+    esp_err_t lock_ret = relock_or_restart();
+    if (lock_ret != ESP_OK) {
+        return lock_ret;
+    }
+    if (wait_ret == ESP_OK) {
+        LogBusyDone(step, polls, start_us);
+        return ESP_OK;
+    }
+
+    ESP_LOGE(kTag, "EPD 1600x1200 13.3 DKE busy timeout step=%s level=%d timeout_ms=%lu elapsed_ms=%lld",
              step != nullptr ? step : "unknown",
              Get_BusyIOLevel(),
-             (unsigned int)max_loops,
+             (unsigned long)timeout_ms,
              (long long)((esp_timer_get_time() - start_us) / 1000));
-    EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
-    (void)relock_or_restart();
+    return ESP_ERR_TIMEOUT;
 }

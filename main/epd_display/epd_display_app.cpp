@@ -79,6 +79,11 @@ ePaperPort ePaperDisplay(USER_EPD_MOSI_PIN,
                          USER_EPD_SCALE_MAX_HEIGHT,
                          USER_EPD_SPI_HOST);
 
+esp_err_t ServerNetworkStaEpdDisplay_SetPower(bool power_on)
+{
+    return ePaperDisplay.Set_Power(power_on ? 1U : 0U);
+}
+
 static void release_epd_job(epd_display_job_t *job)
 {
     if (job != NULL && job->data != NULL) {
@@ -206,11 +211,12 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
         }
         epd_display_restore_wifi_power_save(restore_wifi_ps, saved_ps);
 
-        ESP_LOGI(TAG, "EPD done target=%u type=%u name=%s size=%u total_ms=%lld",
+        ESP_LOGI(TAG, "EPD done target=%u type=%u name=%s size=%u result=%s total_ms=%lld",
                  (unsigned int)job.epd_which_one,
                  (unsigned int)EPD_type,
                  config != NULL ? config->name : "INVALID",
                  (unsigned int)job.size,
+                 esp_err_to_name(display_ret),
                  (long long)((esp_timer_get_time() - display_start_us) / 1000));
         epd_display_completion_t *completion = job.completion;
         release_epd_job(&job);
@@ -230,6 +236,12 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
 esp_err_t ServerNetworkStaEpdDisplay_Init(void)
 {
 #if USER_EPD_ENABLE
+    esp_err_t power_ret = ServerNetworkStaEpdDisplay_SetPower(true);
+    if (power_ret != ESP_OK) {
+        ESP_LOGE(TAG, "EPD/SD startup power on failed ret=%s", esp_err_to_name(power_ret));
+        return power_ret;
+    }
+
     // Load the saved EPD type before USB or network code reports the current display profile.
     // 在 USB 或网络代码上报当前屏幕配置前读取保存的 EPD 类型。
     ESP_ERROR_CHECK(EpdType_LoadSavedOrDefault());

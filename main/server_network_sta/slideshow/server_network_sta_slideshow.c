@@ -80,10 +80,13 @@ typedef struct {
     bool rtc_enabled;
     bool force_first_display;
     bool sntp_schedule_enabled;
-    bool displayed_slot_valid;
-    uint64_t displayed_slot;
+    bool consumed_slot_valid;
+    uint64_t consumed_slot;
     uint64_t scheduled_slot;
     int64_t next_epoch;
+    bool preload_failure_valid;
+    esp_err_t preload_failure_result;
+    char preload_failure_file[TDX_SLIDESHOW_FILE_NAME_MAX_LEN];
 } slideshow_runtime_t;
 
 typedef struct {
@@ -359,7 +362,7 @@ static int64_t slideshow_next_epoch(int64_t anchor_epoch, uint32_t interval, int
     return anchor_epoch + steps * (int64_t)interval;
 }
 
-static int64_t slideshow_next_retry_epoch(int64_t anchor_epoch, uint32_t interval, int64_t now_epoch)
+static int64_t slideshow_next_event_epoch(int64_t anchor_epoch, uint32_t interval, int64_t now_epoch)
 {
     if (now_epoch < anchor_epoch) {
         return anchor_epoch;
@@ -781,6 +784,46 @@ static bool slideshow_loaded_file_matches(const slideshow_loaded_file_t *loaded,
            strcmp(loaded->file_name, file_name) == 0;
 }
 
+static void slideshow_update_preload_failure(slideshow_runtime_t *runtime,
+                                             const char *file_name,
+                                             esp_err_t result)
+{
+    if (runtime == NULL) {
+        return;
+    }
+    runtime->preload_failure_valid = result != ESP_OK &&
+                                     file_name != NULL &&
+                                     !s_slideshow_stop;
+    runtime->preload_failure_result = result;
+    if (runtime->preload_failure_valid && file_name != NULL) {
+        strlcpy(runtime->preload_failure_file,
+                file_name,
+                sizeof(runtime->preload_failure_file));
+    } else {
+        runtime->preload_failure_file[0] = '\0';
+    }
+}
+
+static bool slideshow_take_preload_failure(slideshow_runtime_t *runtime,
+                                           const char *file_name,
+                                           esp_err_t *result)
+{
+    if (runtime == NULL || file_name == NULL || !runtime->preload_failure_valid) {
+        return false;
+    }
+    if (strcmp(runtime->preload_failure_file, file_name) != 0) {
+        runtime->preload_failure_valid = false;
+        runtime->preload_failure_file[0] = '\0';
+        return false;
+    }
+    if (result != NULL) {
+        *result = runtime->preload_failure_result;
+    }
+    runtime->preload_failure_valid = false;
+    runtime->preload_failure_file[0] = '\0';
+    return true;
+}
+
 static esp_err_t slideshow_load_file(const char *base_path,
                                      const char *file_name,
                                      slideshow_loaded_file_t *loaded,
@@ -911,9 +954,6 @@ static esp_err_t slideshow_display_loaded_file_and_wait(slideshow_loaded_file_t 
         ESP_LOGI(TAG, "slideshow display done file=%s elapsed=%lu",
                  loaded->file_name,
                  (unsigned long)display_elapsed);
-    } else {
-        ESP_LOGW(TAG, "slideshow display failed file=%s ret=%s",
-                 loaded->file_name, esp_err_to_name(ret));
     }
     slideshow_loaded_file_free(loaded);
     return ret;
@@ -1187,14 +1227,14 @@ static bool slideshow_sync_sntp_target_to_now(slideshow_runtime_t *runtime,
     }
 
     if (!schedule.started) {
-        if (runtime->scheduled_slot != 0 || runtime->displayed_slot_valid) {
+        if (runtime->scheduled_slot != 0 || runtime->consumed_slot_valid) {
             if (!slideshow_progress_select_index(&runtime->request,
                                                  &runtime->progress,
                                                  runtime->request.start_index)) {
                 return false;
             }
             runtime->scheduled_slot = 0;
-            runtime->displayed_slot_valid = false;
+            runtime->consumed_slot_valid = false;
             runtime->next_epoch = runtime->request.anchor_epoch;
             ESP_LOGI(TAG,
                      "slideshow SNTP resync before anchor reason=%s file=%s now=%lld anchor=%lld",
@@ -1207,22 +1247,22 @@ static bool slideshow_sync_sntp_target_to_now(slideshow_runtime_t *runtime,
     }
 
     bool normal_lead_window = false;
-    if (runtime->displayed_slot_valid &&
-        runtime->displayed_slot == schedule.slot + 1U) {
-        int64_t displayed_epoch = 0;
+    if (runtime->consumed_slot_valid &&
+        runtime->consumed_slot == schedule.slot + 1U) {
+        int64_t consumed_epoch = 0;
         uint32_t lead_seconds = slideshow_rtc_display_lead_seconds();
         if (slideshow_epoch_for_slot(&runtime->request,
-                                     runtime->displayed_slot,
-                                     &displayed_epoch) &&
-            displayed_epoch > (int64_t)lead_seconds &&
-            (int64_t)now_time >= displayed_epoch - (int64_t)lead_seconds) {
+                                     runtime->consumed_slot,
+                                     &consumed_epoch) &&
+            consumed_epoch > (int64_t)lead_seconds &&
+            (int64_t)now_time >= consumed_epoch - (int64_t)lead_seconds) {
             normal_lead_window = true;
         }
     }
 
     bool moved_forward = schedule.slot > runtime->scheduled_slot;
-    bool moved_backward = runtime->displayed_slot_valid ?
-                          schedule.slot < runtime->displayed_slot && !normal_lead_window :
+    bool moved_backward = runtime->consumed_slot_valid ?
+                          schedule.slot < runtime->consumed_slot && !normal_lead_window :
                           schedule.slot < runtime->scheduled_slot;
     if (moved_forward || moved_backward) {
         uint64_t old_slot = runtime->scheduled_slot;
@@ -1319,7 +1359,7 @@ static bool slideshow_enable_sntp_schedule_if_ready(slideshow_runtime_t *runtime
     }
 
     runtime->sntp_schedule_enabled = true;
-    runtime->displayed_slot_valid = false;
+    runtime->consumed_slot_valid = false;
     runtime->scheduled_slot = schedule.slot;
     runtime->next_epoch = schedule.started ? (int64_t)now_time : schedule.next_epoch;
     ESP_LOGI(TAG,
@@ -1384,6 +1424,8 @@ static uint32_t slideshow_rtc_display_lead_seconds(void)
         return 1;
     case EPD_TYPE_1600_1200_133:
         return 3;
+    case  EPD_TYPE_1600_1200_79:
+        return 4;
     default:
         return TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS;
     }
@@ -1876,6 +1918,9 @@ static void slideshow_task(void *arg)
                          runtime->progress.pending_file,
                          esp_err_to_name(preload_ret));
             }
+            slideshow_update_preload_failure(runtime,
+                                             runtime->progress.pending_file,
+                                             preload_ret);
         }
         (void)wait_slideshow_interval_from_start(initial_start_tick,
                                                  runtime->initial_delay_seconds);
@@ -1889,14 +1934,19 @@ static void slideshow_task(void *arg)
             break;
         }
         const char *file_name = runtime->progress.pending_file;
+        char attempted_file[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
+        strlcpy(attempted_file, file_name, sizeof(attempted_file));
         TickType_t display_start_tick = 0;
+        esp_err_t event_ret = ESP_OK;
 
-        if (!slideshow_loaded_file_matches(&loaded, file_name)) {
-            esp_err_t load_ret = slideshow_load_file(runtime->base_path, file_name, &loaded, true);
-            if (load_ret != ESP_OK) {
+        if (slideshow_take_preload_failure(runtime, file_name, &event_ret)) {
+            slideshow_loaded_file_free(&loaded);
+        } else if (!slideshow_loaded_file_matches(&loaded, file_name)) {
+            event_ret = slideshow_load_file(runtime->base_path, file_name, &loaded, true);
+            if (event_ret != ESP_OK) {
                 ESP_LOGW(TAG, "slideshow preload current failed file=%s ret=%s",
                          file_name,
-                         esp_err_to_name(load_ret));
+                         esp_err_to_name(event_ret));
             }
         }
 
@@ -1909,6 +1959,11 @@ static void slideshow_task(void *arg)
                 break;
             }
             if (wait_result == SLIDESHOW_RTC_WAIT_SNTP_READY) {
+                if (event_ret != ESP_OK) {
+                    slideshow_update_preload_failure(runtime,
+                                                     attempted_file,
+                                                     event_ret);
+                }
                 if (!slideshow_enable_sntp_schedule_if_ready(runtime)) {
                     break;
                 }
@@ -1918,157 +1973,155 @@ static void slideshow_task(void *arg)
                 break;
             }
             file_name = runtime->progress.pending_file;
-            if (!slideshow_loaded_file_matches(&loaded, file_name)) {
-                esp_err_t load_ret = slideshow_load_file(runtime->base_path, file_name, &loaded, true);
-                if (load_ret != ESP_OK) {
+            if (strcmp(file_name, attempted_file) != 0) {
+                strlcpy(attempted_file, file_name, sizeof(attempted_file));
+                if (slideshow_take_preload_failure(runtime, file_name, &event_ret)) {
+                    slideshow_loaded_file_free(&loaded);
+                } else {
+                    event_ret = slideshow_loaded_file_matches(&loaded, file_name) ?
+                                ESP_OK :
+                                slideshow_load_file(runtime->base_path, file_name, &loaded, true);
+                }
+                if (event_ret != ESP_OK) {
                     ESP_LOGW(TAG, "slideshow reload current failed file=%s ret=%s",
                              file_name,
-                             esp_err_to_name(load_ret));
+                             esp_err_to_name(event_ret));
                 }
             }
         }
 
-        esp_err_t display_ret = slideshow_display_loaded_file_and_wait(&loaded,
-                                                                       runtime->request.interval,
-                                                                       runtime->rtc_enabled,
-                                                                       runtime->progress.position,
-                                                                       runtime->request.file_count,
-                                                                       &display_start_tick);
+        if (s_slideshow_stop) {
+            break;
+        }
+        char consumed_file[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
+        strlcpy(consumed_file, file_name, sizeof(consumed_file));
+        if (event_ret == ESP_OK && slideshow_loaded_file_matches(&loaded, file_name)) {
+            event_ret = slideshow_display_loaded_file_and_wait(&loaded,
+                                                                runtime->request.interval,
+                                                                runtime->rtc_enabled,
+                                                                runtime->progress.position,
+                                                                runtime->request.file_count,
+                                                                &display_start_tick);
+        } else {
+            slideshow_loaded_file_free(&loaded);
+            if (event_ret == ESP_OK) {
+                event_ret = ESP_ERR_INVALID_STATE;
+            }
+        }
         if (display_start_tick == 0) {
             display_start_tick = xTaskGetTickCount();
             if (!runtime->rtc_enabled) {
                 slideshow_begin_interval(runtime->request.interval, display_start_tick);
             }
         }
-        if (display_ret == ESP_OK) {
-            slideshow_progress_t next;
-            uint64_t next_slot = 0;
-            int64_t sntp_next_epoch = 0;
-            bool next_ready = true;
-            if (runtime->sntp_schedule_enabled) {
-                runtime->displayed_slot = runtime->scheduled_slot;
-                runtime->displayed_slot_valid = true;
-                next_ready = slideshow_prepare_next_sntp_progress(runtime,
-                                                                  &next,
-                                                                  &next_slot,
-                                                                  &sntp_next_epoch);
-            } else {
-                prepare_next_slideshow_progress(&runtime->request, &runtime->progress, &next);
-            }
-            esp_err_t save_ret = next_ready ? save_slideshow_progress(&next) : ESP_FAIL;
-            if (save_ret == ESP_OK) {
-                memcpy(&runtime->progress, &next, sizeof(runtime->progress));
-                if (runtime->sntp_schedule_enabled) {
-                    runtime->scheduled_slot = next_slot;
+
+        slideshow_progress_t next;
+        uint64_t consumed_slot = runtime->scheduled_slot;
+        uint64_t next_slot = 0;
+        int64_t sntp_next_epoch = 0;
+        bool next_ready = true;
+        if (runtime->sntp_schedule_enabled) {
+            next_ready = slideshow_prepare_next_sntp_progress(runtime,
+                                                              &next,
+                                                              &next_slot,
+                                                              &sntp_next_epoch);
+            if (!next_ready && runtime->scheduled_slot < UINT64_MAX) {
+                next_slot = runtime->scheduled_slot + 1U;
+                size_t next_index =
+                    (runtime->request.start_index +
+                     (size_t)(next_slot % (uint64_t)runtime->request.file_count)) %
+                    runtime->request.file_count;
+                memcpy(&next, &runtime->progress, sizeof(next));
+                next_ready = slideshow_progress_select_index(&runtime->request,
+                                                              &next,
+                                                              next_index) &&
+                             slideshow_epoch_for_slot(&runtime->request,
+                                                       next_slot,
+                                                       &sntp_next_epoch);
+                if (next_ready) {
+                    ESP_LOGW(TAG,
+                             "slideshow next SNTP progress recovered sequentially file=%s next=%s next_slot=%llu",
+                             consumed_file,
+                             next.pending_file,
+                             (unsigned long long)next_slot);
                 }
-                slideshow_record_display_start(runtime->request.interval, display_start_tick);
-                if (runtime->rtc_enabled) {
-                    time_t now_time = 0;
-                    time(&now_time);
-                    runtime->next_epoch = runtime->sntp_schedule_enabled ?
-                                          sntp_next_epoch :
-                                          slideshow_next_epoch(runtime->request.anchor_epoch,
-                                                               runtime->request.interval,
-                                                               (int64_t)now_time);
-                    slideshow_begin_rtc_interval(runtime->request.interval, runtime->next_epoch);
-                    char now_text[32] = {0};
-                    char next_text[32] = {0};
-                    format_epoch_local((int64_t)now_time, now_text, sizeof(now_text));
-                    format_epoch_local(runtime->next_epoch, next_text, sizeof(next_text));
-                    ESP_LOGI(TAG,
-                             "slideshow rtc next file=%s now=%lld(%s) next=%lld(%s) interval=%lu",
-                             runtime->progress.pending_file,
-                             (long long)now_time,
-                             now_text,
-                             (long long)runtime->next_epoch,
-                             next_text,
-                             (unsigned long)runtime->request.interval);
-                }
-                if (!s_slideshow_stop) {
-                    esp_err_t preload_ret = slideshow_load_file(runtime->base_path,
-                                                               runtime->progress.pending_file,
-                                                               &loaded,
-                                                               false);
-                    if (preload_ret != ESP_OK) {
-                        ESP_LOGW(TAG, "slideshow preload next failed file=%s ret=%s",
-                                 runtime->progress.pending_file,
-                                 esp_err_to_name(preload_ret));
-                    }
-                }
-            } else {
-                ESP_LOGE(TAG, "slideshow progress unchanged after display file=%s ret=%s",
-                         file_name, esp_err_to_name(save_ret));
             }
-        } else if (runtime->rtc_enabled) {
-            slideshow_progress_t next;
-            uint64_t next_slot = 0;
-            int64_t sntp_next_epoch = 0;
-            bool next_ready = true;
-            if (runtime->sntp_schedule_enabled) {
-                next_ready = slideshow_prepare_next_sntp_progress(runtime,
-                                                                  &next,
-                                                                  &next_slot,
-                                                                  &sntp_next_epoch);
-            } else {
-                prepare_next_slideshow_progress(&runtime->request, &runtime->progress, &next);
-            }
-            esp_err_t save_ret = next_ready ? save_slideshow_progress(&next) : ESP_FAIL;
-            char failed_file[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
-            strlcpy(failed_file, file_name, sizeof(failed_file));
-            time_t now_time = 0;
-            time(&now_time);
-            runtime->next_epoch = runtime->sntp_schedule_enabled && next_ready ?
+        } else {
+            prepare_next_slideshow_progress(&runtime->request, &runtime->progress, &next);
+            next_ready = slideshow_progress_valid(&runtime->request, &next);
+        }
+        if (!next_ready) {
+            ESP_LOGE(TAG,
+                     "slideshow event consumed but next progress invalid file=%s result=%s, stop",
+                     consumed_file,
+                     esp_err_to_name(event_ret));
+            break;
+        }
+
+        esp_err_t save_ret = save_slideshow_progress(&next);
+        memcpy(&runtime->progress, &next, sizeof(runtime->progress));
+        if (runtime->sntp_schedule_enabled) {
+            runtime->consumed_slot = consumed_slot;
+            runtime->consumed_slot_valid = true;
+            runtime->scheduled_slot = next_slot;
+        }
+        slideshow_record_display_start(runtime->request.interval, display_start_tick);
+
+        time_t now_time = 0;
+        time(&now_time);
+        if (runtime->rtc_enabled) {
+            runtime->next_epoch = runtime->sntp_schedule_enabled ?
                                   sntp_next_epoch :
-                                  slideshow_next_retry_epoch(runtime->request.anchor_epoch,
+                                  slideshow_next_event_epoch(runtime->request.anchor_epoch,
                                                              runtime->request.interval,
                                                              (int64_t)now_time);
             slideshow_begin_rtc_interval(runtime->request.interval, runtime->next_epoch);
+        }
+
+        if (event_ret != ESP_OK || save_ret != ESP_OK) {
+            ESP_LOGW(TAG,
+                     "slideshow event consumed file=%s next=%s result=%s progress_save=%s sntp=%d consumed_slot=%llu next_slot=%llu next_epoch=%lld",
+                     consumed_file,
+                     runtime->progress.pending_file,
+                     esp_err_to_name(event_ret),
+                     esp_err_to_name(save_ret),
+                     runtime->sntp_schedule_enabled ? 1 : 0,
+                     (unsigned long long)consumed_slot,
+                     (unsigned long long)next_slot,
+                     (long long)runtime->next_epoch);
+        } else if (runtime->rtc_enabled) {
             char now_text[32] = {0};
             char next_text[32] = {0};
             format_epoch_local((int64_t)now_time, now_text, sizeof(now_text));
             format_epoch_local(runtime->next_epoch, next_text, sizeof(next_text));
-            if (save_ret == ESP_OK) {
-                memcpy(&runtime->progress, &next, sizeof(runtime->progress));
-                if (runtime->sntp_schedule_enabled) {
-                    runtime->scheduled_slot = next_slot;
-                }
-                ESP_LOGW(TAG,
-                         "slideshow rtc display failed, skip current file and retry next at next slot failed=%s next=%s ret=%s now=%lld(%s) next_epoch=%lld(%s) interval=%lu",
-                         failed_file,
+            ESP_LOGI(TAG,
+                     "slideshow rtc next file=%s now=%lld(%s) next=%lld(%s) interval=%lu",
+                     runtime->progress.pending_file,
+                     (long long)now_time,
+                     now_text,
+                     (long long)runtime->next_epoch,
+                     next_text,
+                     (unsigned long)runtime->request.interval);
+        }
+
+        if (!s_slideshow_stop) {
+            esp_err_t preload_ret = slideshow_load_file(runtime->base_path,
+                                                       runtime->progress.pending_file,
+                                                       &loaded,
+                                                       false);
+            if (preload_ret != ESP_OK) {
+                ESP_LOGW(TAG, "slideshow preload next failed file=%s ret=%s",
                          runtime->progress.pending_file,
-                         esp_err_to_name(display_ret),
-                         (long long)now_time,
-                         now_text,
-                         (long long)runtime->next_epoch,
-                         next_text,
-                         (unsigned long)runtime->request.interval);
-                if (!s_slideshow_stop) {
-                    esp_err_t preload_ret = slideshow_load_file(runtime->base_path,
-                                                               runtime->progress.pending_file,
-                                                               &loaded,
-                                                               false);
-                    if (preload_ret != ESP_OK) {
-                        ESP_LOGW(TAG, "slideshow preload next after failed display failed file=%s ret=%s",
-                                 runtime->progress.pending_file,
-                                 esp_err_to_name(preload_ret));
-                    }
-                }
-            } else {
-                ESP_LOGE(TAG,
-                         "slideshow display failed and skip progress save failed file=%s display_ret=%s save_ret=%s now=%lld(%s) next_epoch=%lld(%s) interval=%lu",
-                         failed_file,
-                         esp_err_to_name(display_ret),
-                         esp_err_to_name(save_ret),
-                         (long long)now_time,
-                         now_text,
-                         (long long)runtime->next_epoch,
-                         next_text,
-                         (unsigned long)runtime->request.interval);
+                         esp_err_to_name(preload_ret));
             }
+            slideshow_update_preload_failure(runtime,
+                                             runtime->progress.pending_file,
+                                             preload_ret);
         }
 
         if (!runtime->rtc_enabled) {
-            wait_slideshow_interval_from_start(display_start_tick, runtime->request.interval);
+            (void)wait_slideshow_interval_from_start(display_start_tick,
+                                                     runtime->request.interval);
         }
     }
 
@@ -2128,9 +2181,9 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
     runtime->force_first_display = force_first_display;
     runtime->sntp_schedule_enabled = sntp_schedule_enabled;
     runtime->scheduled_slot = scheduled_slot;
-    runtime->displayed_slot_valid = current_slot_already_displayed;
+    runtime->consumed_slot_valid = current_slot_already_displayed;
     if (current_slot_already_displayed && scheduled_slot > 0) {
-        runtime->displayed_slot = scheduled_slot - 1U;
+        runtime->consumed_slot = scheduled_slot - 1U;
     }
     if (request->anchor_epoch > 0) {
         time_t now_time = 0;

@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
@@ -18,6 +19,10 @@
 #include "led_status.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
+#include "tdx_shared_spi.h"
+
+#define WORK_STATE_POWER_OFF_SPI_LOCK_TIMEOUT_MS 10000U
+#define WORK_STATE_POWER_OFF_CUT_WAIT_MS          2000U
 
 static const char *TAG = "server_sta_wifi_time";
 static TickType_t s_wifi_work_start_tick = 0;
@@ -500,7 +505,37 @@ static bool configure_ch583_wake_timer_before_power_off(void)
 
     if (wake_ret < 0) {
         ESP_LOGW(TAG, "CH583 wake timer config failed ret=%d, continue power off", wake_ret);
+    } else if (slideshow_on) {
+        // Roll back this timer if the current power-off attempt is canceled later.
+        (void)__atomic_fetch_or(&s_runtime_state_flags,
+                                USER_WORK_STATE_RUNTIME_WAKE_TIMER_CANCEL_PENDING_BIT,
+                                __ATOMIC_ACQ_REL);
+    } else {
+        (void)__atomic_fetch_and(&s_runtime_state_flags,
+                                 ~USER_WORK_STATE_RUNTIME_WAKE_TIMER_CANCEL_PENDING_BIT,
+                                 __ATOMIC_ACQ_REL);
     }
+    return true;
+}
+
+static bool retry_pending_wake_timer_cancel(void)
+{
+    uint32_t runtime_flags = __atomic_load_n(&s_runtime_state_flags, __ATOMIC_ACQUIRE);
+    if ((runtime_flags & USER_WORK_STATE_RUNTIME_WAKE_TIMER_CANCEL_PENDING_BIT) == 0) {
+        return true;
+    }
+
+    // Keep rollback traffic separated from the preceding CH583 shutdown command.
+    vTaskDelay(pdMS_TO_TICKS(100));
+    int cancel_ret = ch583_wifi_uart_send_wake_timer_off();
+    if (cancel_ret < 0) {
+        return false;
+    }
+
+    (void)__atomic_fetch_and(&s_runtime_state_flags,
+                             ~USER_WORK_STATE_RUNTIME_WAKE_TIMER_CANCEL_PENDING_BIT,
+                             __ATOMIC_ACQ_REL);
+    ESP_LOGI(TAG, "pending CH583 wake timer cancellation completed");
     return true;
 }
 
@@ -534,13 +569,16 @@ static void work_state_task(void *arg)
     (void)arg;
 
     while (true) {
-        if (!retry_pending_led_power_off_cancel()) {
+        bool led_cancel_done = retry_pending_led_power_off_cancel();
+        bool wake_timer_cancel_done = retry_pending_wake_timer_cancel();
+        if (!led_cancel_done || !wake_timer_cancel_done) {
             vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
             continue;
         }
 
         uint32_t runtime_flags = __atomic_load_n(&s_runtime_state_flags, __ATOMIC_ACQUIRE);
-        if ((runtime_flags & USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT) != 0) {
+        if ((runtime_flags & (USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT |
+                              USER_WORK_STATE_RUNTIME_DEVICE_INFO_PENDING_BIT)) != 0) {
             vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
             continue;
         }
@@ -729,6 +767,9 @@ static void work_state_task(void *arg)
                     UserLedStatus_SetPowerOffPending(false);
                     ESP_LOGE(TAG, "power off postponed because LED shutdown failed ret=%s",
                              esp_err_to_name(led_ret));
+                    if (!retry_pending_wake_timer_cancel()) {
+                        ESP_LOGE(TAG, "LED shutdown failure left CH583 wake timer rollback pending");
+                    }
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
                     continue;
                 }
@@ -771,13 +812,107 @@ static void work_state_task(void *arg)
                     if (!retry_pending_led_power_off_cancel()) {
                         ESP_LOGE(TAG, "final guard failed to release LED power-off lock, retry scheduled");
                     }
+                    if (!retry_pending_wake_timer_cancel()) {
+                        ESP_LOGE(TAG, "final guard failed to cancel CH583 wake timer, retry scheduled");
+                    }
                     s_last_power_off_send_tick = 0;
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
                     continue;
                 }
+                esp_err_t spi_lock_ret =
+                    TdxSharedSpi_Lock(pdMS_TO_TICKS(WORK_STATE_POWER_OFF_SPI_LOCK_TIMEOUT_MS));
+                if (spi_lock_ret != ESP_OK) {
+                    ESP_LOGE(TAG,
+                             "power off postponed because shared SPI lock failed ret=%s",
+                             esp_err_to_name(spi_lock_ret));
+                    (void)__atomic_fetch_or(&s_runtime_state_flags,
+                                            USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT,
+                                            __ATOMIC_ACQ_REL);
+                    if (!retry_pending_led_power_off_cancel()) {
+                        ESP_LOGE(TAG, "SPI lock failure left LED power-off cancellation pending");
+                    }
+                    if (!retry_pending_wake_timer_cancel()) {
+                        ESP_LOGE(TAG, "SPI lock failure left CH583 wake timer rollback pending");
+                    }
+                    s_last_power_off_send_tick = 0;
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
+
+                uint32_t locked_ota_hold_flags =
+                    __atomic_load_n(&s_ota_hold_flags, __ATOMIC_ACQUIRE);
+                bool locked_epd_busy = ServerNetworkStaEpdDisplay_IsBusy();
+                bool locked_image_save_busy =
+                    ServerNetworkStaWifiWorkTime_IsImageSaveInProgress();
+                TickType_t locked_now = xTaskGetTickCount();
+                uint32_t locked_http_hold_remaining =
+                    http_activity_hold_remaining_seconds(locked_now);
+                uint32_t locked_ch583_hold_remaining =
+                    ch583_activity_hold_remaining_seconds(locked_now);
+                uint32_t locked_elapsed = update_working_time_seconds();
+                bool locked_timer_active =
+                    locked_elapsed <= server_required_continue_work_time;
+                if (locked_timer_active ||
+                    locked_ota_hold_flags != 0 ||
+                    locked_epd_busy ||
+                    locked_image_save_busy ||
+                    locked_http_hold_remaining > 0 ||
+                    locked_ch583_hold_remaining > 0) {
+                    ESP_LOGI(TAG,
+                             "power off canceled by locked guard timer=%d ota=0x%lx epd=%d image_save=%d http_remaining=%lu ch583_remaining=%lu",
+                             locked_timer_active ? 1 : 0,
+                             (unsigned long)locked_ota_hold_flags,
+                             locked_epd_busy ? 1 : 0,
+                             locked_image_save_busy ? 1 : 0,
+                             (unsigned long)locked_http_hold_remaining,
+                             (unsigned long)locked_ch583_hold_remaining);
+                    TdxSharedSpi_Unlock();
+                    (void)__atomic_fetch_or(&s_runtime_state_flags,
+                                            USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT,
+                                            __ATOMIC_ACQ_REL);
+                    if (!retry_pending_led_power_off_cancel()) {
+                        ESP_LOGE(TAG, "locked guard failed to release LED power-off lock");
+                    }
+                    if (!retry_pending_wake_timer_cancel()) {
+                        ESP_LOGE(TAG, "locked guard failed to cancel CH583 wake timer");
+                    }
+                    s_last_power_off_send_tick = 0;
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
+
                 int power_off_ret = ch583_wifi_uart_send_power_off();
                 if (power_off_ret < 0) {
                     ESP_LOGW(TAG, "CH583 power off command failed ret=%d", power_off_ret);
+                    TdxSharedSpi_Unlock();
+                    (void)__atomic_fetch_or(&s_runtime_state_flags,
+                                            USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT,
+                                            __ATOMIC_ACQ_REL);
+                    if (!retry_pending_led_power_off_cancel()) {
+                        ESP_LOGE(TAG, "POWER_OFF failure left LED cancellation pending");
+                    }
+                    if (!retry_pending_wake_timer_cancel()) {
+                        ESP_LOGE(TAG, "POWER_OFF failure left CH583 wake timer rollback pending");
+                    }
+                } else {
+                    // The configured wake timer now belongs to the accepted power-off attempt.
+                    (void)__atomic_fetch_and(&s_runtime_state_flags,
+                                             ~USER_WORK_STATE_RUNTIME_WAKE_TIMER_CANCEL_PENDING_BIT,
+                                             __ATOMIC_ACQ_REL);
+                    esp_err_t power_ret = ServerNetworkStaEpdDisplay_SetPower(false);
+                    if (power_ret != ESP_OK) {
+                        ESP_LOGE(TAG,
+                                 "POWER_OFF sent but EPD/SD power off failed ret=%s",
+                                 esp_err_to_name(power_ret));
+                    } else {
+                        ESP_LOGI(TAG, "POWER_OFF sent and EPD/SD power switched off");
+                    }
+
+                    // Keep the shared bus locked after SD power loss. If CH583 does not
+                    // cut ESP32-C5 power, restart so FATFS and the SD card are reinitialized.
+                    vTaskDelay(pdMS_TO_TICKS(WORK_STATE_POWER_OFF_CUT_WAIT_MS));
+                    ESP_LOGE(TAG, "CH583 did not cut power after POWER_OFF, restart");
+                    esp_restart();
                 }
             }
         } else {
@@ -947,6 +1082,24 @@ void ServerNetworkStaWifiWorkTime_OnCh583Initialized(void)
     }
 }
 
+void ServerNetworkStaWifiWorkTime_OnDeviceInfoPending(void)
+{
+    // Keep the work task out of shutdown preparation while a new mandatory
+    // DEVICE_INFO attempt is being validated, persisted, and acknowledged.
+    (void)__atomic_fetch_or(&s_runtime_state_flags,
+                            USER_WORK_STATE_RUNTIME_DEVICE_INFO_PENDING_BIT,
+                            __ATOMIC_ACQ_REL);
+}
+
+void ServerNetworkStaWifiWorkTime_OnDeviceInfoReady(void)
+{
+    // Start a fresh activity hold before releasing the mandatory handshake guard.
+    ServerNetworkStaWifiWorkTime_OnCh583Activity();
+    (void)__atomic_fetch_and(&s_runtime_state_flags,
+                             ~USER_WORK_STATE_RUNTIME_DEVICE_INFO_PENDING_BIT,
+                             __ATOMIC_ACQ_REL);
+}
+
 void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t seconds)
 {
     if (seconds == 0) {
@@ -1025,10 +1178,16 @@ esp_err_t ServerNetworkStaWifiWorkTime_Init(void)
     s_wifi_work_start_tick = xTaskGetTickCount();
     s_last_network_data_tick = s_wifi_work_start_tick;
     s_last_power_off_send_tick = 0;
-    (void)__atomic_fetch_or(&s_runtime_state_flags,
-                            USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT,
-                            __ATOMIC_ACQ_REL);
+    uint32_t startup_guard_flags = USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT;
+#if USER_CH583_UART_ENABLE
+    startup_guard_flags |= USER_WORK_STATE_RUNTIME_DEVICE_INFO_PENDING_BIT;
+#endif
+    (void)__atomic_fetch_or(&s_runtime_state_flags, startup_guard_flags, __ATOMIC_ACQ_REL);
+#if USER_CH583_UART_ENABLE
+    ESP_LOGI(TAG, "CH583 startup guard active until UART and DEVICE_INFO are ready");
+#else
     ESP_LOGI(TAG, "CH583 startup guard active until UART initialization completes");
+#endif
 
     esp_err_t ret = load_work_state_from_nvs(&blob, &stored_size);
     if (ret == ESP_OK) {

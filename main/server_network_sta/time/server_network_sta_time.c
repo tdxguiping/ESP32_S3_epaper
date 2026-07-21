@@ -10,6 +10,9 @@
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
 #include "esp_sntp.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 #include "tdx_cfg.h"
 #include "ch583_wifi_uart_protocol.h"
 #include "server_network_sta_wifi_work_time.h"
@@ -28,11 +31,16 @@ static const char *TAG = "server_sta_time";
 #define TDX_DEFAULT_MIN    0
 #define TDX_DEFAULT_SEC    0
 
+#define TDX_TIME_BACKUP_QUEUE_LENGTH 1
+#define TDX_TIME_BACKUP_TASK_STACK_SIZE 6144
+#define TDX_TIME_BACKUP_TASK_PRIORITY 5
+
 static bool s_time_module_inited;
 static bool s_sntp_started;
 static bool s_sntp_synced;
 static server_network_sta_time_source_t s_time_source = SERVER_NETWORK_STA_TIME_SOURCE_NONE;
 static int64_t s_last_sync_epoch;
+static QueueHandle_t s_ch583_time_backup_queue;
 
 static bool time_uri_matches(const char *uri)
 {
@@ -81,6 +89,33 @@ static void format_time_strings(time_t now,
                                 size_t local_size,
                                 char *utc_buf,
                                 size_t utc_size);
+
+static void ch583_time_backup_task(void *arg)
+{
+    (void)arg;
+
+    int64_t timestamp = 0;
+    while (1) {
+        if (xQueueReceive(s_ch583_time_backup_queue, &timestamp, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        char local_buf[32] = {0};
+        char utc_buf[32] = {0};
+        format_time_strings((time_t)timestamp,
+                            local_buf,
+                            sizeof(local_buf),
+                            utc_buf,
+                            sizeof(utc_buf));
+        ESP_LOGI(TAG,
+                 "SNTP synced, RTC/system time updated server=%s epoch=%lld local=%s utc=%s",
+                 TDX_SNTP_SERVER_MAIN,
+                 (long long)timestamp,
+                 local_buf,
+                 utc_buf);
+        (void)ServerNetworkStaTime_BackupTimestampToCh583(timestamp, "sntp");
+    }
+}
 
 static time_t make_default_epoch_local(void)
 {
@@ -216,16 +251,11 @@ static void sntp_sync_cb(struct timeval *tv)
     s_time_source = SERVER_NETWORK_STA_TIME_SOURCE_SNTP;
     s_last_sync_epoch = (int64_t)tv->tv_sec;
 
-    char local_buf[32] = {0};
-    char utc_buf[32] = {0};
-    format_time_strings((time_t)tv->tv_sec, local_buf, sizeof(local_buf), utc_buf, sizeof(utc_buf));
-    ESP_LOGI(TAG,
-             "SNTP synced, RTC/system time updated server=%s epoch=%lld local=%s utc=%s",
-             TDX_SNTP_SERVER_MAIN,
-             (long long)s_last_sync_epoch,
-             local_buf,
-             utc_buf);
-    (void)ServerNetworkStaTime_BackupTimestampToCh583((int64_t)tv->tv_sec, "sntp");
+    if (s_ch583_time_backup_queue == NULL ||
+        xQueueOverwrite(s_ch583_time_backup_queue, &s_last_sync_epoch) != pdPASS) {
+        ESP_LOGE(TAG, "SNTP CH583 time backup enqueue failed epoch=%lld",
+                 (long long)s_last_sync_epoch);
+    }
 }
 
 static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -286,6 +316,25 @@ esp_err_t ServerNetworkStaTime_Init(void)
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "esp_netif_sntp_init failed ret=%s", esp_err_to_name(ret));
         return ret;
+    }
+
+    s_ch583_time_backup_queue = xQueueCreate(TDX_TIME_BACKUP_QUEUE_LENGTH, sizeof(int64_t));
+    if (s_ch583_time_backup_queue == NULL) {
+        ESP_LOGE(TAG, "create CH583 time backup queue failed");
+        return ESP_ERR_NO_MEM;
+    }
+
+    BaseType_t task_ret = xTaskCreate(ch583_time_backup_task,
+                                      "time_backup",
+                                      TDX_TIME_BACKUP_TASK_STACK_SIZE,
+                                      NULL,
+                                      TDX_TIME_BACKUP_TASK_PRIORITY,
+                                      NULL);
+    if (task_ret != pdPASS) {
+        vQueueDelete(s_ch583_time_backup_queue);
+        s_ch583_time_backup_queue = NULL;
+        ESP_LOGE(TAG, "create CH583 time backup task failed");
+        return ESP_ERR_NO_MEM;
     }
 
     s_time_module_inited = true;

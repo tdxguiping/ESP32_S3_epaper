@@ -61,7 +61,7 @@ extern uint8_t EPD_which_one_;
 #define EPD2_RST_PIN    USER_EPD2_RST_PIN
 #define EPD2_BUSY_PIN   USER_EPD2_BUSY_PIN
 
-#define EPD_Power_PIN   GPIO_NUM_27
+#define EPD_SD_Power_PIN GPIO_NUM_4
 
 // Keep SPI signal names mapped to the C5 shared EPD and SD SPI bus.
 // SPI 信号名映射到 C5 上墨水屏和 SD 卡共用的 SPI 总线。
@@ -210,7 +210,6 @@ class ePaperPort {
     uint8_t              u8flag_ = 0;
 
     void    Set_ResetIOLevel(uint8_t level);
-    void    Set_Power(uint8_t Power_switch);
     void    Set_CSIOLevel(uint8_t level);
     void    Set_DCIOLevel(uint8_t level);
     void    Set_CS2IOLevel(uint8_t level);
@@ -264,15 +263,15 @@ class ePaperPort {
     void EpdType16001200_133_NT61522_InitDisplay();
     void EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
     void EpdType16001200_133_DKE_Sleep();
-    void EpdType16001200_133_DKE_Init();
+    esp_err_t EpdType16001200_133_DKE_Init();
     void EpdType16001200_133_DKE_Display();
     bool EpdType16001200_133_DKE_NT61522_DisplayNet(const uint8_t *imageData, size_t imageSize);
-    void EpdType16001200_133_DKE_Update();
+    esp_err_t EpdType16001200_133_DKE_Update();
     void EpdType16001200_133_DKE_WriteCommandData(EP_Target_t target, uint8_t command, const uint8_t *data, size_t len);
     bool EpdType16001200_133_DKE_WriteFrame(EP_Target_t target, const uint8_t *data, size_t len);
-    void EpdType16001200_133_DKE_WaitBusy(const char *step, uint16_t max_loops);
-    void EpdType16001200_133_DKE_WaitBusyLocked(const char *step, uint16_t max_loops);
-    void EpdType16001200_133_DKE_WaitBusyUnlockSpi(const char *step, uint16_t max_loops);
+    esp_err_t EpdType16001200_133_DKE_WaitBusy(const char *step, uint32_t timeout_ms);
+    esp_err_t EpdType16001200_133_DKE_WaitBusyLocked(const char *step, uint32_t timeout_ms);
+    esp_err_t EpdType16001200_133_DKE_WaitBusyUnlockSpi(const char *step, uint32_t timeout_ms);
 
     void EpdType1360480_1085_Sleep();
     void EpdType1360480_1085_Init();
@@ -337,8 +336,8 @@ class ePaperPort {
     void EPD_Check_Busy_WithSharedSpiRelease(uint16_t loop_counter,
                                              const char *progress_prefix,
                                              const char *timeout_name);
-    void EPD_Check_Busy_133_Locked(uint16_t loop_counter);
-    void EPD_Check_Busy_133_UnlockSpi(uint16_t loop_counter);
+    esp_err_t EPD_Check_Busy_133_Locked(const char *step, uint32_t timeout_ms);
+    esp_err_t EPD_Check_Busy_133_UnlockSpi(const char *step, uint32_t timeout_ms);
 
     // 4 color 800x480 7.5
     void Epaper_Initial();
@@ -360,6 +359,7 @@ class ePaperPort {
     static const uint8_t* NT61522_Sleep_V();
 
   public:
+    esp_err_t Set_Power(uint8_t Power_switch);
     void delayms(unsigned int delayTime);  
     void setPinCsAll(uint8_t setLevel);
     void NT61522_Sleep();

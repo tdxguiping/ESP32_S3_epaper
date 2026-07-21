@@ -5,6 +5,7 @@
 #include "ch583_wifi_uart_protocol.h"
 #include "debug_output.h"
 #include "epd_display_mode.h"
+#include "epd_type.h"
 #include "led_status.h"
 #include "server_network_sta_time.h"
 #include "server_network_sta_wifi_work_time.h"
@@ -19,12 +20,14 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <driver/uart.h>
+#include <nvs.h>
 
 #define CH583_WIFI_MAX_ARG_LEN 300
 #define CH583_WIFI_MAX_WIFI_DATA_LEN 256
-#define CH583_WIFI_BLE_MAC_LEN 12
 #define CH583_WIFI_MAX_FRAME_BODY_LEN 448
 #define CH583_WIFI_MAX_BLE_MESSAGE_LEN 2048
+
+static const char *TAG = "ch583_proto";
 
 #ifndef CH583_WIFI_UART_PORT
 // Use the board-level CH583 UART port so protocol TX follows the C5 UART1 wiring.
@@ -71,6 +74,20 @@ typedef struct {
     const char *arg;
 } ch583_wifi_frame_t;
 
+typedef struct {
+    char mac[CH583_DEVICE_INFO_MAC_HEX_LEN + 1];
+    uint8_t ble_ver;
+    char screen_type;
+    uint8_t board_info;
+    uint8_t epd_type;
+} ch583_wifi_device_info_t;
+
+typedef enum {
+    CH583_DEVICE_INFO_PARSE_OK = 0,
+    CH583_DEVICE_INFO_PARSE_BAD_ARG,
+    CH583_DEVICE_INFO_PARSE_UNSUPPORTED_EPD,
+} ch583_wifi_device_info_parse_result_t;
+
 // Keep the TX sequence independent because each sender owns its own SEQ counter.
 static uint16_t s_tx_seq;
 static SemaphoreHandle_t s_tx_mutex;
@@ -102,10 +119,11 @@ static uint16_t s_ble_total;
 static size_t s_ble_len;
 static char s_ble_buf[CH583_WIFI_MAX_BLE_MESSAGE_LEN + 1];
 static bool s_ble_activity_active;
-static char s_ble_mac[CH583_WIFI_BLE_MAC_LEN + 1];
-static bool s_ble_mac_loaded;
+static char s_ble_mac[CH583_DEVICE_INFO_MAC_HEX_LEN + 1];
 static uint8_t s_ble_ver;
-static bool s_ble_ver_loaded;
+static bool s_device_info_loaded;
+static bool s_ble_ver_nvs_valid;
+static bool s_device_info_ready;
 static uint8_t s_wifi_provision_status;
 static bool s_wifi_provision_status_valid;
 
@@ -161,33 +179,40 @@ static uint16_t ch583_wifi_crc16_ccitt_false(const char *data, size_t len)
     return crc;
 }
 
-static void ch583_wifi_load_ble_mac_from_nvs(void)
+static void ch583_wifi_load_device_info_from_nvs(void)
 {
-    char saved_mac[CH583_WIFI_BLE_MAC_LEN + 1] = {0};
+    char saved_mac[CH583_DEVICE_INFO_MAC_HEX_LEN + 1] = {0};
+    esp_err_t mac_ret;
+    esp_err_t ver_ret;
 
-    if (s_ble_mac_loaded) {
+    if (s_device_info_loaded) {
         return;
     }
-    s_ble_mac_loaded = true;
+    s_device_info_loaded = true;
 
-    (void)app_nvs_read_str(CH583_BLE_MAC_NVS_KEY, saved_mac, sizeof(saved_mac), "");
-    if (strlen(saved_mac) == CH583_WIFI_BLE_MAC_LEN &&
-        ch583_wifi_is_upper_hex_string(saved_mac, CH583_WIFI_BLE_MAC_LEN)) {
-        memcpy(s_ble_mac, saved_mac, CH583_WIFI_BLE_MAC_LEN);
-        s_ble_mac[CH583_WIFI_BLE_MAC_LEN] = '\0';
-        UserDebugOutput_Printf("CH583_PROTO BLE_MAC load nvs=%s\r\n", s_ble_mac);
-    }
-}
-
-static void ch583_wifi_load_ble_ver_from_nvs(void)
-{
-    if (s_ble_ver_loaded) {
-        return;
+    mac_ret = app_nvs_read_str(CH583_DEVICE_INFO_MAC_NVS_KEY,
+                               saved_mac,
+                               sizeof(saved_mac),
+                               "");
+    if (mac_ret != ESP_OK && mac_ret != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "DEVICE_INFO MAC load failed ret=%s", esp_err_to_name(mac_ret));
+    } else if (strlen(saved_mac) == CH583_DEVICE_INFO_MAC_HEX_LEN &&
+               ch583_wifi_is_upper_hex_string(saved_mac, CH583_DEVICE_INFO_MAC_HEX_LEN)) {
+        memcpy(s_ble_mac, saved_mac, CH583_DEVICE_INFO_MAC_HEX_LEN + 1);
     }
 
-    (void)app_nvs_read_u8(CH583_BLE_VER_NVS_KEY, &s_ble_ver, CH583_BLE_VER_DEFAULT);
-    s_ble_ver_loaded = true;
-    UserDebugOutput_Printf("CH583_PROTO BLE_VER load nvs=%u\r\n", (unsigned int)s_ble_ver);
+    ver_ret = app_nvs_read_u8(CH583_DEVICE_INFO_BLE_VER_NVS_KEY,
+                              &s_ble_ver,
+                              CH583_DEVICE_INFO_BLE_VER_DEFAULT);
+    s_ble_ver_nvs_valid = ver_ret == ESP_OK;
+    if (ver_ret != ESP_OK) {
+        ESP_LOGE(TAG, "DEVICE_INFO BLE version load failed ret=%s",
+                 esp_err_to_name(ver_ret));
+    }
+
+    ESP_LOGI(TAG, "DEVICE_INFO data loaded MAC=%s BLE version=%u",
+             s_ble_mac[0] != '\0' ? s_ble_mac : "(empty)",
+             (unsigned int)s_ble_ver);
 }
 
 int ch583_wifi_uart_protocol_init(void)
@@ -195,7 +220,7 @@ int ch583_wifi_uart_protocol_init(void)
     if (s_tx_mutex == NULL) {
         s_tx_mutex = xSemaphoreCreateMutex();
     }
-    ch583_wifi_load_ble_ver_from_nvs();
+    ch583_wifi_load_device_info_from_nvs();
     return s_tx_mutex != NULL ? 0 : -1;
 }
 
@@ -229,6 +254,17 @@ static bool ch583_wifi_cmd_expects_reply(const char *cmd)
            strcmp(cmd, "TIME_GET") != 0 &&
            strcmp(cmd, "TIME_STATUS") != 0 &&
            strcmp(cmd, "NFC_STATUS") != 0;
+}
+
+static bool ch583_wifi_cmd_allowed_before_device_info(const char *cmd)
+{
+    return cmd != NULL &&
+           (strcmp(cmd, "ACK") == 0 ||
+            strcmp(cmd, "ERR") == 0 ||
+            strcmp(cmd, "TIME_GET") == 0 ||
+            strcmp(cmd, "GPIO_READ") == 0 ||
+            strcmp(cmd, "LED_BLINK") == 0 ||
+            strcmp(cmd, "LED_BLINK_STOP") == 0);
 }
 
 static ch583_wifi_pending_tx_t *ch583_wifi_find_pending_tx_locked(uint16_t seq)
@@ -287,6 +323,10 @@ static int ch583_wifi_send_frame(const char *cmd, const char *arg, uint8_t need_
     if (cmd == NULL || arg_len > CH583_WIFI_MAX_ARG_LEN) {
         UserDebugOutput_Printf("CH583_PROTO tx reject cmd=%s arg_len=%u\r\n",
                cmd ? cmd : "NULL", (unsigned int)arg_len);
+        return -1;
+    }
+    if (!s_device_info_ready && !ch583_wifi_cmd_allowed_before_device_info(cmd)) {
+        ESP_LOGW(TAG, "DEVICE_INFO pending, block TX cmd=%s", cmd);
         return -1;
     }
     if (s_tx_mutex == NULL || xSemaphoreTake(s_tx_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
@@ -532,8 +572,8 @@ static uint16_t ch583_wifi_get_current_wifi_ver(void)
     uint8_t low = 0;
 
     if (app == NULL || !ch583_wifi_parse_app_version_byte_pair(app->version, &high, &low)) {
-        UserDebugOutput_Printf("CH583_PROTO WIFI_VER app version parse failed version=%s\r\n",
-                               app != NULL ? app->version : "(null)");
+        ESP_LOGE(TAG, "WIFI_VER app version parse failed version=%s",
+                 app != NULL ? app->version : "(null)");
         return 0;
     }
 
@@ -554,6 +594,80 @@ static bool ch583_wifi_is_upper_hex_string(const char *text, size_t len)
     }
 
     return true;
+}
+
+static bool ch583_wifi_parse_hex_byte(const char *text, uint8_t *value)
+{
+    char *end = NULL;
+    unsigned long parsed = 0;
+
+    if (text == NULL || value == NULL || strlen(text) != 2 ||
+        !ch583_wifi_is_upper_hex_string(text, 2)) {
+        return false;
+    }
+
+    parsed = strtoul(text, &end, 16);
+    if (end == text || *end != '\0' || parsed > 0xFFUL) {
+        return false;
+    }
+    *value = (uint8_t)parsed;
+    return true;
+}
+
+static ch583_wifi_device_info_parse_result_t ch583_wifi_parse_device_info_arg(
+    const ch583_wifi_frame_t *frame,
+    ch583_wifi_device_info_t *device_info)
+{
+    char arg_copy[CH583_DEVICE_INFO_ARG_MAX_LEN + 1];
+    char *fields[4] = {0};
+    char *separator = NULL;
+
+    if (frame == NULL || device_info == NULL || frame->arg == NULL ||
+        frame->arg_len == 0 || frame->arg_len > CH583_DEVICE_INFO_ARG_MAX_LEN) {
+        return CH583_DEVICE_INFO_PARSE_BAD_ARG;
+    }
+
+    memcpy(arg_copy, frame->arg, frame->arg_len + 1);
+    fields[0] = arg_copy;
+    for (size_t i = 1; i < 4; ++i) {
+        separator = strchr(fields[i - 1], ',');
+        if (separator == NULL) {
+            return CH583_DEVICE_INFO_PARSE_BAD_ARG;
+        }
+        *separator = '\0';
+        fields[i] = separator + 1;
+    }
+
+    if (strchr(fields[3], ',') != NULL ||
+        strlen(fields[0]) != CH583_DEVICE_INFO_MAC_HEX_LEN ||
+        !ch583_wifi_is_upper_hex_string(fields[0], CH583_DEVICE_INFO_MAC_HEX_LEN) ||
+        strlen(fields[1]) == 0 ||
+        strlen(fields[1]) > CH583_DEVICE_INFO_BLE_VER_TEXT_MAX_LEN ||
+        !ch583_wifi_parse_u8_dec_arg(fields[1], &device_info->ble_ver) ||
+        strlen(fields[2]) != 1 ||
+        (fields[2][0] != CH583_DEVICE_INFO_SCREEN_TYPE_133 &&
+         fields[2][0] != CH583_DEVICE_INFO_SCREEN_TYPE_709) ||
+        !ch583_wifi_parse_hex_byte(fields[3], &device_info->board_info)) {
+        return CH583_DEVICE_INFO_PARSE_BAD_ARG;
+    }
+
+    memcpy(device_info->mac, fields[0], CH583_DEVICE_INFO_MAC_HEX_LEN + 1);
+    device_info->screen_type = fields[2][0];
+
+    if (device_info->screen_type == CH583_DEVICE_INFO_SCREEN_TYPE_133 &&
+        device_info->board_info == CH583_DEVICE_INFO_BOARD_XINGTAI) {
+        device_info->epd_type = EPD_TYPE_1600_1200_133;
+    } else if (device_info->screen_type == CH583_DEVICE_INFO_SCREEN_TYPE_133 &&
+               device_info->board_info == CH583_DEVICE_INFO_BOARD_DKE) {
+        device_info->epd_type = EPD_TYPE_1600_1200_133_DKE;
+    } else if (device_info->screen_type == CH583_DEVICE_INFO_SCREEN_TYPE_709 &&
+               device_info->board_info == CH583_DEVICE_INFO_BOARD_XINGTAI) {
+        device_info->epd_type = EPD_TYPE_1600_1200_79;
+    } else {
+        return CH583_DEVICE_INFO_PARSE_UNSUPPORTED_EPD;
+    }
+
+    return CH583_DEVICE_INFO_PARSE_OK;
 }
 
 static bool ch583_wifi_parse_reply_seq_arg(const char *arg, uint16_t *seq_out)
@@ -853,68 +967,154 @@ static bool ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame,
     return true;
 }
 
-static void ch583_wifi_handle_ble_mac(const ch583_wifi_frame_t *frame)
+static void ch583_wifi_handle_device_info(const ch583_wifi_frame_t *frame)
 {
-    if (frame == NULL) {
-        return;
-    }
-
-    if (frame->part != 1 || frame->total != 1) {
-        ch583_wifi_send_err(frame->seq, "BAD_PART");
-        return;
-    }
-
-    if (frame->arg_len != CH583_WIFI_BLE_MAC_LEN) {
-        ch583_wifi_send_err(frame->seq, "BAD_LEN");
-        return;
-    }
-
-    if (!ch583_wifi_is_upper_hex_string(frame->arg, CH583_WIFI_BLE_MAC_LEN)) {
-        ch583_wifi_send_err(frame->seq, "BAD_ARG");
-        return;
-    }
-
-    ServerNetworkStaWifiWorkTime_OnCh583Activity();
-    // Save the last CH583 BLE MAC so later WiFi logic can identify the frontend path.
-    memcpy(s_ble_mac, frame->arg, CH583_WIFI_BLE_MAC_LEN);
-    s_ble_mac[CH583_WIFI_BLE_MAC_LEN] = '\0';
-    s_ble_mac_loaded = true;
-    (void)app_nvs_write_str(CH583_BLE_MAC_NVS_KEY, s_ble_mac);
-    UserDebugOutput_Printf("CH583_PROTO BLE_MAC saved=%s\r\n", s_ble_mac);
-    ch583_wifi_send_ack(frame->seq);
-}
-
-static void ch583_wifi_handle_ble_ver(const ch583_wifi_frame_t *frame)
-{
-    uint8_t ble_ver = 0;
+    ch583_wifi_device_info_t device_info = {0};
+    ch583_wifi_device_info_parse_result_t parse_result;
+    uint8_t saved_epd_type = USER_EPD_TYPE_DEFAULT;
+    bool epd_changed = false;
+    bool was_ready = s_device_info_ready;
+    esp_err_t ret;
 
     if (frame == NULL) {
         return;
     }
 
+    // A new DEVICE_INFO frame starts a mandatory handshake attempt. Re-arm the
+    // shutdown guard as well, so protocol and power-management readiness agree.
+    ServerNetworkStaWifiWorkTime_OnDeviceInfoPending();
+    s_device_info_ready = false;
+
     if (frame->part != 1 || frame->total != 1) {
+        ESP_LOGE(TAG, "DEVICE_INFO bad part seq=%u part=%u total=%u",
+                 (unsigned int)frame->seq,
+                 (unsigned int)frame->part,
+                 (unsigned int)frame->total);
         ch583_wifi_send_err(frame->seq, "BAD_PART");
         return;
     }
 
-    if (!ch583_wifi_parse_u8_dec_arg(frame->arg, &ble_ver)) {
+    parse_result = ch583_wifi_parse_device_info_arg(frame, &device_info);
+    if (parse_result == CH583_DEVICE_INFO_PARSE_UNSUPPORTED_EPD) {
+        ESP_LOGE(TAG,
+                 "DEVICE_INFO unsupported EPD mapping seq=%u screen_type=%c board_info_hex=%02X",
+                 (unsigned int)frame->seq,
+                 device_info.screen_type,
+                 (unsigned int)device_info.board_info);
+        ch583_wifi_send_err(frame->seq, "BAD_ARG");
+        return;
+    }
+    if (parse_result != CH583_DEVICE_INFO_PARSE_OK) {
+        ESP_LOGE(TAG, "DEVICE_INFO bad arg seq=%u len=%u arg=%s",
+                 (unsigned int)frame->seq,
+                 (unsigned int)frame->arg_len,
+                 frame->arg);
         ch583_wifi_send_err(frame->seq, "BAD_ARG");
         return;
     }
 
-    ServerNetworkStaWifiWorkTime_OnCh583Activity();
-    s_ble_ver = ble_ver;
-    s_ble_ver_loaded = true;
-    esp_err_t nvs_ret = app_nvs_write_u8(CH583_BLE_VER_NVS_KEY, s_ble_ver);
-    if (nvs_ret != ESP_OK) {
-        UserDebugOutput_Printf("W CH583_PROTO BLE_VER nvs save failed value=%u ret=%s\r\n",
-                               (unsigned int)s_ble_ver,
-                               esp_err_to_name(nvs_ret));
+    ret = EpdType_LoadSavedOrDefault();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "DEVICE_INFO load EPD type failed seq=%u ret=%s",
+                 (unsigned int)frame->seq, esp_err_to_name(ret));
+        ch583_wifi_send_err(frame->seq, CH583_DEVICE_INFO_ERR_SAVE_FAILED);
+        return;
     }
-    UserDebugOutput_Printf("CH583_PROTO BLE_VER saved=%u\r\n", (unsigned int)s_ble_ver);
-    ch583_wifi_send_ack(frame->seq);
 
-    (void)ch583_wifi_uart_send_wifi_ver(ch583_wifi_get_current_wifi_ver());
+    ret = EpdType_SetAndSave(device_info.epd_type, &epd_changed);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "DEVICE_INFO save EPD type=%u failed seq=%u ret=%s",
+                 (unsigned int)device_info.epd_type,
+                 (unsigned int)frame->seq,
+                 esp_err_to_name(ret));
+        ch583_wifi_send_err(frame->seq, CH583_DEVICE_INFO_ERR_SAVE_FAILED);
+        return;
+    }
+
+    // Verify NVS after an unchanged RAM value so a previous failed write cannot be acknowledged.
+    ret = app_nvs_read_u8(USER_EPD_TYPE_NVS_KEY, &saved_epd_type, USER_EPD_TYPE_DEFAULT);
+    if (ret != ESP_OK || saved_epd_type != device_info.epd_type) {
+        ret = app_nvs_write_u8(USER_EPD_TYPE_NVS_KEY, device_info.epd_type);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "DEVICE_INFO verify EPD type=%u failed seq=%u ret=%s",
+                     (unsigned int)device_info.epd_type,
+                     (unsigned int)frame->seq,
+                     esp_err_to_name(ret));
+            ch583_wifi_send_err(frame->seq, CH583_DEVICE_INFO_ERR_SAVE_FAILED);
+            return;
+        }
+    }
+
+    if (strcmp(s_ble_mac, device_info.mac) != 0) {
+        ret = app_nvs_write_str(CH583_DEVICE_INFO_MAC_NVS_KEY, device_info.mac);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "DEVICE_INFO save MAC failed seq=%u ret=%s",
+                     (unsigned int)frame->seq, esp_err_to_name(ret));
+            ch583_wifi_send_err(frame->seq, CH583_DEVICE_INFO_ERR_SAVE_FAILED);
+            return;
+        }
+    }
+    if (!s_ble_ver_nvs_valid || s_ble_ver != device_info.ble_ver) {
+        ret = app_nvs_write_u8(CH583_DEVICE_INFO_BLE_VER_NVS_KEY, device_info.ble_ver);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "DEVICE_INFO save BLE version=%u failed seq=%u ret=%s",
+                     (unsigned int)device_info.ble_ver,
+                     (unsigned int)frame->seq,
+                     esp_err_to_name(ret));
+            ch583_wifi_send_err(frame->seq, CH583_DEVICE_INFO_ERR_SAVE_FAILED);
+            return;
+        }
+        s_ble_ver_nvs_valid = true;
+    }
+
+    memcpy(s_ble_mac, device_info.mac, CH583_DEVICE_INFO_MAC_HEX_LEN + 1);
+    s_ble_ver = device_info.ble_ver;
+    ServerNetworkStaWifiWorkTime_OnCh583Activity();
+
+    if (ch583_wifi_send_ack(frame->seq) != 0) {
+        ESP_LOGE(TAG, "DEVICE_INFO ACK send failed seq=%u", (unsigned int)frame->seq);
+        return;
+    }
+
+    s_device_info_ready = true;
+    if (was_ready) {
+        ESP_LOGW(TAG, "DEVICE_INFO repeated seq=%u, ACK sent again", (unsigned int)frame->seq);
+    } else {
+        ESP_LOGI(TAG,
+                 "DEVICE_INFO ready seq=%u MAC=%s BLE version=%u screen=%c board=%02X EPD type=%u changed=%d",
+                 (unsigned int)frame->seq,
+                 s_ble_mac,
+                 (unsigned int)s_ble_ver,
+                 device_info.screen_type,
+                 (unsigned int)device_info.board_info,
+                 (unsigned int)device_info.epd_type,
+                 epd_changed ? 1 : 0);
+    }
+
+    // Release dependent modules only after the mandatory ACK has left the UART.
+    ServerNetworkStaWifiWorkTime_OnDeviceInfoReady();
+    if (ch583_wifi_uart_send_wifi_ver(ch583_wifi_get_current_wifi_ver()) != 0) {
+        ESP_LOGE(TAG, "DEVICE_INFO WIFI_VER send failed seq=%u", (unsigned int)frame->seq);
+    }
+    if (ch583_wifi_uart_send_current_wifi_provision_status() != 0) {
+        ESP_LOGE(TAG, "DEVICE_INFO WIFI_PROVISION replay failed seq=%u",
+                 (unsigned int)frame->seq);
+    }
+    if (!was_ready) {
+        esp_err_t led_ret = UserLedStatus_ReapplyCurrent();
+        if (led_ret != ESP_OK) {
+            ESP_LOGE(TAG, "DEVICE_INFO LED reapply request failed seq=%u ret=%s",
+                     (unsigned int)frame->seq, esp_err_to_name(led_ret));
+        }
+        if (ServerNetworkStaTime_IsReliableForRtcRestore()) {
+            esp_err_t time_ret =
+                ServerNetworkStaTime_BackupCurrentToCh583("device_info_ready");
+            if (time_ret != ESP_OK) {
+                ESP_LOGE(TAG, "DEVICE_INFO TIME_SET replay failed seq=%u ret=%s",
+                         (unsigned int)frame->seq, esp_err_to_name(time_ret));
+            }
+        }
+    }
 }
 
 static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_callback_t ble_data_callback)
@@ -946,28 +1146,29 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
     }
     ch583_wifi_check_rx_seq_gap(&frame);
 
-    if (strcmp(frame.cmd, "PING") == 0) {
+    if (strcmp(frame.cmd, CH583_DEVICE_INFO_CMD) == 0) {
+        ch583_wifi_handle_device_info(&frame);
+    } else if (strcmp(frame.cmd, "PING") == 0) {
+        if (!s_device_info_ready) {
+            ESP_LOGE(TAG, "PING rejected before DEVICE_INFO seq=%u", (unsigned int)frame.seq);
+            ch583_wifi_send_err(frame.seq, CH583_DEVICE_INFO_ERR_REQUIRED);
+            return;
+        }
         char arg[8];
         snprintf(arg, sizeof(arg), "%u", (unsigned int)frame.seq);
         ch583_wifi_send_frame("PONG", arg,0);
 
        // CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
        //      (unsigned int)frame.seq,frame.cmd,frame.arg);
-
-
-    } else if (strcmp(frame.cmd, "BLE_MAC") == 0) {
-      CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
-           (unsigned int)frame.seq,frame.cmd,frame.arg);
-
-        ch583_wifi_handle_ble_mac(&frame);
-    } else if (strcmp(frame.cmd, "BLE_VER") == 0) {
-      CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
-           (unsigned int)frame.seq,frame.cmd,frame.arg);
-
-        ch583_wifi_handle_ble_ver(&frame);
     } else if (strcmp(frame.cmd, "BLE_DATA") == 0) {       
       CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
            (unsigned int)frame.seq,frame.cmd,frame.arg);
+        if (!s_device_info_ready) {
+            ESP_LOGE(TAG, "BLE_DATA rejected before DEVICE_INFO seq=%u",
+                     (unsigned int)frame.seq);
+            ch583_wifi_send_err(frame.seq, CH583_DEVICE_INFO_ERR_REQUIRED);
+            return;
+        }
         if (ch583_wifi_handle_ble_data(&frame, ble_data_callback)) {
             // Preserve the original full work timer reset only for accepted BLE data.
             ServerNetworkStaWifiWorkTime_OnNetworkData();
@@ -988,7 +1189,7 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
         ch583_wifi_handle_reply_status(&frame);
         CH583_WIFI_DEBUG_PRINTF("CH583_PROTO status cmd=%s arg=%s\r\n", frame.cmd, frame.arg);
     } else {
-        UserDebugOutput_Printf("CH583_PROTO unsupported cmd=%s seq=%u\r\n", frame.cmd, (unsigned int)frame.seq);
+        ESP_LOGE(TAG, "unsupported cmd=%s seq=%u", frame.cmd, (unsigned int)frame.seq);
         ch583_wifi_send_err(frame.seq, "BAD_CMD");
     }
 }
@@ -1107,13 +1308,13 @@ int ch583_wifi_uart_send_current_wifi_provision_status(void)
 
 const char *ch583_wifi_uart_get_ble_mac(void)
 {
-    ch583_wifi_load_ble_mac_from_nvs();
+    ch583_wifi_load_device_info_from_nvs();
     return s_ble_mac[0] != '\0' ? s_ble_mac : NULL;
 }
 
 uint8_t ch583_wifi_uart_get_ble_ver(void)
 {
-    ch583_wifi_load_ble_ver_from_nvs();
+    ch583_wifi_load_device_info_from_nvs();
     return s_ble_ver;
 }
 

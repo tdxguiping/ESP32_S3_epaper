@@ -6,27 +6,28 @@
 #include "esp_timer.h"
 #include "tdx_shared_spi.h"
 
+#include <cstring>
+
 namespace {
-static TaskHandle_t s_epd_133_busy_task = NULL;
-static uint32_t s_epd_133_busy_call_count = 0;
-static int64_t s_epd_133_busy_total_us = 0;
+static constexpr const char *kXingTaiTag = "epd_133_xingtai";
+static constexpr uint32_t kXingTaiResetBusyTimeoutMs = 5000;
+static constexpr uint32_t kXingTaiPonBusyTimeoutMs = 10000;
+static constexpr uint32_t kXingTaiDrfBusyTimeoutMs = 60000;
+static constexpr uint32_t kXingTaiPofBusyTimeoutMs = 10000;
+static constexpr uint32_t kXingTaiBusyPollMs = 100;
 
-static void Epd133BusyPrintTime(int64_t start_us)
+static void XingTaiLogBusyDone(const char *step, uint32_t poll_count, int64_t start_us)
 {
-    TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
-    if (s_epd_133_busy_task != current_task) {
-        s_epd_133_busy_task = current_task;
-        s_epd_133_busy_call_count = 0;
-        s_epd_133_busy_total_us = 0;
+    int64_t elapsed_ms = (esp_timer_get_time() - start_us) / 1000;
+    if (step != nullptr && std::strcmp(step, "DRF") == 0) {
+        ESP_LOGI(kXingTaiTag, "EPD XingTai busy done step=%s polls=%lu elapsed_ms=%lld",
+                 step, (unsigned long)poll_count, (long long)elapsed_ms);
+    } else {
+        ESP_LOGD(kXingTaiTag, "EPD XingTai busy done step=%s polls=%lu elapsed_ms=%lld",
+                 step != nullptr ? step : "busy",
+                 (unsigned long)poll_count,
+                 (long long)elapsed_ms);
     }
-
-    int64_t elapsed_us = esp_timer_get_time() - start_us;
-    s_epd_133_busy_call_count++;
-    s_epd_133_busy_total_us += elapsed_us;
-    UserDebugOutput_Printf("EPD_Check_Busy_133 time call=%lu call_ms=%lld total_ms=%lld\r\n",
-                           (unsigned long)s_epd_133_busy_call_count,
-                           (long long)(elapsed_us / 1000),
-                           (long long)(s_epd_133_busy_total_us / 1000));
 }
 }
 
@@ -40,139 +41,88 @@ void ePaperPort::EPD_Check_Busy_133(uint16_t loop_counter)
                   (epd2_cs_level == GPIO_LOW);
 
     if (cs_low) {
-        EPD_Check_Busy_133_Locked(loop_counter);
+        (void)EPD_Check_Busy_133_Locked("legacy", ((uint32_t)loop_counter + 1U) * 1000U);
     } else {
-        EPD_Check_Busy_133_UnlockSpi(loop_counter);
+        (void)EPD_Check_Busy_133_UnlockSpi("legacy", ((uint32_t)loop_counter + 1U) * 1000U);
     }
 }
 
-void ePaperPort::EPD_Check_Busy_133_Locked(uint16_t loop_counter)
+esp_err_t ePaperPort::EPD_Check_Busy_133_Locked(const char *step, uint32_t timeout_ms)
 {
-    int16_t i;
     int64_t start_us = esp_timer_get_time();
-    int cs1_level = getGpioLevel(cs_);
-    int cs2_level = getGpioLevel(cs_2_);
-    int epd2_cs_level = getGpioLevel(EPD2_CS_PIN);
+    uint32_t poll_count = 0;
 
-    if (loop_counter > 31) {
-        loop_counter = 31;
-    }
-    ESP_LOGI(TAG, "EPD-133 busy path=locked loop=%u cs=%d,%d,%d",
-             (unsigned int)loop_counter,
-             cs1_level,
-             cs2_level,
-             epd2_cs_level);
-    i = 0;
     while (1) {
         int level = Get_BusyIOLevel();
         if (level) {
-            UserDebugOutput_Printf("Check Busy over %d-%d \r\n",i,loop_counter);
-            Epd133BusyPrintTime(start_us);
-            return;
+            XingTaiLogBusyDone(step, poll_count, start_us);
+            return ESP_OK;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(500));
-
-        level = Get_BusyIOLevel();
-        if (level) {
-            UserDebugOutput_Printf("Check Busy over %d-%d \r\n",i,loop_counter);
-            Epd133BusyPrintTime(start_us);
-            return;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(500));
-
-        i++;
-        UserDebugOutput_Printf(".%d-%d.", i,loop_counter);
-
-        level = Get_BusyIOLevel();
-        if (level) {
-            UserDebugOutput_Printf("Check Busy over %d-%d \r\n",i,loop_counter);
-            Epd133BusyPrintTime(start_us);
-            return;
-        }
-
-
-        if (i > loop_counter) {
-            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
-            ESP_LOGE(TAG, "EPD-133 busy timeout level=%d loops=%ld elapsed_ms=%d",
-                     Get_BusyIOLevel(), (long)i, elapsed_ms);
+        int64_t elapsed_ms = (esp_timer_get_time() - start_us) / 1000;
+        if (elapsed_ms >= timeout_ms) {
+            ESP_LOGE(TAG,
+                     "EPD XingTai busy timeout step=%s level=%d polls=%lu timeout_ms=%lu elapsed_ms=%lld",
+                     step != nullptr ? step : "busy",
+                     level,
+                     (unsigned long)poll_count,
+                     (unsigned long)timeout_ms,
+                     (long long)elapsed_ms);
             EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
-            Epd133BusyPrintTime(start_us);
-            return;
+            return ESP_ERR_TIMEOUT;
         }
+
+        vTaskDelay(pdMS_TO_TICKS(kXingTaiBusyPollMs));
+        poll_count++;
     }
 }
 
-void ePaperPort::EPD_Check_Busy_133_UnlockSpi(uint16_t loop_counter)
+esp_err_t ePaperPort::EPD_Check_Busy_133_UnlockSpi(const char *step, uint32_t timeout_ms)
 {
-    int16_t i;
     int64_t start_us = esp_timer_get_time();
-    int cs1_level = getGpioLevel(cs_);
-    int cs2_level = getGpioLevel(cs_2_);
-    int epd2_cs_level = getGpioLevel(EPD2_CS_PIN);
+    uint32_t poll_count = 0;
 
-#define EPD_133_BUSY_LOCK_AND_RETURN() do { \
+#define EPD_133_BUSY_RELOCK_AND_RETURN(result) do { \
         esp_err_t lock_ret = TdxSharedSpi_Lock(pdMS_TO_TICKS(10000)); \
         if (lock_ret != ESP_OK) { \
             ESP_LOGE(TAG, "EPD-133 shared SPI relock timeout ret=%s, restart", esp_err_to_name(lock_ret)); \
             esp_restart(); \
-            return; \
+            return lock_ret; \
         } \
-        Epd133BusyPrintTime(start_us); \
-        return; \
+        if ((result) == ESP_OK) { \
+            XingTaiLogBusyDone(step, poll_count, start_us); \
+        } \
+        return (result); \
     } while (0)
-
-    if (loop_counter > 31) {
-        loop_counter = 31;
-    }
-    ESP_LOGI(TAG, "EPD-133 busy path=unlock_spi loop=%u cs=%d,%d,%d",
-             (unsigned int)loop_counter,
-             cs1_level,
-             cs2_level,
-             epd2_cs_level);
 
     setGpioLevel(cs_, GPIO_HIGH);
     setGpioLevel(cs_2_, GPIO_HIGH);
     setGpioLevel(EPD2_CS_PIN, GPIO_HIGH);
     TdxSharedSpi_Unlock();
 
-    i = 0;
     while (1) {
         int level = Get_BusyIOLevel();
         if (level) {
-            UserDebugOutput_Printf("Check Busy over %d-%d \r\n", i, loop_counter);
-            EPD_133_BUSY_LOCK_AND_RETURN();
+            EPD_133_BUSY_RELOCK_AND_RETURN(ESP_OK);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(500));
-
-        level = Get_BusyIOLevel();
-        if (level) {
-            UserDebugOutput_Printf("Check Busy over %d-%d \r\n", i, loop_counter);
-            EPD_133_BUSY_LOCK_AND_RETURN();
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(500));
-
-        i++;
-        UserDebugOutput_Printf(".%d-%d.", i, loop_counter);
-
-        level = Get_BusyIOLevel();
-        if (level) {
-            UserDebugOutput_Printf("Check Busy over %d-%d \r\n", i, loop_counter);
-            EPD_133_BUSY_LOCK_AND_RETURN();
-        }
-
-        if (i > loop_counter) {
-            int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);
-            ESP_LOGE(TAG, "EPD-133 busy timeout level=%d loops=%ld elapsed_ms=%d",
-                     Get_BusyIOLevel(), (long)i, elapsed_ms);
+        int64_t elapsed_ms = (esp_timer_get_time() - start_us) / 1000;
+        if (elapsed_ms >= timeout_ms) {
+            ESP_LOGE(TAG,
+                     "EPD XingTai busy timeout step=%s level=%d polls=%lu timeout_ms=%lu elapsed_ms=%lld",
+                     step != nullptr ? step : "busy",
+                     level,
+                     (unsigned long)poll_count,
+                     (unsigned long)timeout_ms,
+                     (long long)elapsed_ms);
             EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
-            EPD_133_BUSY_LOCK_AND_RETURN();
+            EPD_133_BUSY_RELOCK_AND_RETURN(ESP_ERR_TIMEOUT);
         }
+
+        vTaskDelay(pdMS_TO_TICKS(kXingTaiBusyPollMs));
+        poll_count++;
     }
-#undef EPD_133_BUSY_LOCK_AND_RETURN
+#undef EPD_133_BUSY_RELOCK_AND_RETURN
 }
 
 void EpdType16001200_133_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size)
@@ -182,11 +132,18 @@ void EpdType16001200_133_Display(ePaperPort &epd, const uint8_t *display_buf, si
         ESP_LOGE("Display", "EPD 1600x1200 13.3 rejected input=%u expected=%u",
                  (unsigned int)display_size,
                  (unsigned int)expected_image_size);
+        EpdType_ReportDisplayFailure(ESP_ERR_INVALID_SIZE);
         return;
     }
 
     epd.EPD_Init();
+    if (EpdType_GetDisplayResult() != ESP_OK) {
+        return;
+    }
     epd.NT61522_Init_display();
+    if (EpdType_GetDisplayResult() != ESP_OK) {
+        return;
+    }
     if (epd.NT61522_Display_net(display_buf, display_size) != ESP_OK) {
         return;
     }
@@ -234,9 +191,14 @@ void ePaperPort::EpdType16001200_133_NT61522_Init()
     EPD_Reset();
     setPinCsAll(GPIO_HIGH);
     Read_Temptr();       //添加锁定当前温度函数(掉电重启时解除)，为了避免屏幕多次运行IC升温导致调取波形温度与实际环境温度不符
+    if (EpdType_GetDisplayResult() != ESP_OK) {
+        return;
+    }
 
 	EPD_Reset();
-	EPD_Check_Busy_133_UnlockSpi(1);
+	if (EPD_Check_Busy_133_UnlockSpi("reset", kXingTaiResetBusyTimeoutMs) != ESP_OK) {
+        return;
+    }
 
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmit(0x74, r74DataBuf, sizeof(r74DataBuf));
@@ -315,28 +277,35 @@ void ePaperPort::EpdType16001200_133_NT61522_Display()
 	spiTransmitCommand(R04_PON);
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-    UserDebugOutput_Printf("---1---\r\n");
-	EPD_Check_Busy_133_UnlockSpi(1);
+	if (EPD_Check_Busy_133_UnlockSpi("PON", kXingTaiPonBusyTimeoutMs) != ESP_OK) {
+        return;
+    }
 	delayms(30);
 
     setPinCsAll(GPIO_LOW);
 	spiTransmit(R12_DRF,DRF_V,sizeof(DRF_V));
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-    UserDebugOutput_Printf("---2---\r\n");
-	EPD_Check_Busy_133_UnlockSpi(31);
+	if (EPD_Check_Busy_133_UnlockSpi("DRF", kXingTaiDrfBusyTimeoutMs) != ESP_OK) {
+        setPinCsAll(GPIO_LOW);
+        spiTransmit(R02_POF, POF_V, sizeof(POF_V));
+        setPinCsAll(GPIO_HIGH);
+        delayms(30);
+        (void)EPD_Check_Busy_133_UnlockSpi("POF-cleanup", kXingTaiPofBusyTimeoutMs);
+        return;
+    }
 	delayms(30);
 	setPinCsAll(GPIO_LOW);
 	spiTransmit(R02_POF,POF_V,sizeof(POF_V));
 	setPinCsAll(GPIO_HIGH);
 	delayms(30);
-    UserDebugOutput_Printf("---3---\r\n");
-	EPD_Check_Busy_133_UnlockSpi(1);
+	if (EPD_Check_Busy_133_UnlockSpi("POF", kXingTaiPofBusyTimeoutMs) != ESP_OK) {
+        return;
+    }
 	delayms(30);
 
 
     vTaskDelay(pdMS_TO_TICKS(1000));
-    Set_Power(0);
 }
 
 void ePaperPort::EpdType16001200_133_NT61522_InitDisplay()
@@ -355,11 +324,16 @@ void ePaperPort::EpdType16001200_133_NT61522_InitDisplay()
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmitCommand(R40_TSC);
 	delayms(10);
-	EPD_Check_Busy_133_Locked(1);
+	if (EPD_Check_Busy_133_Locked("TSC", kXingTaiResetBusyTimeoutMs) != ESP_OK) {
+        setPinCs(TARGET_MASTER, GPIO_HIGH);
+        return;
+    }
 	spiReceiveData(&dataBuff[0], 2);
 	setPinCs(TARGET_MASTER,GPIO_HIGH);
 	delayms(30);
-	EPD_Check_Busy_133_UnlockSpi(1);
+	if (EPD_Check_Busy_133_UnlockSpi("TSC", kXingTaiResetBusyTimeoutMs) != ESP_OK) {
+        return;
+    }
 
     //Temptr[0] =  WHT20_Temp+10;
 	temptr_fill = Temptr[0]<<1;
@@ -546,10 +520,15 @@ unsigned char ePaperPort::Read_Temptr(void)
 	setPinCs(TARGET_MASTER,GPIO_LOW);
 	spiTransmitCommand(R40_TSC);
 	delayms(10);
-	EPD_Check_Busy_133_Locked(1);
+	if (EPD_Check_Busy_133_Locked("TSC", kXingTaiResetBusyTimeoutMs) != ESP_OK) {
+        setPinCs(TARGET_MASTER, GPIO_HIGH);
+        return Temptr[0];
+    }
 	spiReceiveData(&Temptr[0], 2);
 	setPinCs(TARGET_MASTER,GPIO_HIGH);
-	EPD_Check_Busy_133_UnlockSpi(1);
+	if (EPD_Check_Busy_133_UnlockSpi("TSC", kXingTaiResetBusyTimeoutMs) != ESP_OK) {
+        return Temptr[0];
+    }
 
 	Temptr[0] = Temptr[0] > 50 ? 48 : Temptr[0];    
 

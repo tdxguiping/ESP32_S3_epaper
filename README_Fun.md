@@ -63,8 +63,7 @@
 - [10. CH583 串口通信协议汇总](#sec-10)
   - [10.1 通讯基础与帧格式](#sec-10-1)
   - [10.2 SEQ / LEN / PART / CRC / ACK / ERR 校验规则](#sec-10-2)
-  - [10.3 BLE_MAC 握手流程](#sec-10-3)
-  - [10.3.1 BLE/WiFi 版本交换与私有广播版本字段](#sec-10-3-1)
+  - [10.3 DEVICE_INFO 必达握手、版本交换与 EPD 类型](#sec-10-3)
   - [10.4 PING / PONG 心跳流程](#sec-10-4)
   - [10.5 BLE_DATA：前端到 WiFi 透传](#sec-10-5)
   - [10.6 WIFI_DATA：WiFi 到前端通知](#sec-10-6)
@@ -137,11 +136,11 @@ The full result-code table is in `README_Result_Code.md`; this file keeps featur
 | `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `TDX_DELETE_MAX_FILES=50` 限制；超过上限返回 `1514`，文件名非法返回 `1502`；网络与 USB 入口都先完整校验，校验失败不执行删除；只删除匹配的 bin/jpg；不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度 | 从 JSON `fileNames` 取删除列表；校验通过后按文件名拼路径并删除 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从轮播配置/control 文件读取轮播状态 |
 | `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 诊断/兼容进度 | `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=50` 限制；`startIndex` 必填且满足 `0 <= startIndex < file_count`；单个名称缓冲区受 `TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48` 限制；`interval` 限制在 `60..604800` 秒；`random` 永久强制为 `false` | 不兼容缺少 `startIndex` 的旧轮播协议/配置；启动时已有 SNTP 或运行中首次取得 SNTP 后，按 `fileNames + startIndex + anchor_epoch + interval` 使用绝对时间槽 |
-| `wifi_work_time` | `work_state` namespace blob；`PhotoPainter:work_continue/wifi_standby` 字符串兼容键 | 网络 HTTP 与 USB JSON 只接受 `seconds=0..3600`，旧字段 `time` 返回参数非法；BLE/CH583 继续保持原有协议和 `60..3600` 范围；内部 `SetAndSave()` clamp 到 `0..3600`；保存 blob 后会读回验证 | 启动时读取 blob；blob size 不匹配则回退默认值；兼容读取字符串键并解析为 u32；CH583 UART 初始化完成前由 startup-pending guard 禁止关机，初始化完成及后续合法业务活动刷新 RAM 中的 20 秒 CH583 保护；HTTP 使用独立的 20 秒保护，不写 NVS |
+| `wifi_work_time` | `work_state` namespace blob；`PhotoPainter:work_continue/wifi_standby` 字符串兼容键 | 网络 HTTP 与 USB JSON 只接受 `seconds=0..3600`，旧字段 `time` 返回参数非法；BLE/CH583 继续保持原有协议和 `60..3600` 范围；内部 `SetAndSave()` clamp 到 `0..3600`；保存 blob 后会读回验证 | 启动时读取 blob；blob size 不匹配则回退默认值；兼容读取字符串键并解析为 u32；CH583 UART 初始化和 DEVICE_INFO 握手完成前分别由独立 pending guard 禁止关机，DEVICE_INFO 成功后刷新 RAM 中的 20 秒 CH583 保护；HTTP 使用独立的 20 秒保护，不写 NVS |
 | OTA | OTA update partition；boot partition 选择 | 请求必须被识别为 `/ota` 或 `/ota_upload`；body 不超过 `SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE=6MB`；meta/firmware 字段可解析；固件 magic、app_desc、版本、长度和目标分区大小检查通过；写入成功后才设置 boot partition；成功后固定自动复位 | 读取 meta JSON、firmware/bin 字段、running partition、next update partition、app desc 和 OTA 状态；OTA 接收与写入使用独立 power hold，任一阶段进行中都不发送 `POWER_OFF` |
 | EPD 类型 | `PhotoPainter:epd_type` | 只允许保存 `EpdType_GetConfig(type)` 能找到的合法 type；未变化时跳过写入；非法 type 返回 `ESP_ERR_INVALID_ARG` | 启动读取 `epd_type`；不存在或无效时回退 `USER_EPD_TYPE_DEFAULT`；显示时按当前 type 分发到具体驱动 |
 | EPD 显示队列 | RAM 队列 `s_epd_display_queue` | 队列长度受 `USER_EPD_DISPLAY_QUEUE_LENGTH=2` 限制；入队前需要分配/复制 display buffer；显示数据大小应匹配当前屏幕 `display_size`；队列满或内存不足则失败 | `ServerNetworkStaEpdDisplay_Task()` 从队列取 buffer，根据 EPD type 调用具体驱动 |
-| CH583 BLE MAC | `PhotoPainter:ch583_ble_mac` | 收到合法 `BLE_MAC` 帧并解析出 MAC 后保存；保存前需通过 CH583 帧校验 | `/ping` 或 base info 读取保存的 BLE MAC 用于返回给前端 |
+| CH583 DEVICE_INFO | `PhotoPainter:ch583_ble_mac`、`PhotoPainter:ch583_ble_ver`、`PhotoPainter:epd_type` | 收到合法 `DEVICE_INFO` 后解析并保存 MAC、CH583 版本和映射后的 EPD 类型；全部保存成功且 ACK 发出后才完成握手 | `/ping`、base info 和 EPD 显示继续通过原有读取接口使用保存的数据 |
 | USB 请求 / worker | RAM request buffer、response buffer、worker queue | 请求头/body 受 `USB_CONSOLE_HTTP_HEADER_MAX`、`USB_CONSOLE_HTTP_BODY_MAX` 限制；worker queue 长度受 `USB_CONSOLE_WORKER_QUEUE_LENGTH=4` 限制 | `UsbConsoleEcho_Task()` 读取 USB Serial/JTAG 数据，router/worker 取任务执行 |
 
 图片显示与保存说明：
@@ -222,7 +221,7 @@ sequenceDiagram
     opt USER_BLE_ENABLE
         APP->>BLE: Init_Bl()
     end
-    APP->>EPD: ServerNetworkStaEpdDisplay_Init()
+    APP->>EPD: ServerNetworkStaEpdDisplay_Init() / GPIO4 EPD-SD power HIGH
     APP->>SD: example_mount_storage("/data")
     APP->>STA: User_Network_mode_app_init("/data")
     opt storage mount ok
@@ -545,7 +544,7 @@ main/epd_display/epd_display_mode.h
 │  ├─ load_work_time_vars_from_app_nvs()
 │  └─ save_work_time_vars_to_app_nvs()
 ├─ ch583_uart/ch583_wifi_uart_protocol.c
-│  └─ ch583_wifi_handle_ble_mac()
+│  └─ ch583_wifi_handle_device_info()
 └─ server_network_sta/slideshow/*
    └─ 保存 slideshow 状态和 last file
 ```
@@ -594,7 +593,8 @@ Mermaid 流程图：
 
 ```mermaid
 flowchart TD
-    A[example_mount_storage /data] --> B{CONFIG_EXAMPLE_MOUNT_SD_CARD}
+    P[EPD-SD shared power GPIO4 HIGH] --> A[example_mount_storage /data]
+    A --> B{CONFIG_EXAMPLE_MOUNT_SD_CARD}
     B -- false --> C[mount_spiffs_storage]
     B -- true --> D{CONFIG_EXAMPLE_USE_SDMMC_HOST}
     D -- true --> E[esp_vfs_fat_sdmmc_mount]
@@ -621,6 +621,8 @@ main/file_serving_example_common.h
 ```text
 main/main.c
 └─ app_main()
+   ├─ ServerNetworkStaEpdDisplay_Init()
+   │  └─ Set_Power(1)：GPIO4 HIGH
    └─ example_mount_storage("/data")
       └─ mount.c
          ├─ CONFIG_EXAMPLE_MOUNT_SD_CARD disabled
@@ -681,6 +683,7 @@ mount.c
 - example_print_storage_info() 读取挂载状态、容量、目录树、txt 文件内容。
 - list_storage_tree() 扫描并打印 /data 下文件。
 - SD 挂载参数：上电等待 1000ms；单次启动内最多重试 3 次；重试间隔 300ms。失败计数未超过阈值时不进入 SPIFFS，而是软件复位后重试 SD。
+- GPIO4 是 EPD 与 SD 卡公共电源开关；`ServerNetworkStaEpdDisplay_Init()` 在 SD 挂载前调用 `Set_Power(1)`，挂载及正常运行期间保持 HIGH。EPD refresh/sleep 结束不得单独拉低 GPIO4，只有最终 `POWER_OFF` 关机提交路径允许拉低。
 
 日志：
 - 保留关键节点：SD mount start、SDSPI pins、bus reuse、SD ready、SPIFFS fallback、storage ready、mount failed。
@@ -3098,7 +3101,7 @@ Result 定义建议：
 
 `1354` 的当前实际路径是 WiFi 工作状态任务尚未初始化，无法应用新的运行时计时参数；NVS 写入失败仍返回 `1353`。
 
-功能说明：设置 WiFi 保持工作时间；网络 HTTP 与 USB 的 `seconds` 允许范围为 `0..3600`，并严格要求十进制整数，`1.5`、`1800abc` 等格式拒绝。CH583 UART 初始化完成前由 startup-pending guard 禁止关机；初始化完成后产生新的 20 秒 CH583 保护。工作时间超时后，还必须满足最近一次 HTTP 网络活动和 CH583 合法业务活动都已过去至少 20 秒、OTA 接收与写入都不忙、EPD task 空闲且图片保存不忙，才通过 CH583 `POWER_OFF` 关闭 WiFi 电源或进入低功耗流程。HTTP 与 CH583 活动保护使用独立 RAM 时间戳，不重置保存值、不写 NVS；网络 `/ping`、长文件上传、普通文件下载、目录列表和缩略图分块发送持续刷新 HTTP 保护，合法 `BLE_MAC`、`BLE_VER`、单帧和每个有效 `BLE_DATA` 分片刷新 CH583 保护。CH583 UART `PING/PONG`、`ACK/ERR` 和状态回复不刷新保护。LED 关机准备完成后、真正发送 `POWER_OFF` 前会再次检查工作计时及 HTTP、CH583、OTA、EPD 和图片保存保护；发现新任务就取消本次关机，取消失败时持续优先重试，成功解除 LED 永久关机锁前不进入普通保护或新的关机流程。HTTP 与 CH583 保护分别在每个连续保护周期只打印一次推迟日志，避免每秒刷屏。
+功能说明：设置 WiFi 保持工作时间；网络 HTTP 与 USB 的 `seconds` 允许范围为 `0..3600`，并严格要求十进制整数，`1.5`、`1800abc` 等格式拒绝。CH583 UART 初始化完成前由 startup-pending guard 禁止关机；UART 初始化后只清除该 guard，DEVICE_INFO pending guard 继续阻止关机。合法 DEVICE_INFO 保存并成功发送 ACK 后才清除 DEVICE_INFO guard，同时产生新的 20 秒 CH583 保护。工作时间超时后，还必须满足最近一次 HTTP 活动和 CH583 合法业务活动都已过去至少 20 秒、OTA 接收与写入都不忙、EPD task 空闲且图片保存不忙，才通过 CH583 `POWER_OFF` 关闭 WiFi 电源或进入低功耗流程。HTTP 与 CH583 活动保护使用独立 RAM 时间戳，不重置保存值、不写 NVS；网络 `/ping`、长文件上传、普通文件下载、目录列表和缩略图分块发送持续刷新 HTTP 保护，合法 `DEVICE_INFO`、单帧和每个有效 `BLE_DATA` 分片刷新 CH583 保护。CH583 UART `PING/PONG`、`ACK/ERR` 和状态回复不刷新保护。LED 关机准备完成后、真正发送 `POWER_OFF` 前会再次检查工作计时及 HTTP、CH583、OTA、EPD 和图片保存保护；发现新任务就取消本次关机，并回滚本次已开启的 CH583 WAKE_TIMER。LED 或 WAKE_TIMER 取消失败时持续优先重试，两项都取消成功前不进入普通保护或新的关机流程。HTTP 与 CH583 保护分别在每个连续保护周期只打印一次推迟日志，避免每秒刷屏。
 
 Mermaid 时序图：
 
@@ -3144,7 +3147,8 @@ main/server_network_sta/wifi_work_time/server_network_sta_wifi_work_time.h
 ```text
 main/main.c
 └─ ServerNetworkStaWifiWorkTime_Init()
-   ├─ set CH583 startup-pending guard before work_state_task
+   ├─ set CH583 UART startup-pending guard before work_state_task
+   ├─ USER_CH583_UART_ENABLE=1 时同时设置 DEVICE_INFO pending guard
    ├─ load_work_state_from_nvs()
    ├─ load_work_time_vars_from_app_nvs()
    └─ xTaskCreate(work_state_task)
@@ -3152,7 +3156,16 @@ main/main.c
 main/main.c
 └─ Ch583UartApp_Init()
    └─ ServerNetworkStaWifiWorkTime_OnCh583Initialized()
-      ├─ clear CH583 startup-pending guard
+      ├─ clear CH583 UART startup-pending guard
+      └─ start a fresh 20-second CH583 activity hold
+
+main/ch583_uart/ch583_wifi_uart_protocol.c
+├─ 收到新的 DEVICE_INFO
+│  └─ ServerNetworkStaWifiWorkTime_OnDeviceInfoPending()
+│     └─ set DEVICE_INFO pending guard
+└─ DEVICE_INFO 保存且 ACK 发送成功
+   └─ ServerNetworkStaWifiWorkTime_OnDeviceInfoReady()
+      ├─ clear DEVICE_INFO pending guard
       └─ start a fresh 20-second CH583 activity hold
 
 HTTP small JSON set_wifi_work_time
@@ -3195,7 +3208,12 @@ work_state_task()
    ├─ 关机流程中发给 CH583/CH585 的命令之间至少间隔 100ms
    ├─ WAKE_TIMER 检查允许继续关机后，设置 LED power-off pending
    ├─ UserLedStatus_PreparePowerOffSync()
-   └─ ch583_wifi_uart_send_power_off()
+   ├─ 后续关机中止时，回滚本次已开启的 WAKE_TIMER；失败则在每轮任务开始时优先重试
+   ├─ 获取 EPD/SD 共用 SPI 锁并在锁内再次执行关机 guard
+   ├─ ch583_wifi_uart_send_power_off()
+   │  ├─ 发送失败：GPIO4 保持 HIGH，释放 SPI 锁并回滚 LED/WAKE_TIMER
+   │  └─ UART 发送成功：ServerNetworkStaEpdDisplay_SetPower(false)，GPIO4 LOW
+   └─ 2 秒后仍未被 CH583 断电则 esp_restart()，重新初始化并挂载 SD
 ```
 
 关键辅助函数：
@@ -3272,11 +3290,11 @@ USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 默认 60 秒。
 - load_work_state_from_nvs() 读取工作状态 blob。
 - load_work_time_vars_from_app_nvs() 读取兼容字符串 key。
 - `seconds=0` 时 `server_required_continue_work_time` 与 `wifi_standby_time_s` 都按 0 保存和恢复，不再把 standby 的 0 替换为默认 15。
-- work_state_task() 读取 RAM 中计时值；CH583 UART 初始化完成前禁止关机；超时后如果最近一次 HTTP 或 CH583 初始化完成/合法业务活动不足 20 秒、OTA 接收/写入忙、EPD task 忙或图片保存忙则推迟；所有保护解除后才先配置 CH583 WAKE_TIMER，再发送 CH583 POWER_OFF。
+- work_state_task() 读取 RAM 中计时值；CH583 UART 初始化或 DEVICE_INFO 握手任一未完成时禁止关机；超时后如果最近一次 HTTP 或 CH583 合法业务活动不足 20 秒、OTA 接收/写入忙、EPD task 忙或图片保存忙则推迟；所有保护解除后才先配置 CH583 WAKE_TIMER，再发送 CH583 POWER_OFF。
 - ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity() 只记录 HTTP 活动 tick；请求入口、每次成功接收 HTTP body 数据块以及长文件、目录列表、缩略图成功发送数据块时刷新，20 秒保护只在 RAM 中生效，不重置保存的完整工作时间。原 ServerNetworkStaWifiWorkTime_OnNetworkData() 继续供 BLE/CH583、EPD 等原调用方使用。
-- wifi_work_time 初始化时设置 CH583 startup-pending guard；该 guard 不受 20 秒超时限制，CH583 UART 初始化完成前禁止进入关机流程。`ServerNetworkStaWifiWorkTime_OnCh583Initialized()` 清除 startup-pending guard，并从初始化完成时开始新的 20 秒 CH583 活动保护。
-- ServerNetworkStaWifiWorkTime_OnCh583Activity() 只记录 CH583 活动 tick；合法 BLE_MAC、BLE_VER、单帧及每个有效 BLE_DATA 分片刷新。PING/PONG、ACK/ERR、GPIO_VALUE、TIME_STATUS、NFC_STATUS 不刷新。
-- LED 关机准备完成后立即执行 final guard；若工作计时已被 USB/BLE 等活动重置，或此时出现 HTTP、CH583、OTA、EPD、图片保存活动，则设置 LED cancel-pending 状态并调用 `UserLedStatus_CancelPowerOffSync()`。取消失败时，`work_state_task()` 后续每轮都优先重试，成功解除 LED 永久关机锁前不进入普通活动保护或新的关机流程。
+- wifi_work_time 初始化时设置 CH583 UART startup-pending guard；启用 CH583 UART 时还设置独立 DEVICE_INFO pending guard，两者都不受 20 秒超时限制。`ServerNetworkStaWifiWorkTime_OnCh583Initialized()` 只清除 UART guard；`ServerNetworkStaWifiWorkTime_OnDeviceInfoReady()` 在 DEVICE_INFO 保存且 ACK 成功后清除握手 guard，并开始新的 20 秒 CH583 活动保护。
+- ServerNetworkStaWifiWorkTime_OnCh583Activity() 只记录 CH583 活动 tick；合法 DEVICE_INFO、单帧及每个有效 BLE_DATA 分片刷新。PING/PONG、ACK/ERR、GPIO_VALUE、TIME_STATUS、NFC_STATUS 不刷新。
+- LED 关机准备完成后立即执行 final guard；若工作计时已被 USB/BLE 等活动重置，或此时出现 HTTP、CH583、OTA、EPD、图片保存活动，则设置 LED cancel-pending 状态并调用 `UserLedStatus_CancelPowerOffSync()`，同时把本次已开启的 CH583 WAKE_TIMER 回滚为 `OFF,0`。LED 或 WAKE_TIMER 取消失败时，`work_state_task()` 后续每轮都优先重试；两项都取消成功前不进入普通活动保护或新的关机流程。LED 准备失败或 `POWER_OFF` 发送失败时也执行相同的 WAKE_TIMER 回滚，避免 ESP32 继续运行期间遗留旧唤醒定时器。
 - TdxImageTransfer_ProcessItems() 在 cast/upload/cast2pic 发现本次需要保存图片时设置 image_save_busy，并覆盖后续 EPD 显示、保存和 cleanup；显示失败、保存成功、保存失败或 cleanup 后都会清除。work_state_task() 在所有 POWER_OFF 前检查 image_save_busy，busy 时不发送 WAKE_TIMER / LED 关闭 / POWER_OFF，只推迟到保存完成后的下一轮继续关机判断。
 - EPD 完成低功耗倒计时开启时，每个 EPD display job 完成后只请求一次运行时倒计时；倒计时到期后，只有 `epd_mode=1(SLIDESHOW)` 才检查下一次轮播剩余时间，如果剩余时间不大于 60 秒，不关机并恢复 one-shot 前的运行时目标；非轮播模式不做该判断，直接进入现有关机流程；下一次 EPD job 完成才会再次请求。
 - 轮播开启时，WAKE_TIMER 优先使用 RTC 轮播的 `next_epoch - now_epoch` 剩余秒数，并扣除开机自动恢复轮播延迟和额外提前量：`remain - (startup_delay_seconds + TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS)`；其中 `startup_delay_seconds = ceil(TDX_SLIDESHOW_STARTUP_DELAY_MS / 1000)`，当前为 10 秒，`TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS` 当前为 20 秒，总提前 30 秒。若当前不是 RTC 轮播或 RTC timing 不可用，则回退使用旧 runtime timing：`runtime_interval - 已走秒数 - 总提前秒数`；再不可用才回退 control 文件中的 interval。若计算出的 wake_interval 小于 `TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS=20`，ESP32 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，只重置 wifi_work_time 运行时计时并保留本次关机尝试时间，确保 `seconds=0` 时仍按 20 秒节流后再评估；该分支不会设置 LED power-off pending，避免 LED 反复关闭和恢复。轮播配置自身的最小间隔仍由 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60` 控制。
@@ -3290,11 +3308,13 @@ USER_WORK_STATE_TASK_STACK_SIZE 默认使用 8 * 1024。
 
 原因：
 work_state_task() 不是只做简单计时。工作时间超时后，它会执行关机前完整链路：
-1. 先确认 CH583 UART 已初始化完成、最近一次 HTTP 与 CH583 初始化完成/合法业务活动都已过去 20 秒、OTA receive/write hold 均已解除、EPD task 空闲且图片保存不忙；任一保护条件不满足时不关机。
+1. 先确认 CH583 UART 已初始化且 DEVICE_INFO 握手完成、最近一次 HTTP 与 CH583 合法业务活动都已过去 20 秒、OTA receive/write hold 均已解除、EPD task 空闲且图片保存不忙；任一保护条件不满足时不关机。
 2. 读取 slideshow control，决定 WAKE_TIMER ON/OFF。
 3. slideshow 开启时优先读取 RTC schedule timing，使用 `next_epoch - now_epoch` 作为剩余秒数，并额外扣掉 `TDX_SLIDESHOW_STARTUP_DELAY_MS` 换算后的 10 秒和 `TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS=20` 秒；若没有 RTC timing，再回退旧 runtime timing。若剩余 wake_interval 小于 `TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS=20`，不发送 WAKE_TIMER ON/OFF、不设置 LED power-off pending、不发送 POWER_OFF，只重置 wifi_work_time 运行时计时并保留 20 秒关机重试节流；否则发送 CH583 WAKE_TIMER ON。
-4. 调用 `UserLedStatus_PreparePowerOffSync()`，等待 LED Task 停止 RED/GREEN 闪烁并强制关闭后，再执行 final guard；若出现新任务则通过 `UserLedStatus_CancelPowerOffSync()` 解除关机锁并恢复基础灯效。
-5. 发送 CH583 POWER_OFF。
+4. 调用 `UserLedStatus_PreparePowerOffSync()`，等待 LED Task 停止 RED/GREEN 闪烁并强制关闭后，再执行 final guard；若出现新任务则通过 `UserLedStatus_CancelPowerOffSync()` 解除关机锁并恢复基础灯效，并发送 `WAKE_TIMER OFF,0` 撤销本次关机尝试设置的唤醒定时器。LED 准备失败或 `POWER_OFF` 发送失败时也撤销该定时器；取消发送失败则保留待重试状态，后续每轮优先重试。
+5. 取得 EPD/SD 共用 SPI 锁，并在锁内再次检查工作计时、HTTP、CH583、OTA、EPD 和图片保存 guard；出现新任务就释放锁并回滚 LED/WAKE_TIMER。
+6. 发送 CH583 POWER_OFF；UART 发送失败时 GPIO4 保持 HIGH，释放 SPI 锁并取消 LED 关机状态及 WAKE_TIMER。
+7. UART 发送成功后立即通过 `ServerNetworkStaEpdDisplay_SetPower(false)` 把 GPIO4 拉低，并保持 SPI 锁，禁止其他任务访问已经掉电的 SD；2 秒后设备仍运行则调用 `esp_restart()`，由启动流程重新上电和挂载 SD。
 
 这些调用会进入 CH583 V1 组帧、UART 写入、调试输出等函数，栈上存在多个局部 buffer。
 如果栈只有 3 * 1024，可能在超时关机流程中触发 Stack protection fault。
@@ -4704,7 +4724,7 @@ Result 定义建议：
 功能说明：
 
 ```text
-USB ping 用于验证 USB 命令通道可用，并返回设备基础信息；网络 ping 的 BLE_MAC 校验逻辑在 server_network_sta/ping 中处理。USB 与网络 ping 都返回 EPD=BUSY/IDLE。
+USB ping 用于验证 USB 命令通道可用，并返回设备基础信息；网络 ping 的 BLE MAC 数据来自已保存的 DEVICE_INFO，校验逻辑在 server_network_sta/ping 中处理。USB 与网络 ping 都返回 EPD=BUSY/IDLE。
 ```
 
 Mermaid 时序图：
@@ -6056,8 +6076,7 @@ main/led_status/led_status.c
 ```text
 CH583 串口通信协议汇总
 ├─ CH583 -> ESP32-C5
-│  ├─ BLE_MAC
-│  ├─ BLE_VER
+│  ├─ DEVICE_INFO
 │  ├─ PING
 │  └─ BLE_DATA
 ├─ ESP32-C5 -> CH583
@@ -6082,8 +6101,8 @@ ch583_wifi_uart_process_bytes()
 ch583_wifi_parse_frame()
 ch583_wifi_validate_len_and_part()
 ch583_wifi_handle_frame_body()
-ch583_wifi_handle_ble_mac()
-ch583_wifi_handle_ble_ver()
+ch583_wifi_parse_device_info_arg()
+ch583_wifi_handle_device_info()
 ch583_wifi_handle_ble_data()
 ch583_wifi_send_frame()
 ch583_wifi_send_ack()
@@ -6106,13 +6125,14 @@ ch583_wifi_uart_send_gpio()
 
 ```text
 存：
-- BLE_MAC 命令收到合法 MAC 后，保存到 PhotoPainter NVS 的 CH583_BLE_MAC_NVS_KEY。
-- BLE_VER 命令收到合法版本后，保存到 RAM 全局缓存和 PhotoPainter NVS 的 CH583_BLE_VER_NVS_KEY；key 不存在时 app_nvs_read_u8() 会写入默认值 0。
+- DEVICE_INFO 收到合法 MAC 后保存到 PhotoPainter NVS 的 CH583_DEVICE_INFO_MAC_NVS_KEY，字符串 key 继续使用 `ch583_ble_mac`。
+- DEVICE_INFO 收到合法 CH583 版本后保存到 RAM 缓存和 CH583_DEVICE_INFO_BLE_VER_NVS_KEY，字符串 key 继续使用 `ch583_ble_ver`；key 不存在时 app_nvs_read_u8() 写入默认值 0。
+- DEVICE_INFO 根据 screen_type 和 board_info_hex 映射 EPD 类型，再通过 EpdType_SetAndSave() 保存到 USER_EPD_TYPE_NVS_KEY。
 - GPIO / POWER_OFF / WIFI_DATA / WIFI_PROVISION / WAKE_TIMER 等串口命令本身不在 ESP32-C5 侧保存持久化数据；WIFI_PROVISION 和 WAKE_TIMER 由 CH583/CH585 侧校验并保存。
 
 取：
-- ch583_wifi_load_ble_mac_from_nvs() 读取已保存 BLE MAC。
-- ch583_wifi_uart_get_ble_ver() 读取当前 BLE_VER RAM 缓存；启动时从 NVS 加载。
+- ch583_wifi_load_device_info_from_nvs() 一次加载已保存的 BLE MAC 和 CH583 版本。
+- ch583_wifi_uart_get_ble_mac() 与 ch583_wifi_uart_get_ble_ver() 保持原接口，读取 DEVICE_INFO 缓存，避免影响现有 ping 和基础信息功能。
 - UART RX 从环形缓冲中读取 @#...^& 帧并解析。
 ```
 
@@ -6273,6 +6293,8 @@ BAD_PART
 BAD_FORMAT
 BAD_CMD
 BAD_ARG
+DEVICE_INFO_REQUIRED
+DEVICE_INFO_SAVE_FAILED
 BLE_NOT_CONNECTED
 BLE_NOTIFY_DISABLED
 BLE_NOTIFY_FAIL
@@ -6295,7 +6317,7 @@ DENY_GPIO
 
 ---
 
-### 10.3 BLE_MAC 握手流程 <span id="sec-10-3"></span>
+### 10.3 DEVICE_INFO 必达握手、版本交换与 EPD 类型 <span id="sec-10-3"></span>
 
 Mermaid 时序图：
 
@@ -6306,20 +6328,23 @@ sequenceDiagram
     participant ESP32 as ESP32-C5 WiFi
 
     Phone->>CH583: BLE 连接
-    CH583->>CH583: CH583 固件侧拉高 PB8，唤醒 WiFi 电源
-    loop 每 2 秒
-        CH583->>ESP32: CMD=BLE_MAC, ARG=<12位BLE MAC>
+    CH583->>CH583: 拉高当前硬件定义的 WiFi 电源/唤醒控制脚
+    CH583->>CH583: 等待 WiFi 唤醒延时结束
+    loop 每 2 秒，直到收到匹配 ACK
+        CH583->>ESP32: CMD=DEVICE_INFO, ARG=<mac>,<ble_ver>,<screen>,<board>
+        ESP32->>ESP32: 校验并保存 MAC、CH583 版本、EPD 类型
         ESP32->>ESP32: 刷新 CH583 20 秒关机保护
-        ESP32->>ESP32: 保存 BLE MAC 到 NVS
-        ESP32-->>CH583: CMD=ACK, ARG=<BLE_MAC seq>
+        ESP32-->>CH583: CMD=ACK, ARG=<DEVICE_INFO seq>
     end
-    CH583->>CH583: 停止 BLE_MAC，进入 PING/PONG 心跳
+    CH583->>CH583: 停止 DEVICE_INFO，释放 pending BLE_DATA，进入 PING/PONG
+    ESP32-->>CH583: CMD=WIFI_VER, ARG=<wifi_ver_dec>
 ```
 
 相关文件：
 
 ```text
 main/ch583_uart/ch583_wifi_uart_protocol.c
+main/epd_display/epd_type.cpp
 main/app_nvs.c
 main/tdx_cfg.h
 ```
@@ -6328,94 +6353,191 @@ main/tdx_cfg.h
 
 ```text
 CH583
-└─ CMD=BLE_MAC
+└─ CMD=DEVICE_INFO
    └─ ESP32-C5 ch583_wifi_handle_frame_body()
-      ├─ CMD == BLE_MAC
-      ├─ ch583_wifi_handle_ble_mac()
-      │  ├─ 校验 PART=1/TOTAL=1
-      │  ├─ 校验 LEN=12
-      │  ├─ 校验 12 位大写 HEX MAC
-      │  ├─ ServerNetworkStaWifiWorkTime_OnCh583Activity()
-      │  ├─ app_nvs_write_str(CH583_BLE_MAC_NVS_KEY)
-      │  └─ ch583_wifi_send_ack(frame->seq)
-      └─ 后续 /ping 可返回 Ble_MAC
+      └─ ch583_wifi_handle_device_info()
+         ├─ 校验 PART=1/TOTAL=1
+         ├─ ServerNetworkStaWifiWorkTime_OnDeviceInfoPending()
+         ├─ ch583_wifi_parse_device_info_arg()
+         ├─ EpdType_LoadSavedOrDefault()
+         ├─ EpdType_SetAndSave()
+         ├─ 读取并验证 USER_EPD_TYPE_NVS_KEY，必要时补写
+         ├─ 保存 MAC 与 CH583 版本
+         ├─ 更新 DEVICE_INFO RAM 缓存
+         ├─ ServerNetworkStaWifiWorkTime_OnCh583Activity()
+         ├─ ch583_wifi_send_ack(frame->seq)
+         ├─ 设置 DEVICE_INFO ready
+         ├─ ServerNetworkStaWifiWorkTime_OnDeviceInfoReady()
+         ├─ ch583_wifi_uart_send_wifi_ver()
+         ├─ ch583_wifi_uart_send_current_wifi_provision_status()
+         ├─ UserLedStatus_ReapplyCurrent()
+         └─ 可靠时间存在时 ServerNetworkStaTime_BackupCurrentToCh583()
 ```
 
 关键辅助函数：
 
 ```text
-ch583_wifi_handle_ble_mac()
+ch583_wifi_handle_device_info()
+ch583_wifi_parse_device_info_arg()
 ch583_wifi_is_upper_hex_string()
+ch583_wifi_parse_u8_dec_arg()
+ch583_wifi_parse_hex_byte()
 app_nvs_write_str()
+app_nvs_write_u8()
+EpdType_SetAndSave()
 ch583_wifi_send_ack()
 ch583_wifi_uart_get_ble_mac()
+ch583_wifi_uart_get_ble_ver()
+ServerNetworkStaWifiWorkTime_OnDeviceInfoPending()
+ServerNetworkStaWifiWorkTime_OnDeviceInfoReady()
+UserLedStatus_ReapplyCurrent()
+ServerNetworkStaTime_BackupCurrentToCh583()
 ```
 
 精简协议内容：
 
 ```text
-CMD=BLE_MAC
-ARG=<mac>
+CMD=DEVICE_INFO
+ARG=<mac>,<ble_ver_dec>,<screen_type>,<board_info_hex>
 mac：CH583 自身 BLE MAC，12 位大写 HEX，不带冒号
-CH583 每 2 秒发送一次 BLE_MAC
-WiFi 收到合法 BLE_MAC 后刷新 20 秒 CH583 关机保护并必须 ACK
-ACK 的 ARG 必须等于 BLE_MAC 的 SEQ
-ACK 正确后，CH583 停止 BLE_MAC，开始 PING/PONG
+ble_ver_dec：CH583 固件版本，纯十进制文本，范围 0..255
+screen_type：d=13.3 寸 HD 六色屏，e=7.09 寸 HD 六色屏
+board_info_hex：40=兴泰，41=DKE
+ble_ver_dec 来自 CH583/CH585 固件宏 VER
+screen_type 来自 EPD_GetScreenType()，同时对应 BLE 名第 2 位
+board_info_hex 来自 EPD_GetBoardInfo()，同时对应 BLE 名第 18 位
+BLE 连接后先拉高当前硬件定义的 WiFi 电源/唤醒控制脚
+WiFi 唤醒延时结束后才发送第一帧 DEVICE_INFO
+CH583 每 2 秒发送一次 DEVICE_INFO
+ESP32 全部字段解析和保存成功后刷新 20 秒保护并 ACK
+ACK 的 ARG 必须等于 DEVICE_INFO 的 SEQ
+ACK 正确后，CH583 停止 DEVICE_INFO、释放 pending BLE_DATA 并开始 PING/PONG
 ```
 
+完整帧与示例：
+
+```text
+@#V1|SEQ=<seq>|CMD=DEVICE_INFO|LEN=<len>|PART=1|TOTAL=1|ARG=<mac>,<ble_ver_dec>,<screen_type>,<board_info_hex>|CRC=<crc>^&
+@#V1|SEQ=20|CMD=DEVICE_INFO|LEN=21|PART=1|TOTAL=1|ARG=AABBCCDDEEFF,100,d,40|CRC=XXXX^&
+```
+
+MAC 使用广播显示顺序 `Mac[5] Mac[4] Mac[3] Mac[2] Mac[1] Mac[0]`，文本必须为 12 位大写 HEX。`board_info_hex` 是完整 byte 的两位大写 HEX，不是单独字符；映射时 `40` 表示厂家 ID 0，`41` 表示厂家 ID 1。
+
+屏幕类型编码：
+
+```text
+screen_type 是 1 个可见 ASCII 字符，只描述屏幕规格/类型，不描述板卡厂家。
+d = 13.3 寸 HD 六色屏
+e = 7.09 寸 HD 六色屏
+前端必须结合 screen_type 和 board_info_hex 选择图片处理算法。
+后续新增屏幕类型时，在 CH583/CH585 各屏驱动的 EPD_GetScreenType() 字符表中维护。
+```
+
+板卡信息编码：
+
+```text
+board_info 是 1 个 byte，并保持在可见 ASCII 范围，DEVICE_INFO 中使用两位大写 HEX 文本传输。
+bit7-bit5：固定为 010，保证落在可见 ASCII 区间。
+bit4：保留旧分组兼容位。
+bit3-bit0：厂家 ID，从 0 开始递增。
+
+第一组：
+0x40 / '@' = 厂家 ID 0，XT 兴泰
+0x41 / 'A' = 厂家 ID 1，DKE
+0x42 / 'B' = 厂家 ID 2，预留
+0x43 / 'C' = 厂家 ID 3，预留
+
+第二组：
+0x50 / 'P' = 厂家 ID 0，预留
+0x51 / 'Q' = 厂家 ID 1，预留
+0x52 / 'R' = 厂家 ID 2，预留
+0x53 / 'S' = 厂家 ID 3，预留
+
+已确定的厂家 ID 按上表绑定；未确定的编号保持预留。
+后续确定厂家后，只更新对应 ID 的厂家名称和 EPD_GetBoardInfo() 返回值。
+EPD_GetBoardInfo() 放在各屏驱动文件中维护，参考 EPD_GetScreenType()。
+一个驱动文件共用多个厂家版本时，优先使用现有屏幕/厂家编译宏区分。
+只有现有宏无法区分真实厂家时才新增明确厂家宏，不因板卡信息拆分共用驱动。
+```
 
 存 / 取信息（含条件限制）：
 
 ```text
 存：
-- ch583_wifi_handle_ble_mac() 将合法 BLE MAC 写入 PhotoPainter NVS 的 CH583_BLE_MAC_NVS_KEY。
-- 合法 BLE_MAC 在保存和 ACK 前调用 ServerNetworkStaWifiWorkTime_OnCh583Activity()，只刷新 RAM 中的 20 秒保护。
+- MAC 写入 CH583_DEVICE_INFO_MAC_NVS_KEY，NVS 字符串 key 保持 `ch583_ble_mac`。
+- CH583 版本写入 CH583_DEVICE_INFO_BLE_VER_NVS_KEY，NVS 字符串 key 保持 `ch583_ble_ver`。
+- EPD 类型通过 EpdType_SetAndSave() 写入 USER_EPD_TYPE_NVS_KEY。
+- USER_EPD_TYPE_DEFAULT 当前为 EPD_TYPE_1600_1200_133_DKE；NVS 不存在或保存值非法时回退该默认类型。
+- EpdType_SetAndSave() 后再次读取 USER_EPD_TYPE_NVS_KEY 验证；不一致时补写，补写失败不 ACK。
+- 合法 DEVICE_INFO 在 ACK 前调用 ServerNetworkStaWifiWorkTime_OnCh583Activity()，只刷新 RAM 中的 20 秒保护。
+- 重发数据未变化时跳过 MAC、版本和 EPD 的重复 NVS 写入。
+- 三项保存不是 NVS 事务：前一项可能已经保存、后一项保存失败；这种情况下返回错误且不完成握手，CH583 重发后继续收敛到一致数据。
 
 取：
-- 读取 BLE_MAC 帧 ARG。
-- ch583_wifi_uart_get_ble_mac() 会优先读取 RAM 缓存，必要时从 NVS 读取已保存 MAC。
+- ch583_wifi_load_device_info_from_nvs() 启动时读取已保存 MAC 和 CH583 版本。
+- ch583_wifi_uart_get_ble_mac() 和 ch583_wifi_uart_get_ble_ver() 继续向原业务提供数据。
 ```
 
-[⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-3)
+EPD 映射：
 
----
+```text
+screen_type=d, board_info_hex=40 -> EPD_TYPE_1600_1200_133
+screen_type=d, board_info_hex=41 -> EPD_TYPE_1600_1200_133_DKE
+screen_type=e, board_info_hex=40 -> EPD_TYPE_1600_1200_79
+screen_type=e, board_info_hex=41 -> ESP_LOGE 后返回 ERR,<seq>,BAD_ARG
+```
 
-### 10.3.1 BLE/WiFi 版本交换与私有广播版本字段 <span id="sec-10-3-1"></span>
+错误与门控：
 
-该功能用于 CH583/CH585 与 WiFi（ESP32-C5）互相同步固件版本。版本交换是辅助信息，不作为前端 BLE 透传数据的阻塞条件。
+```text
+字段或 EPD 组合非法：ESP_LOGE，返回 BAD_ARG。
+MAC、版本或 EPD 类型保存失败：ESP_LOGE，返回 DEVICE_INFO_SAVE_FAILED，不完成握手。
+ACK UART 发送失败：ESP_LOGE，不设置 DEVICE_INFO ready，等待 CH583 重发。
+握手前收到 PING 或 BLE_DATA：ESP_LOGE，返回 DEVICE_INFO_REQUIRED。
+握手前 ESP32 只发送 ACK / ERR / TIME_GET / GPIO_READ / LED_BLINK / LED_BLINK_STOP。
+其他 ESP32 业务命令在公共发送入口阻止，并用 ESP_LOGW 提示。
+未收到匹配 ACK 时，CH583 不发送 PING、不发送 BLE_DATA，也不释放 pending BLE_DATA。
+未完成握手时，CH583/CH585 仍接受 ESP32 发来的 ACK / ERR / TIME_GET / GPIO_READ / LED_BLINK / LED_BLINK_STOP 等无害查询或提示命令。
+BLE_DATA / WIFI_PROVISION / NFC_SET / TIME_SET / WAKE_TIMER / POWER_OFF / LOWPOWER 等改变状态或进入业务流程的命令必须由对应接收端限制，并返回 DEVICE_INFO_REQUIRED。
+DEVICE_INFO_SAVE_FAILED 是当前 ESP32 保存失败时使用的扩展错误原因，CH583/CH585 必须把它作为未完成握手处理并继续重发 DEVICE_INFO。
+连续超时后的关电策略沿用现有 CH583/CH585 逻辑；USB 供电场景沿用现有逻辑继续等待。
+ESP32 与 CH583/CH585 都必须在 DEVICE_INFO ACK 流程完成后再进入普通业务。
+```
+
+当前 ESP32-C5 实现限制：
+
+```text
+公共发送门控会在 DEVICE_INFO ready 前直接返回失败，不为被阻止的 ESP32 主动命令建立 pending。
+DEVICE_INFO 当前在字段解析前清除 ready；握手完成后若收到 CRC 正确但参数错误的 DEVICE_INFO，
+会重新进入未就绪状态并重新置位关电 guard，直到下一帧合法 DEVICE_INFO 完成。
+DEVICE_INFO 改写 EPD_type 前当前没有检查 EPD display task 是否忙，USB 持续供电并正在显示时应避免并发切换类型。
+后续修改上述流程时，应继续通过现有 DEVICE_INFO pending/ready 通知和延迟重放处理，不要直接放开全部业务命令。
+```
+
+DEVICE_INFO 成功后的恢复动作：
+
+```text
+UserLedStatus_ReapplyCurrent() 向 LED task 投递事件；LED task 先强制停止闪烁并关闭 PB5/PB6，
+再按最新逻辑状态重新应用灯效，修复握手前 GPIO 被门控造成的物理状态不确定。
+如果 DEVICE_INFO 早于 LED task 初始化，LED task 的启动校准会完成相同处理。
+可靠时间已经来自 SNTP、APP 或 CH583 时，ServerNetworkStaTime_BackupCurrentToCh583("device_info_ready")
+补发一次 TIME_SET；若 DEVICE_INFO 完成后才获得 SNTP/APP 时间，原时间模块仍会按原路径发送 TIME_SET。
+ServerNetworkStaWifiWorkTime_OnDeviceInfoReady() 清除独立握手 guard；在此之前 work_state_task
+不会进入 WAKE_TIMER、LED 关机准备或 POWER_OFF 流程。
+```
+
+版本交换与私有广播版本字段：
 
 组合版本共 3 字节：
 
 ```text
-byte0：BLE/CH583/CH585 版本，取 CH583/CH585 当前固件 VER，范围 0..255
+byte0：BLE/CH583/CH585 版本，来自 DEVICE_INFO.ble_ver_dec
 byte1：WiFi 版本高字节
 byte2：WiFi 版本低字节
 WiFi 版本范围 0..65535
 ```
 
-CH583/CH585 上报 BLE 版本：
-
-```text
-CMD=BLE_VER
-@#V1|SEQ=<seq>|CMD=BLE_VER|LEN=<len>|PART=1|TOTAL=1|ARG=<ble_ver_dec>|CRC=<crc>^&
-
-ARG=<ble_ver_dec>
-ble_ver_dec 为十进制文本，范围 0..255
-```
-
-WiFi 行为：
-
-```text
-收到合法 BLE_VER 后保存到 RAM 全局缓存 s_ble_ver。
-同时使用 app_nvs_write_u8(CH583_BLE_VER_NVS_KEY) 保存到 PhotoPainter NVS。
-刚启动时 ch583_wifi_uart_protocol_init() 从 NVS 读取 BLE_VER；如果 key 不存在，app_nvs_read_u8() 写入默认值 0。
-收到新的合法 BLE_VER 时，以新值覆盖 RAM 和 NVS。
-如果 BLE_VER 写 NVS 失败，只打印 warning；RAM 缓存仍更新，不阻塞 ACK 和后续 WIFI_VER 上报。
-收到合法 BLE_VER 后调用 ServerNetworkStaWifiWorkTime_OnCh583Activity()，从当前时刻刷新 RAM 中的 20 秒 CH583 关机保护；不重置保存值、不写 wifi_work_time NVS。
-BLE_VER 保存成功后 ACK，ACK 的 ARG 等于 BLE_VER 的 SEQ。
-```
-
-WiFi 上报 WiFi 版本：
+ESP32 上报 WiFi 版本：
 
 ```text
 CMD=WIFI_VER
@@ -6428,10 +6550,11 @@ wifi_ver_dec 为十进制文本，范围 0..65535
 当前 ESP32-C5 行为：
 
 ```text
-收到合法 BLE_VER 并 ACK 后，立即上报一次 WIFI_VER。
-WIFI_VER 来自当前 app version，按 AAA.BBB 解析为 (AAA << 8) | BBB。
+收到合法 DEVICE_INFO 并成功 ACK 后，立即上报一次 WIFI_VER。
+WIFI_VER 来自当前 app version，按 <high_dec>.<low_dec> 解析为 (high_dec << 8) | low_dec。
+high_dec 和 low_dec 都是十进制数值，范围分别为 0..255；代码不要求每段固定为三位。
 例如 PROJECT_VER "000.003" 上报 WIFI_VER=3。
-如果 app version 不符合 AAA.BBB 或超出 0..255 字节范围，则回退上报 0 并打印 warning。
+如果 app version 不符合上述两个十进制字段格式或任一字段超出 0..255，则回退上报 0 并使用 ESP_LOGE 打印问题。
 ```
 
 CH583/CH585 行为：
@@ -6472,7 +6595,7 @@ WIFI_VER=65536          => ERR,BAD_ARG，不更新广播，不写 DataFlash
 `send_base_info_to_mobile()` 返回给前端的 `wifi_info_result.version` 使用：
 
 ```text
-<WiFi app version>:<BLE_VER>
+<WiFi app version>:<CH583 version>
 ```
 
 示例：
@@ -6484,7 +6607,7 @@ WIFI_VER=65536          => ERR,BAD_ARG，不更新广播，不写 DataFlash
 }
 ```
 
-[⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-3-1)
+[⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-3)
 
 ---
 
@@ -6540,7 +6663,7 @@ uart_wait_tx_done()
 精简协议内容：
 
 ```text
-BLE_MAC 握手成功后，CH583 每 2 秒发送一次 PING
+DEVICE_INFO 握手成功后，CH583 每 2 秒发送一次 PING
 WiFi 收到后立即回复 PONG
 PONG 的 ARG 必须等于对应 PING 的 SEQ
 如果 CH583 连续多次没有收到合法 PONG，则关闭 WiFi 电源并进入低功耗
@@ -6816,10 +6939,17 @@ work_state_task()
    │  ├─ LED_BLINK_STOP GREEN
    │  └─ GPIO PB6 HIGH，确保 GREEN 关闭
    ├─ final guard 发现新任务
-   │  └─ UserLedStatus_CancelPowerOffSync()
+   │  ├─ UserLedStatus_CancelPowerOffSync()
+   │  └─ 本次已开启 WAKE_TIMER 时发送 OFF,0；任一取消失败均保留待重试状态
    └─ final guard 仍为空闲
-      └─ ch583_wifi_uart_send_power_off()
-         └─ ch583_wifi_send_frame("POWER_OFF", "")
+      ├─ TdxSharedSpi_Lock(10s)
+      ├─ 锁内再次检查工作计时及 HTTP/CH583/OTA/EPD/image-save guard
+      ├─ ch583_wifi_uart_send_power_off()
+      │  └─ ch583_wifi_send_frame("POWER_OFF", "")
+      ├─ 发送失败：GPIO4 保持 HIGH，释放 SPI 锁并回滚 LED/WAKE_TIMER
+      └─ UART 发送成功
+         ├─ ServerNetworkStaEpdDisplay_SetPower(false)：GPIO4 LOW
+         └─ 2 秒后仍运行则 esp_restart()
 ```
 
 关键辅助函数：
@@ -6844,7 +6974,7 @@ ch583_wifi_send_frame()
 CMD=POWER_OFF
 ARG 为空
 WiFi 任务完成后，如果允许 CH583 关闭 WiFi 电源，ESP32-C5 发送 POWER_OFF
-CH583 收到并校验通过后回复 ACK，然后由 CH583 固件侧拉低 PB8、关闭 WiFi 电源并进入低功耗。ESP32 当前源码只负责发送 `POWER_OFF` 帧，不直接操作 PB8。发送前需要确认 CH583 UART 已初始化完成、最近一次 HTTP 与 CH583 初始化完成/合法业务活动都已过去 20 秒、OTA receive/write hold 均已解除、EPD task 空闲、图片保存不忙且工作计时没有被 USB/BLE 等新活动重置。LED 关机准备完成后的 final guard 若发现新的 HTTP、CH583 或其他受保护任务，会设置 LED cancel-pending 状态；取消失败时后续每轮优先重试，成功解除 LED 关机锁并恢复基础灯效前不进入普通保护或新的关机流程。
+CH583 收到并校验通过后回复 ACK，然后由 CH583 固件侧拉低 PB8、关闭 WiFi 电源并进入低功耗。ESP32 不直接操作 PB8，但 GPIO4 是 EPD/SD 公共电源开关。发送前需要确认 CH583 UART 已初始化完成、最近一次 HTTP 与 CH583 初始化完成/合法业务活动都已过去 20 秒、OTA receive/write hold 均已解除、EPD task 空闲、图片保存不忙且工作计时没有被 USB/BLE 等新活动重置。LED 关机准备完成后的 final guard 若发现新的 HTTP、CH583 或其他受保护任务，会设置 LED cancel-pending 状态并发送 `WAKE_TIMER OFF,0` 回滚本次已开启的 CH583 唤醒定时器；LED 或 WAKE_TIMER 取消失败时后续每轮优先重试，两项都取消成功前不进入普通保护或新的关机流程。final guard 通过后还要取得 EPD/SD 共用 SPI 锁并在锁内再次复检；`POWER_OFF` UART 发送失败时 GPIO4 保持 HIGH，并回滚 LED/WAKE_TIMER。UART 发送成功后立即把 GPIO4 拉低并保持 SPI 锁；若 CH583 在 2 秒内没有切断 ESP32-C5 电源，则软件重启，重新初始化公共电源和 SD。
 轮播开启时，如果关电前计算出的 WAKE_TIMER wake_interval 小于 `TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS=20`，ESP32-C5 不发送 WAKE_TIMER ON/OFF、不设置 LED power-off pending，也不发送 POWER_OFF；系统重置 wifi_work_time 运行时计时，但保留本次关机尝试时间，至少等待现有 20 秒重试间隔后再评估。该阈值只控制关机决策，不改变轮播配置的最小间隔 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`。
 ```
 
@@ -7028,7 +7158,7 @@ ch583_wifi_send_ack()
 
 ```text
 任何命令必须先通过 CRC、LEN、PART/TOTAL 校验，再执行实际动作。
-WiFi 必须等 CH583 的 BLE_MAC 被 ACK 确认后，再执行后续业务。
+ESP32 必须等 CH583 的 DEVICE_INFO 被 ACK 确认后，再执行后续业务。
 WiFi 会记录上一条合法 CH583 -> WiFi 帧的 SEQ；如果下一条合法帧的 SEQ 不是 last+1，则打印错误日志提示可能丢帧。
 SEQ 按 uint16_t 处理，65535 -> 0 属于正常连续递增。
 SEQ gap 只用于诊断打印，不触发补包、重发或业务状态修正。
@@ -7059,7 +7189,7 @@ flowchart TD
     B --> C[ch583_wifi_uart_process_bytes]
     C --> D[ch583_wifi_handle_frame_body]
     D --> E{CMD}
-    E -->|BLE_MAC| F[ch583_wifi_handle_ble_mac]
+    E -->|DEVICE_INFO| F[ch583_wifi_handle_device_info]
     E -->|PING| G[ch583_wifi_send_frame PONG]
     E -->|BLE_DATA| H[ch583_wifi_handle_ble_data]
     H --> I[Ch583Uart_HandleBleDataText]
@@ -7094,8 +7224,8 @@ CH583 UART RX
          └─ uart_read_bytes()
             └─ ch583_wifi_uart_process_bytes()
                └─ ch583_wifi_handle_frame_body()
-                  ├─ CMD=BLE_MAC
-                  │  └─ ch583_wifi_handle_ble_mac()
+                  ├─ CMD=DEVICE_INFO
+                  │  └─ ch583_wifi_handle_device_info()
                   ├─ CMD=PING
                   │  └─ ch583_wifi_send_frame("PONG")
                   ├─ CMD=BLE_DATA
@@ -7146,7 +7276,7 @@ User_HandleWifiJsonTextFromCh583()
 
 ```text
 存：
-- BLE_MAC：写 PhotoPainter/CH583_BLE_MAC_NVS_KEY。
+- DEVICE_INFO：保存 BLE MAC、CH583 版本和映射后的 EPD 类型。
 - BLE_DATA 下游：可能写 WiFi NVS 或工作时间 NVS。
 - POWER_OFF/GPIO/WIFI_DATA：自身不写持久化。
 
@@ -7260,7 +7390,7 @@ EPD 与网络或 UART 同时活动时，EPD 的 2400 ms 慢闪优先。
 网络、UART RX、UART TX、EPD 分别计数；任务重叠时，只有全部计数归零才关闭 RED。
 大网络数据条件：multipart、OTA 或 body 大于 4096 字节。
 大串口数据条件：分片 BLE_DATA，或 BLE_DATA/WIFI_DATA 长度大于等于 256 字节。
-PING/PONG、ACK/ERR、BLE_MAC、LED/GPIO 等协议维护命令不触发 RED。
+PING/PONG、ACK/ERR、DEVICE_INFO、LED/GPIO 等协议维护命令不触发 RED。
 ```
 
 示例：
@@ -7378,10 +7508,11 @@ work_state_task() 工作时间到期、OTA 不忙且 EPD 空闲时：
 ├─ sw=0：ch583_wifi_uart_send_wake_timer_off()
 ├─ 超时后立即发送一次；之后每 20 秒重发一次 WAKE_TIMER / LED 关闭 / POWER_OFF
 ├─ 关机流程中发给 CH583/CH585 的命令之间至少间隔 100ms
+├─ LED 准备失败、final guard 取消关机或 POWER_OFF 发送失败：若本次已开启 WAKE_TIMER，则发送 OFF,0；失败时每轮优先重试
 └─ 然后继续 ch583_wifi_uart_send_power_off()
 ```
 
-`WAKE_TIMER` 配置失败只打印 warning，不阻止后续 `POWER_OFF`；这样 CH583/CH585 固件暂未支持新命令时，也不会破坏原有关机链路。轮播开启且 wake_interval 小于 `TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS=20` 时，不调用 `ch583_wifi_uart_send_wake_timer_off()`，不设置 LED power-off pending，而是重置 wifi_work_time 运行时计时、保留本次关机尝试时间并跳过本次 `POWER_OFF`；即使 `seconds=0`，也至少等待现有 20 秒重试间隔后再评估。该20秒阈值不改变轮播配置最小间隔 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`。CH583 UART 初始化尚未完成、HTTP 或 CH583 合法业务活动保护不足 20 秒、OTA receive/write busy、EPD busy 或图片保存 busy 时均不发送 WAKE_TIMER、LED 关闭或 `POWER_OFF`，所有保护解除后再进入关机流程。
+`WAKE_TIMER` 配置失败只打印 warning，不阻止后续 `POWER_OFF`；这样 CH583/CH585 固件暂未支持新命令时，也不会破坏原有关机链路。轮播开启且 wake_interval 小于 `TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS=20` 时，不调用 `ch583_wifi_uart_send_wake_timer_off()`，不设置 LED power-off pending，而是重置 wifi_work_time 运行时计时、保留本次关机尝试时间并跳过本次 `POWER_OFF`；即使 `seconds=0`，也至少等待现有 20 秒重试间隔后再评估。该20秒阈值不改变轮播配置最小间隔 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60`。CH583 UART 初始化尚未完成、HTTP 或 CH583 合法业务活动保护不足 20 秒、OTA receive/write busy、EPD busy 或图片保存 busy 时均不发送 WAKE_TIMER、LED 关闭或 `POWER_OFF`，所有保护解除后再进入关机流程。若 WAKE_TIMER ON 已发送，但后续 LED 准备失败、final guard 取消关机或 `POWER_OFF` 发送失败，则发送 `WAKE_TIMER OFF,0`；发送失败会保留待取消状态，并在进入普通保护判断前逐轮重试。
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-10-12)
 
@@ -7761,7 +7892,7 @@ DataFlash 保存发生在 WiFi POWER_OFF / LOWPOWER 收尾阶段。
 复位后如果只能读取到 DataFlash 中最后保存的时间，TIME_GET 返回 STALE。
 从未成功 TIME_SET 且没有可用保存值时，TIME_GET 返回 INVALID。
 ESP32-C5 优先接受 TIME_STATUS VALID 作为开机恢复 RTC 轮播的备份时间源；STALE 可作为无 WiFi 轮播 fallback 时间源，INVALID 不写 RTC。
-SNTP 成功后，ESP32-C5 会发送 TIME_SET 给 CH583/CH585，同步最新北京时间。
+SNTP 成功后，ESP32-C5 会发送 TIME_SET 给 CH583/CH585，同步最新北京时间；如果该发送因 DEVICE_INFO 未完成而被门控，DEVICE_INFO 成功后会使用当前可靠时间补发一次。
 APP/PC 请求中带合法 timestamp 时，ESP32-C5 会尽量发送 TIME_SET 给 CH583/CH585；该备份动作不改变原业务逻辑、result 返回码或是否启动轮播。
 APP/PC timestamp 非法但 ESP32-C5 已完成 SNTP 同步时，ESP32-C5 会把当前 SNTP 时间发送给 CH583/CH585。
 SNTP 已同步且 APP/PC timestamp 与当前 SNTP 时间差值超过 5 秒时，原轮播逻辑仍返回 1513 并拒绝本次轮播，但仍会先把 APP/PC timestamp 发送给 CH583/CH585 作为备份。
@@ -8186,7 +8317,7 @@ http://<host>/dataUP
 - ble_has_saved_wifi_info() 检查 namespace="wifi" 的 ssid 或 namespace="nvs.net80211" 的 sta.ssid 是否存在。
 - ServerNetworkSta_GetStatus() 读取当前 STA IP 状态。
 - notify_wifi_info_if_ip_ready() 统一判断 status.has_ip；配网任务成功后若第一次没读到 IP，会每 300 ms 复查一次，最多复查 3 次；读到 IP 时必须调用 send_base_info_to_mobile()。
-- send_base_info_to_mobile() 读取 IP、app 描述、CH583/CH585 BLE_VER、running partition 信息，并对 wifi_info_result 发送失败做短重试；version 字段格式为 `<WiFi app version>:<BLE_VER>`。
+- send_base_info_to_mobile() 读取 IP、app 描述、DEVICE_INFO 中的 CH583/CH585 版本、running partition 信息，并对 wifi_info_result 发送失败做短重试；version 字段格式为 `<WiFi app version>:<CH583 version>`。
 ```
 
 连接规则：
@@ -8548,6 +8679,7 @@ Mermaid 时序图：
 ```mermaid
 flowchart TD
     A[具体 EPD 驱动] --> B[display_bsp.cpp / ePaperPort]
+    B --> P[Set_Power / GPIO4 EPD-SD shared power]
     B --> C[EPD_WriteCMD]
     B --> D[EPD_WriteDATA]
     B --> E[EPD_Check_Busy]
@@ -8560,6 +8692,8 @@ flowchart TD
 ```text
 main/epd_display/display_bsp.cpp
 main/epd_display/display_bsp.h
+main/epd_display/epd_display_app.cpp
+main/server_network_sta/wifi_work_time/server_network_sta_wifi_work_time.c
 main/tdx_cfg.h
 ```
 
@@ -8568,12 +8702,13 @@ main/tdx_cfg.h
 ```text
 EpdType*_Display()
 └─ display_bsp / ePaperPort
+   ├─ Set_Power(1)：GPIO4 HIGH；EPD/SD 正常运行期间保持供电
    ├─ spiTransmitData()
    ├─ EPD_WriteCMD()
    ├─ EPD_WriteDATA()
    ├─ EPD_Check_Busy()
    ├─ reset / dc / cs gpio control
-   └─ refresh / sleep
+   └─ refresh / sleep：只让 EPD 控制器休眠，不拉低 GPIO4
 ```
 
 关键辅助函数：
@@ -8583,7 +8718,20 @@ spiTransmitData()
 EPD_WriteCMD()
 EPD_WriteDATA()
 EPD_Check_Busy()
+ePaperPort::Set_Power()
+ServerNetworkStaEpdDisplay_SetPower()
 ePaperPort methods used by EpdType_* drivers
+```
+
+EPD / SD 公共电源规则：
+
+```text
+- EPD_SD_Power_PIN 固定为 GPIO_NUM_4，并配置为 GPIO_MODE_OUTPUT。
+- ePaperPort 构造及 ServerNetworkStaEpdDisplay_Init() 都调用 Set_Power(1)，确保任何 EPD 操作和后续 SD 挂载前 GPIO4 为 HIGH。
+- EPD_Reset() 再次调用 Set_Power(1)；EPD refresh/sleep 结束不调用 Set_Power(0)，避免已挂载 SD 突然掉电。
+- Set_Power(0) 只由 work_state_task() 最终关机提交路径通过 C 接口 ServerNetworkStaEpdDisplay_SetPower(false) 调用。
+- work_state_task() 在共用 SPI 锁内复检所有 guard，先成功发送 POWER_OFF，再拉低 GPIO4；发送失败时 GPIO4 保持 HIGH。
+- GPIO4 拉低后保持 SPI 锁，2 秒内 CH583 未切断 ESP32-C5 电源则 esp_restart()，防止继续访问掉电但仍处于 FATFS 挂载状态的 SD。
 ```
 
 SPI DMA 分包规则：
@@ -8606,10 +8754,12 @@ NT61522_Display_net() 返回当前 EPD 显示结果；外层屏幕适配在数�
 存：
 - 不写 SD/NVS。
 - 只把命令和数据通过 SPI/GPIO 写到 EPD 控制器。
+- GPIO4 HIGH 期间为 EPD 和 SD 提供公共电源；本模块不在单次 EPD refresh/sleep 后关闭该电源。
 
 取：
 - 读取 tdx_cfg.h 中 USER_EPD_SPI_HOST、USER_EPD_*_PIN 等配置。
 - 读取 BUSY 引脚状态判断屏幕忙闲。
+- 读取 `Power_switch`：等于 1 时 GPIO4 输出 HIGH，其余值输出 LOW。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-12)
@@ -9039,7 +9189,7 @@ type=EPD_TYPE_1600_1200_133_DKE, width=1600, height=1200, display_size=960000, c
 实现说明：
 
 ```text
-- DKE 13.3 与 EPD_TYPE_1600_1200_133_XingTai 分开实现，不复用兴泰 13.3 的初始化参数，避免影响已验证成功的兴泰屏。
+- DKE 13.3 与 EPD_TYPE_1600_1200_133 分开实现，不复用兴泰 13.3 的初始化参数，避免影响已验证成功的兴泰屏。
 - DKE 参考工厂 EL133UF1.cpp / EPD_IO.cpp：初始化、分帧写入、PON/DRF/POF 更新和 sleep 参数独立维护。
 - 图像总长度 960000 bytes；MASTER 和 SLAVE 各写 480000 bytes。
 - DKE 帧数据按 4092 bytes 小分包调用 spiTransmitData()；轮播/投图数据常在 PSRAM，SPI driver 可能临时申请内部 DMA TX buffer，小分包可避免内部 DMA heap 碎片化时出现 `ESP_ERR_NO_MEM`。任一半帧写入失败时不继续 update，调用方不推进轮播进度。
@@ -10049,7 +10199,7 @@ main/
 ├─ usb_console_echo/
 │  └─ USB Serial/JTAG HTTP-like 请求、路由和响应
 ├─ ch583_uart/
-│  └─ CH583 UART V1 协议、BLE_DATA/BLE_MAC/PING/GPIO/POWER_OFF
+│  └─ CH583 UART V1 协议、DEVICE_INFO/BLE_DATA/PING/GPIO/POWER_OFF
 ├─ ble/
 │  └─ CH583 BLE JSON 分发；可选 ESP32 本机 BLE stub/实现
 ├─ epd_display/

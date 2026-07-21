@@ -51,6 +51,8 @@ void UserLedStatus_FactoryResetEnd(void);
 void UserLedStatus_SetRestartPending(bool active);
 // Show the shutdown countdown before the final synchronous physical LED shutdown.
 void UserLedStatus_SetPowerOffPending(bool active);
+// Recalibrate the physical CH583 LEDs, then apply the latest logical LED state.
+esp_err_t UserLedStatus_ReapplyCurrent(void);
 // Wait until the LED task has stopped both blink engines and forced PB5/PB6 off.
 esp_err_t UserLedStatus_PreparePowerOffSync(void);
 // Release a prepared power-off lock and restore the current base LED effect.

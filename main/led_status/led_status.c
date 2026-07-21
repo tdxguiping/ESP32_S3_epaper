@@ -90,10 +90,16 @@ static bool stop_blink(const char *led, user_led_runtime_t *runtime)
 
     int ret = ch583_wifi_uart_send_led_blink_stop(led);
     if (ret < 0) {
-        ESP_LOGE(TAG, "CH583 LED blink stop failed led=%s ret=%d", led, ret);
+        if (s_apply_retry_count == 0) {
+            ESP_LOGE(TAG, "LED_BLINK_STOP failed led=%s ret=%d", led, ret);
+        }
         return false;
     }
 
+    if (s_apply_retry_count > 0) {
+        ESP_LOGI(TAG, "LED_BLINK_STOP completed led=%s retries=%u",
+                 led, (unsigned int)s_apply_retry_count);
+    }
     runtime->mode = USER_LED_MODE_OFF;
     runtime->interval_ms = 0;
     return true;
@@ -262,6 +268,20 @@ static user_led_effect_t select_effect(void)
     return effect;
 }
 
+static bool required_blink_stop_pending(const user_led_effect_t *effect)
+{
+    if (effect == NULL) {
+        return false;
+    }
+
+    // A successful LED_BLINK is represented by runtime mode BLINK. Leaving
+    // that mode must keep retrying the matching LED_BLINK_STOP until it is sent.
+    return (s_green_runtime.mode == USER_LED_MODE_BLINK &&
+            effect->green_mode != USER_LED_MODE_BLINK) ||
+           (s_red_runtime.mode == USER_LED_MODE_BLINK &&
+            effect->red_mode != USER_LED_MODE_BLINK);
+}
+
 static bool apply_effect(void)
 {
     user_led_effect_t effect = select_effect();
@@ -293,6 +313,25 @@ static bool apply_effect(void)
         s_apply_retry_count = 0;
         s_apply_retry_exhausted_logged = false;
         return true;
+    }
+
+    if (required_blink_stop_pending(&effect)) {
+        // Normal cosmetic commands keep their bounded retry policy, but a
+        // successful LED_BLINK must not be left without its matching STOP.
+        if (s_apply_retry_count < UINT8_MAX) {
+            s_apply_retry_count++;
+        }
+        s_apply_retry_armed = true;
+        s_apply_retry_deadline = xTaskGetTickCount() +
+                                 pdMS_TO_TICKS(USER_LED_APPLY_RETRY_MS);
+        if (s_apply_retry_count >= USER_LED_APPLY_RETRY_MAX &&
+            !s_apply_retry_exhausted_logged) {
+            s_apply_retry_exhausted_logged = true;
+            ESP_LOGW(TAG,
+                     "LED_BLINK_STOP still pending reason=%s retries=%u, keep retrying",
+                     effect.reason, (unsigned int)s_apply_retry_count);
+        }
+        return false;
     }
 
     if (s_apply_retry_count < USER_LED_APPLY_RETRY_MAX) {
@@ -522,6 +561,24 @@ static void handle_event(const user_led_event_t *event)
             if (xSemaphoreGive(s_power_off_done) != pdTRUE) {
                 ESP_LOGW(TAG, "power-off result semaphore already full");
             }
+        }
+        return;
+    }
+    if (event->type == USER_LED_EVENT_REAPPLY_CURRENT) {
+        if (s_shutdown_pending) {
+            ESP_LOGW(TAG, "DEVICE_INFO LED reapply skipped during power-off lock");
+            return;
+        }
+
+        // The protocol gate may have rejected earlier GPIO writes while the cached mode
+        // already advanced. Force a known physical state before applying the latest effect.
+        bool reset_ok = force_all_leds_off();
+        bool apply_ok = apply_effect();
+        if (reset_ok && apply_ok) {
+            ESP_LOGI(TAG, "DEVICE_INFO LED state reapplied");
+        } else {
+            ESP_LOGE(TAG, "DEVICE_INFO LED reapply failed reset=%d apply=%d",
+                     reset_ok ? 1 : 0, apply_ok ? 1 : 0);
         }
         return;
     }
@@ -809,6 +866,27 @@ void UserLedStatus_SetRestartPending(bool active)
 void UserLedStatus_SetPowerOffPending(bool active)
 {
     post_simple_event(USER_LED_EVENT_POWER_OFF_PENDING, 0, active ? 1U : 0U);
+}
+
+esp_err_t UserLedStatus_ReapplyCurrent(void)
+{
+#if USER_LED_STATUS_ENABLE
+    if (s_led_event_queue == NULL || s_led_task == NULL) {
+        // Normal startup initializes UART before the LED task. If DEVICE_INFO arrives
+        // in that short window, UserLedStatus_Task() will perform the same calibration.
+        ESP_LOGW(TAG, "DEVICE_INFO ready before LED task, startup calibration will apply state");
+        return ESP_OK;
+    }
+
+    user_led_event_t event = {
+        .type = USER_LED_EVENT_REAPPLY_CURRENT,
+    };
+    // Put recovery ahead of queued cosmetic state changes and allow the bounded
+    // high-priority wait so the physical-state repair is not silently dropped.
+    return post_event(&event, true) ? ESP_OK : ESP_ERR_TIMEOUT;
+#else
+    return ESP_OK;
+#endif
 }
 
 esp_err_t UserLedStatus_PreparePowerOffSync(void)

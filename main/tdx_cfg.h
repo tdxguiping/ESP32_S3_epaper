@@ -488,7 +488,7 @@ extern "C" {
 // Timing value for TDX SLIDESHOW INTERVAL MIN SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_INTERVAL_MIN_SECONDS 60
 // Minimum computed CH583 wake interval required before slideshow power-off is allowed.
-#define TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS 20
+#define TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS 10
 // Timing value for TDX SLIDESHOW INTERVAL MAX SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_INTERVAL_MAX_SECONDS (7U * 24U * 60U * 60U) // 7 days
 // Timing value for CH583 WAKE TIMER MIN SECONDS; verify related wake, sleep, and retry behavior if it changes.
@@ -555,12 +555,10 @@ extern "C" {
 #define SERVER_REQUIRED_CONTINUE_WORK_TIME_NVS_KEY "work_continue"
 // NVS key used by WIFI STANDBY TIME S NVS KEY; keep storage compatibility before changing it.
 #define WIFI_STANDBY_TIME_S_NVS_KEY "wifi_standby"
-// NVS key used by CH583 BLE MAC NVS KEY; keep storage compatibility before changing it.
-#define CH583_BLE_MAC_NVS_KEY "ch583_ble_mac"
-// NVS key used by CH583 BLE VER NVS KEY; keep storage compatibility before changing it.
-#define CH583_BLE_VER_NVS_KEY "ch583_ble_ver"
-// Configuration value for CH583 BLE VER DEFAULT; update local references before changing it.
-#define CH583_BLE_VER_DEFAULT 0
+// DEVICE_INFO reuses the old key strings so protocol upgrades keep saved CH583 identity data.
+#define CH583_DEVICE_INFO_MAC_NVS_KEY "ch583_ble_mac"
+#define CH583_DEVICE_INFO_BLE_VER_NVS_KEY "ch583_ble_ver"
+#define CH583_DEVICE_INFO_BLE_VER_DEFAULT 0
 
 // Keep sleep/work-state NVS keys here so BLE, HTTP, and network timers share one saved runtime state.
 #define USER_WORK_STATE_NVS_NAMESPACE "work_state"
@@ -590,9 +588,12 @@ extern "C" {
 // Guard-log bits ensure short power-off holds produce one useful log without per-second noise.
 #define USER_WORK_STATE_GUARD_LOG_HTTP_BIT (1UL << 0)
 #define USER_WORK_STATE_GUARD_LOG_CH583_BIT (1UL << 1)
-// Runtime state bits keep startup and LED power-off cancellation guards centralized.
+// Runtime state bits keep startup and power-off cancellation guards centralized.
 #define USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT (1UL << 0)
 #define USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT    (1UL << 1)
+#define USER_WORK_STATE_RUNTIME_WAKE_TIMER_CANCEL_PENDING_BIT (1UL << 2)
+// Keep power-off blocked after UART initialization until DEVICE_INFO has been saved and ACKed.
+#define USER_WORK_STATE_RUNTIME_DEVICE_INFO_PENDING_BIT   (1UL << 3)
 
 // After each EPD display job finishes, request one low-power countdown through work_state_task.
 #define USER_EPD_DONE_LOW_POWER_ENABLE   0
@@ -696,6 +697,18 @@ extern "C" {
 #define CH583_WIFI_UART_TX_SILENCE_MS 10
 // Configuration value for CH583 WIFI UART BAD CRC RETRY MAX; update local references before changing it.
 #define CH583_WIFI_UART_BAD_CRC_RETRY_MAX 5
+// DEVICE_INFO replaces the former BLE_MAC and BLE_VER receive commands.
+#define CH583_DEVICE_INFO_CMD "DEVICE_INFO"
+#define CH583_DEVICE_INFO_MAC_HEX_LEN 12
+#define CH583_DEVICE_INFO_BLE_VER_TEXT_MAX_LEN 3
+#define CH583_DEVICE_INFO_ARG_MAX_LEN 21
+#define CH583_DEVICE_INFO_SCREEN_TYPE_133 'd'
+#define CH583_DEVICE_INFO_SCREEN_TYPE_709 'e'
+// board_info_hex is the complete visible ASCII byte: 0x40 vendor 0, 0x41 vendor 1.
+#define CH583_DEVICE_INFO_BOARD_XINGTAI 0x40
+#define CH583_DEVICE_INFO_BOARD_DKE 0x41
+#define CH583_DEVICE_INFO_ERR_REQUIRED "DEVICE_INFO_REQUIRED"
+#define CH583_DEVICE_INFO_ERR_SAVE_FAILED "DEVICE_INFO_SAVE_FAILED"
 // Configuration value for CH583 WIFI NFC JSON MAX LEN; update local references before changing it.
 #define CH583_WIFI_NFC_JSON_MAX_LEN 220
 // Configuration value for CH583 WIFI NFC BASE64URL MAX LEN; update local references before changing it.
@@ -1014,6 +1027,8 @@ extern "C" {
 #define USER_LED_EVENT_RESTART_PENDING 14
 // Cancel a prepared power-off lock when the final guard detects new work.
 #define USER_LED_EVENT_CANCEL_POWER_OFF 15
+// Recalibrate CH583 LED output after DEVICE_INFO releases the protocol TX gate.
+#define USER_LED_EVENT_REAPPLY_CURRENT 16
 
 // Persistent fault bits evaluated by the LED task in priority order.
 #define USER_LED_FAULT_WIFI_NO_CONFIG (1UL << 0)

@@ -145,7 +145,7 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
     if (Hardware_Version_ == 2) {
         gpio_conf.intr_type = GPIO_INTR_DISABLE;
         gpio_conf.mode = GPIO_MODE_OUTPUT;
-        gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_) | (0x1ULL << EPD2_DC_PIN) | (0x1ULL << EPD2_CS_PIN) | (0x1ULL << EPD2_RST_PIN) | (0x1ULL << EPD_Power_PIN);
+        gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_) | (0x1ULL << EPD2_DC_PIN) | (0x1ULL << EPD2_CS_PIN) | (0x1ULL << EPD2_RST_PIN) | (0x1ULL << EPD_SD_Power_PIN);
         gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
         gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
         ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
@@ -163,7 +163,7 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
     } else {
         gpio_conf.intr_type = GPIO_INTR_DISABLE;
         gpio_conf.mode = GPIO_MODE_OUTPUT;
-        gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_) | (0x1ULL << EPD_Power_PIN);
+        gpio_conf.pin_bit_mask = (0x1ULL << rst_) | (0x1ULL << dc_) | (0x1ULL << cs_) | (0x1ULL << cs_2_) | (0x1ULL << EPD_SD_Power_PIN);
         gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
         gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
         ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&gpio_conf));
@@ -177,7 +177,10 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
     }
     ESP_LOGI(TAG, "EPD hardware version=%u", (unsigned int)Hardware_Version_);
 
-    Set_Power(0);
+    esp_err_t power_ret = Set_Power(1);
+    if (power_ret != ESP_OK) {
+        ESP_LOGE(TAG, "EPD/SD startup power on failed ret=%s", esp_err_to_name(power_ret));
+    }
     
     EPD_interface_init();
     Set_ResetIOLevel(1);
@@ -242,40 +245,39 @@ ePaperPort::~ePaperPort() {
     spi_bus_free(spi_host_);
 }
 
-void ePaperPort::Set_Power(uint8_t Power_switch) {
+esp_err_t ePaperPort::Set_Power(uint8_t Power_switch) {
     gpio_config_t io_conf = {};
-    // gpio_set_level((gpio_num_t)EPD_Power_PIN, Power_switch ? 1 : 0);
-    //ESP_LOGI(TAG, "EPD power=%u", (unsigned int)(Power_switch ? 1 : 0));
-
-    // io_conf.pin_bit_mask = (1ULL << EPD_CS_PIN_2) |
-    //                        (1ULL << EPD_DC_PIN) |
-    //                        (1ULL << EPD_CS_PIN) |
-    //                        (1ULL << EPD_RST_PIN);
-
-    io_conf.pin_bit_mask = (1ULL << EPD_RST_PIN);
+    io_conf.pin_bit_mask = (1ULL << EPD_SD_Power_PIN);
+    io_conf.mode = GPIO_MODE_OUTPUT;
     io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
     io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     io_conf.intr_type = GPIO_INTR_DISABLE;
 
-    if(Power_switch == 1)
-    {
-        ESP_LOGI(TAG, "----------EPD power on");
-        gpio_set_level((gpio_num_t)EPD_Power_PIN, 1);
-        io_conf.mode = GPIO_MODE_OUTPUT;
-    }
-    else
-    {
-        ESP_LOGI(TAG, "---------EPD power off");
-        gpio_set_level((gpio_num_t)EPD_Power_PIN, 1);
-        io_conf.mode = GPIO_MODE_DISABLE;
-    }    
-
     esp_err_t ret = gpio_config(&io_conf);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "gpio_config failed ret=%s", esp_err_to_name(ret));
-        return;
+        ESP_LOGE(TAG,
+                 "EPD/SD power gpio config failed pin=%d ret=%s",
+                 (int)EPD_SD_Power_PIN,
+                 esp_err_to_name(ret));
+        return ret;
     }
 
+    uint32_t level = (Power_switch == 1U) ? 1U : 0U;
+    ret = gpio_set_level((gpio_num_t)EPD_SD_Power_PIN, level);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "EPD/SD power set failed pin=%d level=%lu ret=%s",
+                 (int)EPD_SD_Power_PIN,
+                 (unsigned long)level,
+                 esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGI(TAG,
+             "EPD/SD power pin=%d level=%lu",
+             (int)EPD_SD_Power_PIN,
+             (unsigned long)level);
+    return ESP_OK;
 }
 
 
@@ -339,7 +341,12 @@ void ePaperPort::delay_ms(uint16_t ms) {
 
 void ePaperPort::EPD_Reset(void) {
 
-    Set_Power(1);
+    esp_err_t power_ret = Set_Power(1);
+    if (power_ret != ESP_OK) {
+        ESP_LOGE(TAG, "EPD reset power on failed ret=%s", esp_err_to_name(power_ret));
+        EpdType_ReportDisplayFailure(power_ret);
+        return;
+    }
     // gpio_set_level((gpio_num_t)cs_,1);
     // gpio_set_level((gpio_num_t)cs_2_,1);
     // if (EPD_which_one_ == 2) {
