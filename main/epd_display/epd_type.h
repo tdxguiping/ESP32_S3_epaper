@@ -47,6 +47,8 @@ size_t EpdType_GetCount(void);
 const epd_type_config_t *EpdType_GetConfigByIndex(size_t index);
 esp_err_t EpdType_LoadSavedOrDefault(void);
 esp_err_t EpdType_SetAndSave(uint8_t type, bool *changed);
+// Save a validated type for the next boot without changing the active display driver.
+esp_err_t EpdType_SaveForNextBoot(uint8_t type, bool *changed);
 void EpdType_Set(uint8_t type);
 
 #ifdef __cplusplus

@@ -272,6 +272,8 @@ extern "C" {
 #define SERVER_NETWORK_STA_OK 1
 // Configuration value for SERVER NETWORK STA CONNECT FAIL; update local references before changing it.
 #define SERVER_NETWORK_STA_CONNECT_FAIL 3
+// A newer control request replaced this synchronous wait; it is not a WiFi timeout.
+#define SERVER_NETWORK_STA_CONNECT_SUPERSEDED 4
 // Configuration value for SERVER NETWORK STA NO SAVED WIFI; update local references before changing it.
 #define SERVER_NETWORK_STA_NO_SAVED_WIFI 0xA1
 
@@ -592,8 +594,12 @@ extern "C" {
 #define USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT (1UL << 0)
 #define USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT    (1UL << 1)
 #define USER_WORK_STATE_RUNTIME_WAKE_TIMER_CANCEL_PENDING_BIT (1UL << 2)
-// Keep power-off blocked after UART initialization until DEVICE_INFO has been saved and ACKed.
-#define USER_WORK_STATE_RUNTIME_DEVICE_INFO_PENDING_BIT   (1UL << 3)
+// WIFI_PROVISION low nibble used only for the one-shot standby notification
+// immediately before POWER_OFF. It must not be stored as an EPD display mode.
+#define CH583_WIFI_PROVISION_MODE_STANDBY 0x0FU
+// Keep the local EPD/SD GPIO4 rail on after sending CH583 POWER_OFF.
+// CH583 POWER_OFF remains enabled and still controls the ESP32/WiFi supply.
+#define USER_POWER_OFF_LOCAL_EPD_SD_CUTOFF_ENABLE 0
 
 // After each EPD display job finishes, request one low-power countdown through work_state_task.
 #define USER_EPD_DONE_LOW_POWER_ENABLE   0
@@ -699,6 +705,7 @@ extern "C" {
 #define CH583_WIFI_UART_BAD_CRC_RETRY_MAX 5
 // DEVICE_INFO replaces the former BLE_MAC and BLE_VER receive commands.
 #define CH583_DEVICE_INFO_CMD "DEVICE_INFO"
+#define CH583_WIFI_VER_COMPAT_ON_PING_ENABLE 1
 #define CH583_DEVICE_INFO_MAC_HEX_LEN 12
 #define CH583_DEVICE_INFO_BLE_VER_TEXT_MAX_LEN 3
 #define CH583_DEVICE_INFO_ARG_MAX_LEN 21
@@ -707,7 +714,6 @@ extern "C" {
 // board_info_hex is the complete visible ASCII byte: 0x40 vendor 0, 0x41 vendor 1.
 #define CH583_DEVICE_INFO_BOARD_XINGTAI 0x40
 #define CH583_DEVICE_INFO_BOARD_DKE 0x41
-#define CH583_DEVICE_INFO_ERR_REQUIRED "DEVICE_INFO_REQUIRED"
 #define CH583_DEVICE_INFO_ERR_SAVE_FAILED "DEVICE_INFO_SAVE_FAILED"
 // Configuration value for CH583 WIFI NFC JSON MAX LEN; update local references before changing it.
 #define CH583_WIFI_NFC_JSON_MAX_LEN 220
@@ -1027,7 +1033,7 @@ extern "C" {
 #define USER_LED_EVENT_RESTART_PENDING 14
 // Cancel a prepared power-off lock when the final guard detects new work.
 #define USER_LED_EVENT_CANCEL_POWER_OFF 15
-// Recalibrate CH583 LED output after DEVICE_INFO releases the protocol TX gate.
+// Recalibrate CH583 LED output after the first DEVICE_INFO sync without gating communication.
 #define USER_LED_EVENT_REAPPLY_CURRENT 16
 
 // Persistent fault bits evaluated by the LED task in priority order.

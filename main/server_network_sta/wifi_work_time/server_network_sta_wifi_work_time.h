@@ -20,8 +20,6 @@ void ServerNetworkStaWifiWorkTime_OnNetworkData(void);
 void ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity(void);
 void ServerNetworkStaWifiWorkTime_OnCh583Activity(void);
 void ServerNetworkStaWifiWorkTime_OnCh583Initialized(void);
-void ServerNetworkStaWifiWorkTime_OnDeviceInfoPending(void);
-void ServerNetworkStaWifiWorkTime_OnDeviceInfoReady(void);
 void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t seconds);
 void ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(bool in_progress);
 bool ServerNetworkStaWifiWorkTime_IsImageSaveInProgress(void);

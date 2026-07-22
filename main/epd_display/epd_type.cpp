@@ -150,6 +150,41 @@ esp_err_t EpdType_SetAndSave(uint8_t type, bool *changed)
     return app_nvs_write_u8(USER_EPD_TYPE_NVS_KEY, type);
 }
 
+esp_err_t EpdType_SaveForNextBoot(uint8_t type, bool *changed)
+{
+    const epd_type_config_t *config = EpdType_GetConfig(type);
+    uint8_t saved_type = USER_EPD_TYPE_DEFAULT;
+    if (changed != nullptr) {
+        *changed = false;
+    }
+    if (config == nullptr) {
+        ESP_LOGE(TAG, "save next boot rejected invalid EPD type=%u", (unsigned int)type);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t ret = app_nvs_read_u8(USER_EPD_TYPE_NVS_KEY,
+                                    &saved_type,
+                                    USER_EPD_TYPE_DEFAULT);
+    if (ret == ESP_OK && saved_type == type) {
+        ESP_LOGI(TAG, "next boot EPD type unchanged value=%u name=%s",
+                 (unsigned int)type, config->name);
+        return ESP_OK;
+    }
+
+    ret = app_nvs_write_u8(USER_EPD_TYPE_NVS_KEY, type);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "save next boot EPD type=%u failed ret=%s",
+                 (unsigned int)type, esp_err_to_name(ret));
+        return ret;
+    }
+    if (changed != nullptr) {
+        *changed = true;
+    }
+    ESP_LOGI(TAG, "next boot EPD type saved value=%u name=%s",
+             (unsigned int)type, config->name);
+    return ESP_OK;
+}
+
 static esp_err_t s_display_result = ESP_OK;
 
 void EpdType_ReportDisplayFailure(esp_err_t error)

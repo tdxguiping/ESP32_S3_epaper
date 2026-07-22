@@ -123,7 +123,13 @@ static char s_ble_mac[CH583_DEVICE_INFO_MAC_HEX_LEN + 1];
 static uint8_t s_ble_ver;
 static bool s_device_info_loaded;
 static bool s_ble_ver_nvs_valid;
-static bool s_device_info_ready;
+// DEVICE_INFO is optional for transport readiness. This flag only records whether
+// this ESP32 boot has successfully received and acknowledged current device data.
+static bool s_device_info_received;
+#if CH583_WIFI_VER_COMPAT_ON_PING_ENABLE
+// Send the ESP32 version once when CH583 continues an old session after an ESP32-only restart.
+static bool s_compat_wifi_ver_sent;
+#endif
 static uint8_t s_wifi_provision_status;
 static bool s_wifi_provision_status_valid;
 
@@ -256,17 +262,6 @@ static bool ch583_wifi_cmd_expects_reply(const char *cmd)
            strcmp(cmd, "NFC_STATUS") != 0;
 }
 
-static bool ch583_wifi_cmd_allowed_before_device_info(const char *cmd)
-{
-    return cmd != NULL &&
-           (strcmp(cmd, "ACK") == 0 ||
-            strcmp(cmd, "ERR") == 0 ||
-            strcmp(cmd, "TIME_GET") == 0 ||
-            strcmp(cmd, "GPIO_READ") == 0 ||
-            strcmp(cmd, "LED_BLINK") == 0 ||
-            strcmp(cmd, "LED_BLINK_STOP") == 0);
-}
-
 static ch583_wifi_pending_tx_t *ch583_wifi_find_pending_tx_locked(uint16_t seq)
 {
     for (size_t i = 0; i < CH583_WIFI_TX_PENDING_MAX; i++) {
@@ -323,10 +318,6 @@ static int ch583_wifi_send_frame(const char *cmd, const char *arg, uint8_t need_
     if (cmd == NULL || arg_len > CH583_WIFI_MAX_ARG_LEN) {
         UserDebugOutput_Printf("CH583_PROTO tx reject cmd=%s arg_len=%u\r\n",
                cmd ? cmd : "NULL", (unsigned int)arg_len);
-        return -1;
-    }
-    if (!s_device_info_ready && !ch583_wifi_cmd_allowed_before_device_info(cmd)) {
-        ESP_LOGW(TAG, "DEVICE_INFO pending, block TX cmd=%s", cmd);
         return -1;
     }
     if (s_tx_mutex == NULL || xSemaphoreTake(s_tx_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
@@ -972,18 +963,13 @@ static void ch583_wifi_handle_device_info(const ch583_wifi_frame_t *frame)
     ch583_wifi_device_info_t device_info = {0};
     ch583_wifi_device_info_parse_result_t parse_result;
     uint8_t saved_epd_type = USER_EPD_TYPE_DEFAULT;
-    bool epd_changed = false;
-    bool was_ready = s_device_info_ready;
+    bool epd_saved_changed = false;
+    bool was_received = s_device_info_received;
     esp_err_t ret;
 
     if (frame == NULL) {
         return;
     }
-
-    // A new DEVICE_INFO frame starts a mandatory handshake attempt. Re-arm the
-    // shutdown guard as well, so protocol and power-management readiness agree.
-    ServerNetworkStaWifiWorkTime_OnDeviceInfoPending();
-    s_device_info_ready = false;
 
     if (frame->part != 1 || frame->total != 1) {
         ESP_LOGE(TAG, "DEVICE_INFO bad part seq=%u part=%u total=%u",
@@ -1021,7 +1007,9 @@ static void ch583_wifi_handle_device_info(const ch583_wifi_frame_t *frame)
         return;
     }
 
-    ret = EpdType_SetAndSave(device_info.epd_type, &epd_changed);
+    // Keep the active driver selected from startup NVS (or its validated default).
+    // DEVICE_INFO may arrive during a display, so only persist it for the next boot.
+    ret = EpdType_SaveForNextBoot(device_info.epd_type, &epd_saved_changed);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "DEVICE_INFO save EPD type=%u failed seq=%u ret=%s",
                  (unsigned int)device_info.epd_type,
@@ -1076,23 +1064,22 @@ static void ch583_wifi_handle_device_info(const ch583_wifi_frame_t *frame)
         return;
     }
 
-    s_device_info_ready = true;
-    if (was_ready) {
+    s_device_info_received = true;
+    if (was_received) {
         ESP_LOGW(TAG, "DEVICE_INFO repeated seq=%u, ACK sent again", (unsigned int)frame->seq);
     } else {
         ESP_LOGI(TAG,
-                 "DEVICE_INFO ready seq=%u MAC=%s BLE version=%u screen=%c board=%02X EPD type=%u changed=%d",
+                 "DEVICE_INFO synced seq=%u MAC=%s BLE version=%u screen=%c board=%02X reported_epd=%u active_epd=%u saved_changed=%d",
                  (unsigned int)frame->seq,
                  s_ble_mac,
                  (unsigned int)s_ble_ver,
                  device_info.screen_type,
                  (unsigned int)device_info.board_info,
                  (unsigned int)device_info.epd_type,
-                 epd_changed ? 1 : 0);
+                 (unsigned int)EPD_type,
+                 epd_saved_changed ? 1 : 0);
     }
 
-    // Release dependent modules only after the mandatory ACK has left the UART.
-    ServerNetworkStaWifiWorkTime_OnDeviceInfoReady();
     if (ch583_wifi_uart_send_wifi_ver(ch583_wifi_get_current_wifi_ver()) != 0) {
         ESP_LOGE(TAG, "DEVICE_INFO WIFI_VER send failed seq=%u", (unsigned int)frame->seq);
     }
@@ -1100,7 +1087,7 @@ static void ch583_wifi_handle_device_info(const ch583_wifi_frame_t *frame)
         ESP_LOGE(TAG, "DEVICE_INFO WIFI_PROVISION replay failed seq=%u",
                  (unsigned int)frame->seq);
     }
-    if (!was_ready) {
+    if (!was_received) {
         esp_err_t led_ret = UserLedStatus_ReapplyCurrent();
         if (led_ret != ESP_OK) {
             ESP_LOGE(TAG, "DEVICE_INFO LED reapply request failed seq=%u ret=%s",
@@ -1108,7 +1095,7 @@ static void ch583_wifi_handle_device_info(const ch583_wifi_frame_t *frame)
         }
         if (ServerNetworkStaTime_IsReliableForRtcRestore()) {
             esp_err_t time_ret =
-                ServerNetworkStaTime_BackupCurrentToCh583("device_info_ready");
+                ServerNetworkStaTime_BackupCurrentToCh583("device_info_synced");
             if (time_ret != ESP_OK) {
                 ESP_LOGE(TAG, "DEVICE_INFO TIME_SET replay failed seq=%u ret=%s",
                          (unsigned int)frame->seq, esp_err_to_name(time_ret));
@@ -1149,26 +1136,27 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
     if (strcmp(frame.cmd, CH583_DEVICE_INFO_CMD) == 0) {
         ch583_wifi_handle_device_info(&frame);
     } else if (strcmp(frame.cmd, "PING") == 0) {
-        if (!s_device_info_ready) {
-            ESP_LOGE(TAG, "PING rejected before DEVICE_INFO seq=%u", (unsigned int)frame.seq);
-            ch583_wifi_send_err(frame.seq, CH583_DEVICE_INFO_ERR_REQUIRED);
-            return;
-        }
         char arg[8];
         snprintf(arg, sizeof(arg), "%u", (unsigned int)frame.seq);
-        ch583_wifi_send_frame("PONG", arg,0);
+        if (ch583_wifi_send_frame("PONG", arg, 0) != 0) {
+            ESP_LOGE(TAG, "PONG send failed seq=%u", (unsigned int)frame.seq);
+        }
+#if CH583_WIFI_VER_COMPAT_ON_PING_ENABLE
+        if (!s_device_info_received && !s_compat_wifi_ver_sent) {
+            if (ch583_wifi_uart_send_wifi_ver(ch583_wifi_get_current_wifi_ver()) == 0) {
+                s_compat_wifi_ver_sent = true;
+                ESP_LOGI(TAG, "WIFI_VER sent for continued CH583 session before DEVICE_INFO");
+            } else {
+                ESP_LOGE(TAG, "WIFI_VER compatibility send failed before DEVICE_INFO");
+            }
+        }
+#endif
 
        // CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
        //      (unsigned int)frame.seq,frame.cmd,frame.arg);
     } else if (strcmp(frame.cmd, "BLE_DATA") == 0) {       
       CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
            (unsigned int)frame.seq,frame.cmd,frame.arg);
-        if (!s_device_info_ready) {
-            ESP_LOGE(TAG, "BLE_DATA rejected before DEVICE_INFO seq=%u",
-                     (unsigned int)frame.seq);
-            ch583_wifi_send_err(frame.seq, CH583_DEVICE_INFO_ERR_REQUIRED);
-            return;
-        }
         if (ch583_wifi_handle_ble_data(&frame, ble_data_callback)) {
             // Preserve the original full work timer reset only for accepted BLE data.
             ServerNetworkStaWifiWorkTime_OnNetworkData();
@@ -1304,6 +1292,21 @@ int ch583_wifi_uart_send_current_wifi_provision_status(void)
         s_wifi_provision_status_valid = true;
     }
     return ch583_wifi_uart_send_wifi_provision_status(s_wifi_provision_status);
+}
+
+int ch583_wifi_uart_send_wifi_provision_before_power_off(bool slideshow_enabled)
+{
+    // This is a one-shot CH583 notification. Do not update the cached provision
+    // status or persistent EPD mode; 0xF only means that this shutdown enters standby.
+    uint8_t provision_status = s_wifi_provision_status_valid ? s_wifi_provision_status : 0U;
+    uint8_t provision_nibble = (provision_status == 1U) ? 0x5U : 0x4U;
+    uint8_t mode = slideshow_enabled ? USER_EPD_DISPLAY_MODE_SLIDESHOW :
+                                       CH583_WIFI_PROVISION_MODE_STANDBY;
+    uint8_t combined_status = (uint8_t)((provision_nibble << 4) | (mode & 0x0FU));
+    char status_hex[3];
+
+    snprintf(status_hex, sizeof(status_hex), "%02X", (unsigned int)combined_status);
+    return ch583_wifi_send_frame("WIFI_PROVISION", status_hex, 1);
 }
 
 const char *ch583_wifi_uart_get_ble_mac(void)

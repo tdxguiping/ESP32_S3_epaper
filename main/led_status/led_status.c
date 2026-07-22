@@ -570,8 +570,8 @@ static void handle_event(const user_led_event_t *event)
             return;
         }
 
-        // The protocol gate may have rejected earlier GPIO writes while the cached mode
-        // already advanced. Force a known physical state before applying the latest effect.
+        // CH583 may have rejected startup GPIO commands before its own DEVICE_INFO state
+        // completed. Re-establish the physical outputs without gating ESP32 communication.
         bool reset_ok = force_all_leds_off();
         bool apply_ok = apply_effect();
         if (reset_ok && apply_ok) {
@@ -872,17 +872,13 @@ esp_err_t UserLedStatus_ReapplyCurrent(void)
 {
 #if USER_LED_STATUS_ENABLE
     if (s_led_event_queue == NULL || s_led_task == NULL) {
-        // Normal startup initializes UART before the LED task. If DEVICE_INFO arrives
-        // in that short window, UserLedStatus_Task() will perform the same calibration.
-        ESP_LOGW(TAG, "DEVICE_INFO ready before LED task, startup calibration will apply state");
+        ESP_LOGW(TAG, "DEVICE_INFO synced before LED task, startup calibration will apply state");
         return ESP_OK;
     }
 
     user_led_event_t event = {
         .type = USER_LED_EVENT_REAPPLY_CURRENT,
     };
-    // Put recovery ahead of queued cosmetic state changes and allow the bounded
-    // high-priority wait so the physical-state repair is not silently dropped.
     return post_event(&event, true) ? ESP_OK : ESP_ERR_TIMEOUT;
 #else
     return ESP_OK;

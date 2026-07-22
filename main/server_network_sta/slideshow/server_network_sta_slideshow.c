@@ -2449,7 +2449,7 @@ static void slideshow_startup_delay_task(void *arg)
         }
         if (!ServerNetworkStaTime_IsUsableForSlideshowRestore()) {
             if (!time_get_requested) {
-                (void)ServerNetworkStaTime_RequestCh583Backup();
+                (void)ServerNetworkStaTime_RequestCh583Backup();                
                 time_get_requested = true;
             }
             if (time_wait_seconds >= TDX_SLIDESHOW_STARTUP_TIME_FALLBACK_WAIT_SECONDS) {

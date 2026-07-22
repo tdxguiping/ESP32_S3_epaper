@@ -420,12 +420,18 @@ static bool should_skip_one_shot_power_off_for_slideshow(void)
     return false;
 }
 
-static bool configure_ch583_wake_timer_before_power_off(void)
+static bool configure_ch583_wake_timer_before_power_off(bool *slideshow_enabled_out)
 {
     uint32_t interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
     bool random = false;
     bool slideshow_on = ServerNetworkStaSlideshow_IsSavedEnabled("/data", &interval, &random);
     int wake_ret;
+
+    if (slideshow_enabled_out != NULL) {
+        // Reuse this exact snapshot for the WIFI_PROVISION notification so the
+        // wake-timer decision and reported shutdown mode cannot disagree.
+        *slideshow_enabled_out = slideshow_on;
+    }
 
     if (slideshow_on) {
         if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS ||
@@ -577,8 +583,7 @@ static void work_state_task(void *arg)
         }
 
         uint32_t runtime_flags = __atomic_load_n(&s_runtime_state_flags, __ATOMIC_ACQUIRE);
-        if ((runtime_flags & (USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT |
-                              USER_WORK_STATE_RUNTIME_DEVICE_INFO_PENDING_BIT)) != 0) {
+        if ((runtime_flags & USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT) != 0) {
             vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
             continue;
         }
@@ -665,8 +670,6 @@ static void work_state_task(void *arg)
         } else {
             slideshow_debug_counter = 0;
         }
-
-
 
         if (elapsed > server_required_continue_work_time) {
             uint32_t ota_hold_flags = __atomic_load_n(&s_ota_hold_flags, __ATOMIC_ACQUIRE);
@@ -756,7 +759,9 @@ static void work_state_task(void *arg)
                          (unsigned long)elapsed,
                          (unsigned long)server_required_continue_work_time,
                          (unsigned long)wifi_standby_time_s);
-                if (!configure_ch583_wake_timer_before_power_off()) {
+                bool slideshow_enabled_before_power_off = false;
+                if (!configure_ch583_wake_timer_before_power_off(
+                        &slideshow_enabled_before_power_off)) {
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
                     continue;
                 }
@@ -881,9 +886,35 @@ static void work_state_task(void *arg)
                     continue;
                 }
 
+                int provision_ret =
+                    ch583_wifi_uart_send_wifi_provision_before_power_off(
+                        slideshow_enabled_before_power_off);
+                if (provision_ret < 0) {
+                    // WIFI_PROVISION is an advisory notification. Keep the original
+                    // POWER_OFF behavior even when this extra UART write fails.
+                    ESP_LOGE(TAG,
+                             "pre-power-off WIFI_PROVISION send failed slideshow=%d ret=%d",
+                             slideshow_enabled_before_power_off ? 1 : 0,
+                             provision_ret);
+                } else {
+                    ESP_LOGI(TAG,
+                             "pre-power-off WIFI_PROVISION sent mode=%s",
+                             slideshow_enabled_before_power_off ? "slideshow" : "standby");
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                }
+
                 int power_off_ret = ch583_wifi_uart_send_power_off();
                 if (power_off_ret < 0) {
-                    ESP_LOGW(TAG, "CH583 power off command failed ret=%d", power_off_ret);
+                    ESP_LOGE(TAG, "CH583 POWER_OFF UART send failed ret=%d", power_off_ret);
+                    if (provision_ret == 0) {
+                        int restore_ret =
+                            ch583_wifi_uart_send_current_wifi_provision_status();
+                        if (restore_ret < 0) {
+                            ESP_LOGE(TAG,
+                                     "WIFI_PROVISION restore after POWER_OFF failure failed ret=%d",
+                                     restore_ret);
+                        }
+                    }
                     TdxSharedSpi_Unlock();
                     (void)__atomic_fetch_or(&s_runtime_state_flags,
                                             USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT,
@@ -899,6 +930,7 @@ static void work_state_task(void *arg)
                     (void)__atomic_fetch_and(&s_runtime_state_flags,
                                              ~USER_WORK_STATE_RUNTIME_WAKE_TIMER_CANCEL_PENDING_BIT,
                                              __ATOMIC_ACQ_REL);
+#if USER_POWER_OFF_LOCAL_EPD_SD_CUTOFF_ENABLE
                     esp_err_t power_ret = ServerNetworkStaEpdDisplay_SetPower(false);
                     if (power_ret != ESP_OK) {
                         ESP_LOGE(TAG,
@@ -907,9 +939,13 @@ static void work_state_task(void *arg)
                     } else {
                         ESP_LOGI(TAG, "POWER_OFF sent and EPD/SD power switched off");
                     }
+#else
+                    // CH583 still owns ESP32/WiFi shutdown. Keep GPIO4 high so a rejected
+                    // or ineffective POWER_OFF cannot leave the mounted SD/EPD unpowered.
+                    ESP_LOGI(TAG, "POWER_OFF sent; keep local EPD/SD power on while waiting for CH583");
+#endif
 
-                    // Keep the shared bus locked after SD power loss. If CH583 does not
-                    // cut ESP32-C5 power, restart so FATFS and the SD card are reinitialized.
+                    // If CH583 does not cut ESP32-C5 power, keep the original restart fallback.
                     vTaskDelay(pdMS_TO_TICKS(WORK_STATE_POWER_OFF_CUT_WAIT_MS));
                     ESP_LOGE(TAG, "CH583 did not cut power after POWER_OFF, restart");
                     esp_restart();
@@ -1082,24 +1118,6 @@ void ServerNetworkStaWifiWorkTime_OnCh583Initialized(void)
     }
 }
 
-void ServerNetworkStaWifiWorkTime_OnDeviceInfoPending(void)
-{
-    // Keep the work task out of shutdown preparation while a new mandatory
-    // DEVICE_INFO attempt is being validated, persisted, and acknowledged.
-    (void)__atomic_fetch_or(&s_runtime_state_flags,
-                            USER_WORK_STATE_RUNTIME_DEVICE_INFO_PENDING_BIT,
-                            __ATOMIC_ACQ_REL);
-}
-
-void ServerNetworkStaWifiWorkTime_OnDeviceInfoReady(void)
-{
-    // Start a fresh activity hold before releasing the mandatory handshake guard.
-    ServerNetworkStaWifiWorkTime_OnCh583Activity();
-    (void)__atomic_fetch_and(&s_runtime_state_flags,
-                             ~USER_WORK_STATE_RUNTIME_DEVICE_INFO_PENDING_BIT,
-                             __ATOMIC_ACQ_REL);
-}
-
 void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t seconds)
 {
     if (seconds == 0) {
@@ -1178,17 +1196,10 @@ esp_err_t ServerNetworkStaWifiWorkTime_Init(void)
     s_wifi_work_start_tick = xTaskGetTickCount();
     s_last_network_data_tick = s_wifi_work_start_tick;
     s_last_power_off_send_tick = 0;
-    uint32_t startup_guard_flags = USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT;
-#if USER_CH583_UART_ENABLE
-    startup_guard_flags |= USER_WORK_STATE_RUNTIME_DEVICE_INFO_PENDING_BIT;
-#endif
-    (void)__atomic_fetch_or(&s_runtime_state_flags, startup_guard_flags, __ATOMIC_ACQ_REL);
-#if USER_CH583_UART_ENABLE
-    ESP_LOGI(TAG, "CH583 startup guard active until UART and DEVICE_INFO are ready");
-#else
+    (void)__atomic_fetch_or(&s_runtime_state_flags,
+                            USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT,
+                            __ATOMIC_ACQ_REL);
     ESP_LOGI(TAG, "CH583 startup guard active until UART initialization completes");
-#endif
-
     esp_err_t ret = load_work_state_from_nvs(&blob, &stored_size);
     if (ret == ESP_OK) {
         log_work_state_blob("read value", &blob);

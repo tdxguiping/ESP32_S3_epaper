@@ -537,7 +537,12 @@ static void wifi_connect_task(void *arg)
     s_wifi_connect_result_func = NULL;
     s_wifi_connect_new_credential = false;
     if (notify_result && reply_sender != NULL) {
-        if (connect_result == TDX_JSON_RESULT_OK) {
+        if (init_result == SERVER_NETWORK_STA_CONNECT_SUPERSEDED) {
+            send_simple_result_with_sender(reply_sender,
+                                           result_func,
+                                           TDX_JSON_RESULT_BUSY,
+                                           "WiFi connect request superseded");
+        } else if (init_result == SERVER_NETWORK_STA_OK) {
             bool ip_ready = false;
             if (!notify_wifi_info_if_ip_ready(reply_sender, "wifi_connect_task", true, &ip_ready)) {
                 if (ip_ready) {

@@ -919,6 +919,14 @@ static void complete_pending_request(uint8_t *slot_index, uint32_t *request_id,
     *request_id = 0;
 }
 
+static void complete_pending_requests(uint8_t *primary_slot, uint32_t *primary_id,
+                                      uint8_t *coalesced_slot, uint32_t *coalesced_id,
+                                      uint8_t result)
+{
+    complete_pending_request(primary_slot, primary_id, result);
+    complete_pending_request(coalesced_slot, coalesced_id, result);
+}
+
 static void server_network_sta_manager_task(void *arg)
 {
     (void)arg;
@@ -926,6 +934,8 @@ static void server_network_sta_manager_task(void *arg)
     char base_path[ESP_VFS_PATH_MAX + 1] = "/data";
     uint8_t pending_request_slot = SERVER_NETWORK_STA_INVALID_REQUEST_SLOT;
     uint32_t pending_request_id = 0;
+    uint8_t coalesced_request_slot = SERVER_NETWORK_STA_INVALID_REQUEST_SLOT;
+    uint32_t coalesced_request_id = 0;
     wifi_manager_context_t context = {0};
     uint32_t http_retry_count = 0;
     uint32_t mdns_retry_count = 0;
@@ -1129,8 +1139,9 @@ static void server_network_sta_manager_task(void *arg)
                                      (unsigned long)retry_count, (unsigned long)delay_ms,
                                      esp_err_to_name(ret));
                         }
-                        complete_pending_request(&pending_request_slot, &pending_request_id,
-                                                 SERVER_NETWORK_STA_CONNECT_FAIL);
+                        complete_pending_requests(&pending_request_slot, &pending_request_id,
+                                                  &coalesced_request_slot, &coalesced_request_id,
+                                                  SERVER_NETWORK_STA_CONNECT_FAIL);
                     }
                 }
             } else {
@@ -1153,8 +1164,9 @@ static void server_network_sta_manager_task(void *arg)
                                  (unsigned long)delay_ms);
                     }
                 }
-                complete_pending_request(&pending_request_slot, &pending_request_id,
-                                         SERVER_NETWORK_STA_CONNECT_FAIL);
+                complete_pending_requests(&pending_request_slot, &pending_request_id,
+                                          &coalesced_request_slot, &coalesced_request_id,
+                                          SERVER_NETWORK_STA_CONNECT_FAIL);
             }
             continue;
         }
@@ -1177,8 +1189,31 @@ static void server_network_sta_manager_task(void *arg)
         if (event.type == WIFI_MANAGER_EVENT_CONNECT ||
             event.type == WIFI_MANAGER_EVENT_NEW_CREDENTIAL) {
             bool new_credential = event.type == WIFI_MANAGER_EVENT_NEW_CREDENTIAL;
-            complete_pending_request(&pending_request_slot, &pending_request_id,
-                                     SERVER_NETWORK_STA_CONNECT_FAIL);
+            if (!new_credential && !event.force_reconnect &&
+                pending_request_slot != SERVER_NETWORK_STA_INVALID_REQUEST_SLOT) {
+                bool same_base_path = strcmp(event.base_path, base_path) == 0;
+                if (same_base_path &&
+                    coalesced_request_slot == SERVER_NETWORK_STA_INVALID_REQUEST_SLOT) {
+                    coalesced_request_slot = event.request_slot;
+                    coalesced_request_id = event.request_id;
+                    ESP_LOGI(TAG,
+                             "WiFi connect request joined active connect request_id=%lu active_request_id=%lu",
+                             (unsigned long)event.request_id,
+                             (unsigned long)pending_request_id);
+                } else {
+                    uint8_t rejected_slot = event.request_slot;
+                    uint32_t rejected_id = event.request_id;
+                    complete_pending_request(&rejected_slot, &rejected_id,
+                                             SERVER_NETWORK_STA_CONNECT_SUPERSEDED);
+                    ESP_LOGW(TAG, "WiFi connect request not joined request_id=%lu reason=%s",
+                             (unsigned long)event.request_id,
+                             same_base_path ? "join_slot_busy" : "base_path_mismatch");
+                }
+                continue;
+            }
+            complete_pending_requests(&pending_request_slot, &pending_request_id,
+                                      &coalesced_request_slot, &coalesced_request_id,
+                                      SERVER_NETWORK_STA_CONNECT_SUPERSEDED);
             pending_request_slot = event.request_slot;
             pending_request_id = event.request_id;
             if (event.base_path[0] != '\0') {
@@ -1213,8 +1248,9 @@ static void server_network_sta_manager_task(void *arg)
                 UserLedStatus_SetWifiNoConfig(true);
                 (void)ch583_wifi_uart_send_wifi_provision_status(0);
                 ESP_LOGW(TAG, "WiFi no saved credential");
-                complete_pending_request(&pending_request_slot, &pending_request_id,
-                                         SERVER_NETWORK_STA_NO_SAVED_WIFI);
+                complete_pending_requests(&pending_request_slot, &pending_request_id,
+                                          &coalesced_request_slot, &coalesced_request_id,
+                                          SERVER_NETWORK_STA_NO_SAVED_WIFI);
                 continue;
             }
             (void)ch583_wifi_uart_send_wifi_provision_status(1);
@@ -1225,8 +1261,9 @@ static void server_network_sta_manager_task(void *arg)
                                       TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT, 0, 0);
                 UserLedStatus_SetFatalError(true);
                 ESP_LOGE(TAG, "WiFi stack init failed ret=%s", esp_err_to_name(ret));
-                complete_pending_request(&pending_request_slot, &pending_request_id,
-                                         SERVER_NETWORK_STA_CONNECT_FAIL);
+                complete_pending_requests(&pending_request_slot, &pending_request_id,
+                                          &coalesced_request_slot, &coalesced_request_id,
+                                          SERVER_NETWORK_STA_CONNECT_FAIL);
                 continue;
             }
             UserLedStatus_Set(USER_LED_STATE_WIFI_CONNECTING);
@@ -1268,8 +1305,9 @@ static void server_network_sta_manager_task(void *arg)
                     UserLedStatus_Set(USER_LED_STATE_WIFI_CONNECTING);
                     ESP_LOGW(TAG, "WiFi start failed retry=1 delay_ms=%lu ret=%s",
                              (unsigned long)delay_ms, esp_err_to_name(ret));
-                    complete_pending_request(&pending_request_slot, &pending_request_id,
-                                             SERVER_NETWORK_STA_CONNECT_FAIL);
+                    complete_pending_requests(&pending_request_slot, &pending_request_id,
+                                              &coalesced_request_slot, &coalesced_request_id,
+                                              SERVER_NETWORK_STA_CONNECT_FAIL);
                     continue;
                 }
                 ESP_LOGI(TAG, "WiFi connect start ssid=%s", credential.ssid);
@@ -1278,8 +1316,9 @@ static void server_network_sta_manager_task(void *arg)
         }
 
         if (event.type == WIFI_MANAGER_EVENT_PROVISIONING) {
-            complete_pending_request(&pending_request_slot, &pending_request_id,
-                                     SERVER_NETWORK_STA_CONNECT_FAIL);
+            complete_pending_requests(&pending_request_slot, &pending_request_id,
+                                      &coalesced_request_slot, &coalesced_request_id,
+                                      SERVER_NETWORK_STA_CONNECT_SUPERSEDED);
             reset_connection_health(&context);
             status_clear_retries();
             connection_enabled = false;
@@ -1366,16 +1405,18 @@ static void server_network_sta_manager_task(void *arg)
                 UserLedStatus_SetHttpFailed(false);
                 ESP_LOGI(TAG, "Network READY ip=" IPSTR " http=1 mdns=%d",
                          IP2STR(&verified_ip), s_mdns_service_started ? 1 : 0);
-                complete_pending_request(&pending_request_slot, &pending_request_id,
-                                         SERVER_NETWORK_STA_OK);
+                complete_pending_requests(&pending_request_slot, &pending_request_id,
+                                          &coalesced_request_slot, &coalesced_request_id,
+                                          SERVER_NETWORK_STA_OK);
             } else {
                 http_retry_count = 1;
                 status_enter_service_retry(http_retry_count, SERVER_NETWORK_STA_HTTP_RETRY_MS);
                 UserLedStatus_SetHttpFailed(true);
                 ESP_LOGW(TAG, "HTTP service unavailable retry_ms=%u ret=%s",
                          SERVER_NETWORK_STA_HTTP_RETRY_MS, esp_err_to_name(http_ret));
-                complete_pending_request(&pending_request_slot, &pending_request_id,
-                                         SERVER_NETWORK_STA_CONNECT_FAIL);
+                complete_pending_requests(&pending_request_slot, &pending_request_id,
+                                          &coalesced_request_slot, &coalesced_request_id,
+                                          SERVER_NETWORK_STA_CONNECT_FAIL);
             }
             continue;
         }
@@ -1405,8 +1446,9 @@ static void server_network_sta_manager_task(void *arg)
                 ESP_LOGW(TAG, "WiFi LOST_IP retry=%lu delay_ms=%lu",
                          (unsigned long)retry_count, (unsigned long)delay_ms);
             }
-            complete_pending_request(&pending_request_slot, &pending_request_id,
-                                     SERVER_NETWORK_STA_CONNECT_FAIL);
+            complete_pending_requests(&pending_request_slot, &pending_request_id,
+                                      &coalesced_request_slot, &coalesced_request_id,
+                                      SERVER_NETWORK_STA_CONNECT_FAIL);
             continue;
         }
 
@@ -1503,8 +1545,9 @@ static void server_network_sta_manager_task(void *arg)
                          (unsigned long)context.hard_auth_failure_count,
                          (unsigned long)context.transient_auth_failure_count,
                          credential.ssid);
-                complete_pending_request(&pending_request_slot, &pending_request_id,
-                                         SERVER_NETWORK_STA_CONNECT_FAIL);
+                complete_pending_requests(&pending_request_slot, &pending_request_id,
+                                          &coalesced_request_slot, &coalesced_request_id,
+                                          SERVER_NETWORK_STA_CONNECT_FAIL);
                 continue;
             }
 
@@ -1521,8 +1564,9 @@ static void server_network_sta_manager_task(void *arg)
                          (unsigned long)context.transient_auth_failure_count);
             }
             if (auth_class == WIFI_AUTH_FAILURE_NONE) {
-                complete_pending_request(&pending_request_slot, &pending_request_id,
-                                         SERVER_NETWORK_STA_CONNECT_FAIL);
+                complete_pending_requests(&pending_request_slot, &pending_request_id,
+                                          &coalesced_request_slot, &coalesced_request_id,
+                                          SERVER_NETWORK_STA_CONNECT_FAIL);
             }
         }
     }
