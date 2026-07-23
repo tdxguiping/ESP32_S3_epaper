@@ -6,6 +6,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "epd_sd_power_test.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -82,6 +83,16 @@ ePaperPort ePaperDisplay(USER_EPD_MOSI_PIN,
 esp_err_t ServerNetworkStaEpdDisplay_SetPower(bool power_on)
 {
     return ePaperDisplay.Set_Power(power_on ? 1U : 0U);
+}
+
+esp_err_t ServerNetworkStaEpdDisplay_PrepareRailIoForPowerTestOff(void)
+{
+    return ePaperDisplay.PrepareRailIoForPowerTestOff();
+}
+
+esp_err_t ServerNetworkStaEpdDisplay_RestoreRailIoAfterPowerTestOn(void)
+{
+    return ePaperDisplay.RestoreRailIoAfterPowerTestOn();
 }
 
 static void release_epd_job(epd_display_job_t *job)
@@ -226,6 +237,9 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
             release_completion(completion);
         }
         __atomic_store_n(&s_epd_display_active, false, __ATOMIC_RELEASE);
+        // Arm the independent rail test only after the display driver has returned and
+        // the active flag is clear. Queued EPD jobs are still covered by IsBusy().
+        EpdSdPowerTest_OnEpdJobDone();
 #if USER_EPD_DONE_LOW_POWER_ENABLE
         ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(
             USER_EPD_DONE_LOW_POWER_DELAY_SECONDS);
@@ -284,6 +298,8 @@ esp_err_t ServerNetworkStaEpdDisplay_Init(void)
 esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, size_t display_size, uint8_t epd_which_one)
 {
 #if USER_EPD_ENABLE
+    // A new EPD request must restore GPIO4 before the display task reaches shared SPI.
+    EpdSdPowerTest_OnEpdTaskRequested();
     if (s_epd_display_queue == NULL) {
         ESP_LOGE(TAG, "display queue not initialized");
         return ESP_ERR_INVALID_STATE;
@@ -321,6 +337,8 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, s
 esp_err_t ServerNetworkStaEpdDisplay_QueueToScreenAndWait(const uint8_t *display_buf, size_t display_size, uint8_t epd_which_one)
 {
 #if USER_EPD_ENABLE
+    // Keep the synchronous queue entry equivalent to the asynchronous queue entry.
+    EpdSdPowerTest_OnEpdTaskRequested();
     if (s_epd_display_queue == NULL) {
         ESP_LOGE(TAG, "display queue not initialized");
         return ESP_ERR_INVALID_STATE;

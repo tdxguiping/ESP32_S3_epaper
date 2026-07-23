@@ -1,11 +1,17 @@
 #include "tdx_shared_spi.h"
 
 #include "esp_log.h"
+#include "epd_sd_power_test.h"
 #include "freertos/semphr.h"
+#include "tdx_cfg.h"
+#include <stdbool.h>
 
 static const char *TAG = "tdx_shared_spi";
 static SemaphoreHandle_t s_shared_spi_mutex;
 static StaticSemaphore_t s_shared_spi_mutex_buffer;
+#if USER_EPD_SD_POWER_TEST_ENABLE
+static uint32_t s_normal_spi_request_count;
+#endif
 
 esp_err_t TdxSharedSpi_Init(void)
 {
@@ -21,6 +27,31 @@ esp_err_t TdxSharedSpi_Init(void)
 
 esp_err_t TdxSharedSpi_Lock(TickType_t ticks_to_wait)
 {
+#if USER_EPD_SD_POWER_TEST_ENABLE
+    // Count before the power-ready hook. This closes the scheduling window where a
+    // caller has requested SPI but has not reached the mutex take operation yet.
+    (void)__atomic_add_fetch(&s_normal_spi_request_count, 1U, __ATOMIC_ACQ_REL);
+    // Every normal shared-SPI request must restore the EPD/SD rail before the caller
+    // can touch either device. The test-only lock below bypasses this hook so the
+    // power-test task can perform its final idle check without canceling itself.
+    esp_err_t power_ret = EpdSdPowerTest_PrepareForSharedSpi();
+    if (power_ret != ESP_OK) {
+        (void)__atomic_sub_fetch(&s_normal_spi_request_count, 1U, __ATOMIC_ACQ_REL);
+        return power_ret;
+    }
+#endif
+
+    esp_err_t lock_ret = TdxSharedSpi_LockForEpdSdPowerTest(ticks_to_wait);
+#if USER_EPD_SD_POWER_TEST_ENABLE
+    if (lock_ret != ESP_OK) {
+        (void)__atomic_sub_fetch(&s_normal_spi_request_count, 1U, __ATOMIC_ACQ_REL);
+    }
+#endif
+    return lock_ret;
+}
+
+esp_err_t TdxSharedSpi_LockForEpdSdPowerTest(TickType_t ticks_to_wait)
+{
     esp_err_t init_ret = TdxSharedSpi_Init();
     if (init_ret != ESP_OK) {
         return init_ret;
@@ -34,6 +65,35 @@ esp_err_t TdxSharedSpi_Lock(TickType_t ticks_to_wait)
 void TdxSharedSpi_Unlock(void)
 {
     if (s_shared_spi_mutex != NULL) {
-        xSemaphoreGiveRecursive(s_shared_spi_mutex);
+        if (xSemaphoreGiveRecursive(s_shared_spi_mutex) != pdTRUE) {
+            ESP_LOGE(TAG, "release normal shared SPI mutex failed");
+            return;
+        }
+#if USER_EPD_SD_POWER_TEST_ENABLE
+        uint32_t count = __atomic_load_n(&s_normal_spi_request_count, __ATOMIC_ACQUIRE);
+        if (count == 0U) {
+            ESP_LOGE(TAG, "normal shared SPI request count underflow");
+        } else {
+            (void)__atomic_sub_fetch(&s_normal_spi_request_count, 1U, __ATOMIC_ACQ_REL);
+        }
+#endif
     }
+}
+
+void TdxSharedSpi_UnlockForEpdSdPowerTest(void)
+{
+    if (s_shared_spi_mutex != NULL) {
+        if (xSemaphoreGiveRecursive(s_shared_spi_mutex) != pdTRUE) {
+            ESP_LOGE(TAG, "release EPD/SD power-test SPI mutex failed");
+        }
+    }
+}
+
+bool TdxSharedSpi_HasNormalRequests(void)
+{
+#if USER_EPD_SD_POWER_TEST_ENABLE
+    return __atomic_load_n(&s_normal_spi_request_count, __ATOMIC_ACQUIRE) > 0U;
+#else
+    return false;
+#endif
 }

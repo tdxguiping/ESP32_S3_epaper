@@ -185,6 +185,8 @@ extern "C" {
 #define TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING 1515
 // Public JSON result code for invalid slideshow start index; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID 1516
+// Public JSON result code for duplicate slideshow file names; keep the numeric value stable for clients.
+#define TDX_JSON_RESULT_SLIDESHOW_FILE_DUPLICATE 1517
 
 // Public JSON result code for TDX JSON RESULT UPLOAD BOUNDARY MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_UPLOAD_BOUNDARY_MISSING 1601
@@ -607,6 +609,43 @@ extern "C" {
 #define USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 5
 // Timing value for USER EPD DONE LOW POWER SLIDESHOW MIN REMAIN SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 60
+
+// Independent GPIO4 power-cycle test for the shared EPD/SD rail. This test does not use
+// the CH583 POWER_OFF path and is armed only after an EPD display job has completed.
+#define USER_EPD_SD_POWER_TEST_ENABLE 1
+// Isolate every external EPD/SD rail signal during the independent GPIO4 power test.
+#define USER_EPD_SD_POWER_TEST_IO_ISOLATION_ENABLE 1
+// Keep the rail off for exactly this test interval unless an activity event restores it earlier.
+#define USER_EPD_SD_POWER_TEST_OFF_TIME_MS 2000U
+// Recheck while armed so a shared-SPI user that was already active can finish without extra hooks.
+#define USER_EPD_SD_POWER_TEST_RECHECK_MS 20U
+// Retry a failed GPIO/SD restore without releasing normal SPI users onto an unavailable rail.
+#define USER_EPD_SD_POWER_TEST_RESTORE_RETRY_MS 1000U
+// Wait for the shared rail to stabilize before remounting external SD or releasing EPD/SPI users.
+#define USER_EPD_SD_POWER_TEST_POWER_STABLE_MS 100U
+// Bound callers waiting for the rail and SD mount to recover after an interrupted test.
+#define USER_EPD_SD_POWER_TEST_READY_TIMEOUT_MS 10000U
+// Log the first restore failure and then one out of this many retries to avoid flooding normal logs.
+#define USER_EPD_SD_POWER_TEST_RESTORE_LOG_EVERY_COUNT 10U
+#define USER_EPD_SD_POWER_TEST_TASK_STACK_SIZE (4U * 1024U)
+#define USER_EPD_SD_POWER_TEST_TASK_PRIORITY 6U
+
+// Task-notification bits are centralized here so future event additions remain collision-free.
+#define USER_EPD_SD_POWER_TEST_EVENT_NETWORK_ACTIVITY_BIT (1UL << 0)
+#define USER_EPD_SD_POWER_TEST_EVENT_CH583_BLE_DATA_BIT   (1UL << 1)
+#define USER_EPD_SD_POWER_TEST_EVENT_EPD_REQUEST_BIT      (1UL << 2)
+#define USER_EPD_SD_POWER_TEST_EVENT_EPD_DONE_BIT         (1UL << 3)
+#define USER_EPD_SD_POWER_TEST_EVENT_SPI_BIT              (1UL << 4)
+#define USER_EPD_SD_POWER_TEST_EVENT_IMAGE_TRANSFER_BIT   (1UL << 5)
+#define USER_EPD_SD_POWER_TEST_EVENT_SLIDESHOW_FOLLOWUP_BIT (1UL << 6)
+#define USER_EPD_SD_POWER_TEST_READY_BIT               (1UL << 0)
+
+// Runtime state values are definitions only; the mutable state remains private to the test module.
+#define USER_EPD_SD_POWER_TEST_STATE_IDLE       0U
+#define USER_EPD_SD_POWER_TEST_STATE_ARMED      1U
+#define USER_EPD_SD_POWER_TEST_STATE_PREPARING  2U
+#define USER_EPD_SD_POWER_TEST_STATE_POWER_OFF  3U
+#define USER_EPD_SD_POWER_TEST_STATE_RESTORING  4U
 
 /* -------------------------------------------------------------------------- */
 /* 12. BLE / GATT Legacy Compatibility                                         */

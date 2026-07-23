@@ -9,6 +9,7 @@
 #include <sys/unistd.h>
 
 #include "epd_display_app.h"
+#include "epd_sd_power_test.h"
 #include "epd_display_mode.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -512,23 +513,24 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
     }
 
     bool any_show = false;
+    bool any_save = false;
     for (size_t i = 0; i < item_count; i++) {
         const tdx_image_transfer_item_t *item = &items[i];
         if (item->show) {
             any_show = true;
-            break;
         }
+        if (item->save) {
+            any_save = true;
+        }
+    }
+    bool power_test_transfer_counted = any_show || any_save;
+    if (power_test_transfer_counted) {
+        // Keep one guard across the entire show-then-save transaction. This closes the
+        // otherwise idle-looking gap after EPD completion and before the save queue starts.
+        EpdSdPowerTest_ImageTransferBegin();
     }
     if (any_show) {
         (void)stop_slideshow_for_cast(base_path);
-    }
-
-    bool any_save = false;
-    for (size_t i = 0; i < item_count; i++) {
-        if (items[i].save) {
-            any_save = true;
-            break;
-        }
     }
 
     if (any_save) {
@@ -593,6 +595,11 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
 save_done:
     if (save_busy_set) {
         ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(false);
+    }
+    if (power_test_transfer_counted) {
+        // End only after display, save, last-cast bookkeeping, cleanup, file close, and
+        // shared-SPI release have reached the existing transaction's terminal path.
+        EpdSdPowerTest_ImageTransferEnd();
     }
     if (ret != ESP_OK) {
         UserLedStatus_ShowOperationFail();

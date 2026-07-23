@@ -28,6 +28,7 @@
 #include "debug_output.h"
 #include "epd_display_app.h"
 #include "epd_display_mode.h"
+#include "epd_sd_power_test.h"
 #include "factory_reset.h"
 #include "file_serving_example_common.h"
 #include "gpio_test.h"
@@ -300,6 +301,12 @@ void app_main(void)
     } else {
         UserLedStatus_SetStorageFailed(false);
         ESP_ERROR_CHECK(FactoryReset_Init(base_path));
+    }
+    esp_err_t power_test_ret = EpdSdPowerTest_Init();
+    if (power_test_ret != ESP_OK) {
+        // The test is optional and must never prevent the existing application from starting.
+        ESP_LOGE(TAG, "EPD/SD independent power test init failed ret=%s",
+                 esp_err_to_name(power_test_ret));
     }
     // Force the old read_value=0x02 path here: Server Network STA only, then start the HTTP file server.
     // 中文：在这里固定旧工程 read_value=0x02 路径：只进入 Server Network STA，然后启动 HTTP 文件服务器。

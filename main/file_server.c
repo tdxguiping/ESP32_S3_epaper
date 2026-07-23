@@ -22,6 +22,7 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "epd_sd_power_test.h"
 
 #include "esp_vfs.h"
 #include "esp_spiffs.h"
@@ -253,7 +254,7 @@ static const char* get_path_from_uri(char *dest, const char *base_path, const ch
 }
 
 /* Handler to download a file kept on the server */
-static esp_err_t download_get_handler(httpd_req_t *req)
+static esp_err_t download_get_handler_impl(httpd_req_t *req)
 {
     if (req != NULL && strncmp(req->uri, SERVER_NETWORK_STA_PING_URI, strlen(SERVER_NETWORK_STA_PING_URI)) == 0) {
         ESP_LOGI(TAG, "HTTP GET ping handler enter uri=%s", req->uri);
@@ -370,7 +371,7 @@ static esp_err_t download_get_handler(httpd_req_t *req)
 }
 
 /* Handler to upload a file onto the server */
-static esp_err_t upload_post_handler(httpd_req_t *req)
+static esp_err_t upload_post_handler_impl(httpd_req_t *req)
 {
     ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
     char filepath[FILE_PATH_MAX];
@@ -494,7 +495,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
 }
 
 /* Handler to delete a file from the server */
-static esp_err_t delete_post_handler(httpd_req_t *req)
+static esp_err_t delete_post_handler_impl(httpd_req_t *req)
 {
     ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
     char filepath[FILE_PATH_MAX];
@@ -544,6 +545,32 @@ static esp_err_t delete_post_handler(httpd_req_t *req)
 #endif
     httpd_resp_sendstr(req, "File deleted successfully");
     return ESP_OK;
+}
+
+typedef esp_err_t (*file_server_handler_fn_t)(httpd_req_t *req);
+
+static esp_err_t run_with_epd_sd_network_guard(httpd_req_t *req,
+                                                file_server_handler_fn_t handler)
+{
+    EpdSdPowerTest_NetworkBegin();
+    esp_err_t ret = handler(req);
+    EpdSdPowerTest_NetworkEnd();
+    return ret;
+}
+
+static esp_err_t download_get_handler(httpd_req_t *req)
+{
+    return run_with_epd_sd_network_guard(req, download_get_handler_impl);
+}
+
+static esp_err_t upload_post_handler(httpd_req_t *req)
+{
+    return run_with_epd_sd_network_guard(req, upload_post_handler_impl);
+}
+
+static esp_err_t delete_post_handler(httpd_req_t *req)
+{
+    return run_with_epd_sd_network_guard(req, delete_post_handler_impl);
 }
 
 /* Function to start the file server */

@@ -21,6 +21,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_system.h"
+#include "esp_vfs.h"
 #include "esp_vfs_fat.h"
 #include "esp_spiffs.h"
 #include "freertos/FreeRTOS.h"
@@ -48,6 +49,11 @@ static const char *TAG = "example_mount";
 #define STORAGE_SD_FAIL_RESTART_LIMIT 3
 
 static example_storage_type_t s_storage_type = EXAMPLE_STORAGE_TYPE_UNKNOWN;
+#ifdef CONFIG_EXAMPLE_MOUNT_SD_CARD
+static sdmmc_card_t *s_mounted_sd_card;
+static char s_mounted_sd_base_path[ESP_VFS_PATH_MAX + 1];
+static bool s_sd_unmounted_by_epd_power_test;
+#endif
 
 void example_print_storage_info(const char *base_path);
 
@@ -602,6 +608,9 @@ esp_err_t example_mount_storage(const char* base_path)
         storage_write_sd_fail_count(0);
     }
     s_storage_type = EXAMPLE_STORAGE_TYPE_SD_CARD;
+    s_mounted_sd_card = card;
+    strlcpy(s_mounted_sd_base_path, base_path, sizeof(s_mounted_sd_base_path));
+    s_sd_unmounted_by_epd_power_test = false;
     ensure_default_storage_dirs(base_path);
     example_print_storage_info(base_path);
     return ESP_OK;
@@ -617,3 +626,87 @@ esp_err_t example_mount_storage(const char* base_path)
 }
 
 #endif // !CONFIG_EXAMPLE_MOUNT_SD_CARD
+
+esp_err_t example_storage_unmount_sd_for_epd_power_test(void)
+{
+#if defined(CONFIG_EXAMPLE_MOUNT_SD_CARD) && USER_STORAGE_SD_CARD_ENABLE
+    // SPIFFS is internal flash and must never be unmounted by the external-SD power test.
+    if (s_storage_type != EXAMPLE_STORAGE_TYPE_SD_CARD) {
+        return ESP_OK;
+    }
+    if (s_mounted_sd_card == NULL || s_mounted_sd_base_path[0] == '\0') {
+        ESP_LOGE(TAG, "EPD/SD power test cannot unmount missing SD context");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // The power-test task owns the shared-SPI mutex here. Unmounting before GPIO4
+    // goes low prevents FAT/VFS from retaining a live card object across SD power loss.
+    esp_err_t ret = esp_vfs_fat_sdcard_unmount(s_mounted_sd_base_path, s_mounted_sd_card);
+    // ESP-IDF may consume the card handle before returning a later VFS cleanup error.
+    // Never retain that handle after the unmount API has been entered.
+    s_mounted_sd_card = NULL;
+    s_sd_unmounted_by_epd_power_test = true;
+    return ret;
+#endif
+    return ESP_OK;
+}
+
+esp_err_t example_storage_remount_sd_for_epd_power_test(void)
+{
+#if defined(CONFIG_EXAMPLE_MOUNT_SD_CARD) && USER_STORAGE_SD_CARD_ENABLE
+    if (!s_sd_unmounted_by_epd_power_test) {
+        return ESP_OK;
+    }
+
+    // This path is intentionally independent from startup mounting. A test remount
+    // failure must not restart the device, change NVS counters, or fall back to SPIFFS.
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = false,
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024,
+    };
+    sdmmc_card_t *card = NULL;
+    esp_err_t ret = ESP_FAIL;
+
+#ifdef CONFIG_EXAMPLE_USE_SDMMC_HOST
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.width = 4;
+#ifdef SOC_SDMMC_USE_GPIO_MATRIX
+    slot_config.clk = CONFIG_EXAMPLE_PIN_SDMMC_CLK;
+    slot_config.cmd = CONFIG_EXAMPLE_PIN_CMD;
+    slot_config.d0 = CONFIG_EXAMPLE_PIN_D0;
+    slot_config.d1 = CONFIG_EXAMPLE_PIN_D1;
+    slot_config.d2 = CONFIG_EXAMPLE_PIN_D2;
+    slot_config.d3 = CONFIG_EXAMPLE_PIN_D3;
+#endif
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+    ret = esp_vfs_fat_sdmmc_mount(s_mounted_sd_base_path,
+                                  &host,
+                                  &slot_config,
+                                  &mount_config,
+                                  &card);
+#else
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = USER_SD_SPI_HOST;
+    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot_config.gpio_cs = USER_SD_SPI_CS_PIN;
+    slot_config.host_id = host.slot;
+    // The power-test restore path rebuilds the EPD-owned shared bus before SD remount.
+    ret = esp_vfs_fat_sdspi_mount(s_mounted_sd_base_path,
+                                  &host,
+                                  &slot_config,
+                                  &mount_config,
+                                  &card);
+#endif
+
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    s_mounted_sd_card = card;
+    s_storage_type = EXAMPLE_STORAGE_TYPE_SD_CARD;
+    s_sd_unmounted_by_epd_power_test = false;
+#endif
+    return ESP_OK;
+}

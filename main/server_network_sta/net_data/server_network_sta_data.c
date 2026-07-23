@@ -12,6 +12,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "epd_display_app.h"
+#include "epd_sd_power_test.h"
 #include "file_serving_example_common.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -449,7 +450,7 @@ static esp_err_t process_multipart_upload_request(httpd_req_t *req, const char *
     return ESP_OK;
 }
 
-esp_err_t receive_data_redirect_handler(httpd_req_t *req)
+static esp_err_t receive_data_redirect_handler_impl(httpd_req_t *req)
 {
     size_t remaining = req->content_len;
     const char *uri = req->uri;
@@ -665,6 +666,14 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
              (unsigned int)remaining,
              esp_err_to_name(resp_ret));
     return resp_ret;
+}
+
+esp_err_t receive_data_redirect_handler(httpd_req_t *req)
+{
+    EpdSdPowerTest_NetworkBegin();
+    esp_err_t ret = receive_data_redirect_handler_impl(req);
+    EpdSdPowerTest_NetworkEnd();
+    return ret;
 }
 
 esp_err_t server_network_sta_net_data_register_handlers(httpd_handle_t server, const char *base_path)

@@ -15,6 +15,8 @@ extern "C" {
 
 esp_err_t ServerNetworkStaEpdDisplay_Init(void);
 esp_err_t ServerNetworkStaEpdDisplay_SetPower(bool power_on);
+esp_err_t ServerNetworkStaEpdDisplay_PrepareRailIoForPowerTestOff(void);
+esp_err_t ServerNetworkStaEpdDisplay_RestoreRailIoAfterPowerTestOn(void);
 esp_err_t ServerNetworkStaEpdDisplay_Queue(const uint8_t *display_buf, size_t display_size);
 esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, size_t display_size, uint8_t epd_which_one);
 esp_err_t ServerNetworkStaEpdDisplay_QueueToScreenAndWait(const uint8_t *display_buf, size_t display_size, uint8_t epd_which_one);

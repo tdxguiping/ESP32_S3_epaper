@@ -35,6 +35,8 @@ example_storage_type_t example_storage_get_type(void);
 bool example_storage_is_sd_card(void);
 bool example_storage_supports_directories(void);
 esp_err_t example_storage_get_free_bytes(const char *base_path, uint64_t *free_bytes);
+esp_err_t example_storage_unmount_sd_for_epd_power_test(void);
+esp_err_t example_storage_remount_sd_for_epd_power_test(void);
 
 esp_err_t example_start_file_server(const char *base_path);
 bool example_file_server_is_running(void);

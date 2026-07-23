@@ -85,59 +85,18 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
       height_(height) {
     (void)scale_MaxWidth;
     (void)scale_MaxHeight;
-    esp_err_t ret;
-    spi_bus_config_t buscfg = {};
     int transfer = width_ * height_;
     
     DisplayLen = transfer / 2;
 
-    buscfg.miso_io_num = USER_EPD_MISO_PIN;
-    buscfg.mosi_io_num = mosi_;
-    buscfg.sclk_io_num = scl_;
-    buscfg.quadwp_io_num = -1;
-    buscfg.quadhd_io_num = -1;
-    buscfg.max_transfer_sz = NT61522_SPI_MAX_BUFFER_SIZE;
+    // Power the external rail before any SPI or control output can drive an unpowered device.
+    esp_err_t power_ret = Set_Power(1);
+    if (power_ret != ESP_OK) {
+        ESP_LOGE(TAG, "EPD/SD startup power on failed ret=%s", esp_err_to_name(power_ret));
+    }
 
-    spi_device_interface_config_t devcfg = {};
-    memset(&devcfg, 0, sizeof(devcfg));
-    devcfg.spics_io_num = -1;    
-    // devcfg.clock_speed_hz = 40 * 1000 * 1000;   // 40MHz is ok
-    devcfg.clock_speed_hz = 5 * 1000 * 1000;
-    //devcfg.clock_speed_hz = 10 * 1000 * 1000;
-    //devcfg.clock_speed_hz = 20 * 1000 * 1000;
-
-
-    devcfg.mode = 0;
-    devcfg.queue_size = 7;
-    devcfg.cs_ena_posttrans = 3;
-    devcfg.flags = SPI_DEVICE_HALFDUPLEX | SPI_DEVICE_3WIRE | SPI_DEVICE_NO_DUMMY;
-    // buscfg.miso_io_num                   = -1;
-    // buscfg.mosi_io_num                   = EPD_MOSI_PIN;
-    // buscfg.sclk_io_num                   = EPD_SCK_PIN;
-    // buscfg.quadwp_io_num                 = -1;
-    // buscfg.quadhd_io_num                 = -1;
-    // buscfg.max_transfer_sz               = EXAMPLE_LCD_WIDTH * EXAMPLE_LCD_HEIGHT;
-    // spi_device_interface_config_t devcfg = {};
-    // devcfg.spics_io_num                  = -1;
-    // devcfg.clock_speed_hz                = 10 * 1000 * 1000; //Clock out at 10 MHz
-    // devcfg.mode                          = 0;                //SPI mode 0
-    // devcfg.queue_size                    = 7;                //We want to be able to queue 7 transactions at a time
-    // //devcfg.flags                         = SPI_DEVICE_HALFDUPLEX;
-
-    // Initialize the shared C5 SPI bus with SD MISO present so SDSPI can reuse the same bus later.
-    // 初始化 C5 共用 SPI 总线时带上 SD MISO，便于后续 SDSPI 复用同一总线。
-    ESP_LOGI(TAG, "EPD SPI bus init host=%d mosi=%d miso=%d sck=%d cs=%d cs2=%d",
-             (int)spi_host_,
-             mosi_,
-             USER_EPD_MISO_PIN,
-             scl_,
-             cs_,
-             cs_2_);
-    ret = spi_bus_initialize(spi_host_, &buscfg, SPI_DMA_CH_AUTO);
-    ESP_ERROR_CHECK(ret);
-    ret = spi_bus_add_device(spi_host_, &devcfg, &spi);
-    ESP_ERROR_CHECK(ret);
-
+    // Keep startup and test-only power restoration on one SPI configuration path.
+    ESP_ERROR_CHECK(InitializeSharedSpi());
     Hardware_Version_ = (EPD_type == EPD_TYPE_800_480_4S_75 ||
                          EPD_type == EPD_TYPE_800_480_4S_75_2 ||
                          EPD_type == EPD_TYPE_800_480_4S_75_3) ? 2U : 1U;
@@ -177,11 +136,6 @@ ePaperPort::ePaperPort(int mosi, int scl, int dc, int cs,int cs2, int rst, int b
     }
     ESP_LOGI(TAG, "EPD hardware version=%u", (unsigned int)Hardware_Version_);
 
-    esp_err_t power_ret = Set_Power(1);
-    if (power_ret != ESP_OK) {
-        ESP_LOGE(TAG, "EPD/SD startup power on failed ret=%s", esp_err_to_name(power_ret));
-    }
-    
     EPD_interface_init();
     Set_ResetIOLevel(1);
     SetGlobalEPaperInstance(this);
@@ -231,6 +185,258 @@ void ePaperPort::ReleaseRotationBuffer() {
     }
 }
 
+esp_err_t ePaperPort::InitializeSharedSpi()
+{
+    bool bus_initialized_here = false;
+    if (!spi_bus_initialized_) {
+        spi_bus_config_t buscfg = {};
+        buscfg.miso_io_num = USER_EPD_MISO_PIN;
+        buscfg.mosi_io_num = mosi_;
+        buscfg.sclk_io_num = scl_;
+        buscfg.quadwp_io_num = -1;
+        buscfg.quadhd_io_num = -1;
+        buscfg.max_transfer_sz = NT61522_SPI_MAX_BUFFER_SIZE;
+
+        esp_err_t ret = spi_bus_initialize(spi_host_, &buscfg, SPI_DMA_CH_AUTO);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "EPD shared SPI bus init failed host=%d ret=%s",
+                     (int)spi_host_, esp_err_to_name(ret));
+            return ret;
+        }
+        spi_bus_initialized_ = true;
+        bus_initialized_here = true;
+    }
+
+    if (spi == nullptr) {
+        spi_device_interface_config_t devcfg = {};
+        devcfg.spics_io_num = -1;
+        devcfg.clock_speed_hz = 5 * 1000 * 1000;
+        devcfg.mode = 0;
+        devcfg.queue_size = 7;
+        devcfg.cs_ena_posttrans = 3;
+        devcfg.flags = SPI_DEVICE_HALFDUPLEX | SPI_DEVICE_3WIRE | SPI_DEVICE_NO_DUMMY;
+
+        esp_err_t ret = spi_bus_add_device(spi_host_, &devcfg, &spi);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "EPD shared SPI device add failed host=%d ret=%s",
+                     (int)spi_host_, esp_err_to_name(ret));
+            if (bus_initialized_here) {
+                esp_err_t free_ret = spi_bus_free(spi_host_);
+                if (free_ret == ESP_OK) {
+                    spi_bus_initialized_ = false;
+                } else {
+                    ESP_LOGE(TAG, "EPD shared SPI rollback free failed host=%d ret=%s",
+                             (int)spi_host_, esp_err_to_name(free_ret));
+                }
+            }
+            return ret;
+        }
+    }
+
+    if (!power_test_io_restore_required_) {
+        ESP_LOGI(TAG, "EPD shared SPI ready host=%d mosi=%d miso=%d sck=%d",
+                 (int)spi_host_, mosi_, USER_EPD_MISO_PIN, scl_);
+    }
+    return ESP_OK;
+}
+
+esp_err_t ePaperPort::DeinitializeSharedSpiForPowerTest()
+{
+    if (spi != nullptr) {
+        esp_err_t ret = spi_bus_remove_device(spi);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "EPD shared SPI device remove failed ret=%s",
+                     esp_err_to_name(ret));
+            return ret;
+        }
+        spi = nullptr;
+    }
+
+    if (spi_bus_initialized_) {
+        esp_err_t ret = spi_bus_free(spi_host_);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "EPD shared SPI bus free failed host=%d ret=%s",
+                     (int)spi_host_, esp_err_to_name(ret));
+            return ret;
+        }
+        spi_bus_initialized_ = false;
+    }
+    return ESP_OK;
+}
+
+esp_err_t ePaperPort::ConfigureRailPinsHighImpedance()
+{
+    uint64_t rail_pin_mask =
+        (1ULL << mosi_) |
+        (1ULL << scl_) |
+        (1ULL << dc_) |
+        (1ULL << cs_) |
+        (1ULL << cs_2_) |
+        (1ULL << rst_) |
+        (1ULL << busy_) |
+        (1ULL << EPD2_DC_PIN) |
+        (1ULL << EPD2_CS_PIN) |
+        (1ULL << EPD2_RST_PIN) |
+        (1ULL << EPD2_BUSY_PIN) |
+        (1ULL << USER_SD_SPI_MISO_PIN) |
+        (1ULL << USER_SD_SPI_CS_PIN);
+
+    gpio_config_t io_conf = {};
+    io_conf.pin_bit_mask = rail_pin_mask;
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    esp_err_t ret = gpio_config(&io_conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "EPD/SD rail IO high-impedance config failed ret=%s",
+                 esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+esp_err_t ePaperPort::RestoreRailControlPins()
+{
+    // Set safe output latch values before output drivers are enabled.
+    esp_err_t ret = gpio_set_level((gpio_num_t)cs_, 1);
+    if (ret == ESP_OK) {
+        ret = gpio_set_level((gpio_num_t)cs_2_, 1);
+    }
+    if (ret == ESP_OK) {
+        ret = gpio_set_level((gpio_num_t)USER_SD_SPI_CS_PIN, 1);
+    }
+    if (ret == ESP_OK) {
+        ret = gpio_set_level((gpio_num_t)rst_, 1);
+    }
+    if (ret == ESP_OK) {
+        ret = gpio_set_level((gpio_num_t)dc_, 0);
+    }
+    if (ret == ESP_OK) {
+        ret = gpio_set_level((gpio_num_t)EPD2_CS_PIN, 1);
+    }
+    if (ret == ESP_OK) {
+        ret = gpio_set_level((gpio_num_t)EPD2_RST_PIN, 1);
+    }
+    if (ret == ESP_OK) {
+        ret = gpio_set_level((gpio_num_t)EPD2_DC_PIN, 0);
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "EPD/SD rail safe output latch setup failed ret=%s",
+                 esp_err_to_name(ret));
+        return ret;
+    }
+
+    uint64_t output_pin_mask =
+        (1ULL << dc_) |
+        (1ULL << cs_) |
+        (1ULL << cs_2_) |
+        (1ULL << rst_) |
+        (1ULL << EPD2_DC_PIN) |
+        (1ULL << EPD2_CS_PIN) |
+        (1ULL << EPD2_RST_PIN) |
+        (1ULL << USER_SD_SPI_CS_PIN);
+    gpio_config_t output_conf = {};
+    output_conf.pin_bit_mask = output_pin_mask;
+    output_conf.mode = GPIO_MODE_OUTPUT;
+    output_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    output_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    output_conf.intr_type = GPIO_INTR_DISABLE;
+    ret = gpio_config(&output_conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "EPD/SD rail control output restore failed ret=%s",
+                 esp_err_to_name(ret));
+        return ret;
+    }
+
+    gpio_config_t busy_conf = {};
+    busy_conf.pin_bit_mask = (1ULL << busy_) | (1ULL << EPD2_BUSY_PIN);
+    busy_conf.mode = GPIO_MODE_INPUT;
+    busy_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    busy_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    busy_conf.intr_type = GPIO_INTR_DISABLE;
+    ret = gpio_config(&busy_conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "EPD BUSY input restore failed ret=%s",
+                 esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+esp_err_t ePaperPort::PrepareRailIoForPowerTestOff()
+{
+#if USER_EPD_SD_POWER_TEST_IO_ISOLATION_ENABLE
+    if (power_test_io_restore_required_) {
+        return ESP_OK;
+    }
+
+    // End every possible selection before removing the shared SPI output routing.
+    esp_err_t ret = gpio_set_level((gpio_num_t)cs_, 1);
+    if (ret == ESP_OK) {
+        ret = gpio_set_level((gpio_num_t)cs_2_, 1);
+    }
+    if (ret == ESP_OK) {
+        ret = gpio_set_level((gpio_num_t)USER_SD_SPI_CS_PIN, 1);
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "EPD/SD rail deselect before isolation failed ret=%s",
+                 esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = DeinitializeSharedSpiForPowerTest();
+    if (ret != ESP_OK) {
+        esp_err_t rollback_ret = InitializeSharedSpi();
+        if (rollback_ret != ESP_OK) {
+            power_test_io_restore_required_ = true;
+            ESP_LOGE(TAG, "EPD shared SPI rollback init failed ret=%s",
+                     esp_err_to_name(rollback_ret));
+        }
+        return ret;
+    }
+    // Record the transition as soon as SPI is released so a failed local rollback
+    // remains recoverable by the state machine's normal restore retry path.
+    power_test_io_restore_required_ = true;
+
+    ret = ConfigureRailPinsHighImpedance();
+    if (ret != ESP_OK) {
+        esp_err_t control_ret = RestoreRailControlPins();
+        esp_err_t spi_ret = InitializeSharedSpi();
+        if (control_ret == ESP_OK && spi_ret == ESP_OK) {
+            power_test_io_restore_required_ = false;
+        } else {
+            ESP_LOGE(TAG, "EPD/SD rail isolation rollback failed control=%s spi=%s",
+                     esp_err_to_name(control_ret), esp_err_to_name(spi_ret));
+        }
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "EPD/SD rail IO isolated spi_released=1");
+#endif
+    return ESP_OK;
+}
+
+esp_err_t ePaperPort::RestoreRailIoAfterPowerTestOn()
+{
+#if USER_EPD_SD_POWER_TEST_IO_ISOLATION_ENABLE
+    if (!power_test_io_restore_required_) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = RestoreRailControlPins();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = InitializeSharedSpi();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    power_test_io_restore_required_ = false;
+    ESP_LOGI(TAG, "EPD/SD rail IO restored spi_ready=1");
+#endif
+    return ESP_OK;
+}
+
 ePaperPort::~ePaperPort() {
     if (s_global_epaper_instance == this) {
         s_global_epaper_instance = nullptr;
@@ -239,10 +445,13 @@ ePaperPort::~ePaperPort() {
     ReleaseDispBuffer();
     ReleaseRotationBuffer();
     if (spi) {
-        spi_bus_remove_device(spi);
+        (void)spi_bus_remove_device(spi);
         spi = nullptr;
     }
-    spi_bus_free(spi_host_);
+    if (spi_bus_initialized_) {
+        (void)spi_bus_free(spi_host_);
+        spi_bus_initialized_ = false;
+    }
 }
 
 esp_err_t ePaperPort::Set_Power(uint8_t Power_switch) {
@@ -273,8 +482,7 @@ esp_err_t ePaperPort::Set_Power(uint8_t Power_switch) {
         return ret;
     }
 
-    ESP_LOGI(TAG,
-             "EPD/SD power pin=%d level=%lu",
+    ESP_LOGI(TAG, "EPD/SD power pin=%d level=%lu",
              (int)EPD_SD_Power_PIN,
              (unsigned long)level);
     return ESP_OK;

@@ -185,6 +185,8 @@ class ePaperPort {
 
     spi_device_handle_t spi = nullptr;
     spi_host_device_t    spi_host_ = USER_EPD_SPI_HOST;
+    bool                 spi_bus_initialized_ = false;
+    bool                 power_test_io_restore_required_ = false;
     uint32_t             i2c_data_pdMS_TICKS = 0;
     uint32_t             i2c_done_pdMS_TICKS = 0;
     const char          *TAG = "Display";
@@ -226,6 +228,10 @@ class ePaperPort {
     bool    EnsureRotationBuffer();
     void    ReleaseDispBuffer();
     void    ReleaseRotationBuffer();
+    esp_err_t InitializeSharedSpi();
+    esp_err_t DeinitializeSharedSpiForPowerTest();
+    esp_err_t ConfigureRailPinsHighImpedance();
+    esp_err_t RestoreRailControlPins();
     uint8_t EPD_GetPixel4(const uint8_t* buf, int width, int x, int y);
     void    EPD_SetPixel4(uint8_t* buf, int width, int x, int y, uint8_t px);
     void    EPD_Rotate180_Fast(const uint8_t* src, uint8_t* dst, int width, int height);
@@ -360,6 +366,8 @@ class ePaperPort {
 
   public:
     esp_err_t Set_Power(uint8_t Power_switch);
+    esp_err_t PrepareRailIoForPowerTestOff();
+    esp_err_t RestoreRailIoAfterPowerTestOn();
     void delayms(unsigned int delayTime);  
     void setPinCsAll(uint8_t setLevel);
     void NT61522_Sleep();

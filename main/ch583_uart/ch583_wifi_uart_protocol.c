@@ -5,6 +5,7 @@
 #include "ch583_wifi_uart_protocol.h"
 #include "debug_output.h"
 #include "epd_display_mode.h"
+#include "epd_sd_power_test.h"
 #include "epd_type.h"
 #include "led_status.h"
 #include "server_network_sta_time.h"
@@ -1132,7 +1133,6 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
         return;
     }
     ch583_wifi_check_rx_seq_gap(&frame);
-
     if (strcmp(frame.cmd, CH583_DEVICE_INFO_CMD) == 0) {
         ch583_wifi_handle_device_info(&frame);
     } else if (strcmp(frame.cmd, "PING") == 0) {
@@ -1154,8 +1154,10 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
 
        // CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
        //      (unsigned int)frame.seq,frame.cmd,frame.arg);
-    } else if (strcmp(frame.cmd, "BLE_DATA") == 0) {       
-      CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
+    } else if (strcmp(frame.cmd, "BLE_DATA") == 0) {
+        // Only a validated BLE_DATA frame received from CH583 may interrupt the rail-off test.
+        EpdSdPowerTest_OnCh583BleDataReceived();
+        CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
            (unsigned int)frame.seq,frame.cmd,frame.arg);
         if (ch583_wifi_handle_ble_data(&frame, ble_data_callback)) {
             // Preserve the original full work timer reset only for accepted BLE data.

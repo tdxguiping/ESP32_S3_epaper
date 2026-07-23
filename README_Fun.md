@@ -96,6 +96,7 @@
   - [12.13 epd_type_800_480_4s_75_DKE：800x480 4S 75 DKE 屏](#sec-12-13)
   - [12.14 epd_type_800_480_4s_75_mofang：800x480 4S 75 墨方屏](#sec-12-14)
   - [12.15 epd_test_1360_480_1085_3color_const：1360x480 三色测试图](#sec-12-15)
+  - [12.16 EPD/SD 共用电源独立测试](#sec-12-16)
 - [13. 状态灯](#sec-13)
 - [14. 文件服务器静态资源与旧接口](#sec-14)
 - [15. 四条主业务链路汇总](#sec-15)
@@ -135,7 +136,7 @@ The full result-code table is in `README_Result_Code.md`; this file keeps featur
 | `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | 字段、文件名安全、大小匹配、目录和剩余空间条件与 cast 类似；主要用于保存，`show=true` 时也可显示 | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存；图片列表、轮播、快照从 jpg/bin 目录取数据 |
 | `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `TDX_DELETE_MAX_FILES=50` 限制；超过上限返回 `1514`，文件名非法返回 `1502`；网络与 USB 入口都先完整校验，校验失败不执行删除；只删除匹配的 bin/jpg；不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度 | 从 JSON `fileNames` 取删除列表；校验通过后按文件名拼路径并删除 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从轮播配置/control 文件读取轮播状态 |
-| `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 诊断/兼容进度 | `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=50` 限制；`startIndex` 必填且满足 `0 <= startIndex < file_count`；单个名称缓冲区受 `TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48` 限制；`interval` 限制在 `60..604800` 秒；`random` 永久强制为 `false` | 不兼容缺少 `startIndex` 的旧轮播协议/配置；启动时已有 SNTP 或运行中首次取得 SNTP 后，按 `fileNames + startIndex + anchor_epoch + interval` 使用绝对时间槽 |
+| `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 诊断/兼容进度 | APP / 网络端 `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=50` 限制，忽略大小写后不得重复，且全部 bin 文件必须存在、是普通文件并且非空；列表校验失败不改动现有轮播状态；`startIndex` 必填且满足 `0 <= startIndex < file_count`；单个名称缓冲区受 `TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48` 限制；`interval` 限制在 `60..604800` 秒；`random` 永久强制为 `false` | 不兼容缺少 `startIndex` 的旧轮播协议/配置；启动时已有 SNTP 或运行中首次取得 SNTP 后，按 `fileNames + startIndex + anchor_epoch + interval` 使用绝对时间槽 |
 | `wifi_work_time` | `work_state` namespace blob；`PhotoPainter:work_continue/wifi_standby` 字符串兼容键 | 网络 HTTP 与 USB JSON 只接受 `seconds=0..3600`，旧字段 `time` 返回参数非法；BLE/CH583 继续保持原有协议和 `60..3600` 范围；内部 `SetAndSave()` clamp 到 `0..3600`；保存 blob 后会读回验证 | 启动时读取 blob；blob size 不匹配则回退默认值；兼容读取字符串键并解析为 u32；超时后保留原 CH583 POWER_OFF 关机链路，本地 EPD/SD GPIO4 电源保持开启 |
 | OTA | OTA update partition；boot partition 选择 | 请求必须被识别为 `/ota` 或 `/ota_upload`；body 不超过 `SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE=6MB`；meta/firmware 字段可解析；固件 magic、app_desc、版本、长度和目标分区大小检查通过；写入成功后才设置 boot partition；成功后固定自动复位 | 读取 meta JSON、firmware/bin 字段、running partition、next update partition、app desc 和 OTA 状态；OTA 接收与写入使用独立 power hold，任一阶段进行中都不发送 `POWER_OFF` |
 | EPD 类型 | `PhotoPainter:epd_type` | 只允许保存 `EpdType_GetConfig(type)` 能找到的合法type；未变化时跳过写入；非法type返回 `ESP_ERR_INVALID_ARG` | 启动优先读取 `epd_type`；不存在或无效时回退 `USER_EPD_TYPE_DEFAULT`；DEVICE_INFO上报类型只保存供下次启动使用，不切换本次运行的显示驱动 |
@@ -223,6 +224,7 @@ sequenceDiagram
     end
     APP->>EPD: ServerNetworkStaEpdDisplay_Init() / GPIO4 EPD-SD power HIGH
     APP->>SD: example_mount_storage("/data")
+    APP->>EPD: EpdSdPowerTest_Init()
     APP->>STA: User_Network_mode_app_init("/data")
     opt storage mount ok
         APP->>STA: ServerNetworkStaSlideshow_StartSavedDelayed("/data")
@@ -683,7 +685,7 @@ mount.c
 - example_print_storage_info() 读取挂载状态、容量、目录树、txt 文件内容。
 - list_storage_tree() 扫描并打印 /data 下文件。
 - SD 挂载参数：上电等待 1000ms；单次启动内最多重试 3 次；重试间隔 300ms。失败计数未超过阈值时不进入 SPIFFS，而是软件复位后重试 SD。
-- GPIO4 是 EPD 与 SD 卡公共电源开关；`ServerNetworkStaEpdDisplay_Init()` 在 SD 挂载前调用 `Set_Power(1)`，挂载及正常运行期间保持 HIGH。EPD refresh/sleep 结束不得单独拉低 GPIO4；当前关机提交路径也不调用 `Set_Power(0)`，由 CH583 收到 POWER_OFF 后关闭 ESP32/WiFi 电源。
+- GPIO4 是 EPD 与外部 SD 卡公共电源开关；`ServerNetworkStaEpdDisplay_Init()` 在首次 SD 挂载前调用 `Set_Power(1)`。EPD refresh/sleep 本身不得直接拉低 GPIO4；只有独立 EPD/SD 电源测试在确认 EPD、外部 SD、SPI 和业务请求全部空闲后可以临时拉低。CH583 整机关机提交路径仍不调用 `Set_Power(0)`。
 
 日志：
 - 保留关键节点：SD mount start、SDSPI pins、bus reuse、SD ready、SPIFFS fallback、storage ready、mount failed。
@@ -2411,12 +2413,14 @@ Result 定义建议：
 | `start_slideshow_result` | `1505` | 轮播启动失败 |
 | `start_slideshow_result` | `1506` | 轮播运行时启动失败 |
 | `start_slideshow_result` | `1507` | `interval` 非法 |
-| `start_slideshow_result` | `1508` | 轮播文件不存在 |
+| `start_slideshow_result` | `1508` | 任一轮播文件不存在、不是普通文件或为空文件；设备不执行本次指令 |
 | `start_slideshow_result` | `1510` | `timestamp` 缺失、不是整数、不是秒级 Unix 时间戳，或时间范围不合理 |
 | `start_slideshow_result` | `1512` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
 | `start_slideshow_result` | `1513` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次指令 |
+| `start_slideshow_result` | `1514` | `fileNames` 超过 50 个；设备不执行本次指令 |
 | `start_slideshow_result` | `1515` | `startIndex` 缺失；设备不执行本次指令 |
 | `start_slideshow_result` | `1516` | `startIndex` 不是非负整数或 `startIndex >= fileNames` 数量；设备不执行本次指令 |
+| `start_slideshow_result` | `1517` | `fileNames` 存在重复文件名（忽略大小写）；设备不执行本次指令 |
 
 功能说明：`start_slideshow` 用于下发并保存轮播图片列表、轮播顺序、随机模式和默认 interval，并在同一条命令中使用 `timestamp` 写入标准 RTC control、强制 `sw=1`、启动 RTC 轮播。它等价于“原 start_slideshow 列表配置功能 + set_slideshow 的 sw=1/interval/random/timestamp 启动功能”。
 
@@ -2432,7 +2436,9 @@ sequenceDiagram
     participant EPD as EPD Display Queue
     APP->>DATAUP: start_slideshow fileNames/interval/random/timestamp/startIndex
     DATAUP->>SS: process_small_json_request()
-    SS->>SS: validate timestamp and check/set RTC
+    SS->>SS: validate all fields, count and duplicate names
+    SS->>FILE: check every bin file exists and is non-empty
+    SS->>SS: check/set RTC
     SS->>FILE: save slideshow_config fileNames/interval/random/startIndex
     SS->>FILE: write show_control sw=1 interval/random/timestamp/anchor_epoch
     SS->>TASK: ServerNetworkStaSlideshow_StartSavedForNewCommand()
@@ -2454,8 +2460,9 @@ HTTP small JSON start_slideshow
    └─ process_small_json_request()
       └─ ServerNetworkStaSlideshow_ProcessJson()
          ├─ parse_start_slideshow_request()
-         ├─ parse timestamp and check/set RTC
+         ├─ validate fileNames count and duplicate names
          ├─ check_slideshow_files_exist()
+         ├─ parse timestamp and check/set RTC
          ├─ save_slideshow_config()
          ├─ save random config
          ├─ write show_control sw=1 interval/random/timestamp/anchor_epoch
@@ -2506,7 +2513,7 @@ V2 协议资料拆分：
 字段说明：
 
 ```text
-fileNames 轮播文件顺序；最多 50 个，文件必须已存在于 /data/bin_img
+fileNames 必须是逗号分隔的合法 JSON 数组；最多 50 个，文件名忽略大小写后不得重复；列表中的每个 .bin 文件都必须存在于 /data/bin_img、是普通文件且非空
 interval 默认轮播间隔，单位秒，固件校验 60..604800
 random 字段保留，但设备始终强制为 false，并按 fileNames 顺序轮播
 timestamp 必填；秒级 Unix 时间戳，用作 `fileNames[startIndex]` 起始图片的目标播放时间，同时写入 show_control.timestamp 和 anchor_epoch
@@ -2535,7 +2542,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
   -Body $body
 ```
 
-预期：设备保存轮播列表、interval、random 和 startIndex，从 `fileNames[startIndex]` 建立第 0 个绝对时间槽，重写 `show_control.txt` 为标准 RTC control，并按 `timestamp` 启动 RTC 轮播。缺少 startIndex 返回 1515，startIndex 非法返回 1516，均不执行本次指令。
+预期：设备保存轮播列表、interval、random 和 startIndex，从 `fileNames[startIndex]` 建立第 0 个绝对时间槽，重写 `show_control.txt` 为标准 RTC control，并按 `timestamp` 启动 RTC 轮播。超过 50 个文件返回 1514，缺少 startIndex 返回 1515，startIndex 非法返回 1516，重复文件名返回 1517，任一文件不存在、不是普通文件或为空返回 1508。以上非法指令均不改动 RTC / 系统时间、轮播配置、control、NVS、显示模式和现有轮播任务。
 
 当前实现：
 
@@ -2549,6 +2556,8 @@ start_slideshow 是正式轮播列表配置接口；会重写 `show_control.txt`
 ```text
 存：
 - start_slideshow 严格要求合法 startIndex，保存 slideshow_config 的 fileNames / interval / random / startIndex，保存 random 配置，并写入 `show_control.txt`：`{"func":"set_slideshow","sw":1,"interval":...,"random":...,"timestamp":...,"anchor_epoch":...}`。旧字段 `index` 不兼容；缺少 startIndex 时拒绝启动，不默认补 0。
+- APP / 网络端 start_slideshow 在任何写入或校时前完成整条指令校验：拒绝超过 50 个或忽略大小写后重复的 fileNames，并逐个检查全部 bin 文件。发现任一非法文件时只返回错误，不保存配置、不写 RTC / 系统时间、不改变显示模式，也不停止或重启现有轮播。
+- fileNames 数组严格要求文件名之间使用单个逗号分隔，不接受缺少逗号、重复逗号或尾随逗号；文件检查阶段无法取得共享 SPI 锁时返回 1012，不误报为文件不存在。
 - set_slideshow 写入 sw / interval / timestamp / anchor_epoch，并同步写 PhotoPainter:epd_mode=1。
 - `random` 永久禁用；协议仍兼容接收 `random:true/false`，但设备统一强制为 `random=false`，并在 `slideshow_config.txt`、`show_control.txt`、NVS `slide_random` 和 snapshot 中固定保存/返回 false。
 - NVS `slide_progress` 继续保存版本、配置 hash、待显示文件和位置，供诊断及非 SNTP 兼容路径使用；SNTP 已同步时它不再是选图依据，启动时 NVS 读写失败可用 RAM 进度继续绝对时间轮播。
@@ -8432,6 +8441,7 @@ Init_Bl()
 - [12.13 epd_type_800_480_4s_75_DKE：800x480 4S 75 DKE 屏](#sec-12-13)
 - [12.14 epd_type_800_480_4s_75_mofang：800x480 4S 75 墨方屏](#sec-12-14)
 - [12.15 epd_test_1360_480_1085_3color_const：1360x480 三色测试图](#sec-12-15)
+- [12.16 EPD/SD 共用电源独立测试](#sec-12-16)
 
 
 本章把 `main/epd_display/` 目录拆成二级目录。当前 `main/CMakeLists.txt` 编译的 EPD 相关源码包括显示队列、显示模式、BSP、屏幕类型管理、各具体屏幕驱动和测试图文件。
@@ -8726,8 +8736,8 @@ EPD / SD 公共电源规则：
 
 ```text
 - EPD_SD_Power_PIN 固定为 GPIO_NUM_4，并配置为 GPIO_MODE_OUTPUT。
-- ePaperPort 构造及 ServerNetworkStaEpdDisplay_Init() 都调用 Set_Power(1)，确保任何 EPD 操作和后续 SD 挂载前 GPIO4 为 HIGH。
-- EPD_Reset() 再次调用 Set_Power(1)；EPD refresh/sleep 结束不调用 Set_Power(0)，避免已挂载 SD 突然掉电。
+- ePaperPort 构造先调用 Set_Power(1)，再配置 EPD 控制脚和共享 SPI；ServerNetworkStaEpdDisplay_Init() 会再次确认 GPIO4 为 HIGH，避免冷启动时由未供电外设的信号脚产生瞬时反向供电。
+- EPD_Reset() 再次调用 Set_Power(1)；EPD refresh/sleep 本身不调用 Set_Power(0)。独立 EPD/SD 电源测试会在 EPD 完成后等待所有安全条件满足，并先卸载外部 SD，之后才临时关闭 GPIO4。
 - 当前 `USER_POWER_OFF_LOCAL_EPD_SD_CUTOFF_ENABLE=0`，work_state_task() 发送 CH583 POWER_OFF 后不调用 Set_Power(0)，GPIO4 持续保持 HIGH。
 - work_state_task() 在共用 SPI 锁内复检所有 guard，再发送 POWER_OFF；无论 UART 写入成功或失败，GPIO4 都保持 HIGH。
 - POWER_OFF UART 写入成功后等待 CH583 切断 ESP32-C5 电源；2 秒内仍未断电则沿用原逻辑调用 esp_restart()。
@@ -9699,6 +9709,77 @@ ServerNetworkStaEpdDisplay_Task()
 
 ---
 
+### 12.16 EPD/SD 共用电源独立测试 <span id="sec-12-16"></span>
+
+相关文件：
+
+```text
+main/epd_sd_power_test/epd_sd_power_test.c
+main/epd_sd_power_test/epd_sd_power_test.h
+main/epd_display/display_bsp.cpp
+main/epd_display/display_bsp.h
+main/epd_display/epd_display_app.cpp
+main/epd_display/epd_display_app.h
+main/tdx_shared_spi.c
+main/mount.c
+main/tdx_cfg.h
+main/server_network_sta/slideshow/server_network_sta_slideshow.c
+```
+
+该功能是 GPIO4 EPD/SD 共用电源的独立测试状态机，不复用 `wifi_work_time`，也不发送 CH583 `POWER_OFF`。只有实际 EPD 显示任务完成后才 armed；启动后未发生 EPD 显示时不执行测试。EPD 队列仍有任务、HTTP 请求未结束、图片 show/save 事务未结束、轮播显示后的进度保存或下一张 SD 预读未结束、普通共享 SPI 请求正在执行或等待时均不关电。启动存储类型未知时测试不启动，原有业务继续运行。
+
+网络 cast、cast2pic、upload 和 USB 共用的 `TdxImageTransfer_ProcessItems()` 使用独立引用计数覆盖完整的“先 show、后 save”事务，避免 EPD 完成与保存任务投递之间的短暂空闲被误判。轮播没有请求字段 `show=true/save=true`，使用单独的 slideshow follow-up 引用计数：在同步 EPD 显示前登记，在显示完成后的进度保存和下一张 SD BIN 预读结束后释放，避免轮播任务调度空隙产生约几十毫秒的无效短促断电；释放后若其他安全条件均满足，独立状态机再执行完整的 2 秒断电测试。
+
+安全断电流程：
+
+```text
+EPD job done
+-> wait EPD queue idle
+-> wait image transfer count = 0
+-> wait slideshow follow-up count = 0
+-> test-only zero-wait shared SPI lock
+-> verify no normal SPI request is active or waiting
+-> external SD: unmount while holding the test lock
+-> SPIFFS: skip all storage unmount/remount operations
+-> recheck activity generation
+-> remove the EPD SPI device and free the shared SPI bus
+-> set GPIO0/1/6/7/8/9/10/25/26 to input with all internal pulls disabled
+-> recheck all activity counters and the event generation after IO isolation
+-> GPIO4 LOW last
+-> release test lock
+-> interruptible wait, maximum 2000 ms
+-> GPIO4 HIGH first
+-> wait 100 ms for shared-rail stabilization
+-> restore EPD control pins and rebuild the shared SPI bus/device
+-> external SD: use the test-only remount path
+-> release blocked normal SPI callers
+```
+
+普通 `TdxSharedSpi_Lock()` 在测试 armed、preparing、off 或 restoring 状态下会先登记请求并通知测试模块。登记发生在 mutex take 之前，因此已经等待 SPI 的 SD/EPD任务也会阻止断电。GPIO4 已关闭时，普通 SPI 调用等待电源开启；使用外部 SD 时还会等待 SD 重新挂载，请求不会因测试被丢弃。状态机使用单独的 `TdxSharedSpi_LockForEpdSdPowerTest()`，避免最终检查把自身误报为新 SPI 活动。关闭 `USER_EPD_SD_POWER_TEST_ENABLE` 时，普通 SPI 锁不执行测试计数或电源等待。
+
+HTTP handler 使用 Begin/End 引用计数覆盖完整请求周期；请求到达时若 GPIO4 已关闭，会等待电源恢复后再进入原 handler。提前恢复条件：任何 HTTP 业务请求、CH583 发来的合法 `BLE_DATA`、新 EPD 请求或普通共享 SPI 请求。ESP32 发给 CH583 的命令以及 CH583 发来的其他命令都不影响本测试。2000 ms 内没有事件时也会自动恢复。所有配置、事件位和状态值统一定义在 `tdx_cfg.h` 的 `USER_EPD_SD_POWER_TEST_*` 宏中。
+
+`USER_EPD_SD_POWER_TEST_IO_ISOLATION_ENABLE=1` 时，断电测试通过专用 EPD C 接口释放 SPI 外设路由，并将外部电源域相关 IO 切换为无上下拉的输入高阻，避免 GPIO 反向给 EPD 或 SD 供电。恢复时先开启 GPIO4，等待 100 ms，再恢复控制脚和 EPD 所有的共享 SPI 总线。公共 `Set_Power()` 仍只控制 GPIO4，不改变普通 EPD 初始化、复位和显示流程；测试路径不使用 `gpio_reset_pin()`，避免默认上拉造成反向供电。
+
+外部 SD 测试恢复使用 `example_storage_remount_sd_for_epd_power_test()`，不调用启动入口 `example_mount_storage()`。恢复顺序是先恢复 EPD 共享 SPI，再重新挂载 SD。ESP-IDF 卸载接口一旦被调用，测试模块不再保留旧 card handle；即使卸载最后返回 VFS 清理错误，也保持普通 SPI 请求阻塞并进入现有重挂载重试路径。恢复失败时 GPIO4 保持 HIGH，状态机限频记录错误并定时重试；不修改启动挂载失败计数、不调用 `esp_restart()`、不回退 SPIFFS、不扫描目录。当前存储为 SPIFFS 时，内部 SPIFFS 不卸载也不重新挂载，但 EPD IO 仍按相同顺序隔离和恢复。
+
+存 / 取信息（含条件限制）：
+
+```text
+存：
+- 状态、事件代数、HTTP/图片事务/轮播后续 SD 工作引用计数，以及 EPD SPI 总线/IO 恢复需求状态只保存在 RAM，不写 NVS。
+- 断电前卸载 SD；恢复供电后重新建立 SD card 和 FAT/VFS 挂载状态。
+
+取：
+- 读取 EPD 队列/执行 busy 状态。
+- 读取普通共享 SPI 请求计数，覆盖正在执行和等待 mutex 的任务。
+- 读取测试模块事件通知；只有校验通过的 CH583 `BLE_DATA` 作为 CH583 提前恢复事件。
+```
+
+[⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-12)
+
+---
+
 ## 13. 状态灯 <span id="sec-13"></span>
 
 状态灯严格集中在 `main/led_status/`。系统只创建一个 `UserLedStatus_Task()`；WiFi、HTTP、存储、网络、UART、EPD、OTA、Factory Reset 和关机模块只向 LED event queue 报告事实，不直接控制 PB5/PB6，也不决定闪烁速度。红绿灯的最终状态、优先级、临时保持和恢复全部由 LED Task 统一计算。
@@ -10166,6 +10247,8 @@ main/
 │  └─ SD/SPIFFS 挂载、目录创建、容量查询
 ├─ file_server.c
 │  └─ HTTP server、静态文件、旧上传/删除入口、新网络接口注册
+├─ epd_sd_power_test/
+│  └─ EPD任务完成后执行 GPIO4 EPD/SD 共用电源的独立2秒断电测试
 ├─ server_network_sta/
 │  ├─ server_network_sta.c
 │  │  └─ WiFi STA、mDNS、HTTP server 启动

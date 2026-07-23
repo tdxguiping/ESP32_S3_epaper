@@ -17,6 +17,7 @@
 #include "esp_random.h"
 #include "mbedtls/sha256.h"
 #include "nvs.h"
+#include "epd_sd_power_test.h"
 #include "epd_type.h"
 #include "file_serving_example_common.h"
 #include "epd_display_app.h"
@@ -45,6 +46,12 @@ typedef struct {
     int64_t timestamp;
     int64_t anchor_epoch;
 } slideshow_request_t;
+
+typedef enum {
+    SLIDESHOW_FILE_NAMES_PARSE_OK = 0,
+    SLIDESHOW_FILE_NAMES_PARSE_INVALID,
+    SLIDESHOW_FILE_NAMES_PARSE_TOO_MANY,
+} slideshow_file_names_parse_result_t;
 
 typedef struct {
     uint32_t magic;
@@ -517,11 +524,12 @@ static void slideshow_log_bin_sha256_tail(const char *file_name,
     }
 }
 
-static bool parse_file_names(const char *body, slideshow_request_t *request)
+static slideshow_file_names_parse_result_t parse_file_names(const char *body,
+                                                             slideshow_request_t *request)
 {
     const char *pos = find_json_key(body, "fileNames");
     if (pos == NULL || request == NULL) {
-        return false;
+        return SLIDESHOW_FILE_NAMES_PARSE_INVALID;
     }
 
     pos += strlen("fileNames") + 2;
@@ -529,20 +537,21 @@ static bool parse_file_names(const char *body, slideshow_request_t *request)
         pos++;
     }
     if (*pos != ':') {
-        return false;
+        return SLIDESHOW_FILE_NAMES_PARSE_INVALID;
     }
     pos++;
     while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
         pos++;
     }
     if (*pos != '[') {
-        return false;
+        return SLIDESHOW_FILE_NAMES_PARSE_INVALID;
     }
     pos++;
 
     bool closed = false;
+    bool too_many = false;
     while (*pos != '\0') {
-        while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n' || *pos == ',') {
+        while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
             pos++;
         }
         if (*pos == ']') {
@@ -550,7 +559,7 @@ static bool parse_file_names(const char *body, slideshow_request_t *request)
             break;
         }
         if (*pos != '"') {
-            return false;
+            return SLIDESHOW_FILE_NAMES_PARSE_INVALID;
         }
         pos++;
 
@@ -560,23 +569,67 @@ static bool parse_file_names(const char *body, slideshow_request_t *request)
             file_name[len++] = *pos++;
         }
         if (*pos != '"') {
-            return false;
+            return SLIDESHOW_FILE_NAMES_PARSE_INVALID;
         }
         pos++;
         file_name[len] = '\0';
 
         if (!file_name_is_safe(file_name)) {
-            return false;
+            return SLIDESHOW_FILE_NAMES_PARSE_INVALID;
         }
         if (request->file_count >= TDX_SLIDESHOW_MAX_FILES) {
+            too_many = true;
+        } else {
+            strlcpy(request->file_names[request->file_count], file_name,
+                    sizeof(request->file_names[request->file_count]));
+            request->file_count++;
+        }
+
+        while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+            pos++;
+        }
+        if (*pos == ',') {
+            pos++;
+            const char *next = pos;
+            while (*next == ' ' || *next == '\t' || *next == '\r' || *next == '\n') {
+                next++;
+            }
+            if (*next == ']' || *next == '\0') {
+                return SLIDESHOW_FILE_NAMES_PARSE_INVALID;
+            }
             continue;
         }
-        strlcpy(request->file_names[request->file_count], file_name,
-                sizeof(request->file_names[request->file_count]));
-        request->file_count++;
+        if (*pos == ']') {
+            closed = true;
+            break;
+        }
+        return SLIDESHOW_FILE_NAMES_PARSE_INVALID;
     }
 
-    return closed && request->file_count > 0;
+    if (!closed || request->file_count == 0) {
+        return SLIDESHOW_FILE_NAMES_PARSE_INVALID;
+    }
+    return too_many ? SLIDESHOW_FILE_NAMES_PARSE_TOO_MANY :
+                      SLIDESHOW_FILE_NAMES_PARSE_OK;
+}
+
+static bool slideshow_file_names_have_duplicate(const slideshow_request_t *request,
+                                                 size_t *duplicate_index)
+{
+    if (request == NULL) {
+        return false;
+    }
+    for (size_t i = 0; i < request->file_count; ++i) {
+        for (size_t j = i + 1; j < request->file_count; ++j) {
+            if (strcasecmp(request->file_names[i], request->file_names[j]) == 0) {
+                if (duplicate_index != NULL) {
+                    *duplicate_index = j;
+                }
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 static esp_err_t send_start_slideshow_result(httpd_req_t *req, int result, const char *message)
@@ -607,6 +660,8 @@ static esp_err_t ensure_bin_dir(const char *base_path, char *bin_dir, size_t bin
     }
     esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
     if (lock_ret != ESP_OK) {
+        ESP_LOGE(TAG, "slideshow file validation lock failed ret=%s",
+                 esp_err_to_name(lock_ret));
         return lock_ret;
     }
     if (stat(bin_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
@@ -624,20 +679,32 @@ static esp_err_t check_slideshow_files_exist(const char *bin_dir, const slidesho
     if (lock_ret != ESP_OK) {
         return lock_ret;
     }
+    size_t invalid_count = 0;
+    size_t first_invalid_index = 0;
+    char first_invalid_file[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
     for (size_t i = 0; i < request->file_count; i++) {
         char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
         struct stat st = {0};
         snprintf(path, sizeof(path), "%s/%s.bin", bin_dir, request->file_names[i]);
-        if (stat(path, &st) != 0 || st.st_size <= 0) {
-            TdxSharedSpi_Unlock();
-            ESP_LOGE(TAG, "slideshow file missing index=%u path=%s",
-                     (unsigned int)i, path);
-            return ESP_ERR_NOT_FOUND;
+        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) {
+            if (invalid_count == 0) {
+                first_invalid_index = i;
+                strlcpy(first_invalid_file, request->file_names[i], sizeof(first_invalid_file));
+            }
+            invalid_count++;
         }
-        ESP_LOGI(TAG, "slideshow file ok index=%u path=%s size=%u",
-                 (unsigned int)i, path, (unsigned int)st.st_size);
     }
     TdxSharedSpi_Unlock();
+    if (invalid_count > 0) {
+        ESP_LOGE(TAG,
+                 "slideshow file validation failed invalid=%u first_index=%u first_file=%s",
+                 (unsigned int)invalid_count,
+                 (unsigned int)first_invalid_index,
+                 first_invalid_file);
+        return ESP_ERR_NOT_FOUND;
+    }
+    ESP_LOGI(TAG, "slideshow file validation ok count=%u",
+             (unsigned int)request->file_count);
     return ESP_OK;
 }
 
@@ -696,9 +763,6 @@ static esp_err_t start_slideshow_apply_timestamp(slideshow_request_t *request)
         ESP_LOGW(TAG,
                  "start_slideshow timestamp invalid timestamp=%lld",
                  request != NULL ? (long long)request->timestamp : 0LL);
-        if (ServerNetworkStaTime_IsSntpSynced()) {
-            (void)ServerNetworkStaTime_BackupCurrentToCh583("start_slideshow_bad_timestamp_sntp_now");
-        }
         return TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID;
     }
 
@@ -712,8 +776,6 @@ static esp_err_t start_slideshow_apply_timestamp(slideshow_request_t *request)
     format_epoch_local((int64_t)now_time, now_text, sizeof(now_text));
 
     if (time_from_sntp) {
-        (void)ServerNetworkStaTime_BackupTimestampToCh583(request->timestamp,
-                                                          "start_slideshow_timestamp");
         int64_t diff = (int64_t)now_time - request->timestamp;
         if (diff < 0) {
             diff = -diff;
@@ -728,6 +790,8 @@ static esp_err_t start_slideshow_apply_timestamp(slideshow_request_t *request)
                      (long long)diff);
             return TDX_JSON_RESULT_SLIDESHOW_TIME_DIFF_TOO_LARGE;
         }
+        (void)ServerNetworkStaTime_BackupTimestampToCh583(request->timestamp,
+                                                          "start_slideshow_timestamp");
         if (request->timestamp > (int64_t)now_time) {
             uint32_t lead_seconds = slideshow_rtc_display_lead_seconds();
             int64_t ahead_seconds = request->timestamp - (int64_t)now_time;
@@ -1626,7 +1690,8 @@ static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_req
     fclose(fp);
     TdxSharedSpi_Unlock();
     json[read_len] = '\0';
-    if (read_len != (size_t)st.st_size || !parse_file_names(json, request)) {
+    if (read_len != (size_t)st.st_size ||
+        parse_file_names(json, request) != SLIDESHOW_FILE_NAMES_PARSE_OK) {
         free(json);
         ESP_LOGE(TAG, "slideshow config parse failed path=%s", config_path);
         return ESP_FAIL;
@@ -1938,6 +2003,7 @@ static void slideshow_task(void *arg)
         strlcpy(attempted_file, file_name, sizeof(attempted_file));
         TickType_t display_start_tick = 0;
         esp_err_t event_ret = ESP_OK;
+        bool power_test_followup_active = false;
 
         if (slideshow_take_preload_failure(runtime, file_name, &event_ret)) {
             slideshow_loaded_file_free(&loaded);
@@ -1996,6 +2062,11 @@ static void slideshow_task(void *arg)
         char consumed_file[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
         strlcpy(consumed_file, file_name, sizeof(consumed_file));
         if (event_ret == ESP_OK && slideshow_loaded_file_matches(&loaded, file_name)) {
+            // Keep the independent rail test armed but blocked until the progress
+            // update and next SD preload below are complete. Starting the guard before
+            // the synchronous display closes the gap immediately after EPD completion.
+            EpdSdPowerTest_SlideshowFollowupBegin();
+            power_test_followup_active = true;
             event_ret = slideshow_display_loaded_file_and_wait(&loaded,
                                                                 runtime->request.interval,
                                                                 runtime->rtc_enabled,
@@ -2055,6 +2126,9 @@ static void slideshow_task(void *arg)
                      "slideshow event consumed but next progress invalid file=%s result=%s, stop",
                      consumed_file,
                      esp_err_to_name(event_ret));
+            if (power_test_followup_active) {
+                EpdSdPowerTest_SlideshowFollowupEnd();
+            }
             break;
         }
 
@@ -2117,6 +2191,10 @@ static void slideshow_task(void *arg)
             slideshow_update_preload_failure(runtime,
                                              runtime->progress.pending_file,
                                              preload_ret);
+        }
+
+        if (power_test_followup_active) {
+            EpdSdPowerTest_SlideshowFollowupEnd();
         }
 
         if (!runtime->rtc_enabled) {
@@ -2589,8 +2667,22 @@ static esp_err_t parse_start_slideshow_request(const char *body, slideshow_reque
     if (find_json_key(body, "fileNames") == NULL) {
         return ESP_ERR_NOT_FOUND;
     }
-    if (!parse_file_names(body, request)) {
+    slideshow_file_names_parse_result_t file_names_ret = parse_file_names(body, request);
+    if (file_names_ret == SLIDESHOW_FILE_NAMES_PARSE_TOO_MANY) {
+        ESP_LOGE(TAG, "start_slideshow rejected: too many fileNames max=%u",
+                 (unsigned int)TDX_SLIDESHOW_MAX_FILES);
+        return TDX_JSON_RESULT_FILE_NAMES_TOO_MANY;
+    }
+    if (file_names_ret != SLIDESHOW_FILE_NAMES_PARSE_OK) {
         return ESP_ERR_INVALID_ARG;
+    }
+    size_t duplicate_index = 0;
+    if (slideshow_file_names_have_duplicate(request, &duplicate_index)) {
+        ESP_LOGE(TAG,
+                 "start_slideshow rejected: duplicate fileName index=%u file=%s",
+                 (unsigned int)duplicate_index,
+                 request->file_names[duplicate_index]);
+        return TDX_JSON_RESULT_SLIDESHOW_FILE_DUPLICATE;
     }
     if (find_json_key(body, "startIndex") == NULL) {
         ESP_LOGE(TAG,
@@ -2615,7 +2707,8 @@ static esp_err_t parse_start_slideshow_request(const char *body, slideshow_reque
     }
     request->random = slideshow_force_random_config("start_slideshow",
                                                     parse_json_bool_default(body, "random", false));
-    if (!parse_json_i64(body, "timestamp", &request->timestamp)) {
+    if (!parse_json_i64(body, "timestamp", &request->timestamp) ||
+        !timestamp_reasonable(request->timestamp)) {
         return TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID;
     }
     return ESP_OK;
@@ -2641,6 +2734,12 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
     if (ret == ESP_ERR_INVALID_SIZE) {
         return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID, "invalid interval");
     }
+    if (ret == TDX_JSON_RESULT_FILE_NAMES_TOO_MANY) {
+        return send_start_slideshow_result(req, ret, "too many fileNames");
+    }
+    if (ret == TDX_JSON_RESULT_SLIDESHOW_FILE_DUPLICATE) {
+        return send_start_slideshow_result(req, ret, "duplicate fileName");
+    }
     if (ret == TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING) {
         return send_start_slideshow_result(req, ret, "startIndex missing");
     }
@@ -2648,13 +2747,22 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
         return send_start_slideshow_result(req, ret, "invalid startIndex");
     }
     if (ret == TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID) {
-        if (ServerNetworkStaTime_IsSntpSynced()) {
-            (void)ServerNetworkStaTime_BackupCurrentToCh583("start_slideshow_bad_timestamp_sntp_now");
-        }
         return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_TIMESTAMP_INVALID, "invalid timestamp");
     }
     if (ret != ESP_OK) {
         return send_start_slideshow_result(req, TDX_JSON_RESULT_JSON_INVALID, "start slideshow failed");
+    }
+
+    char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
+    if (ensure_bin_dir(base_path, bin_dir, sizeof(bin_dir)) != ESP_OK) {
+        return send_start_slideshow_result(req, TDX_JSON_RESULT_STORAGE_NOT_READY, "sd card not ready");
+    }
+    ret = check_slideshow_files_exist(bin_dir, &request);
+    if (ret == ESP_ERR_NOT_FOUND) {
+        return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_FILE_NOT_FOUND, "file not found");
+    }
+    if (ret != ESP_OK) {
+        return send_start_slideshow_result(req, TDX_JSON_RESULT_STORAGE_NOT_READY, "sd card not ready");
     }
 
     ret = start_slideshow_apply_timestamp(&request);
@@ -2675,13 +2783,6 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
         return send_start_slideshow_result(req, TDX_JSON_RESULT_JSON_INVALID, "start slideshow failed");
     }
 
-    char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
-    if (ensure_bin_dir(base_path, bin_dir, sizeof(bin_dir)) != ESP_OK) {
-        return send_start_slideshow_result(req, TDX_JSON_RESULT_STORAGE_NOT_READY, "sd card not ready");
-    }
-    if (check_slideshow_files_exist(bin_dir, &request) != ESP_OK) {
-        return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_FILE_NOT_FOUND, "file not found");
-    }
     if (save_slideshow_config(bin_dir, &request) != ESP_OK) {
         return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED, "save config failed");
     }
