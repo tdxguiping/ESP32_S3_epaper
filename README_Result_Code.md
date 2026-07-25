@@ -26,6 +26,7 @@
   - [2.11 cast2pic：双屏投图 / 缓存](#sec-02-11)
   - [2.12 ota：网络 OTA](#sec-02-12)
   - [2.13 wifi_work_time：WiFi 工作时长](#sec-02-13)
+  - [2.14 daily_download_file：每日一图](#sec-02-14)
 - [3. 有线 USB 汇总](#sec-03)
   - [3.1 USB 接收层错误](#sec-03-1)
   - [3.2 USB router 路由错误](#sec-03-2)
@@ -59,6 +60,7 @@
   - [6.7 cast / upload / cast2pic result 编码](#sec-06-7)
   - [6.8 OTA result 编码](#sec-06-8)
   - [6.9 EPD result 编码](#sec-06-9)
+  - [6.9.1 daily_download_file result 编码](#sec-06-9-1)
   - [6.10 result 编码范围总表](#sec-06-10)
 
 ---
@@ -105,7 +107,7 @@
 1601~1699 cast / upload / cast2pic / multipart 错误
 1701~1799 OTA 错误
 1801~1899 EPD 类型 / EPD 测试错误
-1901~1999 预留
+1901~1999 每日一图错误
 ```
 
 [⬆ 返回目录](#toc)
@@ -125,12 +127,14 @@
 ```text
 0 NORMAL     普通模式
 1 SLIDESHOW  轮播模式
-2 DAILY      每日更新模式预留，当前业务不主动设置
+2 DAILY      每日更新模式
 ```
 
 规则：凡是 `show_control.txt` 的 `sw` 写入成功，`epd_mode` 必须同步写入。`sw=1` 写 `epd_mode=1`，`sw=0` 写 `epd_mode=0`。
 
-`WIFI_PROVISION` 是 ESP32-C5 与 CH583/CH585 的 UART 命令，不属于接口返回 JSON，不新增 result code。该命令固定 `LEN=2`，`ARG` 使用 2 位十六进制文本，表示 1 个复合状态 byte：第 1 位十六进制字符是 WiFi 配网状态，未配网为 `4`，已配网为 `5`；第 2 位十六进制字符是 `epd_mode`。例如 `ARG=50` 表示已配网 + 普通模式，`ARG=51` 表示已配网 + 轮播模式，`ARG=40` 表示未配网 + 普通模式。`epd_mode` 写入成功后，必须使用最近一次 WiFi 配网状态重新组合 `ARG` 并再次上报 CH583/CH585。代码中保留的单字节二进制 ARG 发送函数只作为以后可能恢复二进制协议时使用，当前不调用。
+`daily_download_file sw=1` 保存成功后写 `epd_mode=2`，`sw=0` 停止daily和轮播后写 `epd_mode=0`；合法 cast/cast2pic 成功接收后写 `epd_mode=0`；`start_slideshow` 或 `set_slideshow sw=1` 成功后写 `epd_mode=1`。所有模式写入必须通过统一模式接口持久化到 NVS。
+
+`WIFI_PROVISION` 是 ESP32-C5 与 CH583/CH585 的 UART 命令，不属于接口返回 JSON，不新增 result code。该命令固定 `LEN=2`，`ARG` 使用 2 位十六进制文本，表示 1 个复合状态 byte：第 1 位十六进制字符是 WiFi 配网状态，未配网为 `4`，已配网为 `5`；第 2 位十六进制字符是 `epd_mode`。例如 `ARG=50/51/52` 分别表示已配网 + 普通/轮播/每日模式，`ARG=40` 表示未配网 + 普通模式。`epd_mode` 写入成功后，必须使用最近一次 WiFi 配网状态重新组合 `ARG` 并再次上报 CH583/CH585。代码中保留的单字节二进制 ARG 发送函数只作为以后可能恢复二进制协议时使用，当前不调用。
 
 [⬆ 返回目录](#toc)
 
@@ -379,6 +383,40 @@ set_wifi_work_time_result
 ```
 
 网络 HTTP `wifi_work_time` 只接受 `seconds=0..3600`，使用 `1351~1354`；旧字段 `time` 返回通用参数非法 `1004`。详见 [6.4](#sec-06-4)。
+
+[⬆ 返回目录](#toc)
+
+### 2.14 daily_download_file：每日一图 <span id="sec-02-14"></span>
+
+请求：
+
+```json
+{"func":"daily_download_file","imageHeight":1600,"imageWidth":1200,"orientation":0,"api_url":"https://www.esmart-link.com/digitalPhotoFrameInternal/dailyImage/dailyImageSelect","timestamp":1784910600,"sw":1}
+```
+
+关闭请求：
+
+```json
+{"func":"daily_download_file","sw":0}
+```
+
+`sw=1` 要求完整配置；`sw=0` 只要求 `func/sw`，其他字段存在时忽略。`sw` 缺失、非精确整数或不是0/1返回1004。`timestamp` 是秒级Unix每日锚点，不用于设置RTC；当前时间只取已有SNTP网络时间。`imageHeight=EPD width`、`imageWidth=EPD height`，`orientation` 为有符号int16。
+
+成功返回：
+
+```json
+{"func":"daily_download_file_result","result":0,"message":"daily image config saved and accepted","imageHeight":1600,"imageWidth":1200,"orientation":0,"timestamp":1784910600,"sw":1,"mode":2,"error":"no error"}
+```
+
+关闭成功返回：
+
+```json
+{"func":"daily_download_file_result","result":0,"message":"daily image disabled","sw":0,"mode":0,"error":"no error"}
+```
+
+`sw=1 result=0` 表示配置已保存并读回验证、轮播已停止、`epd_mode=2` 已持久化且后台任务已提交；不表示后续HTTPS下载或EPD显示成功。`sw=0 result=0` 表示轮播和daily已停止且 `epd_mode=0` 已持久化，保留旧 `daily_cfg`。
+
+每日一图专用错误使用 `1901~1909`，通用 JSON、内存和队列错误仍使用公共 result code。
 
 [⬆ 返回目录](#toc)
 
@@ -861,6 +899,22 @@ PhotoPainter:epd_mode
 
 [⬆ 返回目录](#toc)
 
+#### 6.9.1 daily_download_file result 编码 <span id="sec-06-9-1"></span>
+
+| result | 宏 | 含义 |
+|---:|---|---|
+| `1901` | `TDX_JSON_RESULT_DAILY_IMAGE_SIZE_MISMATCH` | APP宽高不是正整数，或不满足 `imageHeight=EPD width`、`imageWidth=EPD height` |
+| `1902` | `TDX_JSON_RESULT_DAILY_ORIENTATION_INVALID` | orientation不是精确的有符号int16整数 |
+| `1903` | `TDX_JSON_RESULT_DAILY_API_URL_INVALID` | api_url缺失、不是HTTPS或长度达到500字节 |
+| `1904` | `TDX_JSON_RESULT_DAILY_TIME_INVALID` | timestamp缺失、不是精确整数、不是合理的秒级Unix时间戳，或新配置的timestamp不大于当前SNTP时间 |
+| `1905` | `TDX_JSON_RESULT_DAILY_CONFIG_SAVE_FAILED` | NVS配置保存或读回验证失败 |
+| `1906` | `TDX_JSON_RESULT_DAILY_SLIDESHOW_STOP_FAILED` | 无法停止并确认轮播 |
+| `1907` | `TDX_JSON_RESULT_DAILY_MODE_SAVE_FAILED` | 无法持久化DAILY模式 |
+| `1908` | `TDX_JSON_RESULT_DAILY_JOB_SUBMIT_FAILED` | 每日一图模块未就绪、worker初始化或后台任务提交失败 |
+| `1909` | `TDX_JSON_RESULT_DAILY_NETWORK_TIME_UNAVAILABLE` | 本次启动尚未取得SNTP网络时间，无法校验新配置的timestamp |
+
+[⬆ 返回目录](#toc)
+
 ### 6.10 result 编码范围总表 <span id="sec-06-10"></span>
 
 | 范围 | 类型 |
@@ -875,6 +929,6 @@ PhotoPainter:epd_mode
 | `1601~1699` | cast / upload / cast2pic / multipart 错误 |
 | `1701~1799` | OTA 错误 |
 | `1801~1899` | EPD 类型 / EPD 测试错误 |
-| `1901~1999` | 预留 |
+| `1901~1999` | 每日一图错误 |
 
 [⬆ 返回目录](#toc)

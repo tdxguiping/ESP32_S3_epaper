@@ -34,6 +34,7 @@
 #include "gpio_test.h"
 #include "led_status.h"
 #include "server_network_sta.h"
+#include "server_network_sta_daily_image.h"
 #include "server_network_sta_slideshow.h"
 #include "server_network_sta_time.h"
 #include "server_network_sta_wifi_work_time.h"
@@ -176,12 +177,6 @@ void print_base_info(void)
     esp_reset_reason_t reason = esp_reset_reason();
     g_app_reset_reason = (int)reason;
 
-    if (g_app_reset_reason == ESP_RST_POWERON) {
-        g_app_reset_reason = ESP_RST_low_power_No_Disp;
-    } else {
-        g_app_reset_reason = ESP_RST_low_power_No_Disp;
-    }
-
     size_t ram_free = heap_caps_get_free_size(MALLOC_CAP_8BIT);
     size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -240,7 +235,14 @@ void app_main(void)
     esp_log_level_set("ch583_uart", ESP_LOG_WARN);
 
     ESP_LOGI(TAG, "app start");
-    ESP_ERROR_CHECK(nvs_flash_init());
+    esp_err_t nvs_ret = nvs_flash_init();
+    if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES ||
+        nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS recover erase ret=%s", esp_err_to_name(nvs_ret));
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_ret);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(ServerNetworkStaTime_Init());
@@ -253,17 +255,22 @@ void app_main(void)
              (unsigned int)EpdDisplayMode_Get(),
              EpdDisplayMode_ToString(EpdDisplayMode_Get()));
     char random_value[8] = {0};
-    app_nvs_read_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
-                     random_value,
-                     sizeof(random_value),
-                     "false");
+    esp_err_t random_read_ret = app_nvs_read_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
+                                                 random_value,
+                                                 sizeof(random_value),
+                                                 "false");
     g_slideshow_random_enable = (strcmp(random_value, "true") == 0) ? 1 : 0;
     if (g_slideshow_random_enable) {
         ESP_LOGW(TAG, "slideshow random permanently disabled, force random=false");
     }
     g_slideshow_random_enable = 0;
-    app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
-                      g_slideshow_random_enable ? "true" : "false");
+    if (random_read_ret != ESP_OK || strcmp(random_value, "false") != 0) {
+        esp_err_t random_write_ret = app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY, "false");
+        if (random_write_ret != ESP_OK) {
+            ESP_LOGW(TAG, "slideshow random save failed ret=%s",
+                     esp_err_to_name(random_write_ret));
+        }
+    }
     ESP_LOGI(TAG, "slideshow random config=%s enable=%u",
              random_value, (unsigned int)g_slideshow_random_enable);
 
@@ -308,6 +315,16 @@ void app_main(void)
         ESP_LOGE(TAG, "EPD/SD independent power test init failed ret=%s",
                  esp_err_to_name(power_test_ret));
     }
+
+    /*
+     * Initialize the DAILY synchronization state before HTTP can accept an APP
+     * request. Saved work starts only after the existing network stack starts.
+     */
+    esp_err_t daily_ret = ServerNetworkStaDailyImage_Init(base_path);
+    if (daily_ret != ESP_OK) {
+        ESP_LOGE(TAG, "daily image base init failed ret=%s",
+                 esp_err_to_name(daily_ret));
+    }
     // Force the old read_value=0x02 path here: Server Network STA only, then start the HTTP file server.
     // 中文：在这里固定旧工程 read_value=0x02 路径：只进入 Server Network STA，然后启动 HTTP 文件服务器。
     uint8_t network_ret = User_Network_mode_app_init(base_path);
@@ -319,13 +336,30 @@ void app_main(void)
         ESP_LOGI(TAG, "network ready ret=0x%02x", network_ret);
     }
 
-    if (storage_ret == ESP_OK) {
+    if (daily_ret == ESP_OK) {
+        daily_ret = ServerNetworkStaDailyImage_StartSaved();
+        if (daily_ret != ESP_OK) {
+            ESP_LOGE(TAG, "daily image saved start failed ret=%s",
+                     esp_err_to_name(daily_ret));
+        }
+    }
+
+    uint8_t startup_mode = EpdDisplayMode_Get();
+    if (startup_mode == USER_EPD_DISPLAY_MODE_SLIDESHOW && storage_ret == ESP_OK) {
         esp_err_t slideshow_ret = ServerNetworkStaSlideshow_StartSavedDelayed(base_path);
         if (slideshow_ret == ESP_OK) {
             ESP_LOGI(TAG, "slideshow delayed start ret=%s", esp_err_to_name(slideshow_ret));
         } else {
             ESP_LOGW(TAG, "slideshow delayed start failed ret=%s", esp_err_to_name(slideshow_ret));
         }
+    } else if (startup_mode == USER_EPD_DISPLAY_MODE_SLIDESHOW) {
+        ESP_LOGE(TAG, "slideshow startup blocked because storage is not ready");
+    }
+
+    if (daily_ret == ESP_OK) {
+        ESP_LOGI(TAG, "startup mode selected=%u(%s)",
+                 (unsigned int)EpdDisplayMode_Get(),
+                 EpdDisplayMode_ToString(EpdDisplayMode_Get()));
     }
 
     app_auto_light_sleep_init();

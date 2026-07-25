@@ -253,6 +253,31 @@ static const char* get_path_from_uri(char *dest, const char *base_path, const ch
     return dest + base_pathlen;
 }
 
+static bool uri_path_is_safe(const char *uri)
+{
+    if (uri == NULL || uri[0] != '/') {
+        return false;
+    }
+
+    size_t path_len = strcspn(uri, "?#");
+    size_t segment_start = 1;
+    for (size_t i = 1; i <= path_len; i++) {
+        if (i < path_len && (uri[i] == '\\' || (unsigned char)uri[i] < 0x20)) {
+            return false;
+        }
+        if (i == path_len || uri[i] == '/') {
+            size_t segment_len = i - segment_start;
+            if (segment_len == 2 &&
+                uri[segment_start] == '.' &&
+                uri[segment_start + 1] == '.') {
+                return false;
+            }
+            segment_start = i + 1;
+        }
+    }
+    return true;
+}
+
 /* Handler to download a file kept on the server */
 static esp_err_t download_get_handler_impl(httpd_req_t *req)
 {
@@ -272,6 +297,12 @@ static esp_err_t download_get_handler_impl(httpd_req_t *req)
     esp_err_t time_ret = ServerNetworkStaTime_ProcessGet(req);
     if (time_ret != ESP_ERR_NOT_SUPPORTED) {
         return time_ret;
+    }
+
+    if (!uri_path_is_safe(req->uri)) {
+        ESP_LOGW(TAG, "HTTP path rejected uri=%s", req->uri);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Unsafe path");
+        return ESP_ERR_INVALID_ARG;
     }
 
     const char *filename = get_path_from_uri(filepath, ((struct file_server_data *)req->user_ctx)->base_path,
@@ -380,8 +411,14 @@ static esp_err_t upload_post_handler_impl(httpd_req_t *req)
 
     /* Skip leading "/upload" from URI to get filename */
     /* Note sizeof() counts NULL termination hence the -1 */
+    const char *upload_uri = req->uri + sizeof("/upload") - 1;
+    if (!uri_path_is_safe(upload_uri)) {
+        ESP_LOGW(TAG, "HTTP upload path rejected uri=%s", req->uri);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Unsafe path");
+        return ESP_ERR_INVALID_ARG;
+    }
     const char *filename = get_path_from_uri(filepath, ((struct file_server_data *)req->user_ctx)->base_path,
-                                             req->uri + sizeof("/upload") - 1, sizeof(filepath));
+                                             upload_uri, sizeof(filepath));
     if (!filename) {
         /* Respond with 500 Internal Server Error */
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Filename too long");
@@ -389,7 +426,7 @@ static esp_err_t upload_post_handler_impl(httpd_req_t *req)
     }
 
     /* Filename cannot have a trailing '/' */
-    if (filename[strlen(filename) - 1] == '/') {
+    if (filename[0] == '\0' || filename[strlen(filename) - 1] == '/') {
         ESP_LOGE(TAG, "Invalid filename : %s", filename);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Invalid filename");
         return ESP_FAIL;
@@ -503,8 +540,14 @@ static esp_err_t delete_post_handler_impl(httpd_req_t *req)
 
     /* Skip leading "/delete" from URI to get filename */
     /* Note sizeof() counts NULL termination hence the -1 */
+    const char *delete_uri = req->uri + sizeof("/delete") - 1;
+    if (!uri_path_is_safe(delete_uri)) {
+        ESP_LOGW(TAG, "HTTP delete path rejected uri=%s", req->uri);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Unsafe path");
+        return ESP_ERR_INVALID_ARG;
+    }
     const char *filename = get_path_from_uri(filepath, ((struct file_server_data *)req->user_ctx)->base_path,
-                                             req->uri  + sizeof("/delete") - 1, sizeof(filepath));
+                                             delete_uri, sizeof(filepath));
     if (!filename) {
         /* Respond with 500 Internal Server Error */
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Filename too long");
@@ -512,7 +555,7 @@ static esp_err_t delete_post_handler_impl(httpd_req_t *req)
     }
 
     /* Filename cannot have a trailing '/' */
-    if (filename[strlen(filename) - 1] == '/') {
+    if (filename[0] == '\0' || filename[strlen(filename) - 1] == '/') {
         ESP_LOGE(TAG, "Invalid filename : %s", filename);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Invalid filename");
         return ESP_FAIL;

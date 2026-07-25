@@ -42,9 +42,12 @@ H:/AI2/file_serving/build/esp-idf/esp_pm/libesp_pm.a
 H:/AI2/file_serving/build/esp-idf/efuse/libefuse.a
 H:/AI2/file_serving/build/esp-idf/esp_gdbstub/libesp_gdbstub.a
 H:/AI2/file_serving/build/esp-idf/esp_coex/libesp_coex.a
-H:/AI2/file_serving/build/esp-idf/esp_http_server/libesp_http_server.a
-H:/AI2/file_serving/build/esp-idf/http_parser/libhttp_parser.a
+H:/AI2/file_serving/build/esp-idf/esp_http_client/libesp_http_client.a
 H:/AI2/file_serving/build/esp-idf/esp_event/libesp_event.a
+H:/AI2/file_serving/build/esp-idf/tcp_transport/libtcp_transport.a
+H:/AI2/file_serving/build/esp-idf/esp-tls/libesp-tls.a
+H:/AI2/file_serving/build/esp-idf/http_parser/libhttp_parser.a
+H:/AI2/file_serving/build/esp-idf/esp_http_server/libesp_http_server.a
 H:/AI2/file_serving/build/esp-idf/nvs_flash/libnvs_flash.a
 H:/AI2/file_serving/build/esp-idf/mbedtls/libmbedtls.a
 H:/AI2/file_serving/build/esp-idf/esp_wifi/libesp_wifi.a
@@ -94,6 +97,9 @@ H:/AI2/file_serving/build/esp-idf/nvs_flash/libnvs_flash.a
 H:/AI2/file_serving/build/esp-idf/spiffs/libspiffs.a
 H:/AI2/file_serving/build/esp-idf/http_parser/libhttp_parser.a
 H:/AI2/file_serving/build/esp-idf/esp_http_server/libesp_http_server.a
+H:/AI2/file_serving/build/esp-idf/esp-tls/libesp-tls.a
+H:/AI2/file_serving/build/esp-idf/tcp_transport/libtcp_transport.a
+H:/AI2/file_serving/build/esp-idf/esp_http_client/libesp_http_client.a
 H:/AI2/file_serving/build/esp-idf/esp_phy/libesp_phy.a
 H:/AI2/file_serving/build/esp-idf/wpa_supplicant/libwpa_supplicant.a
 H:/AI2/file_serving/build/esp-idf/esp_coex/libesp_coex.a

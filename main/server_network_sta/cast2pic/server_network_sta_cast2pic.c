@@ -7,6 +7,7 @@
 #include <errno.h>
 
 #include "cast_core.h"
+#include "epd_display_mode.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -210,6 +211,8 @@ static esp_err_t send_cast2pic_result(httpd_req_t *req, const char *result)
             result_code = TDX_JSON_RESULT_STORAGE_NOT_READY;
         } else if (strcmp(result, "storage_not_enough") == 0) {
             result_code = TDX_JSON_RESULT_STORAGE_NO_SPACE;
+        } else if (strcmp(result, "mode_save_failed") == 0) {
+            result_code = TDX_JSON_RESULT_INTERNAL_ERROR;
         } else if (strcmp(result, "missing_bin_file") == 0) {
             result_code = TDX_JSON_RESULT_UPLOAD_BIN_MISSING;
         } else if (strcmp(result, "missing_image_file") == 0) {
@@ -232,24 +235,6 @@ static esp_err_t send_cast2pic_result(httpd_req_t *req, const char *result)
                  result);
     }
 
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_sendstr(req, json);
-}
-
-static esp_err_t send_cast2pic_core_result(httpd_req_t *req, const tdx_cast_core_result_t *result)
-{
-    if (result == NULL || result->result == TDX_JSON_RESULT_OK) {
-        return send_cast2pic_result(req, "ok");
-    }
-
-    char json[256];
-    const char *message = result->message[0] ? result->message : "cast2pic failed";
-    const char *error = result->error[0] ? result->error : "invalid_upload";
-    snprintf(json, sizeof(json),
-             "{\"func\":\"cast2pic_result\",\"result\":%d,\"message\":\"%s\",\"error\":\"%s\"}",
-             result->result,
-             message,
-             error);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, json);
 }
@@ -332,10 +317,15 @@ static void cast2pic_async_process(void *arg)
              job->meta.show ? 1 : 0,
              job->meta.save ? 1 : 0);
     (void)process_cast2pic_items(job->base_path, &job->meta, &result);
-    ESP_LOGI(TAG, "cast2pic async process done result=%d error=%s elapsed_ms=%lu",
-             result.result,
-             result.error[0] ? result.error : "",
-             (unsigned long)elapsed_ms_since(start_us));
+    if (result.result == TDX_JSON_RESULT_OK) {
+        ESP_LOGI(TAG, "cast2pic async process done result=0 elapsed_ms=%lu",
+                 (unsigned long)elapsed_ms_since(start_us));
+    } else {
+        ESP_LOGE(TAG, "cast2pic async process failed result=%d error=%s elapsed_ms=%lu",
+                 result.result,
+                 result.error[0] ? result.error : "cast2pic_failed",
+                 (unsigned long)elapsed_ms_since(start_us));
+    }
 }
 
 static void cast2pic_async_cleanup(void *arg)
@@ -395,14 +385,7 @@ static void assign_text_part(cast2pic_meta_t *meta, const char *name, const mult
 
 static bool image_field_matches(const char *name, const char *base_name)
 {
-    size_t base_len = strlen(base_name);
-
-    if (strcmp(name, base_name) == 0) {
-        return true;
-    }
-    return strncmp(name, base_name, base_len) == 0 &&
-           (name[base_len] == 'A' || name[base_len] == 'B') &&
-           name[base_len + 1] == '\0';
+    return strcmp(name, base_name) == 0;
 }
 
 static bool assign_image_part(cast2pic_meta_t *meta, const char *name, const multipart_part_t *part)
@@ -509,7 +492,8 @@ static const char *validate_cast2pic_meta(const cast2pic_meta_t *meta)
     if (strcmp(meta->func, "cast2pic") != 0) {
         return "invalid_func";
     }
-    if (strcmp(meta->screen, "ab") == 0) {
+    /* The V2 default is "ab", which is temporarily unsupported by the APP. */
+    if (meta->screen[0] == '\0' || strcmp(meta->screen, "ab") == 0) {
         return "unsupported_screen";
     }
     if (!screen_is_valid(meta->screen)) {
@@ -582,26 +566,32 @@ esp_err_t ServerNetworkStaCast2Pic_Process(httpd_req_t *req,
         return send_cast2pic_result(req, validate_error);
     }
 
-    if (meta.show) {
-        esp_err_t async_ret = start_cast2pic_async(body, body_len, base_path, &meta);
-        if (async_ret != ESP_OK) {
-            ESP_LOGW(TAG, "cast2pic async start failed screen=%s ret=%s",
-                     meta.screen, esp_err_to_name(async_ret));
-            return send_cast2pic_result(req,
-                                        async_ret == ESP_ERR_TIMEOUT ? "async_timeout" :
-                                        async_ret == ESP_ERR_INVALID_STATE ? "async_busy" :
-                                        "async_start_failed");
-        }
-        if (body_taken != NULL) {
-            *body_taken = true;
-        }
-        esp_err_t resp_ret = send_cast2pic_result(req, "ok");
-        ESP_LOGI(TAG, "cast2pic async response done screen=%s ret=%s",
-                 meta.screen, esp_err_to_name(resp_ret));
-        return resp_ret;
+    esp_err_t mode_ret = EpdDisplayMode_Set(USER_EPD_DISPLAY_MODE_NORMAL);
+    if (mode_ret != ESP_OK) {
+        ESP_LOGE(TAG, "cast2pic mode save failed screen=%s ret=%s",
+                 meta.screen, esp_err_to_name(mode_ret));
+        return send_cast2pic_result(req, "mode_save_failed");
     }
 
-    tdx_cast_core_result_t result = {0};
-    (void)process_cast2pic_items(base_path, &meta, &result);
-    return send_cast2pic_core_result(req, &result);
+    if (meta.show || meta.save) {
+        esp_err_t async_ret = start_cast2pic_async(body, body_len, base_path, &meta);
+        if (async_ret != ESP_OK) {
+            /*
+             * cast2pic result=0 means that the complete multipart data was
+             * received and validated. Display/save runs best-effort later.
+             */
+            ESP_LOGE(TAG, "cast2pic received but async start failed screen=%s ret=%s",
+                     meta.screen, esp_err_to_name(async_ret));
+        } else if (body_taken != NULL) {
+            *body_taken = true;
+        }
+    }
+
+    esp_err_t resp_ret = send_cast2pic_result(req, "ok");
+    ESP_LOGI(TAG, "cast2pic received screen=%s show=%d save=%d response=%s",
+             meta.screen,
+             meta.show ? 1 : 0,
+             meta.save ? 1 : 0,
+             esp_err_to_name(resp_ret));
+    return resp_ret;
 }

@@ -1298,13 +1298,27 @@ int ch583_wifi_uart_send_current_wifi_provision_status(void)
 
 int ch583_wifi_uart_send_wifi_provision_before_power_off(bool slideshow_enabled)
 {
+    return ch583_wifi_uart_send_wifi_provision_mode_before_power_off(
+        slideshow_enabled ? USER_EPD_DISPLAY_MODE_SLIDESHOW :
+                            USER_EPD_DISPLAY_MODE_NORMAL);
+}
+
+int ch583_wifi_uart_send_wifi_provision_mode_before_power_off(uint8_t mode)
+{
     // This is a one-shot CH583 notification. Do not update the cached provision
-    // status or persistent EPD mode; 0xF only means that this shutdown enters standby.
+    // status or persistent EPD mode. NORMAL uses standby while scheduled modes
+    // remain visible to CH583 so their wake policy is not overwritten at shutdown.
     uint8_t provision_status = s_wifi_provision_status_valid ? s_wifi_provision_status : 0U;
     uint8_t provision_nibble = (provision_status == 1U) ? 0x5U : 0x4U;
-    uint8_t mode = slideshow_enabled ? USER_EPD_DISPLAY_MODE_SLIDESHOW :
-                                       CH583_WIFI_PROVISION_MODE_STANDBY;
-    uint8_t combined_status = (uint8_t)((provision_nibble << 4) | (mode & 0x0FU));
+    uint8_t shutdown_mode;
+    if (mode == USER_EPD_DISPLAY_MODE_SLIDESHOW ||
+        mode == USER_EPD_DISPLAY_MODE_DAILY) {
+        shutdown_mode = mode;
+    } else {
+        shutdown_mode = CH583_WIFI_PROVISION_MODE_STANDBY;
+    }
+    uint8_t combined_status =
+        (uint8_t)((provision_nibble << 4) | (shutdown_mode & 0x0FU));
     char status_hex[3];
 
     snprintf(status_hex, sizeof(status_hex), "%02X", (unsigned int)combined_status);

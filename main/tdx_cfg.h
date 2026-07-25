@@ -250,6 +250,25 @@ extern "C" {
 // Public JSON result code for TDX JSON RESULT OTA BUSY; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_OTA_BUSY 1713
 
+// Daily image dimensions do not match the active EPD profile.
+#define TDX_JSON_RESULT_DAILY_IMAGE_SIZE_MISMATCH 1901
+// Daily image orientation is not an exact signed 16-bit integer.
+#define TDX_JSON_RESULT_DAILY_ORIENTATION_INVALID 1902
+// Daily image API URL is missing, too long, or not HTTPS.
+#define TDX_JSON_RESULT_DAILY_API_URL_INVALID 1903
+// Daily image timestamp is missing, is not an exact integer, or is outside the supported epoch range.
+#define TDX_JSON_RESULT_DAILY_TIME_INVALID 1904
+// Daily image configuration could not be saved to and verified from NVS.
+#define TDX_JSON_RESULT_DAILY_CONFIG_SAVE_FAILED 1905
+// Slideshow could not be stopped and confirmed before DAILY mode was entered.
+#define TDX_JSON_RESULT_DAILY_SLIDESHOW_STOP_FAILED 1906
+// DAILY display mode could not be persisted.
+#define TDX_JSON_RESULT_DAILY_MODE_SAVE_FAILED 1907
+// The dedicated daily image worker could not accept the request.
+#define TDX_JSON_RESULT_DAILY_JOB_SUBMIT_FAILED 1908
+// Current-boot SNTP time is unavailable, so a new daily timestamp cannot be validated.
+#define TDX_JSON_RESULT_DAILY_NETWORK_TIME_UNAVAILABLE 1909
+
 // Public JSON result code for TDX JSON RESULT EPD TYPE INVALID; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_EPD_TYPE_INVALID 1801
 // Public JSON result code for TDX JSON RESULT EPD TYPE SAVE FAILED; keep the numeric value stable for clients.
@@ -340,7 +359,7 @@ extern "C" {
 #define USER_HTTP_FILE_LIST_LOG_ENABLE 0
 
 // Print successful app_nvs read/write logs only when debugging NVS value flow.
-#define USER_NVS_VERBOSE_LOG_ENABLE 1
+#define USER_NVS_VERBOSE_LOG_ENABLE 0
 
 // Print multipart fallback parser details only when debugging legacy /dataUP uploads.
 #define USER_HTTP_MULTIPART_DETAIL_LOG_ENABLE 0
@@ -436,7 +455,7 @@ extern "C" {
 #define USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE (64 * 1024)
 
 // Feature switch for USER USB CONSOLE ANSI COLOR TEST ENABLE; set to 1 to enable and 0 to disable.
-#define USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE 1
+#define USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE 0
 
 /* -------------------------------------------------------------------------- */
 /* 08. OTA Upload                                                              */
@@ -453,7 +472,7 @@ extern "C" {
 #define SERVER_NETWORK_STA_OTA_VERSION_MAX 40
 
 // Print OTA low-level multipart and firmware-header details only during OTA parser bring-up.
-#define SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE 1
+#define SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE 0
 
 /* -------------------------------------------------------------------------- */
 /* 09. Saved Images / Cast / Snapshot / Delete                                 */
@@ -596,6 +615,9 @@ extern "C" {
 #define USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT (1UL << 0)
 #define USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT    (1UL << 1)
 #define USER_WORK_STATE_RUNTIME_WAKE_TIMER_CANCEL_PENDING_BIT (1UL << 2)
+// One-shot state is published atomically so its active and DAILY-owner bits stay consistent.
+#define USER_WORK_STATE_ONE_SHOT_ACTIVE_BIT      (1U << 0)
+#define USER_WORK_STATE_ONE_SHOT_DAILY_OWNER_BIT (1U << 1)
 // WIFI_PROVISION low nibble used only for the one-shot standby notification
 // immediately before POWER_OFF. It must not be stored as an EPD display mode.
 #define CH583_WIFI_PROVISION_MODE_STANDBY 0x0FU
@@ -898,6 +920,65 @@ extern "C" {
 #define USER_EPD_DISPLAY_MODE_DEFAULT USER_EPD_DISPLAY_MODE_NORMAL
 // NVS key used by USER EPD DISPLAY MODE NVS KEY; keep storage compatibility before changing it.
 #define USER_EPD_DISPLAY_MODE_NVS_KEY "epd_mode"
+
+/* -------------------------------------------------------------------------- */
+/* 16.1 Daily Image                                                            */
+/* -------------------------------------------------------------------------- */
+
+// Enable the isolated daily image feature without changing existing display paths.
+#define USER_DAILY_IMAGE_ENABLE 1
+// Version the NVS blob so future fields can be migrated without guessing its layout.
+#define USER_DAILY_IMAGE_NVS_CONFIG_VERSION 2U
+// A saved value of zero means the APP-triggered immediate display has completed.
+#define USER_DAILY_IMAGE_INITIAL_RUN_DONE 0U
+// A saved value of one makes the next valid DAILY worker run immediately after SNTP.
+#define USER_DAILY_IMAGE_INITIAL_RUN_PENDING 1U
+// Keep the NVS key within the ESP-IDF 15-character key limit.
+#define USER_DAILY_IMAGE_NVS_KEY "daily_cfg"
+// Store the fixed protocol function name in the versioned NVS blob for full request recovery.
+#define USER_DAILY_IMAGE_FUNC_BUFFER_SIZE 24U
+// Store at most 499 URL bytes plus the terminating null byte from the APP request.
+#define USER_DAILY_IMAGE_API_URL_BUFFER_SIZE 500U
+// Bound the URL returned by the daily image selection API.
+#define USER_DAILY_IMAGE_DOWNLOAD_URL_BUFFER_SIZE 1024U
+// Bound the small JSON body posted to the selection API.
+#define USER_DAILY_IMAGE_QUERY_BODY_SIZE 192U
+// Bound the selection API response so an unexpected page cannot consume application memory.
+#define USER_DAILY_IMAGE_QUERY_RESPONSE_SIZE 4096U
+// Bound connect and socket operations for both HTTPS requests.
+#define USER_DAILY_IMAGE_HTTP_TIMEOUT_MS 15000U
+// Use one dedicated worker queue entry so repeated APP requests cannot create parallel downloads.
+#define USER_DAILY_IMAGE_QUEUE_LENGTH 1U
+// Size the worker for TLS, JSON parsing, scheduling, and display orchestration.
+#define USER_DAILY_IMAGE_TASK_STACK_SIZE (12 * 1024)
+// Keep daily network work below the EPD display task priority.
+#define USER_DAILY_IMAGE_TASK_PRIORITY 4
+// Poll target time and mode changes without a busy loop.
+#define USER_DAILY_IMAGE_READY_POLL_MS 1000U
+// Space WiFi and SNTP readiness checks without holding the CPU in a tight loop.
+#define USER_DAILY_IMAGE_READY_CHECK_INTERVAL_SECONDS 5U
+// Sleep for one hour after this many consecutive WiFi or SNTP readiness failures.
+#define USER_DAILY_IMAGE_READY_CHECK_MAX_ATTEMPTS 10U
+// Retry only the API selection and BIN download within the current boot.
+#define USER_DAILY_IMAGE_RETRY_COUNT 3U
+// Separate retries so a server outage does not create a tight request loop.
+#define USER_DAILY_IMAGE_RETRY_DELAY_MS 10000U
+// Wake early enough for boot, WiFi association, time restore, and HTTPS setup.
+#define USER_DAILY_IMAGE_WAKE_ADVANCE_SECONDS 30U
+// Repeat the absolute daily schedule every 24 hours.
+#define USER_DAILY_IMAGE_PERIOD_SECONDS (24U * 60U * 60U)
+// Keep scheduled and retry EPD starts at least one hour apart; a new APP-triggered initial run is exempt.
+#define USER_DAILY_IMAGE_MIN_DISPLAY_INTERVAL_SECONDS (60U * 60U)
+// Retry a failed download or a failed single display after one hour.
+#define USER_DAILY_IMAGE_RETRY_WAKE_SECONDS (60U * 60U)
+// Reserve PSRAM for TLS, the EPD queue copy, and unrelated running services.
+#define USER_DAILY_IMAGE_PSRAM_RESERVE_BYTES (256 * 1024U)
+// Four equal steps produce 25/50/75 percent progress plus one completion log.
+#define USER_DAILY_IMAGE_PROGRESS_STEP_COUNT 4U
+// Request the existing guarded power-off path immediately after daily work terminates.
+#define USER_DAILY_IMAGE_POWER_OFF_DELAY_SECONDS 1U
+/* Retry a guarded shutdown after temporary HTTP/EPD/CH583 activity clears. */
+#define USER_DAILY_IMAGE_POWER_OFF_RETRY_SECONDS 20U
 // Feature switch for USB CONSOLE EPD TYPE DEBUG LOG ENABLE; set to 1 to enable and 0 to disable.
 #define USB_CONSOLE_EPD_TYPE_DEBUG_LOG_ENABLE 1
 // HTTP/USB route string for USB CONSOLE EPD TYPE LIST URI; update registered handlers if it changes.

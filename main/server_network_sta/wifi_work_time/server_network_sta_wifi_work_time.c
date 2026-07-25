@@ -18,6 +18,7 @@
 #include "epd_display_mode.h"
 #include "led_status.h"
 #include "server_network_sta_slideshow.h"
+#include "server_network_sta_daily_image.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 
@@ -36,10 +37,11 @@ static uint32_t s_last_http_activity_tick_encoded = 0;
 static uint32_t s_last_ch583_activity_tick_encoded = 0;
 static uint32_t s_guard_log_flags = 0;
 static uint32_t s_runtime_state_flags = 0;
-static bool s_one_shot_power_off_countdown_active = false;
+static uint8_t s_one_shot_power_off_state = 0;
 static uint32_t s_one_shot_restore_continue_time = USER_WORK_STATE_DEFAULT_CONTINUE_SECONDS;
 static uint32_t s_one_shot_restore_standby_time = USER_WORK_STATE_DEFAULT_STANDBY_SECONDS;
 static bool s_image_save_in_progress = false;
+static bool s_daily_image_in_progress = false;
 
 static void format_epoch_local(int64_t epoch, char *buf, size_t buf_size)
 {
@@ -339,17 +341,35 @@ static void restore_work_time_after_one_shot_skip(void)
     s_wifi_work_start_tick = xTaskGetTickCount();
     s_last_network_data_tick = s_wifi_work_start_tick;
     s_last_power_off_send_tick = 0;
-    s_one_shot_power_off_countdown_active = false;
+    __atomic_store_n(&s_one_shot_power_off_state, 0, __ATOMIC_RELEASE);
     UserLedStatus_SetPowerOffPending(false);
 }
 
-static bool should_skip_one_shot_power_off_for_slideshow(void)
+static bool should_skip_or_cancel_one_shot_power_off(void)
 {
-    if (!s_one_shot_power_off_countdown_active) {
+    uint8_t one_shot_state =
+        __atomic_load_n(&s_one_shot_power_off_state, __ATOMIC_ACQUIRE);
+    if ((one_shot_state & USER_WORK_STATE_ONE_SHOT_ACTIVE_BIT) == 0) {
         return false;
     }
 
     uint8_t mode = EpdDisplayMode_Get();
+    /*
+     * A one-shot created in DAILY mode becomes stale when cast, cast2pic, or
+     * slideshow takes ownership. Generic EPD one-shots keep their old behavior.
+     */
+    if ((one_shot_state & USER_WORK_STATE_ONE_SHOT_DAILY_OWNER_BIT) != 0 &&
+        mode != USER_EPD_DISPLAY_MODE_DAILY) {
+        restore_work_time_after_one_shot_skip();
+        ESP_LOGI(TAG,
+                 "daily one-shot power off canceled because mode changed mode=%u(%s) restore_continue=%lu restore_standby=%lu",
+                 (unsigned int)mode,
+                 EpdDisplayMode_ToString(mode),
+                 (unsigned long)server_required_continue_work_time,
+                 (unsigned long)wifi_standby_time_s);
+        return true;
+    }
+
     if (mode != USER_EPD_DISPLAY_MODE_SLIDESHOW) {
         ESP_LOGI(TAG,
                  "one-shot power off skip slideshow remain check mode=%u(%s)",
@@ -424,7 +444,12 @@ static bool configure_ch583_wake_timer_before_power_off(bool *slideshow_enabled_
 {
     uint32_t interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
     bool random = false;
-    bool slideshow_on = ServerNetworkStaSlideshow_IsSavedEnabled("/data", &interval, &random);
+    uint8_t epd_mode = EpdDisplayMode_Get();
+    bool daily_on = epd_mode == USER_EPD_DISPLAY_MODE_DAILY;
+    bool slideshow_on =
+        epd_mode == USER_EPD_DISPLAY_MODE_SLIDESHOW &&
+        ServerNetworkStaSlideshow_IsSavedEnabled("/data", &interval, &random);
+    bool wake_timer_on = false;
     int wake_ret;
 
     if (slideshow_enabled_out != NULL) {
@@ -433,7 +458,34 @@ static bool configure_ch583_wake_timer_before_power_off(bool *slideshow_enabled_
         *slideshow_enabled_out = slideshow_on;
     }
 
-    if (slideshow_on) {
+    if (daily_on) {
+        uint32_t wake_interval = 0;
+        bool keep_awake = true;
+        esp_err_t daily_ret =
+            ServerNetworkStaDailyImage_GetPowerOffWakeSeconds(&wake_interval,
+                                                               &keep_awake);
+        if (daily_ret != ESP_OK) {
+            ESP_LOGE(TAG,
+                     "daily power off postponed because schedule is unavailable ret=%s",
+                     esp_err_to_name(daily_ret));
+            return false;
+        }
+        if (keep_awake) {
+            ESP_LOGI(TAG, "daily power off postponed for due run window");
+            return false;
+        }
+        ESP_LOGI(TAG, "daily wake timer on interval=%lu advance=%u",
+                 (unsigned long)wake_interval,
+                 (unsigned int)USER_DAILY_IMAGE_WAKE_ADVANCE_SECONDS);
+        wake_ret = ch583_wifi_uart_send_wake_timer_on(wake_interval);
+        if (wake_ret < 0) {
+            ESP_LOGE(TAG,
+                     "daily power off postponed because CH583 wake timer failed ret=%d",
+                     wake_ret);
+            return false;
+        }
+        wake_timer_on = true;
+    } else if (slideshow_on) {
         if (interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS ||
             interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
             interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
@@ -479,7 +531,9 @@ static bool configure_ch583_wake_timer_before_power_off(bool *slideshow_enabled_
         }
         wake_interval = wake_interval > wake_advance ? wake_interval - wake_advance : 1U;
 
-        if (!s_one_shot_power_off_countdown_active &&
+        uint8_t one_shot_state =
+            __atomic_load_n(&s_one_shot_power_off_state, __ATOMIC_ACQUIRE);
+        if ((one_shot_state & USER_WORK_STATE_ONE_SHOT_ACTIVE_BIT) == 0 &&
             wake_interval < TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS) {
             reset_work_time_counter_for_slideshow_short_interval();
             ESP_LOGI(TAG,
@@ -504,6 +558,7 @@ static bool configure_ch583_wake_timer_before_power_off(bool *slideshow_enabled_
                  (unsigned long)wake_advance,
                  random ? 1 : 0);
         wake_ret = ch583_wifi_uart_send_wake_timer_on(wake_interval);
+        wake_timer_on = wake_ret >= 0;
     } else {
         ESP_LOGI(TAG, "slideshow disabled before power off, wake timer off");
         wake_ret = ch583_wifi_uart_send_wake_timer_off();
@@ -511,7 +566,7 @@ static bool configure_ch583_wake_timer_before_power_off(bool *slideshow_enabled_
 
     if (wake_ret < 0) {
         ESP_LOGW(TAG, "CH583 wake timer config failed ret=%d, continue power off", wake_ret);
-    } else if (slideshow_on) {
+    } else if (wake_timer_on) {
         // Roll back this timer if the current power-off attempt is canceled later.
         (void)__atomic_fetch_or(&s_runtime_state_flags,
                                 USER_WORK_STATE_RUNTIME_WAKE_TIMER_CANCEL_PENDING_BIT,
@@ -589,10 +644,14 @@ static void work_state_task(void *arg)
         }
 
         uint32_t elapsed = update_working_time_seconds();
-        uint32_t clamped_continue_time = s_one_shot_power_off_countdown_active ?
+        uint8_t one_shot_state =
+            __atomic_load_n(&s_one_shot_power_off_state, __ATOMIC_ACQUIRE);
+        bool one_shot_active =
+            (one_shot_state & USER_WORK_STATE_ONE_SHOT_ACTIVE_BIT) != 0;
+        uint32_t clamped_continue_time = one_shot_active ?
                                          server_required_continue_work_time :
                                          clamp_continue_seconds(server_required_continue_work_time);
-        if (!s_one_shot_power_off_countdown_active &&
+        if (!one_shot_active &&
             clamped_continue_time != server_required_continue_work_time) {
             server_required_continue_work_time = clamped_continue_time;
             (void)save_work_state_to_nvs();
@@ -707,6 +766,16 @@ static void work_state_task(void *arg)
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
                     continue;
                 }
+                if (ServerNetworkStaWifiWorkTime_IsDailyImageInProgress()) {
+                    if (counter == 0) {
+                        ESP_LOGI(TAG,
+                                 "power off postponed because daily image busy elapsed=%lu target=%lu",
+                                 (unsigned long)elapsed,
+                                 (unsigned long)server_required_continue_work_time);
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
                 uint32_t http_hold_remaining = http_activity_hold_remaining_seconds(now);
                 if (http_hold_remaining > 0) {
                     uint32_t old_log_flags = __atomic_fetch_or(&s_guard_log_flags,
@@ -750,7 +819,7 @@ static void work_state_task(void *arg)
                 }
                 s_last_power_off_send_tick = now;
 
-                if (should_skip_one_shot_power_off_for_slideshow()) {
+                if (should_skip_or_cancel_one_shot_power_off()) {
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
                     continue;
                 }
@@ -782,6 +851,8 @@ static void work_state_task(void *arg)
                 uint32_t final_ota_hold_flags = __atomic_load_n(&s_ota_hold_flags, __ATOMIC_ACQUIRE);
                 bool final_epd_busy = ServerNetworkStaEpdDisplay_IsBusy();
                 bool final_image_save_busy = ServerNetworkStaWifiWorkTime_IsImageSaveInProgress();
+                bool final_daily_image_busy =
+                    ServerNetworkStaWifiWorkTime_IsDailyImageInProgress();
                 TickType_t final_now = xTaskGetTickCount();
                 uint32_t final_http_hold_remaining = http_activity_hold_remaining_seconds(final_now);
                 uint32_t final_ch583_hold_remaining = ch583_activity_hold_remaining_seconds(final_now);
@@ -791,14 +862,16 @@ static void work_state_task(void *arg)
                     final_ota_hold_flags != 0 ||
                     final_epd_busy ||
                     final_image_save_busy ||
+                    final_daily_image_busy ||
                     final_http_hold_remaining > 0 ||
                     final_ch583_hold_remaining > 0) {
                     ESP_LOGI(TAG,
-                             "power off canceled by final guard timer=%d ota=0x%lx epd=%d image_save=%d http_remaining=%lu ch583_remaining=%lu",
+                             "power off canceled by final guard timer=%d ota=0x%lx epd=%d image_save=%d daily=%d http_remaining=%lu ch583_remaining=%lu",
                              final_timer_active ? 1 : 0,
                              (unsigned long)final_ota_hold_flags,
                              final_epd_busy ? 1 : 0,
                              final_image_save_busy ? 1 : 0,
+                             final_daily_image_busy ? 1 : 0,
                              (unsigned long)final_http_hold_remaining,
                              (unsigned long)final_ch583_hold_remaining);
                     if (final_http_hold_remaining > 0) {
@@ -849,6 +922,8 @@ static void work_state_task(void *arg)
                 bool locked_epd_busy = ServerNetworkStaEpdDisplay_IsBusy();
                 bool locked_image_save_busy =
                     ServerNetworkStaWifiWorkTime_IsImageSaveInProgress();
+                bool locked_daily_image_busy =
+                    ServerNetworkStaWifiWorkTime_IsDailyImageInProgress();
                 TickType_t locked_now = xTaskGetTickCount();
                 uint32_t locked_http_hold_remaining =
                     http_activity_hold_remaining_seconds(locked_now);
@@ -861,14 +936,16 @@ static void work_state_task(void *arg)
                     locked_ota_hold_flags != 0 ||
                     locked_epd_busy ||
                     locked_image_save_busy ||
+                    locked_daily_image_busy ||
                     locked_http_hold_remaining > 0 ||
                     locked_ch583_hold_remaining > 0) {
                     ESP_LOGI(TAG,
-                             "power off canceled by locked guard timer=%d ota=0x%lx epd=%d image_save=%d http_remaining=%lu ch583_remaining=%lu",
+                             "power off canceled by locked guard timer=%d ota=0x%lx epd=%d image_save=%d daily=%d http_remaining=%lu ch583_remaining=%lu",
                              locked_timer_active ? 1 : 0,
                              (unsigned long)locked_ota_hold_flags,
                              locked_epd_busy ? 1 : 0,
                              locked_image_save_busy ? 1 : 0,
+                             locked_daily_image_busy ? 1 : 0,
                              (unsigned long)locked_http_hold_remaining,
                              (unsigned long)locked_ch583_hold_remaining);
                     TdxSharedSpi_Unlock();
@@ -887,19 +964,20 @@ static void work_state_task(void *arg)
                 }
 
                 int provision_ret =
-                    ch583_wifi_uart_send_wifi_provision_before_power_off(
-                        slideshow_enabled_before_power_off);
+                    ch583_wifi_uart_send_wifi_provision_mode_before_power_off(
+                        EpdDisplayMode_Get());
                 if (provision_ret < 0) {
                     // WIFI_PROVISION is an advisory notification. Keep the original
                     // POWER_OFF behavior even when this extra UART write fails.
                     ESP_LOGE(TAG,
-                             "pre-power-off WIFI_PROVISION send failed slideshow=%d ret=%d",
-                             slideshow_enabled_before_power_off ? 1 : 0,
+                             "pre-power-off WIFI_PROVISION send failed mode=%u ret=%d",
+                             (unsigned int)EpdDisplayMode_Get(),
                              provision_ret);
                 } else {
                     ESP_LOGI(TAG,
-                             "pre-power-off WIFI_PROVISION sent mode=%s",
-                             slideshow_enabled_before_power_off ? "slideshow" : "standby");
+                             "pre-power-off WIFI_PROVISION sent mode=%u(%s)",
+                             (unsigned int)EpdDisplayMode_Get(),
+                             EpdDisplayMode_ToString(EpdDisplayMode_Get()));
                     vTaskDelay(pdMS_TO_TICKS(100));
                 }
 
@@ -1123,10 +1201,28 @@ void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t secon
     if (seconds == 0) {
         return;
     }
-    if (!s_one_shot_power_off_countdown_active) {
-        s_one_shot_restore_continue_time = server_required_continue_work_time;
-        s_one_shot_restore_standby_time = wifi_standby_time_s;
+    bool daily_owned =
+        EpdDisplayMode_Get() == USER_EPD_DISPLAY_MODE_DAILY;
+    /*
+     * Keep an active one-shot deadline stable. The daily worker periodically
+     * checks that shutdown is progressing, so resetting the counter here can
+     * race the final power-off guard and cause an unnecessary cancel/retry.
+     */
+    uint8_t one_shot_state =
+        __atomic_load_n(&s_one_shot_power_off_state, __ATOMIC_ACQUIRE);
+    if ((one_shot_state & USER_WORK_STATE_ONE_SHOT_ACTIVE_BIT) != 0) {
+        if (daily_owned) {
+            (void)__atomic_fetch_or(&s_one_shot_power_off_state,
+                                    USER_WORK_STATE_ONE_SHOT_DAILY_OWNER_BIT,
+                                    __ATOMIC_ACQ_REL);
+        }
+        ESP_LOGI(TAG,
+                 "one-shot power off countdown already active, keep target=%lu",
+                 (unsigned long)server_required_continue_work_time);
+        return;
     }
+    s_one_shot_restore_continue_time = server_required_continue_work_time;
+    s_one_shot_restore_standby_time = wifi_standby_time_s;
 
     server_required_continue_work_time = seconds;
     wifi_standby_time_s = seconds;
@@ -1134,7 +1230,11 @@ void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t secon
     s_wifi_work_start_tick = xTaskGetTickCount();
     s_last_network_data_tick = s_wifi_work_start_tick;
     s_last_power_off_send_tick = 0;
-    s_one_shot_power_off_countdown_active = true;
+    one_shot_state = USER_WORK_STATE_ONE_SHOT_ACTIVE_BIT;
+    if (daily_owned) {
+        one_shot_state |= USER_WORK_STATE_ONE_SHOT_DAILY_OWNER_BIT;
+    }
+    __atomic_store_n(&s_one_shot_power_off_state, one_shot_state, __ATOMIC_RELEASE);
     UserLedStatus_SetPowerOffPending(true);
 
     ESP_LOGI(TAG,
@@ -1154,6 +1254,21 @@ void ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(bool in_progress)
 bool ServerNetworkStaWifiWorkTime_IsImageSaveInProgress(void)
 {
     return __atomic_load_n(&s_image_save_in_progress, __ATOMIC_ACQUIRE);
+}
+
+void ServerNetworkStaWifiWorkTime_SetDailyImageInProgress(bool in_progress)
+{
+    bool old_value = __atomic_exchange_n(&s_daily_image_in_progress,
+                                         in_progress,
+                                         __ATOMIC_ACQ_REL);
+    if (old_value != in_progress) {
+        ESP_LOGI(TAG, "daily image in progress=%d", in_progress ? 1 : 0);
+    }
+}
+
+bool ServerNetworkStaWifiWorkTime_IsDailyImageInProgress(void)
+{
+    return __atomic_load_n(&s_daily_image_in_progress, __ATOMIC_ACQUIRE);
 }
 
 void ServerNetworkStaWifiWorkTime_SetOtaWriteInProgress(bool in_progress)
@@ -1251,7 +1366,7 @@ esp_err_t ServerNetworkStaWifiWorkTime_SetAndSave(uint32_t seconds)
     s_wifi_work_start_tick = xTaskGetTickCount();
     s_last_network_data_tick = s_wifi_work_start_tick;
     s_last_power_off_send_tick = 0;
-    s_one_shot_power_off_countdown_active = false;
+    __atomic_store_n(&s_one_shot_power_off_state, 0, __ATOMIC_RELEASE);
     UserLedStatus_SetPowerOffPending(false);
 
     ESP_LOGI(TAG, "set work time requested=%lu continue=%lu standby=%lu",

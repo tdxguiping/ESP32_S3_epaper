@@ -27,31 +27,40 @@ typedef struct {
     size_t file_count;
 } usb_delete_request_t;
 
-static bool delete_file_pair(const char *file_name)
+typedef struct {
+    int deleted;
+    int missing;
+    int failed;
+} usb_delete_summary_t;
+
+static void delete_one_path(const char *path, usb_delete_summary_t *summary)
+{
+    if (unlink(path) == 0) {
+        summary->deleted++;
+    } else if (errno == ENOENT) {
+        summary->missing++;
+    } else {
+        summary->failed++;
+        ESP_LOGE(TAG, "delete failed path=%s errno=%d", path, errno);
+    }
+}
+
+static void delete_file_pair(const char *file_name, usb_delete_summary_t *summary)
 {
     char bin_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
     char jpg_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
-    bool removed = false;
 
     if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
-        return false;
+        summary->failed++;
+        return;
     }
     snprintf(bin_path, sizeof(bin_path), "%s/bin_img/%s.bin", USB_CONSOLE_BASE_PATH, file_name);
-    if (unlink(bin_path) == 0) {
-        removed = true;
-    } else if (errno != ENOENT) {
-        ESP_LOGE(TAG, "delete failed path=%s errno=%d", bin_path, errno);
-    }
+    delete_one_path(bin_path, summary);
 
     snprintf(jpg_path, sizeof(jpg_path), "%s/jpg_img/%s.jpg", USB_CONSOLE_BASE_PATH, file_name);
-    if (unlink(jpg_path) == 0) {
-        removed = true;
-    } else if (errno != ENOENT) {
-        ESP_LOGE(TAG, "delete failed path=%s errno=%d", jpg_path, errno);
-    }
+    delete_one_path(jpg_path, summary);
 
     TdxSharedSpi_Unlock();
-    return removed;
 }
 
 static const char *find_json_key(const char *body, const char *key)
@@ -147,7 +156,7 @@ esp_err_t UsbConsoleDelete_Handle(const usb_console_http_request_t *request,
 esp_err_t UsbConsoleDelete_Process(const usb_console_http_request_t *request,
                                   usb_console_http_response_t *response)
 {
-    int removed_name_count = 0;
+    usb_delete_summary_t summary = {0};
     usb_delete_request_t delete_request;
 
     if (request == NULL || response == NULL ||
@@ -183,13 +192,14 @@ esp_err_t UsbConsoleDelete_Process(const usb_console_http_request_t *request,
     }
 
     for (size_t i = 0; i < delete_request.file_count; i++) {
-        if (delete_file_pair(delete_request.file_names[i])) {
-            removed_name_count++;
-        }
+        delete_file_pair(delete_request.file_names[i], &summary);
     }
-    if (removed_name_count <= 0) {
-        ESP_LOGW(TAG, "delete failed request_count=%u removed_name_count=%d",
-                 (unsigned int)delete_request.file_count, removed_name_count);
+    if (summary.failed > 0 || summary.deleted <= 0) {
+        ESP_LOGW(TAG, "delete failed request_count=%u deleted=%d missing=%d failed=%d",
+                 (unsigned int)delete_request.file_count,
+                 summary.deleted,
+                 summary.missing,
+                 summary.failed);
         UserLedStatus_ShowOperationFail();
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
@@ -197,8 +207,11 @@ esp_err_t UsbConsoleDelete_Process(const usb_console_http_request_t *request,
                                          "{\"func\":\"delete_result\",\"result\":%d,\"message\":\"delete failed\"}",
                                          TDX_JSON_RESULT_DELETE_FAILED);
     }
-    ESP_LOGI(TAG, "delete success request_count=%u removed_name_count=%d",
-             (unsigned int)delete_request.file_count, removed_name_count);
+    ESP_LOGI(TAG, "delete success request_count=%u deleted=%d missing=%d failed=%d",
+             (unsigned int)delete_request.file_count,
+             summary.deleted,
+             summary.missing,
+             summary.failed);
     UserLedStatus_ShowSuccess();
     return UsbConsoleCommon_SetJsonf(response,
                                      200,

@@ -20,6 +20,12 @@ esp_err_t ServerNetworkStaSlideshow_StartSaved(const char *base_path);
 esp_err_t ServerNetworkStaSlideshow_StartSavedResetInterval(const char *base_path);
 esp_err_t ServerNetworkStaSlideshow_StartSavedForNewCommand(const char *base_path);
 esp_err_t ServerNetworkStaSlideshow_StartSavedDelayed(const char *base_path);
+/*
+ * Return the EPD-specific lead time used before an absolute display target.
+ * Daily image scheduling shares this value so both timed display paths stay
+ * aligned when support for an EPD type is adjusted.
+ */
+uint32_t slideshow_rtc_display_lead_seconds(void);
 bool ServerNetworkStaSlideshow_IsSavedEnabled(const char *base_path,
                                               uint32_t *interval,
                                               bool *random);

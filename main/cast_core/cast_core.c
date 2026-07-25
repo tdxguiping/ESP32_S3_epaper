@@ -514,10 +514,14 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
 
     bool any_show = false;
     bool any_save = false;
+    bool cast_stop_required = false;
     for (size_t i = 0; i < item_count; i++) {
         const tdx_image_transfer_item_t *item = &items[i];
         if (item->show) {
             any_show = true;
+            if (item->record_last_cast) {
+                cast_stop_required = true;
+            }
         }
         if (item->save) {
             any_save = true;
@@ -530,7 +534,17 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
         EpdSdPowerTest_ImageTransferBegin();
     }
     if (any_show) {
-        (void)stop_slideshow_for_cast(base_path);
+        esp_err_t stop_ret = stop_slideshow_for_cast(base_path);
+        if (stop_ret != ESP_OK && cast_stop_required) {
+            set_result(result,
+                       stop_ret == ESP_ERR_TIMEOUT ? TDX_JSON_RESULT_TIMEOUT
+                                                   : TDX_JSON_RESULT_STORAGE_NOT_READY,
+                       "image transfer failed",
+                       stop_ret == ESP_ERR_TIMEOUT ? "slideshow_stop_timeout"
+                                                   : "slideshow_stop_failed");
+            ret = stop_ret;
+            goto save_done;
+        }
     }
 
     if (any_save) {
@@ -741,31 +755,35 @@ static esp_err_t stop_slideshow_for_cast(const char *base_path)
     }
     esp_err_t ret = write_file_exact(control_path, json, strlen(json));
     TdxSharedSpi_Unlock();
-    if (ret == ESP_OK) {
-        ServerNetworkStaSlideshow_Stop();
-        esp_err_t mode_ret = EpdDisplayMode_SetBySlideshowSwitch(false);
-        if (mode_ret != ESP_OK) {
-            ESP_LOGW(TAG, "show=true slideshow stop epd mode sync failed ret=%s",
-                     esp_err_to_name(mode_ret));
-        }
-        lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
-        if (lock_ret == ESP_OK) {
-            bool read_ok = read_slideshow_control_sw(control_path, &sw);
-            TdxSharedSpi_Unlock();
-            if (read_ok && sw == 0) {
-                ESP_LOGI(TAG, "show=true slideshow stop confirmed sw=0");
-            } else {
-                ESP_LOGW(TAG, "show=true slideshow stop check failed read_ok=%d sw=%lu",
-                         read_ok ? 1 : 0,
-                         (unsigned long)sw);
-            }
-        } else {
-            ESP_LOGW(TAG, "show=true slideshow stop check lock failed ret=%s",
-                     esp_err_to_name(lock_ret));
-        }
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "show=true slideshow stop write failed ret=%s", esp_err_to_name(ret));
+        return ret;
     }
-    ESP_LOGI(TAG, "stop slideshow ret=%s", esp_err_to_name(ret));
-    return ret;
+
+    ServerNetworkStaSlideshow_Stop();
+    esp_err_t mode_ret = EpdDisplayMode_SetBySlideshowSwitch(false);
+    if (mode_ret != ESP_OK) {
+        ESP_LOGW(TAG, "show=true slideshow stop epd mode sync failed ret=%s",
+                 esp_err_to_name(mode_ret));
+    }
+
+    lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    if (lock_ret != ESP_OK) {
+        ESP_LOGW(TAG, "show=true slideshow stop check lock failed ret=%s",
+                 esp_err_to_name(lock_ret));
+        return lock_ret;
+    }
+    bool read_ok = read_slideshow_control_sw(control_path, &sw);
+    TdxSharedSpi_Unlock();
+    if (!read_ok || sw != 0) {
+        ESP_LOGW(TAG, "show=true slideshow stop check failed read_ok=%d sw=%lu",
+                 read_ok ? 1 : 0,
+                 (unsigned long)sw);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "show=true slideshow stop confirmed sw=0");
+    return ESP_OK;
 }
 
 esp_err_t TdxImageTransfer_ParseSingle(const char *body,

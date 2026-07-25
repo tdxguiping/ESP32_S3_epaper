@@ -1,0 +1,831 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>相框传图与蓝牙协议说明</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f6f8;
+        --panel: #ffffff;
+        --text: #172033;
+        --muted: #586579;
+        --line: #dce3ec;
+        --brand: #1d5fd1;
+        --brand-soft: #e8f1ff;
+        --code-bg: #101828;
+        --code-text: #eef4ff;
+        --radius: 12px;
+        --shadow: 0 12px 34px rgba(17, 24, 39, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          15px/1.75 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", Arial, sans-serif;
+      }
+
+      .page {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 28px 18px 48px;
+      }
+
+      .hero {
+        padding: 26px 28px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+
+      .hero__tag {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: var(--brand-soft);
+        color: var(--brand);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      h1 {
+        margin: 14px 0 8px;
+        font-size: 34px;
+        line-height: 1.2;
+      }
+
+      .hero p {
+        max-width: 860px;
+        margin: 0;
+        color: var(--muted);
+        font-size: 16px;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 260px minmax(0, 1fr);
+        gap: 20px;
+        margin-top: 20px;
+        align-items: start;
+      }
+
+      .toc {
+        position: sticky;
+        top: 16px;
+        max-height: calc(100vh - 32px);
+        overflow: auto;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+
+      .toc h2 {
+        margin: 0 0 10px;
+        font-size: 15px;
+      }
+
+      .toc-group + .toc-group {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid var(--line);
+      }
+
+      .toc-label {
+        display: block;
+        margin: 4px 0 6px;
+        color: #344054;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .toc a {
+        display: block;
+        padding: 6px 8px;
+        border-radius: 8px;
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 14px;
+      }
+
+      .toc a.toc-sub {
+        padding-left: 18px;
+        font-size: 13px;
+      }
+
+      .toc a.toc-command {
+        padding-left: 28px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+      }
+
+      .toc a:hover {
+        background: var(--brand-soft);
+        color: var(--brand);
+      }
+
+      .doc {
+        min-width: 0;
+        padding: 28px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+
+      section,
+      h2,
+      h3,
+      h4 {
+        scroll-margin-top: 20px;
+      }
+
+      section + section {
+        margin-top: 34px;
+        padding-top: 30px;
+        border-top: 1px solid var(--line);
+      }
+
+      h2 {
+        margin: 0 0 12px;
+        font-size: 25px;
+        line-height: 1.3;
+      }
+
+      h3 {
+        margin: 24px 0 10px;
+        font-size: 19px;
+      }
+
+      h4 {
+        margin: 20px 0 8px;
+        font-size: 16px;
+        line-height: 1.35;
+      }
+
+      p {
+        margin: 10px 0 0;
+      }
+
+      ul,
+      ol {
+        margin: 10px 0 0;
+        padding-left: 22px;
+      }
+
+      li + li {
+        margin-top: 4px;
+      }
+
+      .table-wrap {
+        margin-top: 12px;
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #fff;
+      }
+
+      th,
+      td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #f7f9fc;
+        color: #344054;
+        font-weight: 700;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      code {
+        padding: 0.16em 0.42em;
+        border-radius: 7px;
+        background: var(--brand-soft);
+        color: var(--brand);
+        font-size: 0.92em;
+      }
+
+      pre {
+        margin: 12px 0 0;
+        padding: 15px 16px;
+        overflow-x: auto;
+        border-radius: var(--radius);
+        background: var(--code-bg);
+        color: var(--code-text);
+        line-height: 1.6;
+      }
+
+      pre code {
+        padding: 0;
+        background: transparent;
+        color: inherit;
+      }
+
+      .note {
+        margin-top: 12px;
+        padding: 12px 14px;
+        border: 1px solid #b7d3ff;
+        border-left: 4px solid var(--brand);
+        border-radius: 10px;
+        background: #f5f9ff;
+        color: #344054;
+      }
+
+      @media (max-width: 960px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .toc {
+          position: static;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .page {
+          padding: 14px 10px 32px;
+        }
+
+        .hero,
+        .doc {
+          padding: 20px 16px;
+        }
+
+        h1 {
+          font-size: 28px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header class="hero">
+        <span class="hero__tag">Wi-Fi / HTTP / BLE</span>
+        <h1>相框传图与蓝牙协议说明</h1>
+        <p>
+          按当前前端代码整理设备联调协议，覆盖 Wi-Fi/HTTP 传图、设备图片管理、蓝牙配网、蓝牙唤醒 Wi-Fi 和设备 BLE 广播识别。
+        </p>
+      </header>
+
+      <div class="layout">
+        <aside class="toc">
+          <h2>目录</h2>
+          <div class="toc-group">
+            <a href="#transport">1. 传输通道</a>
+          </div>
+          <div class="toc-group">
+            <a href="#http">2. HTTP 图片与控制协议</a>
+            <a class="toc-sub" href="#http-overview">2.1 接口总览</a>
+            <span class="toc-label">multipart 图片接口</span>
+            <a class="toc-command" href="#func-cast">cast</a>
+            <a class="toc-command" href="#func-upload">upload</a>
+            <a class="toc-command" href="#func-cast2pic">cast2pic</a>
+            <a class="toc-command" href="#func-update">update</a>
+            <span class="toc-label">JSON 控制接口</span>
+            <a class="toc-command" href="#func-get-saved-images">get_saved_images</a>
+            <a class="toc-command" href="#func-get-snapshot">get_snapshot</a>
+            <a class="toc-command" href="#func-start-slideshow">start_slideshow</a>
+            <a class="toc-command" href="#func-set-slideshow">set_slideshow</a>
+            <a class="toc-command" href="#func-delete">delete</a>
+            <a class="toc-command" href="#func-set-wifi-work-time">set_wifi_work_time</a>
+            <a class="toc-command" href="#func-ping">ping</a>
+          </div>
+          <div class="toc-group">
+            <a href="#ble-config">3. 蓝牙配网协议</a>
+            <a class="toc-sub" href="#ble-config-flow">3.1 当前主流程</a>
+            <a class="toc-sub" href="#ble-config-payload">3.2 写入与响应</a>
+          </div>
+          <div class="toc-group">
+            <a href="#ble-wakeup">4. 蓝牙唤醒 Wi-Fi</a>
+            <a class="toc-sub" href="#ble-wakeup-params">4.1 连接参数</a>
+            <a class="toc-sub" href="#ble-wakeup-payload">4.2 写入与响应</a>
+          </div>
+          <div class="toc-group">
+            <a href="#ble-adv">5. 设备 BLE 广播识别</a>
+            <a class="toc-sub" href="#ble-adv-fields">5.1 广播字段</a>
+          </div>
+          <div class="toc-group">
+            <a href="#notes">6. 设备端实现要点</a>
+          </div>
+        </aside>
+
+        <main class="doc">
+          <section id="transport">
+            <h2>1. 传输通道</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>通道</th>
+                    <th>用途</th>
+                    <th>入口/路径</th>
+                    <th>数据格式</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>BLE GATT</td>
+                    <td>蓝牙配网、蓝牙唤醒 Wi-Fi</td>
+                    <td>Service/Characteristic 见下文</td>
+                    <td>ASCII JSON 写入特征值，JSON/嵌套 JSON 通知或读取</td>
+                  </tr>
+                  <tr>
+                    <td>HTTP</td>
+                    <td>投图、保存图片管理、轮播、保活</td>
+                    <td><code>http://&lt;device-ip&gt;/dataUP</code></td>
+                    <td>上传用 <code>multipart/form-data</code>，控制命令用 JSON</td>
+                  </tr>
+                  <tr>
+                    <td>HTTP GET</td>
+                    <td>连通性校验</td>
+                    <td><code>http://&lt;device-ip&gt;/ping</code></td>
+                    <td>无请求体，返回 JSON</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <ul>
+              <li>设备返回 <code>result: 0</code> 或 <code>result: "0"</code> 表示成功。</li>
+              <li>部分 BLE 响应会包一层 <code>{ "payload": "{...}" }</code>，前端会优先解析 <code>payload</code>。</li>
+              <li>HTTP 非 2xx、响应不可解析、超时都按失败处理。</li>
+            </ul>
+          </section>
+
+          <section id="http">
+            <h2>2. HTTP 图片与控制协议</h2>
+
+            <h3 id="http-overview">2.1 接口总览</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>func</th>
+                    <th>用途</th>
+                    <th>请求格式</th>
+                    <th>关键字段</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><a href="#func-cast"><code>cast</code></a></td>
+                    <td>普通投图</td>
+                    <td><code>POST /dataUP</code> + multipart</td>
+                    <td><code>fileName</code> <code>bin</code> <code>bin_size</code> <code>image</code> <code>image_size</code> <code>save</code> <code>show</code></td>
+                  </tr>
+                  <tr>
+                    <td><a href="#func-upload"><code>upload</code></a></td>
+                    <td>通用上传</td>
+                    <td><code>POST /dataUP</code> + multipart</td>
+                    <td>同 <code>cast</code></td>
+                  </tr>
+                  <tr>
+                    <td><a href="#func-cast2pic"><code>cast2pic</code></a></td>
+                    <td>双图投图/上传</td>
+                    <td><code>POST /dataUP</code> + multipart</td>
+                    <td>与 <code>upload</code> 多张上传一致，重复两组 <code>fileName</code> <code>bin</code> <code>bin_size</code> <code>image</code> <code>image_size</code>，并带 <code>screen</code></td>
+                  </tr>
+                  <tr>
+                    <td><a href="#func-update"><code>update</code></a></td>
+                    <td>替换旧图片，当前前端预留</td>
+                    <td><code>POST /dataUP</code> + multipart</td>
+                    <td><code>oldfileNames</code> <code>newfileNames</code> <code>bin</code> <code>image</code></td>
+                  </tr>
+                  <tr>
+                    <td><a href="#func-get-saved-images"><code>get_saved_images</code></a></td>
+                    <td>获取已保存图片列表</td>
+                    <td><code>POST /dataUP</code> + JSON</td>
+                    <td>无</td>
+                  </tr>
+                  <tr>
+                    <td><a href="#func-get-snapshot"><code>get_snapshot</code></a></td>
+                    <td>获取已保存图片列表与轮播状态</td>
+                    <td><code>POST /dataUP</code> + JSON</td>
+                    <td><code>images</code> <code>slideshow</code></td>
+                  </tr>
+                  <tr>
+                    <td><a href="#func-start-slideshow"><code>start_slideshow</code></a></td>
+                    <td>下发轮播列表</td>
+                    <td><code>POST /dataUP</code> + JSON</td>
+                    <td><code>fileNames</code> <code>interval</code> <code>random</code></td>
+                  </tr>
+                  <tr>
+                    <td><a href="#func-set-slideshow"><code>set_slideshow</code></a></td>
+                    <td>设置轮播开关与周期</td>
+                    <td><code>POST /dataUP</code> + JSON</td>
+                    <td><code>sw</code> <code>interval</code> <code>random</code></td>
+                  </tr>
+                  <tr>
+                    <td><a href="#func-set-wifi-work-time"><code>set_wifi_work_time</code></a></td>
+                    <td>设置 Wi-Fi 工作时长</td>
+                    <td><code>POST /dataUP</code> + JSON</td>
+                    <td><code>seconds</code></td>
+                  </tr>
+                  <tr>
+                    <td><a href="#func-delete"><code>delete</code></a></td>
+                    <td>删除已保存图片</td>
+                    <td><code>POST /dataUP</code> + JSON</td>
+                    <td><code>fileNames</code></td>
+                  </tr>
+                  <tr>
+                    <td><a href="#func-ping"><code>ping</code></a></td>
+                    <td>检查设备网络连通性</td>
+                    <td><code>GET /ping</code></td>
+                    <td>无</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3 id="func-cast">2.2 cast 普通投图 multipart</h3>
+            <pre><code>POST /dataUP HTTP/1.1
+Content-Type: multipart/form-data
+
+func=cast
+fileName=26422
+bin_size=123456
+image_size=23456
+save=true
+show=true
+bin=@26422.bin
+image=@26422.jpg</code></pre>
+            <p>设备端需要校验字段完整性、文件大小和主图/缩略图关联关系。<code>cast</code> 成功后应记录最后一次投图，设备重启或 OTA 后优先显示该图片。</p>
+            <pre><code>{
+  "func": "cast_result",
+  "result": 0
+}</code></pre>
+
+            <h3 id="func-upload">2.3 upload 通用上传 multipart</h3>
+            <p><code>upload</code> 与 <code>cast</code> 字段一致，用于保存图片上传。多张图片上传时按 <code>cast2pic</code> 一样重复追加多组同名字段。</p>
+            <pre><code>POST /dataUP HTTP/1.1
+Content-Type: multipart/form-data
+
+func=upload
+fileName=26422
+bin_size=123456
+image_size=23456
+save=true
+show=false
+bin=@26422.bin
+image=@26422.jpg</code></pre>
+
+            <h3 id="func-cast2pic">2.4 cast2pic 双图投图 multipart</h3>
+            <p>用于一次请求上传两张完整图片。传输格式与 <code>upload</code> 多张上传完全一致：每张图片都包含一组 <code>fileName</code>、<code>bin_size</code>、<code>image_size</code>、<code>bin</code>、<code>image</code>，两张图片就在同一个 multipart 请求体里重复追加两组同名字段，设备端按字段出现顺序配对。</p>
+            <pre><code>POST /dataUP HTTP/1.1
+Content-Type: multipart/form-data
+
+func=cast2pic
+screen=ab
+save=true
+show=true
+fileName=26422
+bin_size=123456
+image_size=23456
+bin=@26422.bin
+image=@26422.jpg
+fileName=26423
+bin_size=123000
+image_size=23000
+bin=@26423.bin
+image=@26423.jpg</code></pre>
+            <ul>
+              <li><code>cast2pic</code> 除 <code>func</code> 外，字段组织方式与 <code>upload</code> 多张上传一致。</li>
+              <li><code>screen</code> 为字符串更新范围：<code>ab</code> 更新 A+B，<code>a</code> 只更新 A 屏，<code>b</code> 只更新 B 屏；缺省按 <code>ab</code> 处理。</li>
+              <li><code>fileName</code>、<code>bin_size</code>、<code>image_size</code>、<code>bin</code>、<code>image</code> 都重复出现两次。</li>
+              <li>设备端按出现顺序把第 1 组主图和缩略图配对为第 1 张，把第 2 组配对为第 2 张。</li>
+            </ul>
+            <pre><code>{
+  "func": "cast2pic_result",
+  "result": 0
+}</code></pre>
+
+            <h3 id="func-update">2.5 update 替换图片 multipart</h3>
+            <p>当前前端预留。用于用新图片替换旧图片，字段中同时带旧文件名和新文件名。</p>
+            <pre><code>POST /dataUP HTTP/1.1
+Content-Type: multipart/form-data
+
+func=update
+oldfileNames=12345
+newfileNames=67890
+bin_size=123456
+image_size=23456
+save=true
+show=true
+bin=@67890.bin
+image=@67890.jpg</code></pre>
+
+            <h3 id="func-get-saved-images">2.6 get_saved_images 获取已保存图片</h3>
+            <pre><code>{
+  "func": "get_saved_images"
+}</code></pre>
+            <pre><code>{
+  "func": "get_saved_images_result",
+  "result": 0,
+  "images": [
+    {
+      "fileName": "26422",
+      "thumbnailUrl": "/thumb/26422.jpg"
+    }
+  ]
+            }</code></pre>
+            <p>前端会用设备 <code>baseUrl</code> 拼接相对缩略图地址。</p>
+
+            <h3 id="func-get-snapshot">2.7 get_snapshot 获取已保存图片与轮播状态</h3>
+            <p>新接口用于一次取回设备本地保存图片和当前轮播配置。<code>images</code> 字段沿用 <code>get_saved_images</code> 的返回数据，<code>slideshow</code> 字段返回设备当前保存的轮播状态。</p>
+            <pre><code>{
+  "func": "get_snapshot"
+}</code></pre>
+            <pre><code>{
+  "func": "get_snapshot_result",
+  "result": 0,
+  "images": [
+    {
+      "fileName": "26422",
+      "thumbnailUrl": "/thumb/26422.jpg"
+    },
+    {
+      "fileName": "26423",
+      "thumbnailUrl": "/thumb/26423.jpg"
+    }
+  ],
+  "slideshow": {
+    "sw": 1,
+    "fileNames": ["26422", "26423"],
+    "interval": 60,
+    "random": false
+  }
+}</code></pre>
+            <ul>
+              <li><code>images</code> 与 <code>get_saved_images_result.images</code> 结构一致。</li>
+              <li><code>slideshow.sw</code> 返回当前轮播开关，<code>1</code> 开启，<code>0</code> 关闭。</li>
+              <li><code>slideshow.fileNames</code> 返回最近一次 <code>start_slideshow</code> 下发的轮播图片列表，按设备实际轮播顺序返回。</li>
+              <li><code>slideshow.interval</code> 返回最近一次 <code>start_slideshow</code> 或 <code>set_slideshow</code> 保存的轮播间隔。</li>
+              <li><code>slideshow.random</code> 返回最近一次 <code>start_slideshow</code> 或 <code>set_slideshow</code> 保存的随机轮播开关。</li>
+              <li>如果设备未设置过轮播，建议返回 <code>{"sw":0,"fileNames":[],"interval":0,"random":false}</code>。</li>
+            </ul>
+
+            <h3 id="func-start-slideshow">2.8 start_slideshow 下发轮播列表</h3>
+            <pre><code>{
+  "func": "start_slideshow",
+  "fileNames": ["26422", "26423"],
+  "interval": 60,
+  "random": false
+}</code></pre>
+            <p><code>fileNames</code> 顺序就是轮播顺序；<code>random=true</code> 表示随机轮播；<code>interval</code> 前端会归一为大于等于 1 的整数。</p>
+
+            <h3 id="func-set-slideshow">2.9 set_slideshow 设置轮播开关与周期</h3>
+            <pre><code>{
+  "func": "set_slideshow",
+  "sw": 1,
+  "interval": 60,
+  "random": false
+}</code></pre>
+            <p><code>sw=1</code> 开启轮播，<code>sw=0</code> 关闭轮播；<code>random=true</code> 表示随机轮播，<code>random=false</code> 表示按列表顺序轮播。</p>
+
+            <h3 id="func-delete">2.10 delete 删除已保存图片</h3>
+            <pre><code>{
+  "func": "delete",
+  "fileNames": ["26422", "26423"]
+}</code></pre>
+
+            <h3 id="func-set-wifi-work-time">2.11 set_wifi_work_time 设置 Wi-Fi 工作时长</h3>
+            <pre><code>{
+  "func": "set_wifi_work_time",
+  "seconds": 300
+}</code></pre>
+            <p><code>seconds</code> 前端会归一为大于等于 1 的整数。</p>
+
+            <h3 id="func-ping">2.12 ping 连通性检查</h3>
+            <pre><code>GET /ping HTTP/1.1</code></pre>
+            <pre><code>{
+  "func": "ping_result",
+  "result": 0,
+  "message": "ok",
+  "Ble_MAC": "AABBCCDDEEFF"
+}</code></pre>
+            <div class="note">
+              前端写操作前会优先访问缓存端点的 <code>/ping</code>。如果响应包含 <code>Ble_MAC</code> 或 <code>ble_mac</code>，必须与目标设备 MAC 一致。
+            </div>
+          </section>
+
+          <section id="ble-config">
+            <h2>3. 蓝牙配网协议</h2>
+            <h3 id="ble-config-flow">3.1 当前主流程</h3>
+            <div class="table-wrap">
+              <table>
+                <tbody>
+                  <tr>
+                    <th>扫描目标</th>
+                    <td>按设备 MAC 扫描相框广播</td>
+                  </tr>
+                  <tr>
+                    <th>Service UUID</th>
+                    <td><code>7B12FF00-4413-49C1-A307-74997B8B5941</code></td>
+                  </tr>
+                  <tr>
+                    <th>Characteristic UUID</th>
+                    <td><code>7B12FF14-4413-49C1-A307-74997B8B5941</code></td>
+                  </tr>
+                  <tr>
+                    <th>写入方式</th>
+                    <td>优先 <code>write</code>，否则 <code>writeNoResponse</code>，默认 <code>write</code></td>
+                  </tr>
+                  <tr>
+                    <th>Notify</th>
+                    <td>同一个特征值开启 notify，开启失败时仍继续写入</td>
+                  </tr>
+                  <tr>
+                    <th>MTU</th>
+                    <td>尝试设置 <code>256</code>，失败不阻断</td>
+                  </tr>
+                  <tr>
+                    <th>超时</th>
+                    <td>总响应 15 秒；第一段成功后等待最终 IP 最多 5 秒</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3 id="ble-config-payload">3.2 写入与响应</h3>
+            <p>写入 payload：</p>
+            <pre><code>{
+  "func": "wifi",
+  "ssid": "Office-WiFi",
+  "key": "password"
+}</code></pre>
+            <p>响应可以直接返回 JSON，也可以放在 <code>payload</code> 字符串中：</p>
+            <pre><code>{
+  "result": 0,
+  "message": "find wifi",
+  "stage": "Office-WiFi"
+}</code></pre>
+            <pre><code>{
+  "result": 0,
+  "message": "network ready",
+  "stage": "192.168.1.88",
+  "version": "3.0.0"
+}</code></pre>
+            <ul>
+              <li><code>message=find wifi</code> 且 <code>stage</code> 非空时，<code>stage</code> 保存为已连接 Wi-Fi 名。</li>
+              <li><code>stage</code> 中能提取 IPv4 地址时，配网最终成功。</li>
+              <li>最终成功后缓存 <code>baseUrl=http://&lt;ip&gt;</code> 和 <code>commandUrl=http://&lt;ip&gt;/dataUP</code>。</li>
+            </ul>
+
+          </section>
+
+          <section id="ble-wakeup">
+            <h2>4. 蓝牙唤醒 Wi-Fi</h2>
+            <p>HTTP 投图或图片管理前，如果缓存 HTTP 端点不可用，前端会通过 BLE 唤醒设备 Wi-Fi 并解析新的上传端点。</p>
+            <h3 id="ble-wakeup-params">4.1 连接参数</h3>
+            <div class="table-wrap">
+              <table>
+                <tbody>
+                  <tr>
+                    <th>扫描目标</th>
+                    <td>目标设备 MAC，统一成 <code>AA:BB:CC:DD:EE:FF</code></td>
+                  </tr>
+                  <tr>
+                    <th>扫描超时</th>
+                    <td>10 秒</td>
+                  </tr>
+                  <tr>
+                    <th>连接尝试</th>
+                    <td>最多 3 次，每次 4.5 秒，间隔 800 ms</td>
+                  </tr>
+                  <tr>
+                    <th>Service UUID</th>
+                    <td><code>7B12FF00-4413-49C1-A307-74997B8B5941</code></td>
+                  </tr>
+                  <tr>
+                    <th>Characteristic UUID</th>
+                    <td><code>7B12FF14-4413-49C1-A307-74997B8B5941</code></td>
+                  </tr>
+                  <tr>
+                    <th>读写</th>
+                    <td>写入同一特征值；写入成功后每 800 ms 读取一次同一特征值</td>
+                  </tr>
+                  <tr>
+                    <th>响应超时</th>
+                    <td>20 秒</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3 id="ble-wakeup-payload">4.2 写入与响应</h3>
+            <p>写入 payload：</p>
+            <pre><code>{
+  "func": "wifi_wakeup"
+}</code></pre>
+            <p>成功响应：</p>
+            <pre><code>{
+  "result": 0,
+  "stage": "192.168.1.88",
+  "message": "network ready",
+  "version": "3.0.0"
+}</code></pre>
+            <p><code>stage</code> 可返回 <code>192.168.1.88</code>、<code>192.168.1.88:8080</code>、<code>http://192.168.1.88</code> 或 <code>http://192.168.1.88/dataUP</code>，前端都会归一化为 <code>http://&lt;host&gt;/dataUP</code>。</p>
+            <ol>
+              <li>归一化得到 <code>commandUrl</code>。</li>
+              <li>请求 <code>GET /ping</code>。</li>
+              <li>如果 <code>/ping</code> 返回 <code>Ble_MAC</code> 或 <code>ble_mac</code>，必须与目标 MAC 一致。</li>
+              <li>校验通过后缓存端点；校验失败不写缓存。</li>
+            </ol>
+          </section>
+
+          <section id="ble-adv">
+            <h2>5. 设备 BLE 广播识别</h2>
+            <p>扫描设备时前端按统一的 <code>localName</code> 命名格式解析设备信息。</p>
+            <h3 id="ble-adv-fields">5.1 广播字段</h3>
+            <p><code>localName</code> 长度大于等于 20，示例：</p>
+            <pre><code>T!2F782D4AADFAS1F@@A</code></pre>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>位置</th>
+                    <th>长度</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>0</td>
+                    <td>1</td>
+                    <td>厂商 ID，当前支持 <code>T</code>、<code>M</code></td>
+                  </tr>
+                  <tr>
+                    <td>1</td>
+                    <td>1</td>
+                    <td>屏类型字符，通过 <code>deviceNameToTypeMap</code> 映射</td>
+                  </tr>
+                  <tr>
+                    <td>2..13</td>
+                    <td>12</td>
+                    <td>MAC，不带冒号</td>
+                  </tr>
+                  <tr>
+                    <td>14</td>
+                    <td>1</td>
+                    <td>电量字符，<code>(charCode - 33) * 2</code> 后限制在 0..100</td>
+                  </tr>
+                  <tr>
+                    <td>15..16</td>
+                    <td>2</td>
+                    <td>固件版本十六进制，解析为 <code>&lt;major&gt;.&lt;minor&gt;</code></td>
+                  </tr>
+                  <tr>
+                    <td>18</td>
+                    <td>1</td>
+                    <td>功耗/充电信息，bit4 为 1 表示高功耗</td>
+                  </tr>
+                  <tr>
+                    <td>19</td>
+                    <td>1</td>
+                    <td>合法标识，<code>A</code> 合法，<code>B</code> 非法</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>非指定扫描时，前端只展示长度大于等于 20、首字母为 <code>T/M</code>、第二位存在于 <code>deviceNameToTypeMap</code> 的设备。</p>
+          </section>
+
+          <section id="notes">
+            <h2>6. 设备端实现要点</h2>
+            <ol>
+              <li>BLE 配网和 BLE 唤醒建议统一实现 Service <code>7B12FF00...</code> 与 Characteristic <code>7B12FF14...</code>。</li>
+              <li>配网写入 <code>func=wifi</code> 后，设备至少返回一条成功 JSON；若能返回包含 IP 的最终响应，前端会自动缓存 HTTP 端点。</li>
+              <li>唤醒写入 <code>func=wifi_wakeup</code> 后，设备必须在 20 秒内返回 <code>result=0</code> 且 <code>stage</code> 为可解析的 IPv4 host。</li>
+              <li>HTTP 服务端统一接受 <code>/dataUP</code> JSON 控制命令和 multipart 图片上传。</li>
+              <li><code>/ping</code> 建议返回 <code>Ble_MAC</code>，用于防止缓存 IP 指向错误设备。</li>
+              <li>所有 JSON 响应建议使用 UTF-8，不要包含额外日志文本。</li>
+            </ol>
+            <p class="note">这份 HTML 版用于阅读和联调说明，协议内容应与 <code>NEW_UPLOAD_FLOW_SPEC.md</code> 保持一致。</p>
+          </section>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

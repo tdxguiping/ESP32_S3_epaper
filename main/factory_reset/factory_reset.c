@@ -12,10 +12,12 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "epd_display_app.h"
+#include "epd_display_mode.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "led_status.h"
 #include "server_network_sta_slideshow.h"
+#include "server_network_sta_daily_image.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 
@@ -115,6 +117,25 @@ static void factory_reset_clear_slideshow_nvs(factory_reset_result_t *result)
         ret = one_ret;
     }
     g_slideshow_random_enable = 0;
+
+    /*
+     * Select NORMAL before erasing the daily configuration. A running daily
+     * worker checks this mode under its config lock and cannot restore the
+     * erased configuration after factory reset.
+     */
+    one_ret = EpdDisplayMode_Set(USER_EPD_DISPLAY_MODE_NORMAL);
+    if (one_ret != ESP_OK && ret == ESP_OK) {
+        ret = one_ret;
+    }
+    if (one_ret == ESP_OK) {
+        one_ret = ServerNetworkStaDailyImage_ResetConfig();
+        if (one_ret != ESP_OK && ret == ESP_OK) {
+            ret = one_ret;
+        }
+    } else {
+        ESP_LOGE(TAG,
+                 "factory reset keeps daily config because NORMAL mode was not saved");
+    }
 
     if (result != NULL) {
         result->nvs_ret = ret;

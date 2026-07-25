@@ -20,6 +20,7 @@
 #include "network_ota_upload.h"
 #include "server_network_sta_cast2pic.h"
 #include "server_network_sta_cast.h"
+#include "server_network_sta_daily_image.h"
 #include "server_network_sta_dataup_async.h"
 #include "server_network_sta_delete.h"
 #include "server_network_sta_saved_images.h"
@@ -199,26 +200,19 @@ static esp_err_t send_unsupported_func_response(httpd_req_t *req)
 static void log_network_small_json_body(const char *body, size_t body_len)
 {
     const size_t chunk_size = 240;
-    size_t offset = 0;
     if (body == NULL) {
         ESP_LOGI(TAG, "network small JSON received len=%u body=<null>", (unsigned int)body_len);
         return;
     }
 
-    ESP_LOGI(TAG, "network small JSON received full body len=%u", (unsigned int)body_len);
-    while (offset < body_len) {
-        size_t chunk_len = body_len - offset;
-        if (chunk_len > chunk_size) {
-            chunk_len = chunk_size;
-        }
-        ESP_LOGI(TAG,
-                 "network small JSON body chunk offset=%u len=%u: %.*s",
-                 (unsigned int)offset,
-                 (unsigned int)chunk_len,
-                 (int)chunk_len,
-                 body + offset);
-        offset += chunk_len;
-    }
+    size_t log_len = body_len < chunk_size ? body_len : chunk_size;
+    ESP_LOGI(TAG,
+             "network small JSON received body_len=%u log_len=%u truncated=%d: %.*s",
+             (unsigned int)body_len,
+             (unsigned int)log_len,
+             body_len > chunk_size ? 1 : 0,
+             (int)log_len,
+             body);
 }
 
 static esp_err_t process_small_json_request(httpd_req_t *req, const char *body, size_t body_len)
@@ -228,6 +222,16 @@ static esp_err_t process_small_json_request(httpd_req_t *req, const char *body, 
     if (!body_looks_like_json(body, body_len)) {
         ESP_LOGW(TAG, "small JSON invalid body");
         return send_invalid_json_response(req, "get_saved_images");
+    }
+
+    esp_err_t daily_ret = ServerNetworkStaDailyImage_ProcessJson(req,
+                                                                 body,
+                                                                 body_len,
+                                                                 s_base_path);
+    if (daily_ret != ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGI(TAG, "small JSON func=daily_download_file ret=%s",
+                 esp_err_to_name(daily_ret));
+        return daily_ret;
     }
 
     esp_err_t snapshot_ret = ServerNetworkStaSnapshot_ProcessJson(req, body, body_len, s_base_path);
@@ -330,6 +334,17 @@ static esp_err_t ensure_dir(const char *path)
     return ESP_FAIL;
 }
 
+static bool upload_file_name_is_safe(const char *file_name)
+{
+    if (file_name == NULL || file_name[0] == '\0') {
+        return true;
+    }
+    return strcmp(file_name, ".") != 0 &&
+           strcmp(file_name, "..") != 0 &&
+           strchr(file_name, '/') == NULL &&
+           strchr(file_name, '\\') == NULL;
+}
+
 static esp_err_t save_upload_part(const char *field_name, const char *file_name,
                                   const char *data, size_t data_len)
 {
@@ -349,6 +364,11 @@ static esp_err_t save_upload_part(const char *field_name, const char *file_name,
                  field_name != NULL ? field_name : "<null>", (unsigned int)data_len);
 #endif
         return ESP_OK;
+    }
+
+    if (!upload_file_name_is_safe(file_name)) {
+        ESP_LOGW(TAG, "multipart file name rejected field=%s", field_name);
+        return ESP_ERR_INVALID_ARG;
     }
 
     esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);

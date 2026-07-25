@@ -176,16 +176,22 @@ static esp_err_t send_delete_result(httpd_req_t *req, int result, const char *me
     return httpd_resp_sendstr(req, json);
 }
 
-static bool delete_one_path(const char *path)
+typedef enum {
+    DELETE_PATH_DELETED = 0,
+    DELETE_PATH_NOT_FOUND,
+    DELETE_PATH_FAILED,
+} delete_path_result_t;
+
+static delete_path_result_t delete_one_path(const char *path)
 {
     if (unlink(path) == 0) {
-        return true;
+        return DELETE_PATH_DELETED;
     }
     if (errno == ENOENT) {
-        return false;
+        return DELETE_PATH_NOT_FOUND;
     }
     ESP_LOGE(TAG, "delete failed path=%s errno=%d", path, errno);
-    return false;
+    return DELETE_PATH_FAILED;
 }
 
 esp_err_t ServerNetworkStaDelete_ProcessJson(httpd_req_t *req,
@@ -235,31 +241,48 @@ esp_err_t ServerNetworkStaDelete_ProcessJson(httpd_req_t *req,
         return send_delete_result(req, TDX_JSON_RESULT_DELETE_FAILED, "delete failed");
     }
 
-    int removed_count = 0;
+    int deleted_path_count = 0;
+    int missing_path_count = 0;
+    int failed_path_count = 0;
     for (size_t i = 0; i < request.file_count; i++) {
         char bin_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
         char jpg_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
         snprintf(bin_path, sizeof(bin_path), "%s/%s.bin", bin_dir, request.file_names[i]);
         snprintf(jpg_path, sizeof(jpg_path), "%s/%s.jpg", jpg_dir, request.file_names[i]);
 
-        if (delete_one_path(bin_path)) {
-            removed_count++;
-        }
-        if (delete_one_path(jpg_path)) {
-            removed_count++;
+        delete_path_result_t path_results[] = {
+            delete_one_path(bin_path),
+            delete_one_path(jpg_path),
+        };
+        for (size_t result_index = 0;
+             result_index < sizeof(path_results) / sizeof(path_results[0]);
+             result_index++) {
+            if (path_results[result_index] == DELETE_PATH_DELETED) {
+                deleted_path_count++;
+            } else if (path_results[result_index] == DELETE_PATH_NOT_FOUND) {
+                missing_path_count++;
+            } else {
+                failed_path_count++;
+            }
         }
     }
     TdxSharedSpi_Unlock();
 
-    if (removed_count <= 0) {
-        ESP_LOGW(TAG, "delete failed request_count=%u removed_count=%d",
-                 (unsigned int)request.file_count, removed_count);
+    if (failed_path_count > 0 || deleted_path_count <= 0) {
+        ESP_LOGW(TAG, "delete failed request_count=%u deleted=%d missing=%d failed=%d",
+                 (unsigned int)request.file_count,
+                 deleted_path_count,
+                 missing_path_count,
+                 failed_path_count);
         UserLedStatus_ShowOperationFail();
         return send_delete_result(req, TDX_JSON_RESULT_DELETE_FAILED, "delete failed");
     }
 
-    ESP_LOGI(TAG, "delete success removed_count=%d request_count=%u",
-             removed_count, (unsigned int)request.file_count);
+    ESP_LOGI(TAG, "delete success request_count=%u deleted=%d missing=%d failed=%d",
+             (unsigned int)request.file_count,
+             deleted_path_count,
+             missing_path_count,
+             failed_path_count);
     UserLedStatus_ShowSuccess();
     return send_delete_result(req, TDX_JSON_RESULT_OK, NULL);
 }

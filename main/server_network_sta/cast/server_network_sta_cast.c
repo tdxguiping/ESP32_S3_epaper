@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "cast_core.h"
+#include "epd_display_mode.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -157,6 +158,16 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
         return send_single_error(req, &result);
     }
 
+    esp_err_t mode_ret = EpdDisplayMode_Set(USER_EPD_DISPLAY_MODE_NORMAL);
+    if (mode_ret != ESP_OK) {
+        ESP_LOGE(TAG, "cast mode save failed file=%s ret=%s",
+                 cast.file_name, esp_err_to_name(mode_ret));
+        result.result = TDX_JSON_RESULT_INTERNAL_ERROR;
+        snprintf(result.message, sizeof(result.message), "%s", "cast failed");
+        snprintf(result.error, sizeof(result.error), "%s", "mode_save_failed");
+        return send_single_error(req, &result);
+    }
+
     if (cast.show) {
         esp_err_t async_ret = start_cast_async(body, body_len, base_path, &cast);
         if (async_ret != ESP_OK) {
@@ -175,6 +186,7 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
             return send_single_error(req, &result);
         }
         if (body_taken != NULL) {
+            /* The async worker owns and releases the request body after submit succeeds. */
             *body_taken = true;
         }
         httpd_resp_set_type(req, "application/x-ndjson");
@@ -182,7 +194,13 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
         if (resp_ret == ESP_OK) {
             resp_ret = httpd_resp_send_chunk(req, NULL, 0);
         }
-        ESP_LOGI(TAG, "cast async response done file=%s ret=%s", cast.file_name, esp_err_to_name(resp_ret));
+        if (resp_ret == ESP_OK) {
+            ESP_LOGI(TAG, "cast response sent file=%s", cast.file_name);
+        } else {
+            ESP_LOGW(TAG, "cast accepted but response failed file=%s ret=%s",
+                     cast.file_name,
+                     esp_err_to_name(resp_ret));
+        }
         return resp_ret;
     }
 

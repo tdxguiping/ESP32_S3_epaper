@@ -28,6 +28,10 @@ CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=512
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 
+# Let large mbedTLS allocations follow the existing malloc threshold into PSRAM.
+# CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set
+CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
+
 # Use USB Serial/JTAG as the primary console on the ESP32-C5 board.
 # 中文：在 ESP32-C5 板上使用 USB Serial/JTAG 作为主控制台。
 # CONFIG_ESP_CONSOLE_UART_DEFAULT is not set

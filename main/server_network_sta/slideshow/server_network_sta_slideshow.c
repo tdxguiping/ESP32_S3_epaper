@@ -119,7 +119,6 @@ static uint32_t s_slideshow_last_display_interval = 0;
 static TickType_t s_slideshow_last_display_start_tick = 0;
 
 static void slideshow_begin_interval(uint32_t interval, TickType_t start_tick);
-static uint32_t slideshow_rtc_display_lead_seconds(void);
 
 static bool slideshow_wifi_has_ip(void)
 {
@@ -1481,7 +1480,7 @@ static bool slideshow_force_random_config(const char *scope, bool random)
     return false;
 }
 
-static uint32_t slideshow_rtc_display_lead_seconds(void)
+uint32_t slideshow_rtc_display_lead_seconds(void)
 {
     switch (EPD_type) {
     case EPD_TYPE_1600_1200_133_DKE:

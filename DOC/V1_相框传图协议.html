@@ -1,0 +1,1081 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>图片协议说明</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #eef2f7;
+        --panel: rgba(255, 255, 255, 0.92);
+        --panel-strong: #ffffff;
+        --border: #d7dee8;
+        --border-strong: #c3d0e0;
+        --text: #18212f;
+        --muted: #546273;
+        --muted-strong: #334155;
+        --brand: #2563eb;
+        --brand-soft: #e8f0ff;
+        --success: #0f766e;
+        --warning: #b45309;
+        --code-bg: #0f172a;
+        --code-border: #1e293b;
+        --code-text: #e2e8f0;
+        --shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
+        --radius-xl: 24px;
+        --radius-lg: 18px;
+        --radius-md: 14px;
+        --radius-sm: 10px;
+        --content-width: 1220px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background:
+          radial-gradient(circle at top left, rgba(37, 99, 235, 0.12), transparent 32%),
+          linear-gradient(180deg, #f7f9fc 0%, var(--bg) 100%);
+        color: var(--text);
+        font:
+          16px/1.75 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+          'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
+      }
+
+      a {
+        color: var(--brand);
+        text-decoration: none;
+      }
+
+      code,
+      pre {
+        font-family:
+          'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, 'Courier New', monospace;
+      }
+
+      .page {
+        max-width: var(--content-width);
+        margin: 0 auto;
+        padding: 32px 20px 56px;
+      }
+
+      .hero {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid rgba(37, 99, 235, 0.12);
+        border-radius: 28px;
+        padding: 30px 32px;
+        background:
+          linear-gradient(135deg, rgba(37, 99, 235, 0.12), rgba(255, 255, 255, 0.92) 42%),
+          var(--panel-strong);
+        box-shadow: var(--shadow);
+      }
+
+      .hero::after {
+        content: '';
+        position: absolute;
+        top: -48px;
+        right: -48px;
+        width: 180px;
+        height: 180px;
+        border-radius: 999px;
+        background: radial-gradient(circle, rgba(37, 99, 235, 0.16), transparent 68%);
+        pointer-events: none;
+      }
+
+      .hero__eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: rgba(37, 99, 235, 0.08);
+        color: var(--brand);
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+      }
+
+      .hero h1 {
+        margin: 16px 0 10px;
+        font-size: clamp(32px, 5vw, 44px);
+        line-height: 1.15;
+      }
+
+      .hero__desc {
+        max-width: 760px;
+        margin: 0;
+        color: var(--muted-strong);
+        font-size: 17px;
+      }
+
+      .hero__meta {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 24px;
+      }
+
+      .hero__meta-item {
+        min-height: 92px;
+        padding: 16px 18px;
+        border: 1px solid rgba(37, 99, 235, 0.1);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.8);
+      }
+
+      .hero__meta-label {
+        display: block;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .hero__meta-value {
+        display: block;
+        margin-top: 10px;
+        color: var(--text);
+        font-size: 24px;
+        font-weight: 700;
+        line-height: 1.15;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        gap: 24px;
+        margin-top: 24px;
+        align-items: start;
+      }
+
+      .toc {
+        position: sticky;
+        top: 20px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-xl);
+        padding: 20px 18px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(18px);
+      }
+
+      .toc__title {
+        margin: 0 0 12px;
+        color: var(--text);
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      .toc ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .toc li + li {
+        margin-top: 4px;
+      }
+
+      .toc a {
+        display: block;
+        padding: 7px 10px;
+        border-radius: 10px;
+        color: var(--muted-strong);
+        font-size: 14px;
+      }
+
+      .toc a:hover {
+        background: var(--brand-soft);
+        color: var(--brand);
+      }
+
+      .toc .toc-l3 a {
+        padding-left: 22px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .doc {
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 28px;
+        padding: 34px 34px 44px;
+        background: var(--panel-strong);
+        box-shadow: var(--shadow);
+      }
+
+      .lead {
+        margin: 0 0 28px;
+        padding: 16px 18px;
+        border: 1px solid rgba(37, 99, 235, 0.12);
+        border-radius: 16px;
+        background: linear-gradient(180deg, #f8fbff 0%, #f3f7ff 100%);
+        color: var(--muted-strong);
+      }
+
+      section {
+        scroll-margin-top: 24px;
+      }
+
+      section + section {
+        margin-top: 34px;
+        padding-top: 34px;
+        border-top: 1px solid #e8edf3;
+      }
+
+      h2,
+      h3 {
+        margin: 0 0 14px;
+        color: var(--text);
+        line-height: 1.3;
+      }
+
+      h2 {
+        font-size: 28px;
+      }
+
+      h3 {
+        margin-top: 24px;
+        font-size: 21px;
+      }
+
+      p {
+        margin: 10px 0 0;
+      }
+
+      ul,
+      ol {
+        margin: 12px 0 0;
+        padding-left: 22px;
+      }
+
+      li + li {
+        margin-top: 6px;
+      }
+
+      .section-kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: #f4f7fb;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        margin-top: 14px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #fff;
+      }
+
+      th,
+      td {
+        padding: 12px 14px;
+        border-bottom: 1px solid #e8edf3;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #f6f9fc;
+        color: var(--muted-strong);
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      tbody tr:nth-child(even) td {
+        background: #fbfdff;
+      }
+
+      tbody tr:last-child td {
+        border-bottom: 0;
+      }
+
+      code {
+        padding: 0.18em 0.45em;
+        border-radius: 8px;
+        background: #edf3ff;
+        color: #1d4ed8;
+        font-size: 0.92em;
+      }
+
+      pre {
+        margin: 14px 0 0;
+        padding: 18px 20px;
+        overflow-x: auto;
+        border: 1px solid var(--code-border);
+        border-radius: var(--radius-lg);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent),
+          var(--code-bg);
+        color: var(--code-text);
+        line-height: 1.6;
+      }
+
+      pre code {
+        padding: 0;
+        background: transparent;
+        color: inherit;
+      }
+
+      blockquote {
+        margin: 16px 0 0;
+        padding: 14px 16px;
+        border: 1px solid #cfe2ff;
+        border-left: 4px solid var(--brand);
+        border-radius: 14px;
+        background: #f5f9ff;
+        color: var(--muted-strong);
+      }
+
+      .callout-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        margin-top: 16px;
+      }
+
+      .callout {
+        padding: 16px 18px;
+        border-radius: 16px;
+        border: 1px solid var(--border);
+        background: #fafcff;
+      }
+
+      .callout--success {
+        border-color: rgba(15, 118, 110, 0.2);
+        background: rgba(15, 118, 110, 0.06);
+      }
+
+      .callout--warning {
+        border-color: rgba(180, 83, 9, 0.2);
+        background: rgba(180, 83, 9, 0.06);
+      }
+
+      .callout__title {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .callout--success .callout__title {
+        color: var(--success);
+      }
+
+      .callout--warning .callout__title {
+        color: var(--warning);
+      }
+
+      .callout p {
+        margin-top: 8px;
+        color: var(--muted-strong);
+        font-size: 14px;
+      }
+
+      .footer-note {
+        margin-top: 40px;
+        padding-top: 22px;
+        border-top: 1px solid #e8edf3;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      @media (max-width: 1100px) {
+        .hero__meta {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .toc {
+          position: static;
+        }
+      }
+
+      @media (max-width: 720px) {
+        .page {
+          padding: 16px 12px 36px;
+        }
+
+        .hero,
+        .doc {
+          padding: 22px 18px;
+          border-radius: 22px;
+        }
+
+        .hero__meta,
+        .callout-grid {
+          grid-template-columns: 1fr;
+        }
+
+        h2 {
+          font-size: 24px;
+        }
+
+        h3 {
+          font-size: 18px;
+        }
+
+        th,
+        td {
+          padding: 10px 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header class="hero">
+        <div class="hero__eyebrow">Wi-Fi / HTTP / 图片协议</div>
+        <h1 id="图片协议说明">图片协议说明</h1>
+        <p class="hero__desc">
+          面向设备端与手机端联调的接口说明。本文只描述目标协议，不描述现有实现，重点覆盖上传、轮播、连通性检查和设备侧返回格式。
+        </p>
+        <div class="hero__meta">
+          <div class="hero__meta-item">
+            <span class="hero__meta-label">接口数量</span>
+            <span class="hero__meta-value">9</span>
+          </div>
+          <div class="hero__meta-item">
+            <span class="hero__meta-label">上传格式</span>
+            <span class="hero__meta-value">multipart</span>
+          </div>
+          <div class="hero__meta-item">
+            <span class="hero__meta-label">控制格式</span>
+            <span class="hero__meta-value">JSON / GET</span>
+          </div>
+          <div class="hero__meta-item">
+            <span class="hero__meta-label">心跳路径</span>
+            <span class="hero__meta-value">/ping</span>
+          </div>
+        </div>
+      </header>
+
+      <div class="layout">
+        <aside class="toc">
+          <h2 class="toc__title">目录</h2>
+          <ul>
+            <li class="toc-l1"><a href="#图片协议说明">图片协议说明</a></li>
+            <li class="toc-l2"><a href="#section-1">1. 通用约定</a></li>
+            <li class="toc-l2"><a href="#section-2">2. 协议总表</a></li>
+            <li class="toc-l3"><a href="#section-2-1">2.1 接口总览</a></li>
+            <li class="toc-l3"><a href="#section-2-2">2.2 通用字段</a></li>
+            <li class="toc-l3"><a href="#section-2-3">2.3 文件字段</a></li>
+            <li class="toc-l2"><a href="#section-3">3. upload</a></li>
+            <li class="toc-l2"><a href="#section-4">4. cast</a></li>
+            <li class="toc-l2"><a href="#section-5">5. 获取已存图片</a></li>
+            <li class="toc-l2"><a href="#section-6">6. 轮播</a></li>
+            <li class="toc-l2"><a href="#section-7">7. set_slideshow</a></li>
+            <li class="toc-l2"><a href="#section-8">8. 删除</a></li>
+            <li class="toc-l2"><a href="#section-9">9. 设置 WiFi 工作时长</a></li>
+            <li class="toc-l2"><a href="#section-10">10. 连通性检查</a></li>
+            <li class="toc-l2"><a href="#section-11">11. update</a></li>
+            <li class="toc-l2"><a href="#section-12">12. 恢复显示规则</a></li>
+            <li class="toc-l2"><a href="#section-13">13. 请求格式示例</a></li>
+          </ul>
+        </aside>
+
+        <main class="doc">
+          <p class="lead">
+            协议默认将上传类请求与控制类请求分开处理：图片数据建议使用
+            <code>multipart/form-data</code>，控制命令与状态查询使用 JSON 或
+            <code>HTTP GET</code>。
+          </p>
+
+          <section id="section-1">
+            <div class="section-kicker">基础约定</div>
+            <h2>1. 通用约定</h2>
+            <ul>
+              <li><code>fileName</code> 只传基础名，不带后缀</li>
+              <li><code>bin</code> 文件字段表示主图数据，对应 <code>${fileName}.bin</code></li>
+              <li><code>image</code> 文件字段表示缩略图数据，对应 <code>${fileName}.jpg</code></li>
+              <li><code>save</code> 表示是否保存</li>
+              <li><code>show</code> 表示是否立即显示</li>
+              <li>上传请求建议使用 <code>multipart/form-data</code></li>
+              <li>文本字段放表单项，文件内容放文件字段</li>
+            </ul>
+          </section>
+
+          <section id="section-2">
+            <div class="section-kicker">总览</div>
+            <h2>2. 协议总表</h2>
+
+            <h3 id="section-2-1">2.1 接口总览</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>func</th>
+                    <th>用途</th>
+                    <th>请求格式</th>
+                    <th>关键字段</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>upload</code></td>
+                    <td>通用上传一组图片</td>
+                    <td><code>HTTP POST + multipart/form-data</code></td>
+                    <td>
+                      <code>fileName</code> <code>bin</code> <code>bin_size</code>
+                      <code>image</code> <code>image_size</code> <code>save</code>
+                      <code>show</code>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><code>cast</code></td>
+                    <td>普通投图</td>
+                    <td><code>HTTP POST + multipart/form-data</code></td>
+                    <td>
+                      <code>fileName</code> <code>bin</code> <code>bin_size</code>
+                      <code>image</code> <code>image_size</code> <code>save</code>
+                      <code>show</code>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><code>update</code></td>
+                    <td>替换旧图片</td>
+                    <td><code>HTTP POST + multipart/form-data</code></td>
+                    <td>
+                      <code>oldfileNames</code> <code>newfileNames</code> <code>bin</code>
+                      <code>bin_size</code> <code>image</code> <code>image_size</code>
+                      <code>save</code> <code>show</code>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><code>get_saved_images</code></td>
+                    <td>获取已存图片列表</td>
+                    <td><code>HTTP POST + JSON</code></td>
+                    <td>无</td>
+                  </tr>
+                  <tr>
+                    <td><code>ping</code></td>
+                    <td>检查设备网络是否连通</td>
+                    <td><code>HTTP GET</code></td>
+                    <td>无</td>
+                  </tr>
+                  <tr>
+                    <td><code>start_slideshow</code></td>
+                    <td>启动轮播</td>
+                    <td><code>HTTP POST + JSON</code></td>
+                    <td><code>fileNames</code> <code>interval</code></td>
+                  </tr>
+                  <tr>
+                    <td><code>set_slideshow</code></td>
+                    <td>设置轮播开关与周期</td>
+                    <td><code>HTTP POST + JSON</code></td>
+                    <td><code>sw</code> <code>interval</code></td>
+                  </tr>
+                  <tr>
+                    <td><code>set_wifi_work_time</code></td>
+                    <td>设置 WiFi 工作时长</td>
+                    <td><code>HTTP POST + JSON</code></td>
+                    <td><code>seconds</code></td>
+                  </tr>
+                  <tr>
+                    <td><code>delete</code></td>
+                    <td>删除选中图片</td>
+                    <td><code>HTTP POST + JSON</code></td>
+                    <td><code>fileNames</code></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3 id="section-2-2">2.2 通用字段</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>字段</th>
+                    <th>类型</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>fileName</code></td>
+                    <td>string</td>
+                    <td>图片基础名，不带后缀</td>
+                  </tr>
+                  <tr>
+                    <td><code>oldfileNames</code></td>
+                    <td>string</td>
+                    <td>被替换的旧图片基础名</td>
+                  </tr>
+                  <tr>
+                    <td><code>newfileNames</code></td>
+                    <td>string</td>
+                    <td>替换后的新图片基础名</td>
+                  </tr>
+                  <tr>
+                    <td><code>fileNames</code></td>
+                    <td>string[]</td>
+                    <td>多张图片基础名列表</td>
+                  </tr>
+                  <tr>
+                    <td><code>save</code></td>
+                    <td>boolean</td>
+                    <td>是否保存到设备</td>
+                  </tr>
+                  <tr>
+                    <td><code>show</code></td>
+                    <td>boolean</td>
+                    <td>是否立即显示</td>
+                  </tr>
+                  <tr>
+                    <td><code>sw</code></td>
+                    <td>number</td>
+                    <td>轮播开关，<code>1</code> 表示开启，<code>0</code> 表示关闭</td>
+                  </tr>
+                  <tr>
+                    <td><code>interval</code></td>
+                    <td>number</td>
+                    <td>轮播切换间隔，建议单位为秒</td>
+                  </tr>
+                  <tr>
+                    <td><code>seconds</code></td>
+                    <td>number</td>
+                    <td>WiFi 工作时长，单位为秒</td>
+                  </tr>
+                  <tr>
+                    <td><code>bin_size</code></td>
+                    <td>number</td>
+                    <td>主图文件大小，单位字节</td>
+                  </tr>
+                  <tr>
+                    <td><code>image_size</code></td>
+                    <td>number</td>
+                    <td>缩略图文件大小，单位字节</td>
+                  </tr>
+                  <tr>
+                    <td><code>thumbnailUrl</code></td>
+                    <td>string</td>
+                    <td>缩略图下载地址</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3 id="section-2-3">2.3 文件字段</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>字段</th>
+                    <th>文件名规则</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>bin</code></td>
+                    <td><code>${fileName}.bin</code></td>
+                    <td>主图文件</td>
+                  </tr>
+                  <tr>
+                    <td><code>image</code></td>
+                    <td><code>${fileName}.jpg</code></td>
+                    <td>缩略图文件</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="section-3">
+            <div class="section-kicker">上传</div>
+            <h2>3. upload</h2>
+            <p>用途：通用上传一组图片。</p>
+            <p>表单字段：</p>
+            <ul>
+              <li><code>func=upload</code></li>
+              <li><code>fileName=26422</code></li>
+              <li><code>bin_size=123456</code></li>
+              <li><code>image_size=23456</code></li>
+              <li><code>save=true</code></li>
+              <li><code>show=true</code></li>
+              <li>文件字段 <code>bin</code> -&gt; <code>26422.bin</code></li>
+              <li>文件字段 <code>image</code> -&gt; <code>26422.jpg</code></li>
+            </ul>
+            <p>设备端要求：</p>
+            <ol>
+              <li>校验 <code>func</code>、<code>fileName</code>、<code>bin_size</code>、<code>image_size</code></li>
+              <li>校验文件字段 <code>bin</code>、<code>image</code></li>
+              <li>校验文件大小是否分别等于 <code>bin_size</code>、<code>image_size</code></li>
+              <li>按同一个 <code>fileName</code> 建立主图与缩略图关联</li>
+              <li>按 <code>save</code>、<code>show</code> 处理</li>
+              <li>返回成功或失败</li>
+            </ol>
+          </section>
+
+          <section id="section-4">
+            <div class="section-kicker">投图</div>
+            <h2>4. cast</h2>
+            <p>用途：普通投图流程。</p>
+            <p>特点：</p>
+            <ul>
+              <li>和 <code>upload</code> 一样一次上传完整主图与缩略图</li>
+              <li>成功后设备要记录最后一次成功 <code>cast</code> 的图片</li>
+              <li>设备重启、OTA 后应优先显示最后一次成功 <code>cast</code> 的图片</li>
+            </ul>
+            <p>表单字段：</p>
+            <ul>
+              <li><code>func=cast</code></li>
+              <li><code>fileName=26422</code></li>
+              <li><code>bin_size=123456</code></li>
+              <li><code>image_size=23456</code></li>
+              <li><code>save=true</code></li>
+              <li><code>show=true</code></li>
+              <li>文件字段 <code>bin</code> -&gt; <code>26422.bin</code></li>
+              <li>文件字段 <code>image</code> -&gt; <code>26422.jpg</code></li>
+            </ul>
+            <p>设备端要求：</p>
+            <ol>
+              <li>校验 <code>func</code>、<code>fileName</code>、<code>bin_size</code>、<code>image_size</code></li>
+              <li>校验文件字段 <code>bin</code>、<code>image</code></li>
+              <li>校验文件大小是否分别等于 <code>bin_size</code>、<code>image_size</code></li>
+              <li>按同一个 <code>fileName</code> 建立主图与缩略图关联</li>
+              <li>按 <code>save</code>、<code>show</code> 处理</li>
+              <li>记录该图片为最后一次成功 <code>cast</code> 的图片</li>
+              <li>返回成功或失败</li>
+            </ol>
+
+            <div class="callout-grid">
+              <div class="callout callout--success">
+                <p class="callout__title">成功响应建议</p>
+                <pre><code class="language-json">{
+  "func": "cast_result",
+  "result": 0
+}</code></pre>
+              </div>
+              <div class="callout callout--warning">
+                <p class="callout__title">失败响应建议</p>
+                <pre><code class="language-json">{
+  "func": "cast_result",
+  "result": 1,
+  "message": "cast failed"
+}</code></pre>
+              </div>
+            </div>
+          </section>
+
+          <section id="section-5">
+            <div class="section-kicker">读取设备资源</div>
+            <h2>5. 获取已存图片</h2>
+            <p>手机请求设备返回已保存图片列表和缩略图地址。</p>
+            <p>请求：</p>
+            <pre><code class="language-json">{
+  "func": "get_saved_images"
+}</code></pre>
+            <p>响应：</p>
+            <pre><code class="language-json">{
+  "func": "get_saved_images_result",
+  "result": 0,
+  "images": [
+    {
+      "fileName": "26422",
+      "thumbnailUrl": "/thumb/26422.jpg"
+    },
+    {
+      "fileName": "26423",
+      "thumbnailUrl": "/thumb/26423.jpg"
+    }
+  ]
+}</code></pre>
+            <p>说明：</p>
+            <ul>
+              <li>设备返回列表和 <code>thumbnailUrl</code></li>
+              <li>手机再主动发起 <code>HTTP GET</code> 请求获取缩略图</li>
+            </ul>
+            <p>失败响应建议：</p>
+            <pre><code class="language-json">{
+  "func": "get_saved_images_result",
+  "result": 1,
+  "message": "read saved images failed"
+}</code></pre>
+          </section>
+
+          <section id="section-6">
+            <div class="section-kicker">轮播</div>
+            <h2>6. 轮播</h2>
+            <p>手机选择部分图片后，下发轮播列表。</p>
+            <pre><code class="language-json">{
+  "func": "start_slideshow",
+  "fileNames": ["26422", "26423", "26430"],
+  "interval": 60
+}</code></pre>
+            <p>说明：</p>
+            <ul>
+              <li><code>fileNames</code> 顺序就是轮播顺序</li>
+              <li><code>interval</code> 单位建议为秒</li>
+            </ul>
+            <p>设备端要求：</p>
+            <ol>
+              <li>校验 <code>fileNames</code> 和 <code>interval</code></li>
+              <li>按顺序建立轮播队列</li>
+              <li>按 <code>interval</code> 切换</li>
+              <li>返回成功或失败</li>
+            </ol>
+
+            <div class="callout-grid">
+              <div class="callout callout--success">
+                <p class="callout__title">成功响应建议</p>
+                <pre><code class="language-json">{
+  "func": "start_slideshow_result",
+  "result": 0
+}</code></pre>
+              </div>
+              <div class="callout callout--warning">
+                <p class="callout__title">失败响应建议</p>
+                <pre><code class="language-json">{
+  "func": "start_slideshow_result",
+  "result": 1,
+  "message": "file not found"
+}</code></pre>
+              </div>
+            </div>
+          </section>
+
+          <section id="section-7">
+            <div class="section-kicker">轮播开关</div>
+            <h2>7. set_slideshow</h2>
+            <p>用于单独控制轮播开启或关闭，并设置轮播周期。</p>
+            <p>请求：</p>
+            <pre><code class="language-json">{
+  "func": "set_slideshow",
+  "sw": 1,
+  "interval": 60
+}</code></pre>
+            <p>说明：</p>
+            <ul>
+              <li><code>sw=1</code> 表示开启轮播</li>
+              <li><code>sw=0</code> 表示关闭轮播</li>
+              <li><code>interval</code> 单位为分钟</li>
+            </ul>
+            <p>成功响应建议：</p>
+            <pre><code class="language-json">{
+  "func": "set_slideshow_result",
+  "result": 0
+}</code></pre>
+            <p>失败响应建议：</p>
+            <pre><code class="language-json">{
+  "func": "set_slideshow_result",
+  "result": 1,
+  "message": "set slideshow failed"
+}</code></pre>
+            <blockquote>
+              Note:<br />
+              <code>set_slideshow.interval</code> is sent in seconds.<br />
+              <code>sw=1</code> means on, <code>sw=0</code> means off.
+            </blockquote>
+          </section>
+
+          <section id="section-8">
+            <div class="section-kicker">删除</div>
+            <h2>8. 删除</h2>
+            <p>删除设备内已保存的选中文件。</p>
+            <pre><code class="language-json">{
+  "func": "delete",
+  "fileNames": ["26422", "26423", "26430"]
+}</code></pre>
+            <p>设备端要求：</p>
+            <ol>
+              <li>校验 <code>fileNames</code></li>
+              <li>删除对应主图及缩略图</li>
+              <li>返回成功或失败</li>
+            </ol>
+            <p>成功响应建议：</p>
+            <pre><code class="language-json">{
+  "func": "delete_result",
+  "result": 0
+}</code></pre>
+            <p>失败响应建议：</p>
+            <pre><code class="language-json">{
+  "func": "delete_result",
+  "result": 1,
+  "message": "delete failed"
+}</code></pre>
+          </section>
+
+          <section id="section-9">
+            <div class="section-kicker">设备保活</div>
+            <h2>9. 设置 WiFi 工作时长</h2>
+            <p>用于通知设备在收到指令后保持 WiFi 工作指定时长。</p>
+            <p>请求：</p>
+            <pre><code class="language-json">{
+  "func": "set_wifi_work_time",
+  "seconds": 300
+}</code></pre>
+            <p>说明：</p>
+            <ul>
+              <li><code>seconds</code> 单位为秒</li>
+              <li>建议设备校验 <code>seconds &gt; 0</code></li>
+            </ul>
+            <p>成功响应建议：</p>
+            <pre><code class="language-json">{
+  "func": "set_wifi_work_time_result",
+  "result": 0
+}</code></pre>
+            <p>失败响应建议：</p>
+            <pre><code class="language-json">{
+  "func": "set_wifi_work_time_result",
+  "result": 1,
+  "message": "set wifi work time failed"
+}</code></pre>
+          </section>
+
+          <section id="section-10">
+            <div class="section-kicker">联调 / 心跳</div>
+            <h2>10. 连通性检查</h2>
+            <p>用途：手机向设备发送一条轻量 <code>HTTP GET</code> 请求，用于判断当前网络是否仍然连通。</p>
+            <p>请求（建议）：</p>
+            <pre><code class="language-http">GET /ping HTTP/1.1</code></pre>
+            <p>说明：</p>
+            <ul>
+              <li>该请求不带请求体</li>
+              <li>设备端 <code>HTTP GET</code> 请求由 <code>have_request</code> 统一处理</li>
+              <li>连通性检查建议在 <code>have_request</code> 中识别路径 <code>/ping</code> 并返回结果</li>
+              <li>设备在线且网络可达时，应尽快返回 JSON</li>
+              <li>手机端如果在约定时间内未收到响应，应按超时处理，视为当前网络不通</li>
+              <li>建议手机端超时时间为 <code>3~5</code> 秒，具体可由实现侧配置</li>
+            </ul>
+            <div class="callout-grid">
+              <div class="callout callout--success">
+                <p class="callout__title">成功响应建议</p>
+                <pre><code class="language-json">{
+  "func": "ping_result",
+  "result": 0,
+  "message": "ok"
+}</code></pre>
+              </div>
+              <div class="callout callout--warning">
+                <p class="callout__title">失败判定</p>
+                <p>协议层不要求设备主动返回失败 JSON。设备不可达、连接断开或链路异常时，手机端以请求超时作为失败判定。</p>
+              </div>
+            </div>
+          </section>
+
+          <section id="section-11">
+            <div class="section-kicker">替换</div>
+            <h2>11. update</h2>
+            <p>替换旧文件。</p>
+            <blockquote>当前前端尚未接入该接口，协议先保留。</blockquote>
+            <p>表单字段：</p>
+            <ul>
+              <li><code>func=update</code></li>
+              <li><code>oldfileNames=12345</code></li>
+              <li><code>newfileNames=67890</code></li>
+              <li><code>bin_size=123456</code></li>
+              <li><code>image_size=23456</code></li>
+              <li><code>save=true</code></li>
+              <li><code>show=true</code></li>
+              <li>文件字段 <code>bin</code> -&gt; <code>67890.bin</code></li>
+              <li>文件字段 <code>image</code> -&gt; <code>67890.jpg</code></li>
+            </ul>
+            <p>说明：</p>
+            <ul>
+              <li>用新图片 <code>67890</code> 替换旧图片 <code>12345</code></li>
+            </ul>
+            <p>设备端要求：</p>
+            <ol>
+              <li>校验 <code>oldfileNames</code>、<code>newfileNames</code>、<code>bin_size</code>、<code>image_size</code></li>
+              <li>校验文件字段 <code>bin</code>、<code>image</code></li>
+              <li>校验文件大小是否分别等于 <code>bin_size</code>、<code>image_size</code></li>
+              <li>删除或覆盖旧图片</li>
+              <li>写入新主图和新缩略图</li>
+              <li>按 <code>save</code>、<code>show</code> 处理</li>
+              <li>返回成功或失败</li>
+            </ol>
+            <p>成功响应建议：</p>
+            <pre><code class="language-json">{
+  "func": "update_result",
+  "result": 0
+}</code></pre>
+            <p>失败响应建议：</p>
+            <pre><code class="language-json">{
+  "func": "update_result",
+  "result": 1,
+  "message": "update failed"
+}</code></pre>
+          </section>
+
+          <section id="section-12">
+            <div class="section-kicker">显示规则</div>
+            <h2>12. 恢复显示规则</h2>
+            <p>设备端建议：</p>
+            <ol>
+              <li>记录最后一次成功 <code>cast</code> 的 <code>fileName</code></li>
+              <li>重启后优先显示最后一次成功 <code>cast</code> 的图片</li>
+              <li>OTA 后优先显示最后一次成功 <code>cast</code> 的图片</li>
+              <li>若该图片不存在，再走默认显示逻辑</li>
+            </ol>
+          </section>
+
+          <section id="section-13">
+            <div class="section-kicker">请求示例</div>
+            <h2>13. 请求格式示例</h2>
+            <p>推荐请求格式：</p>
+            <pre><code class="language-text">Content-Type: multipart/form-data</code></pre>
+
+            <p><code>cast</code> 示例：</p>
+            <pre><code class="language-text">func=cast
+fileName=26422
+bin_size=123456
+image_size=23456
+save=true
+show=true
+bin=@26422.bin
+image=@26422.jpg</code></pre>
+
+            <p><code>upload</code> 示例：</p>
+            <pre><code class="language-text">func=upload
+fileName=26422
+bin_size=123456
+image_size=23456
+save=true
+show=true
+bin=@26422.bin
+image=@26422.jpg</code></pre>
+
+            <p><code>update</code> 示例：</p>
+            <pre><code class="language-text">func=update
+oldfileNames=12345
+newfileNames=67890
+bin_size=123456
+image_size=23456
+save=true
+show=true
+bin=@67890.bin
+image=@67890.jpg</code></pre>
+
+          </section>
+
+          <p class="footer-note">
+            这份 HTML 版用于阅读和联调说明，协议内容应与
+            <code>NEW_UPLOAD_FLOW_SPEC.md</code> 保持一致。
+          </p>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

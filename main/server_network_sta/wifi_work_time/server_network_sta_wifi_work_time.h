@@ -23,6 +23,8 @@ void ServerNetworkStaWifiWorkTime_OnCh583Initialized(void);
 void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t seconds);
 void ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(bool in_progress);
 bool ServerNetworkStaWifiWorkTime_IsImageSaveInProgress(void);
+void ServerNetworkStaWifiWorkTime_SetDailyImageInProgress(bool in_progress);
+bool ServerNetworkStaWifiWorkTime_IsDailyImageInProgress(void);
 void ServerNetworkStaWifiWorkTime_SetOtaWriteInProgress(bool in_progress);
 void ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress(bool in_progress);
 

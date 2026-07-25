@@ -284,6 +284,21 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
+  include("H:/AI2/file_serving/build/esp-idf/esp-tls/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
+  include("H:/AI2/file_serving/build/esp-idf/tcp_transport/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
+  include("H:/AI2/file_serving/build/esp-idf/esp_http_client/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
   include("H:/AI2/file_serving/build/esp-idf/esp_phy/cmake_install.cmake")
 endif()
 

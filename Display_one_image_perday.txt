@@ -1,0 +1,193 @@
+Display_one_image_perday
+========================
+
+1. APP protocol
+
+POST /dataUP with a small JSON body:
+
+{
+  "func": "daily_download_file",
+  "imageHeight": 1600,
+  "imageWidth": 1200,
+  "orientation": 0,
+  "api_url": "https://www.esmart-link.com/digitalPhotoFrameInternal/dailyImage/dailyImageSelect",
+  "timestamp": 1784910600,
+  "sw": 1
+}
+
+Validation:
+- sw is required and must be the exact integer 0 or 1.
+- sw=1 requires and validates every field shown above.
+- sw=0 requires only {"func":"daily_download_file","sw":0}; any additional
+  daily configuration fields are ignored.
+- imageHeight and imageWidth are positive exact integers.
+- imageHeight equals EpdType_GetCurrentConfig()->width.
+- imageWidth equals EpdType_GetCurrentConfig()->height.
+- orientation is an exact signed int16 value.
+- api_url starts with https:// and is shorter than 500 bytes.
+- timestamp is an exact, reasonable Unix timestamp in seconds.
+
+Development logs keep full URLs; received small JSON bodies are limited to the
+first 240 bytes.
+
+2. Persistent state
+
+NVS namespace: PhotoPainter
+NVS key:       daily_cfg
+
+The versioned, CRC-protected blob stores the complete APP configuration plus:
+- one-hour retry due time;
+- original target being retried;
+- last successfully completed target.
+
+Every write is read back and verified. The downloaded BIN is PSRAM-only and is
+never written to SD. show_control.txt is changed only through the existing
+slideshow-control API.
+
+PhotoPainter:epd_mode remains authoritative:
+- 0 NORMAL;
+- 1 SLIDESHOW;
+- 2 DAILY.
+
+A valid daily request stops slideshow, confirms sw=0, saves epd_mode=2, and
+submits the daily worker. Valid cast/cast2pic changes it to 0. Starting
+slideshow changes it to 1. A running daily job cancels when the mode changes.
+The daily protocol switch is represented persistently by epd_mode and is not
+duplicated in the daily_cfg blob.
+
+For sw=0, the handler takes the daily config mutex, stops slideshow and
+confirms show_control.txt sw=0, saves epd_mode=0, and returns without creating
+a worker, downloading, displaying, or erasing daily_cfg. Repeated sw=0
+requests are valid and idempotent.
+
+3. Startup and concurrency
+
+Daily base synchronization is initialized before the HTTP service can accept
+APP requests. Loading saved DAILY work occurs after the existing network
+initialization. Worker creation is mutex-protected and lazy:
+- NORMAL and SLIDESHOW startup do not create a daily worker;
+- DAILY startup loads and verifies daily_cfg, then creates/submits one worker;
+- an APP request arriving during startup is serialized with saved-job loading,
+  so an older saved request cannot overwrite the newer APP request;
+- a worker resubmits only after checking its generation under the config mutex,
+  so an old worker cannot overwrite a newer APP job;
+- saved startup work rechecks epd_mode after taking the config mutex, so an APP
+  sw=0 received during startup cannot be followed by an old saved job;
+- worker initialization is confirmed before persistent state is changed, and a
+  submit failure restores NORMAL mode;
+- factory reset saves NORMAL first and erases daily_cfg under the same config
+  mutex, preventing a running worker from restoring erased state.
+
+This change does not alter slideshow scheduling or EPD display implementation.
+
+4. Time decision
+
+Only the existing SNTP-backed network clock is used. The APP timestamp is a
+daily absolute anchor and never sets ESP32 RTC/system time.
+
+Daily slots repeat every 86400 seconds:
+- target = timestamp + N * 86400;
+- lead = slideshow_rtc_display_lead_seconds();
+- execute time = target - lead;
+- at or after the execute time, an unfinished target runs immediately;
+- up to 30 seconds before the execute time, remain awake and wait silently;
+- more than 30 seconds before the execute time, request guarded power-off and
+  program CH583 to wake 30 seconds before the execute time;
+- an unfinished current slot is never replaced by now + N or skipped because
+  startup/SNTP was late;
+- only a successfully completed current slot advances to the next daily slot;
+- an overdue one-hour retry runs immediately.
+
+The completed target is persisted so a reboot does not display the same target
+twice. A one-hour retry retains the original daily target and never shifts the
+APP timestamp anchor.
+
+5. HTTPS selection and download
+
+ESP32-C5 POSTs this JSON to api_url:
+
+{
+  "imageHeight": 1600,
+  "imageWidth": 1200,
+  "orientation": 0
+}
+
+The response must have code "1" and an HTTPS data.dailyImageUrl. Both requests
+use the ESP-IDF certificate bundle. Redirects are intentionally rejected; the
+server must return final HTTPS URLs.
+
+mbedTLS uses the ESP-IDF default allocation strategy instead of internal-only
+allocation. With CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=512, large TLS allocations
+can use PSRAM while small allocations retain the existing malloc preference.
+Before each daily POST or GET, one diagnostic line reports internal/PSRAM free
+bytes and largest free blocks. This diagnoses TLS allocation failures without
+printing buffer contents.
+
+The GET body must contain exactly EpdType_GetCurrentConfig()->display_size
+bytes. Content-Length is checked when present, and final accumulated length is
+always checked. PSRAM must cover the download buffer, the EPD queue copy, and
+the configured reserve.
+
+6. Retry, display, and shutdown
+
+The API selection plus BIN download pipeline is attempted at most three times.
+Each failed buffer is freed before the next attempt. After one complete BIN is
+available, EPD display is called exactly once:
+
+ServerNetworkStaEpdDisplay_QueueToScreenAndWait(buffer, display_size, 1)
+
+Success:
+- save the completed target and clear retry state;
+- schedule the next daily target;
+- enter the existing guarded CH583 power-off path.
+
+Three download failures or one display failure:
+- save the original failed target;
+- save retry_due = current SNTP time + 3600 seconds;
+- program the one-hour wake and enter guarded power-off;
+- repeat hourly until success or epd_mode changes.
+
+NVS runtime-state save failure keeps the ESP32 awake and retries the save. It
+must not power off with an undurable retry/completion state.
+
+The daily worker sets a dedicated in-progress guard around download, display,
+and durable state update. Existing HTTP, CH583, OTA, EPD, image-save, LED, and
+shared-SPI shutdown guards remain active. Temporary shutdown rejection is
+retried every 20 seconds. CH583 UART frame-write success is sufficient; no new
+ACK wait is introduced.
+
+Changing to sw=0 cancels network wait, schedule wait, API selection, and
+download through the existing mode checks. An EPD refresh that has already
+started is allowed to finish safely; no later daily state or job is continued.
+
+7. Key logs
+
+ESP_LOGI: accepted response, parsed EPD profile, NVS save, worker/job start,
+named schedule action with target/execute/lead times, full URLs and small API
+JSON, 25/50/75% download progress plus completion, display result, and guarded
+shutdown request.
+
+ESP_LOGW: rate-limited WiFi/SNTP waiting, download retry, missing
+Content-Length, saved one-hour retry, stale-generation cancellation, and mode
+cancellation.
+
+ESP_LOGE: invalid protocol values, NVS/worker failure, slideshow stop failure,
+TLS/HTTP/API failure, size/PSRAM failure, display failure, and wake failure.
+
+Binary contents are never printed.
+
+8. Result codes
+
+1901 EPD width/height mismatch
+1902 orientation is not an exact signed int16
+1903 api_url is invalid or too long
+1904 timestamp is invalid
+1905 NVS save/read-back failure
+1906 slideshow stop failure
+1907 DAILY mode save failure
+1908 worker initialization or submit failure
+
+An invalid or missing sw uses the common result 1004. Successful responses
+include sw and the resulting epd_mode.
+
+README_Result_Code.md is the formal result-code specification.

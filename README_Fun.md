@@ -39,6 +39,7 @@
   - [7.12 wifi_work_time：WiFi 省电管理](#sec-07-12)
   - [7.13 time：RTC 默认时间与 SNTP 网络校时](#sec-07-13)
   - [7.14 factory_reset：GPIO28 长按清除图片](#sec-07-14)
+  - [7.15 daily_download_file：每日一图](#sec-07-15)
 - [8. USB Serial/JTAG HTTP-like 协议](#sec-08)
 - [9. USB 路由与各功能处理汇总](#sec-09)
   - [9.1 cast：投屏功能模块](#sec-09-1)
@@ -131,8 +132,8 @@ The full result-code table is in `README_Result_Code.md`; this file keeps featur
 |---|---|---|---|
 | `app_nvs` 通用 NVS | `PhotoPainter` namespace | `key != NULL`；写字符串时 `value != NULL`；写入后必须 `nvs_commit()`；`read_u8` 发现 key 不存在时会写入默认值 | `read_u8` 要求 `out_value != NULL`；`read_str` 要求 `value != NULL` 且 `value_size > 0`；打开失败或读取失败时按默认值回退 |
 | WiFi 配网 NVS | `wifi:ssid/password`，`nvs.net80211:sta.ssid/sta.pswd` | USB、BLE、CH583 配网都要求 `func=wifi`、`ssid` 可解析且长度 1..32、`key` 可解析且长度小于 65；两个 namespace 都写入成功后才提交 worker 连接 | STA 启动时从保存的 WiFi 配置恢复连接；请求侧只负责保存和提交 worker，真正连接在 `User_Network_mode_app_init()` / `server_network_sta.c` |
-| `cast` 图片保存 | `/data/cast_img/<fileName>.bin`，`/data/cast_img/<fileName>.jpg`，`/data/cast_img/last_cast.txt` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename；新 bin/jpg 保存和 last_cast 记录成功后，清理 `/data/cast_img` 中非本次文件名的旧 `.bin/.jpg` | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存并记录 last cast；重启恢复可读取 last cast 和 `/data/cast_img` |
-| `cast2pic` 图片保存 | `screen=a` 保存 `/data/cast_img/screen_b.bin`、`/data/cast_img/screen_b.jpg`；`screen=b` 保存 `/data/cast_img/screen_a.bin`、`/data/cast_img/screen_a.jpg` | 当前源码 `screen` 只接受 `a` 或 `b`，`ab` 明确返回 `1617`；`screen=a -> EPD2 -> screen_b`，`screen=b -> EPD1 -> screen_a`；每组 `fileName/bin_size/image_size/bin/image` 必须完整，并兼容 `fileNameA/bin_sizeA/image_sizeA/binA/imageA`、`fileNameB/bin_sizeB/image_sizeB/binB/imageB`；大小必须匹配；`save=true` 才保存；写入使用 `.tmp`，大小校验通过后 rename；空间不足返回失败；本次需要保存的 screen 文件全部成功后，清理 `/data/cast_img` 中非本次 screen 名的旧 `.bin/.jpg`，并删除旧 `last_cast.txt` 避免指向已清理文件 | `show=true && save=true` 时按 screen 转成 EPD number，等待 EPD 显示任务完成后再保存；保存后从固定 screen 文件名读取；核心处理 result 原值透传到响应 |
+| `cast` 图片保存 | `/data/cast_img/<fileName>.bin`，`/data/cast_img/<fileName>.jpg`，`/data/cast_img/last_cast.txt` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename；新 bin/jpg 保存和 last_cast 记录成功后，清理 `/data/cast_img` 中非本次文件名的旧 `.bin/.jpg` | `show=true && save=true` 时先成功停止轮播，再显示、保存并记录 last cast；启动时不读取或显示 last_cast |
+| `cast2pic` 数据接收 | 一次接收一组 `fileName/bin_size/image_size/bin/image` | 网络和 USB 只接受 `screen=a/b`；`ab` 和缺少 `screen` 返回 `1617`；字段完整、文件名安全且实际大小匹配后返回 `result=0` | `result=0` 只表示数据接收校验成功；显示和保存由后台处理，结果只写日志 |
 | `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | 字段、文件名安全、大小匹配、目录和剩余空间条件与 cast 类似；主要用于保存，`show=true` 时也可显示 | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存；图片列表、轮播、快照从 jpg/bin 目录取数据 |
 | `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `TDX_DELETE_MAX_FILES=50` 限制；超过上限返回 `1514`，文件名非法返回 `1502`；网络与 USB 入口都先完整校验，校验失败不执行删除；只删除匹配的 bin/jpg；不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度 | 从 JSON `fileNames` 取删除列表；校验通过后按文件名拼路径并删除 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从轮播配置/control 文件读取轮播状态 |
@@ -178,8 +179,8 @@ network cast 的后台执行顺序是 show=true 时先等待 EPD 显示任务完
 - PM/light sleep 打印锁和阻塞源，便于功耗调试。
 
 量产/外发前建议：
-- server_network_sta.c 和 usb_console_wifi.c 两处 password 都只打印长度或打印 ***。
-- HTTP body 只打印 body_len、func、Content-Type，不打印完整 body。
+- 开发阶段 WiFi password 使用明文日志，发布前必须关闭。
+- HTTP 大包不打印完整 body；small JSON正文日志最多打印前240字节。
 - OTA raw meta 和进度细节降到 debug/verbose 或关闭。
 - PM/light sleep 诊断日志默认关闭。
 - 如仍需完整 body/password，应增加单独显式调试宏，默认关闭。
@@ -213,17 +214,22 @@ sequenceDiagram
     APP->>SYS: TdxCastCore_Init()
     APP->>USB: UsbConsoleEcho_Init()
     APP->>WORK: ServerNetworkStaWifiWorkTime_Init()
+    APP->>SYS: EpdDisplayMode_Init()
     APP->>SYS: read/write slideshow random NVS
     APP->>SYS: print_base_info()
     APP->>SYS: GpioTest_Init()
     APP->>STA: ServerNetworkSta_Init()
     APP->>CH583: Ch583UartApp_Init()
+    APP->>CH583: ServerNetworkStaTime_RequestCh583Backup()
     APP->>LED: UserLedStatus_Init()
     opt USER_BLE_ENABLE
         APP->>BLE: Init_Bl()
     end
     APP->>EPD: ServerNetworkStaEpdDisplay_Init() / GPIO4 EPD-SD power HIGH
     APP->>SD: example_mount_storage("/data")
+    opt storage mount ok
+        APP->>SD: FactoryReset_Init("/data")
+    end
     APP->>EPD: EpdSdPowerTest_Init()
     APP->>STA: User_Network_mode_app_init("/data")
     opt storage mount ok
@@ -272,6 +278,7 @@ main/main.c
    ├─ ServerNetworkStaWifiWorkTime_Init()
    │  └─ server_network_sta/wifi_work_time/server_network_sta_wifi_work_time.c
    │     └─ work_state_task()
+   ├─ EpdDisplayMode_Init()
    ├─ app_nvs_read_str(TDX_SLIDESHOW_RANDOM_NVS_KEY)
    ├─ app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY)
    ├─ print_base_info()
@@ -286,6 +293,7 @@ main/main.c
    │     ├─ User_UartEventTask()
    │     ├─ User_UartReceiveTask()
    │     └─ 先启动 CH583 UART，供 C5 GPIO/LED 状态使用
+   ├─ ServerNetworkStaTime_RequestCh583Backup()
    ├─ UserLedStatus_Init()
    │  └─ led_status/led_status.c
    │     └─ UserLedStatus_Task()
@@ -296,6 +304,8 @@ main/main.c
    │     └─ ServerNetworkStaEpdDisplay_Task()
    ├─ example_mount_storage("/data")
    │  └─ mount.c
+   ├─ storage_ret == ESP_OK
+   │  └─ FactoryReset_Init("/data")
    ├─ User_Network_mode_app_init("/data")
    │  └─ server_network_sta/server_network_sta.c
    ├─ storage_ret == ESP_OK
@@ -304,7 +314,7 @@ main/main.c
    ├─ app_auto_light_sleep_init()
    │  └─ 网络、存储、轮播启动后再配置自动 light sleep
    ├─ usb_console_ansi_color_test()
-   │  └─ 仅 USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE=1 时打印
+   │  └─ USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE=0，默认不打印
    ├─ esp_app_get_description()
    │  └─ 打印 app version
    └─ get_ble_mac_no_colon()
@@ -345,7 +355,7 @@ EPD 显示期间会临时把 WiFi PS 切到 WIFI_PS_MAX_MODEM，以降低 EPD �
 
 ```text
 存：
-- nvs_flash_init() 初始化 NVS 子系统，不直接写业务数据。
+- nvs_flash_init() 初始化 NVS；无可用页或版本不兼容时擦除后重试。
 - 后续模块在启动中可能写入默认值：工作时长、EPD 类型、CH583 BLE MAC、轮播配置等。
 
 取：
@@ -458,10 +468,10 @@ SERVER_NETWORK_STA_DEBUG_LOG_ENABLE=1
 当前默认保留 WiFi STA 连接细节日志，便于排查 STA_START、BSSID、RSSI、WiFi PS、esp_wifi_start/connect 返回值。
 
 SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT=1
-当前开发阶段默认打印明文 WiFi 密码，便于本地配网调试；发布测试和正式版本必须改为 0。
+开发阶段打印明文 WiFi 密码；发布前改为 0。
 
-USER_NVS_VERBOSE_LOG_ENABLE=1
-当前默认保留 app_nvs 成功读写日志；如果只需失败日志，发布前建议改为 0。
+USER_NVS_VERBOSE_LOG_ENABLE=0
+只保留 NVS 失败日志。
 
 USER_STORAGE_LIST_ON_STARTUP_ENABLE=0
 默认不在启动时逐项扫描打印 /data 文件树。
@@ -472,11 +482,11 @@ USER_HTTP_FILE_LIST_LOG_ENABLE=0
 USER_HTTP_MULTIPART_DETAIL_LOG_ENABLE=0
 默认关闭 legacy multipart fallback 的 field、boundary、slot 等细节日志；关键保存和错误日志保留。
 
-USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE=1
-当前默认保留 ANSI 颜色测试输出，发布前建议改为 0。
+USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE=0
+默认关闭 ANSI 颜色测试。
 
-SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE=1
-当前默认保留 OTA multipart boundary、field、firmware header 等底层细节日志；发布前建议改为 0。
+SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE=0
+只保留 OTA 关键节点和错误日志。
 ```
 
 ---
@@ -574,7 +584,7 @@ main/epd_display/epd_display_mode.h
 
 主要调用：
 - EPD 类型保存 / 读取。
-- EPD 显示模式保存 / 读取：PhotoPainter:epd_mode，u8，0=NORMAL，1=SLIDESHOW，2=DAILY 预留。
+- EPD 显示模式保存 / 读取：PhotoPainter:epd_mode，u8，0=NORMAL，1=SLIDESHOW，2=DAILY。
 - CH583 BLE MAC 保存 / 读取。
 - WiFi 工作时间字符串兼容保存 / 读取。
 - 凡是 show_control.txt 的 sw 写入成功，epd_mode 必须同步写入；sw=1 写 1，sw=0 写 0。
@@ -868,7 +878,7 @@ GET /ping HTTP/1.1
 - HTTP handlers 注册失败会独立重试；mDNS 失败不阻止直接通过 IP 使用 HTTP，并在后台独立重试。
 
 日志：
-- 当前处于开发阶段，WiFi credential 读取成功时允许明文打印 ssid/password，便于确认配网和 NVS 内容。
+- 开发阶段 WiFi credential 打印 SSID 和明文密码；发布前关闭。
 - 保留关键节点：saved WiFi 读取结果、WiFi IP、断开原因、认证累计达到阈值、mDNS ready、HTTP server ready、网络初始化失败。
 - 当前 `SERVER_NETWORK_STA_DEBUG_LOG_ENABLE=1`，默认保留 STA_START、BSSID/RSSI、WiFi PS、esp_wifi_start/connect 返回值等细节日志；发布前建议改为 0。
 ```
@@ -968,8 +978,9 @@ read_request_body_to_buffer() 会把完整 body 读入内存后再分发，不�
 
 日志：
 - 保留入口关键节点：HTTP data header、enter、dispatch=ota/json/multipart、upload busy、body too large、recv failed。
-- `small JSON` 内容较小，收到后打印完整 JSON body。
+- `small JSON` 收到后打印JSON正文；超过240字节时只打印前240字节。
 - legacy multipart fallback 的 boundary、part field、upload slot 等细节由 `USER_HTTP_MULTIPART_DETAIL_LOG_ENABLE` 控制，默认关闭。
+- 文件路径拒绝 `..`、反斜杠和带目录的 multipart 文件名。
 ```
 
 
@@ -1098,7 +1109,7 @@ HTTP POST /ota or /ota_upload
 
 日志：
 - 保留关键节点：detect ota request、max body size、meta raw/parsed、ota write start、版本/分区检查、写入进度、verify、set boot、reboot。
-- firmware 指针、boundary 内容、multipart field、firmware header 等底层细节由 `SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE` 控制；当前开发配置默认开启，发布前建议关闭。
+- firmware 指针、boundary、field、firmware header 等细节日志默认关闭。
 - OTA 失败阶段使用 `ESP_LOGE`，可继续返回错误响应的异常使用 `ESP_LOGW` 或 OTA result JSON 表达。
 ```
 
@@ -1164,7 +1175,7 @@ HTTP GET /ping
 - 根据源码顺序依次尝试 snapshot、saved_images、slideshow、slideshow_control、delete、wifi_work_time。
 
 日志：
-- small JSON body 小，入口打印完整 body：`small JSON len=... body=...`。
+- small JSON入口打印body；超过240字节时只打印前240字节。
 - 每个已识别 func 打印短结果：`small JSON func=... ret=...`。
 - 非 JSON body、未知 func 使用 `ESP_LOGW`。
 ```
@@ -1479,14 +1490,16 @@ image      缩略图 jpg 文件
 {"func":"cast_received","result":0,"fileName":"26422"}
 ```
 
-V2 说明：`cast` 成功后应记录最后一次投图，设备重启或 OTA 后优先显示该图片。
+V2 说明：`cast` 成功后记录最后一次投图；设备启动时不读取、解析或显示 `last_cast.txt`。
 
 当前源码注意点：
 
 ```text
 network cast 当前要求 save=true。
 如果 save=false，设备返回 cast_result 失败，error=save_required_for_last_cast。
-原因是 cast 成功后需要保存 bin/jpg，并记录 /data/cast_img/last_cast.txt，供重启或 OTA 后恢复显示。
+原因是 cast 成功后需要保存 bin/jpg，并记录 `/data/cast_img/last_cast.txt`。
+
+停止轮播或 `sw=0` 读回确认失败时，本次 cast 中止，不显示、不保存。
 
 show/save 顺序：
 1. show=true 时，先把当前请求中的 bin 投递到 EPD 显示任务并等待完成。
@@ -1534,7 +1547,7 @@ curl.exe -X POST "$esp/dataUP" `
 取：
 - check_save_space() 通过 example_storage_get_free_bytes() 读取剩余空间。
 - 显示时下发已收到的 bin 数据到 EPD 显示任务；后台保存和显示串行执行，网络 HTTP 不再等待最终结果 JSON。
-- 重启恢复时可读取 last cast 记录。
+- 启动时不读取 last cast，也不触发 cast 显示。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -1547,29 +1560,20 @@ Result 定义建议：
 
 | 返回 | result | 说明 |
 |---|---|---|
-| `cast2pic_result` | `0` | cast2pic 成功 |
-| `cast2pic_result` | `1012` | 存储未就绪 |
-| `cast2pic_result` | `1013` | 存储空间不足 |
+| `cast2pic_result` | `0` | multipart 数据接收并校验成功 |
 | `cast2pic_result` | `1601` | multipart boundary 缺失 |
 | `cast2pic_result` | `1602` | multipart `func` 缺失 |
 | `cast2pic_result` | `1603` | 上传内容格式非法 |
 | `cast2pic_result` | `1604` | `bin` 缺失 |
 | `cast2pic_result` | `1605` | `image` 缺失 |
 | `cast2pic_result` | `1606` | 声明大小和实际大小不一致 |
-| `cast2pic_result` | `1607` | 保存 bin 失败 |
-| `cast2pic_result` | `1608` | 保存 image 失败 |
-| `cast2pic_result` | `1609` | EPD 显示队列提交失败 |
-| `cast2pic_result` | `1008` | EPD 同步显示等待或驱动 BUSY 超时 |
-| `cast2pic_result` | `1011` | EPD 显示 buffer / completion 内存不足 |
-| `cast2pic_result` | `1016` | 保存队列创建或提交失败 |
-| `cast2pic_result` | `1804` | EPD 驱动执行失败 |
 | `cast2pic_result` | `1612` | 文件名非法 |
 | `cast2pic_result` | `1616` | `screen` 不是 `a` / `b` |
-| `cast2pic_result` | `1617` | `screen` 当前实现不支持 |
+| `cast2pic_result` | `1617` | `screen=ab` 或缺少 `screen` |
 
 失败返回会附带 `error` 字段，内容为源码中的具体错误名，例如 `missing_bin_file`、`storage_not_enough`、`display_request_failed`。
 
-功能说明：网络 `cast2pic` 用于单次刷新指定屏幕，当前源码只接受 `screen=a` 或 `screen=b`，并且 `CAST2PIC_MAX_IMAGES=1`。`screen=ab` 只属于 USB `cast2pic` 侧能力，不写入网络 HTTP 流程。
+功能说明：以 `V2_相框传图协议.html` 为协议依据，当前 APP 的 `ab` 实现有问题，因此网络和 USB 暂时都只接受 `screen=a/b`。协议规定缺少 `screen` 默认按 `ab`，所以缺少时同样返回 `1617`。每次只接收一组标准无后缀字段。
 
 Mermaid 时序图：
 
@@ -1583,10 +1587,10 @@ sequenceDiagram
     participant EPD as Screen A/B
     APP->>DATAUP: multipart func=cast2pic screen=a/b
     DATAUP->>C2P: route by func
-    C2P->>C2P: parse fileName/bin/image or A/B suffix fields
+    C2P->>C2P: validate one fileName/bin/image group
     C2P-->>APP: {func:cast2pic_result,result:0}
     C2P-->>DATAUP: HTTP handler done
-    C2P->>CORE: build one image transfer item
+    C2P->>CORE: background image transfer
     alt show=true
         CORE->>EPD: ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
     end
@@ -1594,7 +1598,6 @@ sequenceDiagram
         CORE->>SAVE: submit save task and wait result
         SAVE->>SAVE: save screen_a/screen_b bin and jpg
     end
-    C2P-->>APP: {func:cast2pic_result,result:<code>}
 ```
 
 相关文件：
@@ -1641,7 +1644,6 @@ server_network_sta_cast2pic.c
 ├─ screen_to_epd_number()
 ├─ process_cast2pic_items()
 ├─ cast2pic_async_process()
-├─ send_cast2pic_core_result()
 └─ ServerNetworkStaCast2Pic_Process()
 
 cast_core.c
@@ -1649,7 +1651,7 @@ cast_core.c
 └─ CastSaveTask()
 ```
 
-说明：network cast2pic 和 USB cast2pic 都复用 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`，并给 image transfer item 指定保存到 `/data/cast_img`。network cast2pic 在 `show=true` 时解析和字段校验通过后先返回 `cast2pic_result=0` 并结束 HTTP handler；EPD 显示和保存由固定的 `dataup_async_worker` 调用 `cast2pic_async_process()` 后台执行，不再返回第二个最终结果。`show` 和 `save` 是独立动作：后台存在 `show=true` 时先停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再等待 EPD 显示任务完成；`save=true` 时再提交保存任务；`show=false` 不显示，`save=false` 不保存。`show=false` 的 network cast2pic 仍同步返回最终结果。
+说明：network cast2pic 和 USB cast2pic 校验完整请求后立即返回 `cast2pic_result=0`。`result=0` 只表示接收成功，不表示 EPD 显示或保存成功；后续动作在后台执行，失败只记录日志，不返回第二个结果。`show=false && save=false` 时不提交后台任务。
 
 当前源码协议资料拆分（以 `server_network_sta_cast2pic.c` 为准）：
 
@@ -1667,19 +1669,16 @@ image_size=23456
 bin=@26422.bin
 image=@26422.jpg
 
-兼容字段：
-fileNameA / bin_sizeA / image_sizeA / binA / imageA
-fileNameB / bin_sizeB / image_sizeB / binB / imageB
 ```
 
 字段说明：
 
 ```text
 func     固定为 cast2pic
-screen   只接受 a 或 b；a 映射到 EPD2，b 映射到 EPD1；不接受 ab
+screen   只接受 a 或 b；ab 和缺少 screen 返回 1617
 save     是否保存
 show     是否立即显示
-当前网络版本只处理 1 组 fileName/bin/image；无后缀、A 后缀、B 后缀字段都可作为这一组输入，超过 1 组会被忽略或不进入有效流程
+网络和 USB 都只处理 1 组标准无后缀 fileName/bin/image
 ```
 
 screen 映射注意：
@@ -1717,16 +1716,16 @@ $screen = "a"
 curl.exe -X POST "$esp/dataUP" `
   -F "func=cast2pic" `
   -F "screen=$screen" `
-  -F "fileNameA=26423" `
-  -F "bin_sizeA=$binSize" `
-  -F "image_sizeA=$jpgSize" `
+  -F "fileName=26423" `
+  -F "bin_size=$binSize" `
+  -F "image_size=$jpgSize" `
   -F "save=true" `
   -F "show=true" `
-  -F "binA=@$bin;type=application/octet-stream" `
-  -F "imageA=@$jpg;type=image/jpeg"
+  -F "bin=@$bin;type=application/octet-stream" `
+  -F "image=@$jpg;type=image/jpeg"
 ```
 
-预期：设备返回 `cast2pic_result`，`result=0` 表示成功；`screen` 只能测试 `a` 或 `b`。
+预期：完整接收并校验后返回 `{"func":"cast2pic_result","result":0}`；显示和保存结果只写日志。
 
 存 / 取信息（含条件限制）：
 
@@ -1738,7 +1737,7 @@ curl.exe -X POST "$esp/dataUP" `
 - 本次需要保存的 screen 文件全部成功后，扫描 /data/cast_img，删除非本次 screen 名的旧 .bin/.jpg，并删除旧 last_cast.txt，避免它指向已清理文件。
 
 取：
-- 读取 multipart 中的 fileName/bin_size/image_size/bin/image，兼容 A/B 后缀字段。
+- 读取 multipart 中的一组标准 `fileName/bin_size/image_size/bin/image`。
 - 根据 screen=a/b 转成 EPD screen number 后等待显示任务完成；screen=a -> EPD2，screen=b -> EPD1。
 - 写入前读取剩余空间做容量检查。
 ```
@@ -1758,10 +1757,10 @@ Result 定义建议：
 | `delete_result` | `1003` | 缺少必要字段 |
 | `delete_result` | `1501` | `fileNames` 缺失或为空 |
 | `delete_result` | `1502` | 文件名非法 |
-| `delete_result` | `1503` | 删除指定 bin/jpg 文件失败，或指定文件均不存在/未删除 |
+| `delete_result` | `1503` | 任一路径发生真实删除错误，或指定文件均不存在/未删除 |
 | `delete_result` | `1514` | `fileNames` 超过单次删除上限 50 个；不执行本次删除 |
 
-功能说明：只删除 JSON `fileNames` 指定的图片和缩略图文件。网络入口先完整解析并校验全部名称；超过 50 个返回 `1514`，单个名称非法返回 `1502`，两种情况都不会删除任何文件。delete 不清理、不修改 `last_cast.txt`、`slideshow_config.txt`、`show_control.txt`，也不清理 NVS 中的轮播进度。
+功能说明：只删除 JSON `fileNames` 指定的图片和缩略图文件。网络入口先完整解析并校验全部名称；超过 50 个返回 `1514`，单个名称非法返回 `1502`，两种情况都不会删除任何文件。部分路径不存在不影响成功，但任一路径发生真实删除错误时整体返回 `1503`。delete 不清理、不修改 `last_cast.txt`、`slideshow_config.txt`、`show_control.txt`，也不清理 NVS 中的轮播进度。
 
 Mermaid 时序图：
 
@@ -3275,7 +3274,7 @@ USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 默认 5 秒。
 USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 默认 60 秒。
 ```
 
-当 `USER_EPD_DONE_LOW_POWER_ENABLE=1` 时，每次 EPD display task 实际完成一个显示 job 后，都会调用 `ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown()` 请求一次低功耗倒计时。该倒计时允许使用默认 5 秒，不依赖普通 `set_wifi_work_time` 的 `0..3600` 秒保存值；它只修改 RAM 中的运行时计时，不写 NVS，不改变 `set_wifi_work_time` 保存值。倒计时到期后，所有 `POWER_OFF` 前都会先检查 cast/upload/cast2pic 图片保存状态；如果 SD 保存或 cleanup 正在进行，只推迟 `POWER_OFF`，不取消关机请求，保存完成后由 `work_state_task()` 下一轮继续关机判断。只有当前 `epd_mode=1(SLIDESHOW)` 时才读取下一次轮播剩余时间：剩余时间不大于 `USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS=60` 秒时不关机，并恢复 one-shot 前的运行时目标；剩余时间大于 60 秒时继续执行关机流程。如果当前不是轮播模式，例如 `epd_mode=0(NORMAL)`、`epd_mode=2(DAILY)` 或保留值，则不做轮播剩余时间判断，直接进入现有关机流程。后续仍由 `work_state_task()` 统一判断 HTTP/CH583 活动保护、OTA receive/write busy、EPD busy、图片保存 busy、slideshow wake timer、LED 关机准备，并最终调用 `ch583_wifi_uart_send_power_off()`；`USER_POWER_OFF_LOCAL_EPD_SD_CUTOFF_ENABLE=0` 只阻止发送成功后的本地 `Set_Power(0)`。
+当 `USER_EPD_DONE_LOW_POWER_ENABLE=1` 时，每次 EPD display task 实际完成一个显示 job 后，都会调用 `ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown()` 请求一次低功耗倒计时。该倒计时允许使用默认 5 秒，不依赖普通 `set_wifi_work_time` 的 `0..3600` 秒保存值；它只修改 RAM 中的运行时计时，不写 NVS，不改变 `set_wifi_work_time` 保存值。倒计时到期后，所有 `POWER_OFF` 前都会先检查 cast/upload/cast2pic 图片保存状态；如果 SD 保存或 cleanup 正在进行，只推迟 `POWER_OFF`。one-shot会记录请求时是否为DAILY模式；DAILY创建的倒计时在模式被cast/cast2pic/slideshow切离DAILY后恢复原工作时间并取消，不再发送旧daily的POWER_OFF。其它EPD one-shot保留原规则。后续仍由 `work_state_task()` 统一判断 HTTP/CH583 活动保护、OTA receive/write busy、EPD busy、图片保存 busy、slideshow wake timer、LED 关机准备，并最终调用 `ch583_wifi_uart_send_power_off()`；`USER_POWER_OFF_LOCAL_EPD_SD_CUTOFF_ENABLE=0` 只阻止发送成功后的本地 `Set_Power(0)`。
 
 存 / 取信息（含条件限制）：
 
@@ -3503,6 +3502,8 @@ Invoke-RestMethod -Uri "$esp/time?t=123" -Method Get
 NVS: slide_progress
 NVS: slide_last
 NVS: slide_random 写回 false
+NVS: daily_cfg 删除
+NVS: epd_mode 写回 0
 
 必须保留，不允许清除：
 WiFi 配网
@@ -3530,6 +3531,134 @@ factory reset gpio init pin=28 active=0 check_ms=300 hold_ms=5000
 factory reset button held gpio=28 hold_ms=5100, start clear images
 factory reset done ret=ESP_OK upload_bin_deleted=... upload_jpg_deleted=... cast_bin_deleted=... cast_jpg_deleted=... cfg_deleted=... nvs_ret=ESP_OK
 ```
+
+[⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
+
+---
+
+### 7.15 daily_download_file：每日一图 <span id="sec-07-15"></span>
+
+APP通过 `/dataUP` small JSON 下发 `daily_download_file`。`sw=1` 要求完整的 `imageHeight/imageWidth/orientation/api_url/timestamp`；每次合法请求都建立一次不受间隔限制的首次立即执行。首次完成后仍以APP的 `timestamp + N*86400` 为绝对时间槽，不改变APP锚点。
+
+第二次及以后，原执行点为 `target-slideshow_rtc_display_lead_seconds()`；若距离上次每日一图EPD调用不足3600秒，只把本槽推迟到满3600秒，后续槽仍按原timestamp计算。EPD调用前持久化 `last_daily_epd_epoch`，显示失败也受该间隔限制；下载失败且未调用EPD时不更新。每周期下载最多3次、EPD只调用1次，失败保存1小时重试；提前不超过30秒在线等待，更早则设置CH583提前30秒唤醒。
+
+`sw=0` 只要求 `func/sw`，停止daily和轮播并进入 `epd_mode=0`，保留 `daily_cfg`。`sw` 缺失、非精确整数或不是0/1返回1004。尺寸按 `imageHeight==EPD width`、`imageWidth==EPD height` 校验，`orientation` 为int16，`api_url` 是少于500字节的HTTPS URL。新 `sw=1` 要求本次启动SNTP可用且 `timestamp>now`；SNTP不可用返回1909，时间不在未来返回1904，均不修改已有状态。
+
+#### Mermaid时序图
+
+```mermaid
+sequenceDiagram
+    participant APP
+    participant HTTP as /dataUP
+    participant CFG as daily config/NVS
+    participant WORK as daily worker
+    participant API as HTTPS API/BIN
+    participant EPD
+    participant CH as CH583
+    APP->>HTTP: daily_download_file sw=1
+    HTTP->>HTTP: 校验本次启动SNTP且timestamp>now
+    HTTP->>CFG: 校验并保存 initial_run_pending=1
+    HTTP->>HTTP: 停止轮播，保存 epd_mode=DAILY
+    HTTP->>WORK: 提交最新 generation
+    WORK->>WORK: 等待 WiFi + 本次开机 SNTP
+    WORK->>API: POST api_url，GET dailyImageUrl
+    API-->>WORK: BIN（当前屏型要求960000字节）
+    WORK->>CFG: EPD调用前保存last_daily_epd_epoch
+    WORK->>EPD: 显示一次
+    alt 首次成功
+        WORK->>CFG: 清除initial/retry，不占用timestamp时间槽
+        WORK->>WORK: 不足1小时则只推迟当前槽
+        WORK->>CH: 安排timestamp时间槽唤醒并关机
+    else 下载或显示失败
+        WORK->>CFG: 保存1小时重试，保留initial
+        WORK->>CH: 安排1小时后唤醒并关机
+    else WiFi或SNTP连续10次未就绪
+        WORK->>CH: 相对定时1小时后唤醒并关机
+    end
+```
+
+#### 相关目录
+
+```text
+main/server_network_sta/daily_image/
+├─ daily_image_config.c/.h              JSON、NVS、首次/重试/成功状态
+├─ daily_image_schedule.c/.h            SNTP、首次立即、绝对时间槽
+├─ daily_image_http.c/.h                HTTPS查询和BIN下载
+└─ server_network_sta_daily_image.c/.h  worker、EPD、模式和关机编排
+
+main/epd_display/                        EPD显示和epd_mode
+main/server_network_sta/slideshow/       共用显示提前秒数
+main/server_network_sta/wifi_work_time/  关机保护
+main/ch583_uart/                         唤醒定时和POWER_OFF
+main/tdx_cfg.h                           DAILY标志和限制
+```
+
+#### 启动时序
+
+```text
+app_main
+├─ EpdDisplayMode_Init()读取PhotoPainter:epd_mode
+├─ ServerNetworkStaDailyImage_Init()只初始化锁和基础状态
+├─ 启动WiFi、HTTP和SNTP
+└─ ServerNetworkStaDailyImage_StartSaved()
+   ├─ mode不是DAILY：不创建daily worker
+   ├─ mode是DAILY：读取并校验daily_cfg
+   ├─ retry_pending=1：先等待1小时重试点
+   ├─ initial_run_pending=1：SNTP可用后立即执行
+   ├─ 其他：按timestamp绝对时间槽执行，不足1小时间隔则推迟本槽
+   └─ WiFi或SNTP每5秒检查一次，10次失败后关机1小时再试
+```
+
+#### 接收解析树状时序
+
+```text
+daily_download_file
+├─ sw缺失、非整数或不是0/1 → 1004
+├─ sw=0
+│  ├─ 忽略其他字段
+│  ├─ 停止轮播并确认show_control sw=0
+│  ├─ 保存epd_mode=NORMAL
+│  └─ 取消旧daily generation
+└─ sw=1
+   ├─ 校验当前EPD的imageHeight/imageWidth
+   ├─ 校验orientation为int16
+   ├─ 校验api_url为少于500字节的HTTPS URL
+   ├─ 校验本次启动SNTP可用，否则1909且不改状态
+   ├─ 校验timestamp为有效且大于now，否则1904且不改状态
+   ├─ 使旧startup/APP generation失效
+   ├─ 保存initial_run_pending=1并清除旧进度/重试/显示时间
+   ├─ 停止轮播并保存epd_mode=DAILY
+   ├─ 提交最新generation，首次不等待timestamp
+   └─ 保存后任一步失败：恢复旧daily_cfg并进入NORMAL
+```
+
+#### 存 / 取信息（含条件限制）
+
+```text
+存：
+- PhotoPainter:daily_cfg保存版本、CRC、尺寸、orientation、api_url、timestamp、
+  initial_run_pending、retry状态、last_daily_epd_epoch和last_completed_target_epoch。
+- PhotoPainter:epd_mode保存NORMAL/SLIDESHOW/DAILY；show_control.txt只用于停止轮播。
+- BIN只在PSRAM中下载并交给EPD，不写SD；mbedTLS大块内存可按项目malloc策略进入PSRAM。
+
+取：
+- 启动只在epd_mode=DAILY时读取daily_cfg；blob大小、版本、CRC、URL、时间或状态非法则拒绝。
+- retry优先，initial其次，普通timestamp时间槽最后。
+- 新sw=1的首次立即执行不检查间隔；普通槽和retry检查last_daily_epd_epoch。
+- 当前槽只有EPD显示成功并且状态写回NVS成功后才算完成。
+
+条件：
+- 每条合法sw=1都重新产生一次首次立即执行；每个执行周期API/下载最多3次，失败后保存1小时重试，EPD不重试。
+- 1小时间隔只约束同一配置的第二次及以后；APP重复下发合法sw=1会再次触发不受限制的首次执行。
+- cast/cast2pic切换NORMAL，slideshow/slideshow_control切换SLIDESHOW，都会停止daily。
+- 已经开始的EPD刷新不强制中断；旧generation不得覆盖APP刚保存的新配置。
+- daily重复检查关机时保留已激活的一次性截止时间，不重新开始倒计时。
+- daily one-shot激活后若cast/cast2pic/slideshow把模式切离DAILY，恢复原工作时间并取消旧daily关机。
+- 新配置保存后若停止轮播、模式或任务提交失败，恢复旧daily_cfg；不自动恢复轮播，模式保持NORMAL。
+- 新配置首次保存失败时尚未停止轮播：恢复旧daily_cfg并保留原NORMAL/SLIDESHOW；旧模式为DAILY时回到NORMAL。
+```
+
+正式result code为 `1901~1909`，见 `README_Result_Code.md`。
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
 
@@ -3961,7 +4090,7 @@ Content-Type: image/jpeg
 取：
 - USB cast 与 network cast 共用 check_save_space() 做剩余空间检查。
 - 显示时下发已收到的 bin 数据到 EPD 显示任务；保存和显示串行，cast_result=0 等 EPD 显示任务、保存与 last_cast 成功。
-- 重启恢复时可读取 last cast 记录。
+- 启动时不读取 last cast，也不触发 cast 显示。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-09)
@@ -3974,23 +4103,18 @@ Result 定义建议：
 
 | 返回 | result | 说明 |
 |---|---|---|
-| `cast2pic_result` | `0` | USB cast2pic 成功 |
+| `cast2pic_result` | `0` | multipart 数据接收并校验成功 |
 | `cast2pic_result` | `1601` | multipart boundary 缺失 |
 | `cast2pic_result` | `1602` | multipart `func` 缺失 |
 | `cast2pic_result` | `1603` | 上传内容格式非法 |
 | `cast2pic_result` | `1606` | 声明大小和实际大小不一致 |
-| `cast2pic_result` | `1607` | 保存 bin 失败 |
-| `cast2pic_result` | `1608` | 保存 image 失败 |
-| `cast2pic_result` | `1609` | EPD 显示队列提交失败 |
-| `cast2pic_result` | `1008` | EPD 同步显示等待或驱动 BUSY 超时 |
-| `cast2pic_result` | `1011` | EPD 显示内存不足 |
-| `cast2pic_result` | `1804` | EPD 驱动执行失败 |
 | `cast2pic_result` | `1616` | `screen` 非法 |
+| `cast2pic_result` | `1617` | `screen=ab` 或缺少 `screen` |
 
 功能说明：
 
 ```text
-USB cast2pic 用于双屏或分屏投图，按 screen=a/b/ab 映射到指定屏幕编号，并让对应图片在指定 EPD 屏幕显示；show=true && save=true 时先等待 EPD 显示任务完成，再保存文件。
+USB cast2pic 与网络协议统一：只接受 `screen=a/b` 和一组标准无后缀图片字段；`ab` 及缺少 `screen` 均返回 `1617`。数据完整并通过校验后立即返回成功，显示和保存结果只写日志。
 ```
 
 Mermaid 时序图：
@@ -4006,14 +4130,14 @@ sequenceDiagram
 
     PC->>Router: POST /cast2pic multipart
     Router->>Cast2Pic: UsbConsoleCast2Pic_Handle()
-    Cast2Pic->>Cast2Pic: parse screen / A/B file groups
-    Cast2Pic->>Core: build one or two image transfer items
+    Cast2Pic->>Cast2Pic: validate screen and one image group
+    Cast2Pic-->>PC: {func:cast2pic_result,result:0}
+    Cast2Pic->>Core: background image transfer
     alt show=true
         Core->>EPD: ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
     end
     Core->>Save: submit save task and wait result
     Save->>Save: save screen_a/screen_b bin and jpg
-    Cast2Pic-->>PC: cast2pic_result JSON
 ```
 
 相关文件：
@@ -4033,10 +4157,9 @@ UsbConsoleRouter_Handle()
 └─ /cast2pic
    └─ UsbConsoleCast2Pic_Handle()
       └─ UsbConsoleCast2Pic_Process()
-         ├─ parse screen=a/b/ab
-         ├─ parse multipart file groups
-         ├─ build tdx_image_transfer_item_t list
-         └─ TdxImageTransfer_ProcessItems()
+         ├─ parse screen=a/b and one multipart image group
+         ├─ return cast2pic_result=0
+         └─ background TdxImageTransfer_ProcessItems()
             ├─ show=true
             │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
             └─ save=true
@@ -4055,13 +4178,13 @@ CastSaveTask()
 ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
 ```
 
-说明：USB cast2pic 复用 `TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`，并给 item 指定保存到 `/data/cast_img`。`screen=ab` 会先解析成 A/B 两个 image transfer item；存在 `show=true` 时会先停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，然后逐个等待需要显示的 EPD 任务完成，再保存所有需要保存的文件；`cast2pic_result=0` 表示 EPD 显示任务和保存任务已完成。
+说明：USB 在校验完成后返回 `cast2pic_result=0`，再由 USB worker 后台执行 `show/save`；后台失败不改变已返回的接收结果。
 
 串口发送数据：
 
 ```text
 cast2pic 是 multipart + 二进制接口，不建议手工在普通串口窗口输入。
-screen 可发送 a、b 或 ab；ab 时需要同时带 A/B 两组字段。
+screen 只发送 a 或 b；字段名与网络一致，不带 A/B 后缀。
 
 @#$
 POST /cast2pic HTTP/1.1
@@ -4076,7 +4199,7 @@ cast2pic
 ------tdxusb
 Content-Disposition: form-data; name="screen"
 
-ab
+a
 ------tdxusb
 Content-Disposition: form-data; name="save"
 
@@ -4086,69 +4209,47 @@ Content-Disposition: form-data; name="show"
 
 true
 ------tdxusb
-Content-Disposition: form-data; name="fileNameA"
+Content-Disposition: form-data; name="fileName"
 
 screen_a
 ------tdxusb
-Content-Disposition: form-data; name="bin_sizeA"
+Content-Disposition: form-data; name="bin_size"
 
-<A 屏 bin 文件字节数>
+<bin 文件字节数>
 ------tdxusb
-Content-Disposition: form-data; name="image_sizeA"
+Content-Disposition: form-data; name="image_size"
 
-<A 屏 jpg 文件字节数>
+<jpg 文件字节数>
 ------tdxusb
-Content-Disposition: form-data; name="binA"; filename="screen_a.bin"
+Content-Disposition: form-data; name="bin"; filename="screen.bin"
 Content-Type: application/octet-stream
 
-<A 屏 bin 二进制数据>
+<bin 二进制数据>
 ------tdxusb
-Content-Disposition: form-data; name="imageA"; filename="screen_a.jpg"
+Content-Disposition: form-data; name="image"; filename="screen.jpg"
 Content-Type: image/jpeg
 
-<A 屏 jpg 二进制数据>
-------tdxusb
-Content-Disposition: form-data; name="fileNameB"
-
-screen_b
-------tdxusb
-Content-Disposition: form-data; name="bin_sizeB"
-
-<B 屏 bin 文件字节数>
-------tdxusb
-Content-Disposition: form-data; name="image_sizeB"
-
-<B 屏 jpg 文件字节数>
-------tdxusb
-Content-Disposition: form-data; name="binB"; filename="screen_b.bin"
-Content-Type: application/octet-stream
-
-<B 屏 bin 二进制数据>
-------tdxusb
-Content-Disposition: form-data; name="imageB"; filename="screen_b.jpg"
-Content-Type: image/jpeg
-
-<B 屏 jpg 二进制数据>
+<jpg 二进制数据>
 ------tdxusb--
 %^&
 ```
 
-预期：返回 `cast2pic_result`，`result=0` 表示成功；`screen=ab` 会分别保存为 `screen_a`、`screen_b` 并投递到对应屏。
+预期：返回 `{"func":"cast2pic_result","result":0}`；只表示数据接收校验成功。
 
 
 存 / 取信息（含条件限制）：
 
 ```text
 存：
-- UsbConsoleCast2Pic_Process() 解析 A/B 图片组后生成 tdx_image_transfer_item_t。
-- TdxImageTransfer_ProcessItems() 先等待所有 show=true 的 EPD 显示任务完成。
+- UsbConsoleCast2Pic_Process() 解析一组标准图片字段后生成后台任务。
+- 后台调用 TdxImageTransfer_ProcessItems() 处理 show/save。
 - CastSaveTask 保存 screen_a/screen_b 对应的 .bin 和 .jpg 到 /data/cast_img。
 - CastSaveTask 使用临时文件写入再 rename，避免半文件覆盖正式文件。
 - 本次 screen 文件全部保存成功后，清理 /data/cast_img 中非本次 screen 名的旧 .bin/.jpg，并删除旧 last_cast.txt，避免它指向已清理文件。
 
 取：
-- 读取 multipart 中重复出现的 fileName/bin_size/image_size/bin/image。
-- 根据 screen=a/b/ab 转成 EPD screen number 后等待显示任务完成。
+- 读取一组 `fileName/bin_size/image_size/bin/image`。
+- `screen=a/b` 的内部映射与网络一致。
 - 写入前由 CastSaveTask 读取剩余空间做容量检查。
 ```
 
@@ -4263,13 +4364,13 @@ Result 定义建议：
 | `delete_result` | `0` | USB 删除成功 |
 | `delete_result` | `1501` | `fileNames` 缺失 |
 | `delete_result` | `1502` | 文件名非法 |
-| `delete_result` | `1503` | 删除失败 |
+| `delete_result` | `1503` | 任一路径发生真实删除错误，或指定文件均不存在/未删除 |
 | `delete_result` | `1514` | `fileNames` 超过单次删除上限 50 个；不执行本次删除 |
 
 功能说明：
 
 ```text
-USB delete 接收 JSON fileNames 数组，单次最多 50 个；先完整解析并严格校验整个 `fileNames` 数组，再删除对应 bin/jpg 文件。超过 50 个返回 `1514`，文件名非法返回 `1502`，JSON 结构非法返回 `1001`，校验失败时不执行任何删除。该功能不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度。
+USB delete 接收 JSON fileNames 数组，单次最多 50 个；先完整解析并严格校验整个 `fileNames` 数组，再删除对应 bin/jpg 文件。部分路径不存在不影响成功，但任一路径发生真实删除错误时整体返回 `1503`。该功能不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度。
 ```
 
 Mermaid 时序图：
@@ -4333,7 +4434,7 @@ Content-Length: 50
 %^&
 ```
 
-预期：返回 `delete_result`；至少删除到一个文件时 `result=0`，没有删除到文件时返回失败。
+预期：返回 `delete_result`；没有真实删除错误且至少删除到一个文件时 `result=0`，否则返回失败。
 
 
 存 / 取信息（含条件限制）：
@@ -7751,7 +7852,7 @@ ARG bit 定义：
 组合规则：
 
 ```text
-ARG = (provision_status_nibble << 4) | epd_display_mode
+ARG = (provision_status_nibble << 4) | epd_mode
 provision_status_nibble: 未配网=0x4，已配网=0x5
 发送 POWER_OFF 前：轮播开启时低 4bit=0x1；轮播未开启时低 4bit=0xF
 ```
@@ -7844,7 +7945,7 @@ work_state_task()
    └─ 随后发送 POWER_OFF
 ```
 
-`ch583_wifi_uart_send_wifi_provision_status()` 内部保存最近一次 WiFi 配网状态；当 `epd_display_mode` 变化时，使用这个缓存的配网状态重新组合 ARG 并再次上报 CH583/CH585。若还没有读取到 WiFi 配网状态，则按未配网 `0` 处理。
+`ch583_wifi_uart_send_wifi_provision_status()` 内部保存最近一次 WiFi 配网状态；当 `epd_mode` 变化时，使用这个缓存的配网状态重新组合 ARG 并再次上报 CH583/CH585。若还没有读取到 WiFi 配网状态，则按未配网 `0` 处理。
 
 `ch583_wifi_uart_send_wifi_provision_before_power_off()` 只读取最近一次配网状态并发送一次，不改配网状态缓存、不改 `EpdDisplayMode`、不写 NVS。该通知发送失败只记录 `ESP_LOGE`，仍继续原有 `POWER_OFF`；如果通知发送成功但 `POWER_OFF` UART 写入失败，则重新上报当前持久工作模式，避免 CH583 长时间保留临时待机状态。
 
@@ -8468,7 +8569,7 @@ EPD 显示模式：
 PhotoPainter:epd_mode，u8
 0 NORMAL     普通模式
 1 SLIDESHOW  轮播模式
-2 DAILY      每日更新模式预留，当前业务不主动设置
+2 DAILY      每日更新模式
 ```
 
 启动时 `EpdDisplayMode_Init()` 读取 `epd_mode`，不存在时写入默认 `0`。如果读到非法值，恢复为 `0`。`app_main()` 会打印当前模式，例如 `EPD display mode=0(NORMAL)`。
@@ -8485,7 +8586,7 @@ show_control.txt sw=0 写入成功 -> EpdDisplayMode_SetBySlideshowSwitch(false)
 ```text
 存：
 - EpdType_SetAndSave() 只保存合法屏幕类型；合法条件是 EpdType_GetConfig(type) 能找到配置。
-- EpdDisplayMode_Set() 只保存 0/1/2；当前业务只通过 sw 设置 0/1，2 作为每日更新模式预留。
+- EpdDisplayMode_Set() 只保存 0/1/2；轮播控制写0/1，每日一图配置成功写2，cast/cast2pic成功接收写0。
 - 如果当前 EPD_type 已经等于目标 type，则 changed=false，不重复写 NVS。
 - 显示队列只保存 RAM buffer，不写 SD；队列长度由 USER_EPD_DISPLAY_QUEUE_LENGTH 限制。
 - 入队需要 malloc/copy display buffer 成功；队列满或内存不足时失败。
@@ -10050,7 +10151,7 @@ HTTP POST /dataUP
 
 取：
 - check_save_space() 通过 example_storage_get_free_bytes() 读取剩余空间。
-- 显示时下发已收到的 bin 数据到 EPD 显示任务并等待完成；重启恢复时可读取 last cast 记录。
+- 显示时下发已收到的 bin 数据到 EPD 显示任务并等待完成；启动时不读取或显示 last cast。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回第 15 节](#sec-15) | [↩ 返回当前目录](#sec-15-1)
