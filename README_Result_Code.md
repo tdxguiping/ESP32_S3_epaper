@@ -27,6 +27,8 @@
   - [2.12 ota：网络 OTA](#sec-02-12)
   - [2.13 wifi_work_time：WiFi 工作时长](#sec-02-13)
   - [2.14 daily_download_file：每日一图](#sec-02-14)
+  - [2.15 time：网络时间状态](#sec-02-15)
+  - [2.16 dataup_result：通用数据上传结果](#sec-02-16)
 - [3. 有线 USB 汇总](#sec-03)
   - [3.1 USB 接收层错误](#sec-03-1)
   - [3.2 USB router 路由错误](#sec-03-2)
@@ -40,6 +42,7 @@
   - [3.10 USB wifi](#sec-03-10)
   - [3.11 USB wifi_work_time](#sec-03-11)
   - [3.12 USB epd_type / set_epd_type / test_epd_display](#sec-03-12)
+  - [3.13 USB restart / wifi_status / async](#sec-03-13)
 - [4. CH583 蓝牙汇总](#sec-04)
   - [4.1 CH583 / BLE JSON 通用错误](#sec-04-1)
   - [4.2 wifi：CH583 蓝牙配网](#sec-04-2)
@@ -69,26 +72,26 @@
 
 ### 1.1 JSON 返回格式 <span id="sec-01-1"></span>
 
-成功返回建议格式：
+常见成功返回格式：
 
 ```json
 {"func":"xxx_result","result":0,"message":"ok"}
 ```
 
-失败返回建议格式：
+常见失败返回格式：
 
 ```json
 {"func":"xxx_result","result":1604,"message":"xxx failed","error":"missing_bin"}
 ```
 
-字段建议：
+当前代码字段规则：
 
 | 字段 | 要求 | 说明 |
 |---|---|---|
-| `func` | 必须 | 返回类型，例如 `cast_result` |
-| `result` | 必须 | `0` 成功，非 `0` 失败 |
-| `message` | 建议必须 | 给人看的简短说明 |
-| `error` | 失败时建议有 | 给程序判断的稳定错误名 |
+| `func` | JSON 返回必须 | 返回类型，例如 `cast_result` |
+| `result` | 大多数返回包含 | 通常 `0` 成功、非 `0` 失败；例外见下文 |
+| `message` | 可选 | 给人看的简短说明 |
+| `error` | 可选 | 部分失败返回使用的稳定错误名 |
 | `stage` | 阶段流程可选 | WiFi / OTA / BLE 等流程使用 |
 | `esp_err` | ESP-IDF 错误可选 | OTA、NVS、WiFi 等底层错误可带 |
 
@@ -110,6 +113,11 @@
 1901~1999 每日一图错误
 ```
 
+实际接口有两个例外：
+
+- `time_result` 的 `result=0/1/2` 是时间状态：已同步 / 时间有效但本次启动未同步 / 时间无效，不是普通的成功或失败编码。
+- `wifi_status_result` 是 USB WiFi 状态快照，不含 `result` 字段。
+
 [⬆ 返回目录](#toc)
 
 ### 1.3 内部保存 JSON 不加 result <span id="sec-01-3"></span>
@@ -119,7 +127,7 @@
 ```text
 /data/bin_img/slideshow_config.txt
 /data/bin_img/show_control.txt
-/data/bin_img/last_cast.txt
+/data/cast_img/last_cast.txt
 ```
 
 `PhotoPainter:epd_mode` 是 u8 内部状态，不属于接口返回 JSON：
@@ -187,7 +195,7 @@ IDLE  EPD display task 空闲
 }
 ```
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `0` | `TDX_JSON_RESULT_OK` | 连通性检查成功 |
 | `1405` | `TDX_JSON_RESULT_BLE_MAC_EMPTY` | BLE MAC 尚未获取 |
@@ -202,7 +210,7 @@ IDLE  EPD display task 空闲
 get_saved_images_result
 ```
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `0` | `TDX_JSON_RESULT_OK` | 图片列表读取成功 |
 | `1401` | `TDX_JSON_RESULT_IMAGES_READ_FAILED` | 图片列表读取失败 |
@@ -217,7 +225,7 @@ get_saved_images_result
 thumb_result
 ```
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `0` | `TDX_JSON_RESULT_OK` | 缩略图读取成功 |
 | `1402` | `TDX_JSON_RESULT_THUMB_NAME_INVALID` | 缩略图名称非法 |
@@ -235,7 +243,7 @@ thumb_result
 get_snapshot_result
 ```
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `0` | `TDX_JSON_RESULT_OK` | 快照读取成功 |
 | `1011` | `TDX_JSON_RESULT_NO_MEMORY` | 内存分配失败 |
@@ -252,7 +260,7 @@ get_snapshot_result
 delete_result
 ```
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `0` | `TDX_JSON_RESULT_OK` | 删除成功 |
 | `1001` | `TDX_JSON_RESULT_JSON_INVALID` | JSON 格式错误 |
@@ -278,7 +286,7 @@ delete_result
 start_slideshow_result
 ```
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `0` | `TDX_JSON_RESULT_OK` | 轮播启动成功 |
 | `1501` | `TDX_JSON_RESULT_FILE_NAMES_MISSING` | `fileNames` 缺失 |
@@ -305,7 +313,7 @@ APP / 网络端 `start_slideshow` 在校时、保存配置、写 control、写 N
 set_slideshow_result
 ```
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `0` | `TDX_JSON_RESULT_OK` | 轮播控制设置成功 |
 | `1004` | `TDX_JSON_RESULT_PARAM_INVALID` | `sw` / `random` / `interval` 参数非法 |
@@ -420,6 +428,44 @@ set_wifi_work_time_result
 
 [⬆ 返回目录](#toc)
 
+### 2.15 time：网络时间状态 <span id="sec-02-15"></span>
+
+返回 func：
+
+```text
+time_result
+```
+
+| result | 实际含义 |
+|---:|---|
+| `0` | 当前时间有效，并且本次启动已经完成 SNTP 同步 |
+| `1` | 当前时间有效，但本次启动尚未完成 SNTP 同步 |
+| `2` | 当前时间无效 |
+
+返回同时包含 `valid`、`synced`、`source`、`server`、`timezone`、`epoch`、`local`、`utc`。这里的 `1/2` 是时间状态，不使用公共错误码语义。
+
+[⬆ 返回目录](#toc)
+
+### 2.16 dataup_result：通用数据上传结果 <span id="sec-02-16"></span>
+
+`POST /dataUP` 未被业务模块识别、最终走通用 multipart 保存时，返回：
+
+```text
+dataup_result
+```
+
+| result | 源码宏 / 含义 |
+|---:|---|
+| `0` | 通用 multipart 文件保存成功 |
+| `1006` | `TDX_JSON_RESULT_BODY_TOO_LARGE`，非 OTA 请求体过大 |
+| `1007` | `TDX_JSON_RESULT_BUSY`，上传锁或 EPD / 后台图片任务正忙 |
+| `1008` | `TDX_JSON_RESULT_TIMEOUT`，上一后台图片任务处于超时状态 |
+| `1011` | `TDX_JSON_RESULT_NO_MEMORY`，请求体内存分配失败 |
+
+OTA 请求返回 `ota_event` / `ota_result`，不使用 `dataup_result`。
+
+[⬆ 返回目录](#toc)
+
 ---
 
 ## 3. 有线 USB 汇总 <span id="sec-03"></span>
@@ -432,7 +478,7 @@ set_wifi_work_time_result
 usb_receive_result
 ```
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `1101` | `TDX_JSON_RESULT_USB_REQUEST_TOO_LARGE` | USB 请求太大 |
 | `1102` | `TDX_JSON_RESULT_USB_REQUEST_TIMEOUT` | USB 请求接收超时 |
@@ -450,7 +496,7 @@ usb_route_result
 unknown_result
 ```
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `1104` | `TDX_JSON_RESULT_USB_ROUTE_NOT_FOUND` | USB 路由不存在 |
 | `1105` | `TDX_JSON_RESULT_USB_HANDLER_FAILED` | USB handler 执行失败 |
@@ -584,6 +630,22 @@ USB EPD 类型和测试使用 `1801~1803`，详见 [6.9](#sec-06-9)。
 
 [⬆ 返回目录](#toc)
 
+### 3.13 USB restart / wifi_status / async <span id="sec-03-13"></span>
+
+实际返回 func：
+
+```text
+usb_restart_result
+wifi_status_result
+usb_async_result
+```
+
+- `usb_restart_result`：`result=0` 表示已安排重启；创建重启任务失败返回 `1009`。
+- `wifi_status_result`：返回 WiFi 状态、重试计数、IP 和内部 generation 等快照；当前代码不含 `result` 字段。
+- `usb_async_result`：USB 异步处理函数执行失败时返回 `1106`（`TDX_JSON_RESULT_USB_ASYNC_FAILED`）。
+
+[⬆ 返回目录](#toc)
+
 ---
 
 ## 4. CH583 蓝牙汇总 <span id="sec-04"></span>
@@ -596,7 +658,7 @@ USB EPD 类型和测试使用 `1801~1803`，详见 [6.9](#sec-06-9)。
 ble_json_result
 ```
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `1201` | `TDX_JSON_RESULT_BLE_JSON_EMPTY` | BLE / CH583 透传 JSON 为空 |
 | `1202` | `TDX_JSON_RESULT_BLE_FUNC_UNSUPPORTED` | BLE / CH583 `func` 不支持 |
@@ -638,9 +700,11 @@ wifi_wakeup_result
 wifi_info_result
 ```
 
-| result | 名称建议 | 含义 |
+`wifi_info_result` 表示已取得 IP（`stage=<IP>`），当前不含 `result` 字段。下表只适用于 `wifi_wakeup_result`：
+
+| result | 源码宏 | 含义 |
 |---:|---|---|
-| `0` | `TDX_JSON_RESULT_OK` | `wifi_wakeup_result` 表示连接已提交/正在连接（`stage=connecting`）；`wifi_info_result` 表示已取得 IP（`stage=<IP>`） |
+| `0` | `TDX_JSON_RESULT_OK` | 连接已提交、正在连接或当前状态可继续等待 |
 | `1205` | `TDX_JSON_RESULT_BLE_NO_SAVED_WIFI` | 没有可用 WiFi 配置 |
 | `1307` | `TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT` | WiFi 连接超时 |
 | `1308` | `TDX_JSON_RESULT_WIFI_AUTH_FAILED` | WiFi 认证失败 |
@@ -669,13 +733,13 @@ CH583 侧兼容 `seconds` 和旧字段 `time`，使用 `1351~1354`，详见 [6.4
 
 ### 4.5 BLE_MAC / ping 相关返回 <span id="sec-04-5"></span>
 
-CH583 上报 BLE MAC 后，设备可在 `ping_result` 或 `wifi_info_result` 中携带：
+CH583 上报 BLE MAC 后，网络和 USB 的 `ping_result` 携带：
 
 ```json
 {"Ble_MAC":"AABBCCDDEEFF"}
 ```
 
-如果 BLE MAC 缺失但不影响 ping 成功，可以继续返回 `result=0`。如果业务要求 BLE MAC 必须存在，再返回 `1405`。
+当前网络和 USB ping 都要求 BLE MAC 存在；缺失时固定返回 `result=1405`，并返回空的 `Ble_MAC`。当前 `wifi_info_result` 不包含 `Ble_MAC`。
 
 [⬆ 返回目录](#toc)
 
@@ -685,9 +749,9 @@ CH583 上报 BLE MAC 后，设备可在 `ping_result` 或 `wifi_info_result` 中
 
 ### 5.1 EPD type result <span id="sec-05-1"></span>
 
-EPD 相关 result 当前主要由 USB 使用。如果以后网络 HTTP 或 CH583 也支持设置 EPD type，统一复用这里的 result。
+当前 USB 的 `epd_type`、`set_epd_type_result` 和 `test_epd_display_result` 使用以下 EPD result。
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `0` | `TDX_JSON_RESULT_OK` | EPD 类型读取或设置成功 |
 | `1801` | `TDX_JSON_RESULT_EPD_TYPE_INVALID` | 当前或目标 EPD 类型非法 |
@@ -697,7 +761,7 @@ EPD 相关 result 当前主要由 USB 使用。如果以后网络 HTTP 或 CH583
 
 ### 5.2 EPD test result <span id="sec-05-2"></span>
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `0` | `TDX_JSON_RESULT_OK` | EPD 测试显示成功 |
 | `1801` | `TDX_JSON_RESULT_EPD_TYPE_INVALID` | 当前 EPD 类型非法 |
@@ -739,7 +803,7 @@ PhotoPainter:epd_mode
 
 ### 6.1 通用 result 编码 <span id="sec-06-1"></span>
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `0` | `TDX_JSON_RESULT_OK` | 成功 |
 | `1001` | `TDX_JSON_RESULT_JSON_INVALID` | JSON 格式错误 |
@@ -763,7 +827,7 @@ PhotoPainter:epd_mode
 
 ### 6.2 USB result 编码 <span id="sec-06-2"></span>
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `1101` | `TDX_JSON_RESULT_USB_REQUEST_TOO_LARGE` | USB 请求太大 |
 | `1102` | `TDX_JSON_RESULT_USB_REQUEST_TIMEOUT` | USB 请求接收超时 |
@@ -776,7 +840,7 @@ PhotoPainter:epd_mode
 
 ### 6.3 BLE / CH583 result 编码 <span id="sec-06-3"></span>
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `1201` | `TDX_JSON_RESULT_BLE_JSON_EMPTY` | BLE / CH583 透传 JSON 为空 |
 | `1202` | `TDX_JSON_RESULT_BLE_FUNC_UNSUPPORTED` | BLE / CH583 `func` 不支持 |
@@ -788,7 +852,7 @@ PhotoPainter:epd_mode
 
 ### 6.4 WiFi result 编码 <span id="sec-06-4"></span>
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `1301` | `TDX_JSON_RESULT_WIFI_SSID_MISSING` | `ssid` 缺失 |
 | `1302` | `TDX_JSON_RESULT_WIFI_KEY_MISSING` | `key` / password 缺失 |
@@ -810,7 +874,7 @@ PhotoPainter:epd_mode
 
 ### 6.5 图片 / ping / 快照 result 编码 <span id="sec-06-5"></span>
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `1401` | `TDX_JSON_RESULT_IMAGES_READ_FAILED` | 图片列表读取失败 |
 | `1402` | `TDX_JSON_RESULT_THUMB_NAME_INVALID` | 缩略图名称非法 |
@@ -822,7 +886,7 @@ PhotoPainter:epd_mode
 
 ### 6.6 delete / slideshow result 编码 <span id="sec-06-6"></span>
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `1501` | `TDX_JSON_RESULT_FILE_NAMES_MISSING` | `fileNames` 缺失 |
 | `1502` | `TDX_JSON_RESULT_FILE_NAME_INVALID` | 文件名非法，或 APP / 网络端 start_slideshow 的 `fileNames` 数组分隔格式非法 |
@@ -846,7 +910,7 @@ PhotoPainter:epd_mode
 
 ### 6.7 cast / upload / cast2pic result 编码 <span id="sec-06-7"></span>
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `1601` | `TDX_JSON_RESULT_UPLOAD_BOUNDARY_MISSING` | multipart boundary 缺失 |
 | `1602` | `TDX_JSON_RESULT_UPLOAD_FUNC_MISSING` | multipart `func` 缺失 |
@@ -870,7 +934,7 @@ PhotoPainter:epd_mode
 
 ### 6.8 OTA result 编码 <span id="sec-06-8"></span>
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `1701` | `TDX_JSON_RESULT_OTA_BOUNDARY_MISSING` | OTA boundary 缺失 |
 | `1702` | `TDX_JSON_RESULT_OTA_META_MISSING` | OTA meta 缺失 |
@@ -890,7 +954,7 @@ PhotoPainter:epd_mode
 
 ### 6.9 EPD result 编码 <span id="sec-06-9"></span>
 
-| result | 名称建议 | 含义 |
+| result | 源码宏 | 含义 |
 |---:|---|---|
 | `1801` | `TDX_JSON_RESULT_EPD_TYPE_INVALID` | 当前或目标 EPD 类型非法 |
 | `1802` | `TDX_JSON_RESULT_EPD_TYPE_SAVE_FAILED` | EPD 类型保存失败 |
