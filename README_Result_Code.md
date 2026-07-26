@@ -183,6 +183,16 @@ BUSY  EPD display task 正在执行、已有 pending job 或队列仍有任务
 IDLE  EPD display task 空闲
 ```
 
+实际构造响应的代码：
+
+```text
+网络 HTTP：main/server_network_sta/ping/server_network_sta_ping.c
+USB HTTP-like：main/usb_console_echo/ping/usb_console_ping.c
+状态判定：main/epd_display/epd_display_app.cpp -> ServerNetworkStaEpdDisplay_IsBusy()
+```
+
+网络和 USB 都固定返回 `func/result/message/EPD/Ble_MAC`，正式字段名是 `Ble_MAC`。`result=0` 和 `result=1405` 都保留 `EPD`；`1405` 是 JSON 业务结果码，网络 HTTP 仍返回正常 JSON 响应。
+
 当 `Ble_MAC` 尚未获取时，仍返回 `EPD` 字段，并使用 `result=1405`：
 
 ```json
@@ -739,7 +749,7 @@ CH583 上报 BLE MAC 后，网络和 USB 的 `ping_result` 携带：
 {"Ble_MAC":"AABBCCDDEEFF"}
 ```
 
-当前网络和 USB ping 都要求 BLE MAC 存在；缺失时固定返回 `result=1405`，并返回空的 `Ble_MAC`。当前 `wifi_info_result` 不包含 `Ble_MAC`。
+当前网络和 USB ping 都要求 BLE MAC 存在；缺失时固定返回 `result=1405`，但仍保留 `message`、`EPD` 和空的 `Ble_MAC`。当前 `wifi_info_result` 不包含 `Ble_MAC`。
 
 [⬆ 返回目录](#toc)
 

@@ -200,8 +200,8 @@ SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE=0
 
 | 返回 | result | 说明 |
 |---|---|---|
-| `ping_result` | `0` | `/ping` 正常返回，包含 `Ble_MAC` |
-| `ping_result` | `1405` | `Ble_MAC` 尚未从 CH583 获取；网络和 USB 当前均返回该错误码 |
+| `ping_result` | `0` | `/ping` 正常返回，包含 `EPD=BUSY/IDLE` 和非空 `Ble_MAC` |
+| `ping_result` | `1405` | `Ble_MAC` 尚未从 CH583 获取；网络和 USB 都返回 `EPD=BUSY/IDLE`、空 `Ble_MAC` 和该错误码 |
 | WiFi 连接事件通知 | `1307` | WiFi 连接超时 |
 | WiFi 连接事件通知 | `1308` | WiFi 认证失败 |
 | WiFi 连接事件通知 | `1309` | WiFi 获取 IP 失败 |
@@ -289,7 +289,11 @@ file_server.c
    ├─ register GET /*
    │  └─ download_get_handler()
    │     ├─ ServerNetworkStaPing_ProcessGet(req)
-   │     │  └─ 如果 URI 是 /ping，直接返回 ping JSON
+   │     │  ├─ ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()
+   │     │  ├─ get_ble_mac_no_colon()
+   │     │  ├─ ServerNetworkStaEpdDisplay_IsBusy()
+   │     │  ├─ 设置 application/json 和 Connection: close
+   │     │  └─ 如果 URI 是 /ping，返回包含 EPD 与 Ble_MAC 的 ping JSON
    │     ├─ ServerNetworkStaTime_ProcessGet(req)
    │     │  └─ 如果 URI 是 /time，直接返回 time JSON
    │     ├─ ServerNetworkStaSavedImages_SendThumbnail()
@@ -338,19 +342,46 @@ auto light sleep / HTTP 接收注意事项：
 GET /ping HTTP/1.1
 ```
 
-成功返回示例：
+BLE MAC 已取得时的返回示例：
 
 ```json
 {
   "func": "ping_result",
   "result": 0,
   "message": "ok",
+  "EPD": "BUSY",
   "Ble_MAC": "AABBCCDDEEFF"
 }
 ```
 
-说明：前端写操作前会优先访问缓存端点的 `/ping`。如果响应包含 `Ble_MAC` 或 `ble_mac`，需要与目标设备 MAC 一致，避免缓存 IP 指向错误设备。
+BLE MAC 尚未取得时的返回示例：
 
+```json
+{
+  "func": "ping_result",
+  "result": 1405,
+  "message": "Ble_MAC not ready",
+  "EPD": "IDLE",
+  "Ble_MAC": ""
+}
+```
+
+`EPD` 由 `ServerNetworkStaEpdDisplay_IsBusy()` 生成：
+
+```text
+BUSY  显示任务 active、pending job 计数大于 0、EPD 队列仍有消息，任一条件成立
+IDLE  以上三项均不存在
+```
+
+实际代码位置：
+
+```text
+main/server_network_sta/ping/server_network_sta_ping.c
+main/usb_console_echo/ping/usb_console_ping.c
+main/epd_display/epd_display_app.cpp
+```
+
+当前固件正式输出字段名固定为 `Ble_MAC`，不输出小写 `ble_mac`。前端可以兼容旧资料中的小写写法，但校验当前设备响应时应使用 `Ble_MAC`；非空 MAC 必须与目标设备一致，避免缓存 IP 指向错误设备。
 
 
 存 / 取信息（含条件限制）：

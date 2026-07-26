@@ -1090,6 +1090,14 @@ OTA 写分区时会分块 esp_ota_write()，但 HTTP 接收阶段不是 streamin
 
 结果码以 [README_Result_Code.md](README_Result_Code.md) 为准。
 
+实际代码位置：
+
+```text
+网络 HTTP：main/server_network_sta/ping/server_network_sta_ping.c
+USB HTTP-like：main/usb_console_echo/ping/usb_console_ping.c
+EPD BUSY 判定：main/epd_display/epd_display_app.cpp
+```
+
 功能说明：用于 App/PC 判断设备 HTTP 服务是否可用，通过 `Ble_MAC` 防止缓存 IP 指向错误设备，并通过 `EPD` 字段告知当前 EPD display task 是忙碌还是空闲。网络 ping 匹配 `/ping` 路径，并允许携带 query/hash 后缀，例如 `/ping?t=123`。每次有效网络 `/ping` 都调用 `ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()`，从当前时刻重新产生 20 秒 HTTP 关机保护，但不重置完整 `wifi_work_time`、不写 NVS。网络 ping 响应会设置 `Connection: close`，避免 App/PC 的 keep-alive 长时间占用 HTTP socket。
 
 Mermaid 时序图：
@@ -1152,7 +1160,19 @@ BUSY  EPD display task 正在执行、已有 pending job 或队列仍有任务
 IDLE  EPD display task 空闲
 ```
 
-V2 说明：前端写操作前会优先访问缓存端点的 `/ping`；如果响应包含 `Ble_MAC` 或 `ble_mac`，必须与目标设备 MAC 一致。
+BLE MAC 尚未取得时仍返回完整字段：
+
+```json
+{
+  "func": "ping_result",
+  "result": 1405,
+  "message": "Ble_MAC not ready",
+  "EPD": "IDLE",
+  "Ble_MAC": ""
+}
+```
+
+网络和 USB 当前都固定输出字段名 `Ble_MAC`，不输出小写 `ble_mac`。前端可以兼容旧资料中的小写写法，但当前设备协议和文档统一使用 `Ble_MAC`。前端写操作前应访问目标设备的 `/ping`，并校验非空 `Ble_MAC` 与目标设备一致。
 
 
 

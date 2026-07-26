@@ -208,13 +208,47 @@ curl.exe -X POST "$esp/ota_upload" `
 Powershell 测试用例：
 
 ```powershell
-# ping：GET /ping 检查 HTTP 服务和设备身份。
+# ping：GET /ping 检查 HTTP 服务、设备身份和 EPD 忙闲状态。
 $esp = "http://192.168.1.104"
-Invoke-RestMethod -Uri "$esp/ping" -Method Get
-Invoke-RestMethod -Uri "$esp/ping?t=123" -Method Get
+
+function Assert-PingResponse($r) {
+  foreach ($name in @("func", "result", "message", "EPD", "Ble_MAC")) {
+    if ($null -eq $r.PSObject.Properties[$name]) {
+      throw "ping missing field: $name"
+    }
+  }
+  if ($r.func -ne "ping_result") { throw "ping func error: $($r.func)" }
+  if (@("BUSY", "IDLE") -notcontains [string]$r.EPD) {
+    throw "ping EPD error: $($r.EPD)"
+  }
+
+  if ([int]$r.result -eq 0) {
+    if ($r.message -ne "ok") { throw "ping message error: $($r.message)" }
+    if ([string]$r.Ble_MAC -notmatch '^[0-9A-F]{12}$') {
+      throw "ping Ble_MAC error: $($r.Ble_MAC)"
+    }
+  } elseif ([int]$r.result -eq 1405) {
+    if ($r.message -ne "Ble_MAC not ready") {
+      throw "ping message error: $($r.message)"
+    }
+    if (-not [string]::IsNullOrEmpty([string]$r.Ble_MAC)) {
+      throw "result=1405 but Ble_MAC is not empty"
+    }
+  } else {
+    throw "ping result error: $($r.result)"
+  }
+}
+
+$r = Invoke-RestMethod -Uri "$esp/ping" -Method Get
+Assert-PingResponse $r
+$r | ConvertTo-Json -Depth 5
+
+# query 后缀也必须进入同一个 /ping handler。
+$rQuery = Invoke-RestMethod -Uri "$esp/ping?t=123" -Method Get
+Assert-PingResponse $rQuery
 ```
 
-预期：BLE MAC 已获取时返回 `result=0`；尚未获取时返回 `result=1405` 和空 `Ble_MAC`。两种情况下都返回 `EPD` 字段。
+预期：响应固定包含 `func/result/message/EPD/Ble_MAC`。BLE MAC 已获取时返回 `result=0`、`message=ok` 和 12 位大写无冒号 MAC；尚未获取时返回 `result=1405`、`message=Ble_MAC not ready` 和空 `Ble_MAC`。两种情况下 `EPD` 都只能是 `BUSY` 或 `IDLE`。当前固件正式字段名固定为 `Ble_MAC`。
 
 ---
 

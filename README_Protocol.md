@@ -321,9 +321,38 @@ HTTP GET /ping
       ├─ ServerNetworkStaPing_ProcessGet(req)
       │  ├─ ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()
       │  ├─ get_ble_mac_no_colon()
+      │  ├─ ServerNetworkStaEpdDisplay_IsBusy()
+      │  ├─ httpd_resp_set_type(application/json)
+      │  ├─ httpd_resp_set_hdr(Connection: close)
       │  └─ httpd_resp_sendstr()
       └─ 非 /ping 时继续走缩略图/静态文件/目录列表处理
 ```
+
+当前网络和 USB `/ping` 的 JSON 字段一致：
+
+```json
+{
+  "func": "ping_result",
+  "result": 0,
+  "message": "ok",
+  "EPD": "BUSY",
+  "Ble_MAC": "AABBCCDDEEFF"
+}
+```
+
+字段规则：
+
+```text
+EPD=BUSY：显示任务 active、pending job 计数大于 0、EPD 队列仍有消息，任一条件成立
+EPD=IDLE：以上三项均不存在
+Ble_MAC 已取得：result=0，message=ok，Ble_MAC 为 12 位大写无冒号字符串
+Ble_MAC 未取得：result=1405，message=Ble_MAC not ready，Ble_MAC 为空字符串
+当前固件正式输出字段名为 Ble_MAC，不输出小写 ble_mac
+```
+
+网络响应设置 `Content-Type: application/json` 和 `Connection: close`；`result=1405` 仍是正常返回的 JSON 业务结果。
+
+USB `/ping` 通过 `UsbConsolePing_Handle()` 提交异步请求，再由 `UsbConsolePing_Process()` 构造同字段 JSON；USB 路径调用 `ServerNetworkStaWifiWorkTime_OnNetworkData()`，网络 HTTP 路径调用 `ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()`，两者计时行为不同但响应字段一致。
 
 GET `/time` 在同一个 `download_get_handler()` 中紧接 `/ping` 检查，由 `ServerNetworkStaTime_ProcessGet()` 返回 `time_result`。
 
@@ -2347,10 +2376,15 @@ AUTH_FAILED                   -> wifi_wakeup_result/1308
 
 ### 11.4 set_wifi_work_time / wifi_standby <span id="sec-11-4"></span>
 
-CH583/BLE JSON 同时接受新旧 `func`，并同时兼容 `seconds` 和旧字段 `time`：
+CH583/BLE JSON 同时接受新旧 `func`，并同时兼容 `seconds` 和旧字段 `time`。新格式：
 
 ```json
 {"func":"set_wifi_work_time","seconds":300}
+```
+
+兼容旧格式：
+
+```json
 {"func":"wifi_standby","time":300}
 ```
 
