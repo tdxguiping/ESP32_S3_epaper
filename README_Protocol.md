@@ -209,6 +209,21 @@ HTTP POST /dataUP
 
 `update` 在 V2 协议中是“替换旧图片，当前前端预留”：字段包括 `oldfileNames`、`newfileNames`、`bin_size`、`image_size`、`save`、`show`、`bin`、`image`。当前 `main/CMakeLists.txt` 已列出 `cast`、`cast2pic`、`upload` 等网络模块，但没有单独列出 `server_network_sta/update` 源文件，因此本文只记录为 V2 预留接口，不写成当前已实现链路。
 
+`start_slideshow.fileNames` 表示 APP 最终生成的播放事件列表，不是唯一文件集合。最终列表允许同一文件名出现多次，最少 1 项、最多 150 项；`startIndex` 索引最终列表，必须满足 `0 <= startIndex < fileNames.length`，不得对最终数量再次乘 3。APP 在 `random=true` 时使用最多 50 个原始文件，把每个名称复制 3 次并对扩展后的列表打乱；ESP32-C5 不再次随机，也不校验每个名称是否刚好出现 3 次，按收到的最终顺序播放，并继续在配置、NVS 和 snapshot 中保存/返回 `random=false`。
+
+```json
+{
+  "func": "start_slideshow",
+  "fileNames": ["A", "B", "A", "A", "B", "B"],
+  "interval": 60,
+  "random": true,
+  "timestamp": 1783372200,
+  "startIndex": 0
+}
+```
+
+APP / 网络端完整 small JSON 仍受 `SERVER_NETWORK_STA_SMALL_JSON_BODY_MAX=4096` 限制；150 项上限以当前常用的 16 位文件名为主要场景。每个列表项仍必须对应存在、属于普通文件且非空的 `/data/bin_img/<fileName>.bin`。相同文件名位于不同索引时属于不同播放事件，相邻重复项会在相邻两个播放点分别触发显示。
+
 
 
 存 / 取信息（含条件限制）：

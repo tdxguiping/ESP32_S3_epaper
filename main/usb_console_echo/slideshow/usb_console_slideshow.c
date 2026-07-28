@@ -178,8 +178,12 @@ static int validate_file_names(const char *body, size_t *file_count, bool check_
             name[len++] = *pos++;
         }
         if (*pos++ != '"' || !UsbConsoleCommon_FileNameIsSafe(name) ||
-            len >= TDX_SLIDESHOW_FILE_NAME_MAX_LEN || ++count > TDX_SLIDESHOW_MAX_FILES) {
+            len >= TDX_SLIDESHOW_FILE_NAME_MAX_LEN) {
             return TDX_JSON_RESULT_FILE_NAME_INVALID;
+        }
+        count++;
+        if (count > TDX_SLIDESHOW_MAX_FILES) {
+            return TDX_JSON_RESULT_FILE_NAMES_TOO_MANY;
         }
         if (check_files) {
             char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];

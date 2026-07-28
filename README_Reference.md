@@ -2170,6 +2170,16 @@ main/server_network_sta/slideshow/server_network_sta_slideshow.c
 main/server_network_sta/slideshow/server_network_sta_slideshow.h
 ```
 
+轮播容量与状态参考：
+
+- `TDX_SLIDESHOW_MAX_FILES=150`；该常量只控制轮播，`TDX_DELETE_MAX_FILES` 仍为 50。
+- `slideshow_progress_t.order_count`、`position` 和 `order[]` 使用 `uint8_t`，索引 `0..149` 在当前范围内安全；如果未来超过 255，必须先调整这些字段及配置 hash 中的数量编码。
+- APP 在 `random=true` 时负责将每个原始文件复制 3 次并打乱；ESP32-C5 允许最终列表重复、不再次随机，保存状态仍为 `random=false`。
+- `startIndex` 始终索引 APP 最终发送的列表，校验条件为 `startIndex < file_count`，不得再次乘 3。
+- 允许重复后，SNTP 开机恢复使用 `progress.order[progress.position]` 与目标索引比较，并同时核对 `pending_file`，不能只按文件名判断。
+- `slideshow_progress_t` 随 `order[]` 扩大而改变 blob 大小；旧 NVS `slide_progress` 会因大小不匹配返回 `ESP_ERR_INVALID_SIZE`，随后由现有流程按配置重建，不需要迁移或主动删除。
+- 网络 small JSON 仍受 `SERVER_NETWORK_STA_SMALL_JSON_BODY_MAX=4096` 限制，`slideshow_config` 生成缓冲仍为 `SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX=8192`；150 个当前常用的 16 位名称在这两个边界内，长名称组合必须单独核对请求总长度。
+
 ---
 
 ### 7.8 slideshow：图片轮播的文件列表，轮播间隔，是否随机

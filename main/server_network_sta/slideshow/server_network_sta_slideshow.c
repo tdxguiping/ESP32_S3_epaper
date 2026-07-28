@@ -612,25 +612,6 @@ static slideshow_file_names_parse_result_t parse_file_names(const char *body,
                       SLIDESHOW_FILE_NAMES_PARSE_OK;
 }
 
-static bool slideshow_file_names_have_duplicate(const slideshow_request_t *request,
-                                                 size_t *duplicate_index)
-{
-    if (request == NULL) {
-        return false;
-    }
-    for (size_t i = 0; i < request->file_count; ++i) {
-        for (size_t j = i + 1; j < request->file_count; ++j) {
-            if (strcasecmp(request->file_names[i], request->file_names[j]) == 0) {
-                if (duplicate_index != NULL) {
-                    *duplicate_index = j;
-                }
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 static esp_err_t send_start_slideshow_result(httpd_req_t *req, int result, const char *message)
 {
     char json[160];
@@ -2422,6 +2403,7 @@ static esp_err_t start_saved_slideshow_with_mode(const char *base_path,
                                           progress_loaded_existing &&
                                           schedule.started;
             current_slot_already_displayed = may_use_saved_progress &&
+                progress.order[progress.position] == expected_next_index &&
                 strcmp(progress.pending_file,
                        request->file_names[expected_next_index]) == 0;
             size_t selected_index = current_slot_already_displayed ?
@@ -2675,14 +2657,6 @@ static esp_err_t parse_start_slideshow_request(const char *body, slideshow_reque
     if (file_names_ret != SLIDESHOW_FILE_NAMES_PARSE_OK) {
         return ESP_ERR_INVALID_ARG;
     }
-    size_t duplicate_index = 0;
-    if (slideshow_file_names_have_duplicate(request, &duplicate_index)) {
-        ESP_LOGE(TAG,
-                 "start_slideshow rejected: duplicate fileName index=%u file=%s",
-                 (unsigned int)duplicate_index,
-                 request->file_names[duplicate_index]);
-        return TDX_JSON_RESULT_SLIDESHOW_FILE_DUPLICATE;
-    }
     if (find_json_key(body, "startIndex") == NULL) {
         ESP_LOGE(TAG,
                  "start_slideshow rejected: startIndex missing count=%u",
@@ -2735,9 +2709,6 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
     }
     if (ret == TDX_JSON_RESULT_FILE_NAMES_TOO_MANY) {
         return send_start_slideshow_result(req, ret, "too many fileNames");
-    }
-    if (ret == TDX_JSON_RESULT_SLIDESHOW_FILE_DUPLICATE) {
-        return send_start_slideshow_result(req, ret, "duplicate fileName");
     }
     if (ret == TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING) {
         return send_start_slideshow_result(req, ret, "startIndex missing");

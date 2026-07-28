@@ -299,7 +299,23 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
   -Body $body
 ```
 
-预期：设备保存轮播列表、interval、random 和 startIndex，从 `fileNames[startIndex]` 建立第 0 个绝对时间槽，重写 `show_control.txt` 为标准 RTC control，并按 `timestamp` 启动 RTC 轮播。超过 50 个文件返回 1514，缺少 startIndex 返回 1515，startIndex 非法返回 1516，重复文件名返回 1517，任一文件不存在、不是普通文件或为空返回 1508。以上非法指令均不改动 RTC / 系统时间、轮播配置、control、NVS、显示模式和现有轮播任务。
+预期：设备保存 APP 最终发送的轮播列表、interval、强制为 false 的 random 和 startIndex，从 `fileNames[startIndex]` 建立第 0 个绝对时间槽，重写 `show_control.txt` 为标准 RTC control，并按 `timestamp` 启动 RTC 轮播。最终列表允许重复且最多 150 项；超过 150 项返回 1514，缺少 startIndex 返回 1515，`startIndex >= 最终 fileNames 数量` 返回 1516，任一文件不存在、不是普通文件或为空返回 1508。以上非法指令均不改动 RTC / 系统时间、轮播配置、control、NVS、显示模式和现有轮播任务。
+
+`random=true` 的 APP 侧测试：APP 将每个原始文件名复制 3 次，对扩展后的最终列表打乱，再把该最终列表发送给设备。设备允许重复、不再次随机，并按最终列表顺序播放；设备保存和 snapshot 返回的 random 仍为 false。
+
+边界测试表：
+
+| 场景 | 预期 |
+|---|---|
+| 最终列表包含重复名称 | 接受；相同名称的不同索引是不同播放事件 |
+| 随机后两个相同名称相邻 | 在相邻两个 RTC 播放点分别调用 EPD |
+| 最终列表 150 项，`startIndex=149` | 接受 |
+| 最终列表 150 项，`startIndex=150` | 返回 1516，不修改现有状态 |
+| 最终列表 151 项 | 返回 1514，不修改现有状态 |
+| 任一重复项对应的 bin 不存在、非普通文件或为空 | 返回 1508，不修改现有状态 |
+| 重启恢复包含重复名称的列表 | 使用保存的 `order[position]` 索引恢复，不得只按文件名判断当前槽是否已显示 |
+| 150 个 16 位文件名且完整 JSON 不超过 4096 字节 | 网络端可接收 |
+| 完整 JSON 超过 4096 字节 | 在网络 small JSON 入口拒绝；数量未超过 150 也不能绕过 body 上限 |
 
 当前实现：
 

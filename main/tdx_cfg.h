@@ -185,7 +185,7 @@ extern "C" {
 #define TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING 1515
 // Public JSON result code for invalid slideshow start index; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID 1516
-// Public JSON result code for duplicate slideshow file names; keep the numeric value stable for clients.
+// Reserved legacy result code for duplicate slideshow file names; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_SLIDESHOW_FILE_DUPLICATE 1517
 
 // Public JSON result code for TDX JSON RESULT UPLOAD BOUNDARY MISSING; keep the numeric value stable for clients.
@@ -507,7 +507,7 @@ extern "C" {
 // Keep slideshow limits and state file names here so JSON parsing and saved config stay in sync.
 #define TDX_SLIDESHOW_FILE_NAME_MAX_LEN 48
 // Configuration value for TDX SLIDESHOW MAX FILES; update local references before changing it.
-#define TDX_SLIDESHOW_MAX_FILES 50
+#define TDX_SLIDESHOW_MAX_FILES 150
 // Timing value for TDX SLIDESHOW INTERVAL MIN SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_INTERVAL_MIN_SECONDS 60
 // Minimum computed CH583 wake interval required before slideshow power-off is allowed.

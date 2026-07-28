@@ -306,10 +306,10 @@ start_slideshow_result
 | `1506` | `TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED` | 轮播运行时启动失败 |
 | `1507` | `TDX_JSON_RESULT_SLIDESHOW_INTERVAL_INVALID` | 轮播间隔非法 |
 | `1508` | `TDX_JSON_RESULT_SLIDESHOW_FILE_NOT_FOUND` | APP / 网络端 `start_slideshow` 的任一轮播文件不存在、不是普通文件或为空；不执行本次指令 |
-| `1514` | `TDX_JSON_RESULT_FILE_NAMES_TOO_MANY` | APP / 网络端 `start_slideshow` 的 `fileNames` 超过 50 个；不执行本次指令 |
+| `1514` | `TDX_JSON_RESULT_FILE_NAMES_TOO_MANY` | `start_slideshow` 最终收到的 `fileNames` 超过 150 个；不执行本次指令 |
 | `1515` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING` | `startIndex` 缺失；设备不保存配置、不启动本次轮播 |
-| `1516` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID` | `startIndex` 不是非负整数或 `startIndex >= fileNames` 数量；设备不保存配置、不启动本次轮播 |
-| `1517` | `TDX_JSON_RESULT_SLIDESHOW_FILE_DUPLICATE` | APP / 网络端 `start_slideshow` 的 `fileNames` 存在重复项（忽略大小写）；不执行本次指令 |
+| `1516` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID` | `startIndex` 不是非负整数或 `startIndex >= APP 最终发送的 fileNames 数量`；设备不保存配置、不启动本次轮播 |
+| `1517` | `TDX_JSON_RESULT_SLIDESHOW_FILE_DUPLICATE` | 旧版本保留码；当前版本允许 `start_slideshow.fileNames` 重复，不再主动返回该码 |
 
 APP / 网络端 `start_slideshow` 在校时、保存配置、写 control、写 NVS、切换显示模式或启停轮播任务前完成上述列表校验。任一项非法时只返回错误，不改动设备业务状态。
 
@@ -571,7 +571,7 @@ delete_result
 start_slideshow_result
 ```
 
-使用规则与网络 HTTP `slideshow` 一致，详见 [2.7](#sec-02-7)。
+最终列表数量、允许重复和 `startIndex` 范围规则与网络 HTTP `slideshow` 一致，详见 [2.7](#sec-02-7)。USB 最终列表超过 150 项时返回 `1514`。
 
 [⬆ 返回目录](#toc)
 
@@ -911,10 +911,10 @@ PhotoPainter:epd_mode
 | `1511` | `TDX_JSON_RESULT_SLIDESHOW_TIMEZONE_DEPRECATED` | 旧协议 `timezone` 已废弃；新协议不再接收 `datetime/timezone` |
 | `1512` | `TDX_JSON_RESULT_SLIDESHOW_TIME_SET_FAILED` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
 | `1513` | `TDX_JSON_RESULT_SLIDESHOW_TIME_DIFF_TOO_LARGE` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次轮播指令 |
-| `1514` | `TDX_JSON_RESULT_FILE_NAMES_TOO_MANY` | delete 或 APP / 网络端 start_slideshow 的 `fileNames` 数量超过单次上限 50 个；不执行本次指令 |
+| `1514` | `TDX_JSON_RESULT_FILE_NAMES_TOO_MANY` | delete 的 `fileNames` 超过 50 个，或 start_slideshow 最终收到的 `fileNames` 超过 150 个；不执行本次指令 |
 | `1515` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING` | start_slideshow 的 `startIndex` 缺失，或 set_slideshow 开启时保存的轮播配置缺少 `startIndex` |
-| `1516` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID` | start_slideshow 的 `startIndex` 不是非负整数或超出 `fileNames` 范围，或保存的轮播配置包含非法 `startIndex` |
-| `1517` | `TDX_JSON_RESULT_SLIDESHOW_FILE_DUPLICATE` | APP / 网络端 start_slideshow 的 `fileNames` 存在重复项（忽略大小写）；不执行本次指令 |
+| `1516` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID` | start_slideshow 的 `startIndex` 不是非负整数或超出最终 `fileNames` 范围，或保存的轮播配置包含非法 `startIndex` |
+| `1517` | `TDX_JSON_RESULT_SLIDESHOW_FILE_DUPLICATE` | 旧版本保留码；当前版本允许 start_slideshow 的 `fileNames` 重复，不再主动返回该码 |
 
 [⬆ 返回目录](#toc)
 
