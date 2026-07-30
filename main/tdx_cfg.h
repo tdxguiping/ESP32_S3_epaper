@@ -967,8 +967,8 @@ extern "C" {
 #define USER_DAILY_IMAGE_WAKE_ADVANCE_SECONDS 30U
 // Repeat the absolute daily schedule every 24 hours.
 #define USER_DAILY_IMAGE_PERIOD_SECONDS (24U * 60U * 60U)
-// Keep scheduled and retry EPD starts at least one hour apart; a new APP-triggered initial run is exempt.
-#define USER_DAILY_IMAGE_MIN_DISPLAY_INTERVAL_SECONDS (60U * 60U)
+// Keep scheduled and retry EPD starts at least five minutes apart; a new APP-triggered initial run is exempt.
+#define USER_DAILY_IMAGE_MIN_DISPLAY_INTERVAL_SECONDS (5U * 60U)
 // Retry a failed download or a failed single display after one hour.
 #define USER_DAILY_IMAGE_RETRY_WAKE_SECONDS (60U * 60U)
 // Reserve PSRAM for TLS, the EPD queue copy, and unrelated running services.

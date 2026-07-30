@@ -491,6 +491,8 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 前提：本次启动必须已经完成 SNTP，且 `timestamp` 必须严格大于设备当前网络时间。成功返回只表示配置保存、停止轮播、切换 DAILY 模式和提交 worker 成功；首次下载与显示立即在后台执行。
 
+边界测试：将 `$future` 改为当前时间加100秒。预期首次仍立即执行；该timestamp对应的正式时间槽因距离首次EPD调用不足300秒，被推迟到首次EPD调用满300秒后执行。失败后的重试时间仍为1小时。
+
 关闭请求：
 
 ```powershell

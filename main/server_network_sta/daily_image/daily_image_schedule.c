@@ -107,7 +107,7 @@ esp_err_t DailyImageSchedule_Decide(
     /*
      * A newly accepted APP request always keeps its immediate first run.
      * Every later EPD attempt, including retries, must respect the persisted
-     * one-hour interval without moving the APP's absolute timestamp slots.
+     * five-minute interval without moving the APP's absolute timestamp slots.
      */
     bool initial_run_exempt = decision->initial_run && !decision->retry;
     if (!initial_run_exempt && config->last_daily_epd_epoch != 0U) {

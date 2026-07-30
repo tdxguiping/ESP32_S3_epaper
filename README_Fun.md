@@ -2070,7 +2070,7 @@ factory reset done ret=ESP_OK upload_bin_deleted=... upload_jpg_deleted=... cast
 
 APP通过 `/dataUP` small JSON 下发 `daily_download_file`。`sw=1` 要求完整的 `imageHeight/imageWidth/orientation/api_url/timestamp`；每次合法请求都建立一次不受间隔限制的首次立即执行。首次完成后仍以APP的 `timestamp + N*86400` 为绝对时间槽，不改变APP锚点。
 
-第二次及以后，原执行点为 `target-slideshow_rtc_display_lead_seconds()`；若距离上次每日一图EPD调用不足3600秒，只把本槽推迟到满3600秒，后续槽仍按原timestamp计算。EPD调用前持久化 `last_daily_epd_epoch`，显示失败也受该间隔限制；下载失败且未调用EPD时不更新。每周期下载最多3次、EPD只调用1次，失败保存1小时重试；提前不超过30秒在线等待，更早则设置CH583提前30秒唤醒。
+第二次及以后，原执行点为 `target-slideshow_rtc_display_lead_seconds()`；若距离上次每日一图EPD调用不足300秒，只把本槽推迟到满300秒，后续槽仍按原timestamp计算。EPD调用前持久化 `last_daily_epd_epoch`，显示失败也受该间隔限制；下载失败且未调用EPD时不更新。每周期下载最多3次、EPD只调用1次，失败保存1小时重试；提前不超过30秒在线等待，更早则设置CH583提前30秒唤醒。
 
 `sw=0` 只要求 `func/sw`，停止daily和轮播并进入 `epd_mode=0`，保留 `daily_cfg`。`sw` 缺失、非精确整数或不是0/1返回1004。尺寸按 `imageHeight==EPD width`、`imageWidth==EPD height` 校验，`orientation` 为int16，`api_url` 是少于500字节的HTTPS URL。新 `sw=1` 要求本次启动SNTP可用且 `timestamp>now`；SNTP不可用返回1909，时间不在未来返回1904，均不修改已有状态。
 
@@ -2097,7 +2097,7 @@ sequenceDiagram
     WORK->>EPD: 显示一次
     alt 首次成功
         WORK->>CFG: 清除initial/retry，不占用timestamp时间槽
-        WORK->>WORK: 不足1小时则只推迟当前槽
+        WORK->>WORK: 不足5分钟则只推迟当前槽
         WORK->>CH: 安排timestamp时间槽唤醒并关机
     else 下载或显示失败
         WORK->>CFG: 保存1小时重试，保留initial
@@ -2135,7 +2135,7 @@ app_main
    ├─ mode是DAILY：读取并校验daily_cfg
    ├─ retry_pending=1：先等待1小时重试点
    ├─ initial_run_pending=1：SNTP可用后立即执行
-   ├─ 其他：按timestamp绝对时间槽执行，不足1小时间隔则推迟本槽
+   ├─ 其他：按timestamp绝对时间槽执行，不足5分钟间隔则推迟本槽
    └─ WiFi或SNTP每5秒检查一次，10次失败后关机1小时再试
 ```
 
@@ -2180,7 +2180,7 @@ daily_download_file
 
 条件：
 - 每条合法sw=1都重新产生一次首次立即执行；每个执行周期API/下载最多3次，失败后保存1小时重试，EPD不重试。
-- 1小时间隔只约束同一配置的第二次及以后；APP重复下发合法sw=1会再次触发不受限制的首次执行。
+- 5分钟间隔只约束同一配置的第二次及以后；APP重复下发合法sw=1会再次触发不受限制的首次执行。
 - cast/cast2pic切换NORMAL，slideshow/slideshow_control切换SLIDESHOW，都会停止daily。
 - 已经开始的EPD刷新不强制中断；旧generation不得覆盖APP刚保存的新配置。
 - daily重复检查关机时保留已激活的一次性截止时间，不重新开始倒计时。
