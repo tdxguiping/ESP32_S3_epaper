@@ -23,6 +23,7 @@
 #include "server_network_sta_time.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
+#include "tdx_zlib_buffer.h"
 
 static const char *TAG = "daily_image";
 
@@ -332,8 +333,19 @@ static esp_err_t download_once(const daily_image_config_t *config,
         return ret != ESP_OK ? ret : ESP_ERR_INVALID_STATE;
     }
 
+    size_t download_capacity = (*epd_config)->display_size;
+#if USER_EPD_DISPLAY_DATA_ZLIB_ENABLE
+    download_capacity =
+        TdxZlibBuffer_GetCompressBound((*epd_config)->display_size);
+    if (download_capacity == 0) {
+        ESP_LOGE(TAG, "zlib download capacity failed display=%u",
+                 (unsigned int)(*epd_config)->display_size);
+        return ESP_ERR_INVALID_SIZE;
+    }
+#endif
+
     size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    size_t required = (*epd_config)->display_size * 2U +
+    size_t required = (*epd_config)->display_size + download_capacity +
                       USER_DAILY_IMAGE_PSRAM_RESERVE_BYTES;
     if (psram_free < required) {
         ESP_LOGE(TAG, "PSRAM not enough free=%u required=%u display=%u",
@@ -344,17 +356,17 @@ static esp_err_t download_once(const daily_image_config_t *config,
     }
 
     *display_buffer = (uint8_t *)heap_caps_malloc(
-        (*epd_config)->display_size,
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        download_capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (*display_buffer == NULL) {
         ESP_LOGE(TAG, "display buffer alloc failed bytes=%u",
-                 (unsigned int)(*epd_config)->display_size);
+                 (unsigned int)download_capacity);
         return ESP_ERR_NO_MEM;
     }
 
     ret = DailyImageHttp_Download(download_url,
                                   *display_buffer,
-                                  (*epd_config)->display_size,
+                                  download_capacity,
+                                  USER_EPD_DISPLAY_DATA_ZLIB_ENABLE == 0,
                                   downloaded_size,
                                   daily_mode_is_active);
     if (ret != ESP_OK) {

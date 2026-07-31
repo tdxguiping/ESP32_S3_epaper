@@ -344,6 +344,11 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
+  include("H:/AI2/file_serving/build/esp-idf/zlib/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
   include("H:/AI2/file_serving/build/esp-idf/esp_eth/cmake_install.cmake")
 endif()
 

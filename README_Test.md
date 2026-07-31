@@ -21,6 +21,8 @@
   - [2.13 wifi_work_time：WiFi 工作时间](#sec-02-13)
   - [2.14 time：RTC 与网络时间](#sec-02-14)
   - [2.15 daily_download_file：每日一图](#sec-02-15)
+  - [2.16 wifi_wakeup：首次连接失败后快速恢复](#sec-02-16)
+  - [2.17 zlib 压缩文件 EPD 显示测试](#sec-02-17)
 
 ## 1. 测试约定 <span id="sec-01"></span>
 
@@ -199,7 +201,33 @@ curl.exe -X POST "$esp/ota_upload" `
 
 版本规则：当前代码不解析 `version` 的数字格式或范围。OTA meta 中 `version` 字段如果存在，只做字符串完全匹配，必须与固件 `app_desc.version` 完全一致，否则返回 `1711/version_mismatch` 并拒绝写入；不确定固件版本字符串时可以省略该字段。
 
-预期：固件大小不能超过 OTA 分区；版本校验和固件校验通过后写 OTA 分区、设置 boot partition、发送成功结果，并在约 1 秒后自动复位。`reboot` 缺失时默认按 `true`；即使请求传入 `reboot=false`，设备也会打印警告并忽略该值，成功 OTA 必须复位。
+预期：固件大小不能超过 OTA 分区；版本校验和固件校验通过后写 OTA 分区并设置 boot partition。成功响应中 `ota_event/stage=rebooting` 位于 `ota_result/result=0` 之前，`ota_result` 必须是最后一条 JSON；chunked response 正常结束、HTTP handler 返回后，OTA 专用任务按 `SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS`（当前为 3000 ms）自动复位。`reboot` 缺失时默认按 `true`；即使请求传入 `reboot=false`，设备也会打印警告并忽略该值，成功 OTA 必须复位。
+
+关键日志应依次包含：
+
+```text
+stage=set_boot_ok
+stage=write_done
+stage=rebooting
+func=ota_result result=0
+finish ota stream ret=ESP_OK
+ota final response complete result_last=1
+ota restart pending delay_ms=3000
+HTTP data handler done
+ota restart now
+```
+
+`ota restart pending` 由新任务打印，可能与外层的 `HTTP data handler done` 相邻交错，两者不要求固定先后；必须保证 `ota restart now` 位于它们之后。测试判定：`ASSOC_LEAVE` 出现在 `ota restart now` 之后属于设备主动复位，不作为 OTA 写入失败；若出现 `ota final response incomplete`，表示固件已完成写入和 boot partition 设置，但手机端可能没有收到完整的最终 HTTP 响应，应记录其中的 event/result/finish 返回值。
+
+重启等待窗口测试：在 `ota restart pending delay_ms=3000` 后立即再次发送 multipart 请求。`/ota` 或 `/ota_upload` 应返回现有 `1713/upload_busy` 且 message 为 `restart_pending`；`/dataUP` multipart 应返回现有 `1007` 且 message 为 `restart_pending`。GET `/ping` 不受该保护影响。
+
+新固件启动确认测试：OTA 后第一次启动必须先出现一条 `net-ota-boot: pending verify`，其中包含 version、partition、addr、state 和 reset_reason；随后出现 `ota pending verify=1`。日志必须先出现 `HTTP POST ready /dataUP /ota /ota_upload`，再出现 `current image confirmed` 和 `ota pending verify=0`。若确认失败，必须出现 `ESP_LOGE`，同时 HTTP POST handler 和 pending hold 保持有效。
+
+启动状态重试测试：模拟第一次 `esp_ota_get_state_partition()` 读取失败，work-time 初始化后必须在 GPIO test 前再读取一次；第二次读取成功时应正常打印 pending 诊断、设置 hold，并启用 OTA 首次启动容错。两次都失败时只保留两次模块级 `ESP_LOGE`，`main.c` 不重复打印同一错误。
+
+普通启动测试：factory 分区、已确认的 OTA 分区均不得出现 `pending verify` 启动诊断，也不得设置 pending-verify hold；GPIO test、factory reset、PM 和其他业务保持原启动行为。
+
+OTA 首次启动容错测试：分别模拟 `GpioTest_Init()` 和 `FactoryReset_Init()` 失败，应打印一次 `ESP_LOGE` 并继续到网络恢复及镜像确认；同样的失败发生在普通启动时，仍保持原有 `ESP_ERROR_CHECK()` 行为。当前 PM 配置的 `light_sleep_enable` 固定为 false；若镜像尚未确认，启动末尾还应打印一次 `keep light sleep disabled`。
 
 ---
 
@@ -316,6 +344,8 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 | 重启恢复包含重复名称的列表 | 使用保存的 `order[position]` 索引恢复，不得只按文件名判断当前槽是否已显示 |
 | 150 个 16 位文件名且完整 JSON 不超过 4096 字节 | 网络端可接收 |
 | 完整 JSON 超过 4096 字节 | 在网络 small JSON 入口拒绝；数量未超过 150 也不能绕过 body 上限 |
+
+运行中首次取得 SNTP 的防重复测试：使用 A、B、C 三个不同文件并设置 `interval=300`，启动时暂时阻止 SNTP、保留 CH583/RTC 可用，让 A 完成一次 EPD 显示，再于完成后 10～30 秒恢复 SNTP。预期切换日志包含 `current_consumed=1 action=wait_next`，A 不再次进入 EPD，B 等待下一个绝对播放点。反向测试应在 A 尚未显示前恢复 SNTP，预期日志包含 `current_consumed=0 action=display_current`，当前绝对槽仍正常显示。
 
 当前实现：
 
@@ -451,6 +481,22 @@ USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 默认 60 秒。
 
 普通EPD完成自动倒计时默认关闭；开启后只修改RAM计时，不写NVS。每日一图独立请求one-shot，不受该开关控制；DAILY创建的one-shot在模式切离DAILY后恢复原工作时间并取消。
 
+Factory Reset 断电重启测试：
+
+```text
+1. 通过 USB 或 BLE 保存有效 WiFi，准备 upload、cast、轮播和 daily 数据。
+2. 把 epd_mode 设为 SLIDESHOW 或 DAILY，长按 GPIO28 约 5.1 秒。
+3. 确认图片、轮播配置、daily_cfg、wifi namespace 和 nvs.net80211 的 sta.ssid/sta.pswd 均被清除。
+4. 确认 PhotoPainter:epd_mode 已写入 USER_EPD_DISPLAY_MODE_DEFAULT，并能读回相同值。
+5. 确认 UART 顺序包含未配网 WIFI_PROVISION、WAKE_TIMER ON,10、关机前 WIFI_PROVISION 4F、POWER_OFF。
+6. 确认 CH583 关闭 ESP32/WiFi 电源，断电约 10 秒后重新上电。
+7. 重启后应为默认显示模式且没有可用 WiFi 配置；EPD type、WiFi 工作时间、BLE MAC 和 OTA 状态保持不变。
+```
+
+短按GPIO28后松开不得设置Factory Reset guard，也不得影响普通关机。连续低电平达到5秒后，应先设置guard再开始删除；把普通 `wifi_work_time`设置到即将超时时，恢复出厂清理期间不得出现普通 `WAKE_TIMER OFF,0` 或 `POWER_OFF`。成功时先提交10秒专用请求再清除guard；失败时不提交专用请求并清除guard，无论哪种结果普通关机都不能因guard永久失效。
+
+恢复出厂任一必要 NVS 操作或实际文件删除失败时不得提交 Factory Reset 关机请求。通过测试钩子模拟一个 `unlink()`失败时，应继续尝试剩余文件，最终看到 `file_delete_failed>0`、`file_ret!=ESP_OK`、总 `ret!=ESP_OK`，且不发送 `WAKE_TIMER ON,10` 和 `POWER_OFF`。文件原本不存在不算失败。Factory Reset 专用请求不使用普通 one-shot，不写工作时间 NVS；OTA、EPD、图片保存、daily 或 SPI busy 时仍由 `work_state_task()`推迟关机。
+
 ---
 
 ### 2.14 time：RTC 默认时间与 SNTP 网络校时 <span id="sec-02-14"></span>
@@ -504,3 +550,70 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 ```
 
 关闭成功后 `epd_mode=0(NORMAL)`，旧 `daily_cfg` 保留，但 daily worker 已取消。
+
+---
+
+### 2.16 wifi_wakeup：首次连接失败后快速恢复 <span id="sec-02-16"></span>
+
+测试目标：复现第一次 `NO_AP_FOUND`、底层 manager 随后重试并很快 READY 的场景，确认手机不会先收到错误的 `1307`。
+
+步骤：
+
+```text
+1. 保留有效的已保存 WiFi 配置。
+2. 发送 {"func":"wifi_wakeup"}。
+3. 让第一次连接产生 reason=201(NO_AP_FOUND)，随后恢复 AP，使下一次重试成功。
+4. 持续记录 CH583/BLE JSON 和 server_network_sta 日志。
+```
+
+预期关键日志：
+
+```text
+wifi_wakeup_result/result=0/stage=connecting
+WiFi disconnected reason=201(NO_AP_FOUND)
+wifi_wakeup early 1307 suppressed grace_ms=10000 state=RETRY_WAIT
+WiFi GOT_IP ip=<IPv4>
+Network READY ip=<IPv4>
+wifi_wakeup recovered before notify timeout
+wifi_info_result
+```
+
+判定：
+
+- 从命令受理到 READY 之间不得发送 `wifi_wakeup_result/result=1307`。
+- 过早 1307 后 10 秒内 READY 时，最终通知必须是 `wifi_info_result`。
+- AP 持续不可用且 10 秒宽限到期时，仍应只发送一次原 `wifi_wakeup_result/result=1307`。
+- 普通 `wifi` 配网的 `wifi_result` 行为必须保持不变。
+
+立即重新配网测试：在 `wifi_wakeup` 的 CONNECTING、RETRY_WAIT 和10秒宽限阶段分别发送新的 `{"func":"wifi","ssid":"...","key":"..."}`。预期不返回BUSY，而是返回 `wifi_result/result=0`、`message=WiFi config saved and queued`；旧wakeup不再发送尚未产生的1307或成功通知，worker随后只应用最新保存的配置。通过测试钩子延长NVS保存时间，使wakeup worker恰好在保存期间完成，预期worker等待SAVING发布为READY，不得出现“配置已保存但返回BUSY”。普通 `wifi` worker自身忙时仍应返回原BUSY。
+
+并发提交测试：让BLE和CH583在同一调度窗口分别提交WiFi请求，只允许一方占用 `submit_in_progress` 并创建worker；另一方返回BUSY且不得清除成功请求的WiFi connect guard。日志中只应出现一条对应受理请求的guard启动记录。
+
+关机保护测试：冷启动时保持AP不可用并把工作时间设为20秒，确认同步联网尚在45秒窗口内时不得出现 `POWER_OFF`；快速READY或明确终止应清除启动guard。再让手机 `wifi` 或 `wifi_wakeup` 在 `app_main()` 自动联网前先建立guard，预期冷启动只打印 `power guard reused remaining_ms=...`，不得再次打印新的45秒started日志，最终deadline仍从手机请求开始计算。对BLE/CH583请求同样让工作时间先达到20秒，45秒绝对窗口到期前不得出现 `POWER_OFF`，应只打印一次 `power off postponed by WiFi connect guard`；worker路径在READY或明确终止时应立即清除guard。还要先让manager进入CONNECTING/RETRY_WAIT，再发送 `wifi_wakeup`，确认未创建新连接请求但同样设置最多45秒的自动到期guard。持续失败时，guard从单次请求接收起不得超过45秒。还需分别在初始关机判断、LED关机准备和SPI锁前制造并发请求，验证三层guard都能阻止或取消关机。
+
+凭据日志测试：当前开发配置 `SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT=1`，分别从 `wifi` namespace和 `nvs.net80211` fallback读取有效配置，日志应出现 `WiFi credential loaded ssid=<SSID> password=<PASSWORD>`。把宏改为0后，日志只能输出SSID。正式发布检查必须确认宏为0。
+
+### 2.17 zlib 压缩文件 EPD 显示测试 <span id="sec-02-17"></span>
+
+准备：
+
+1. 确认存储类型是 SD 卡，不是 SPIFFS fallback。
+2. 确认 SD 卡存在之前生成的 `/bin_img/2486aad8763e9822.bin.zlib`。
+3. 确认 `USER_EPD_DISPLAY_DATA_ZLIB_ENABLE=1`。
+4. 将 `main.c` 中包围 `TdxZlibEpdTest_Run(base_path)` 的局部 `#if 0` 临时改为 `#if 1`，启动设备并查看串口日志。测试完成后恢复为 `#if 0`。
+
+成功时关键日志应包含：
+
+```text
+I zlib-epd-test: compressed EPD test start path=/data/bin_img/2486aad8763e9822.bin.zlib size=<压缩长度>
+I epd_display: zlib display decode passed input=<压缩长度> output=<屏幕原始长度> elapsed_ms=<解压耗时>
+I epd_display: EPD queued wait target=1 size=<屏幕原始长度>
+I epd_display: EPD done ... result=ESP_OK ...
+I zlib-epd-test: compressed EPD test passed input=<压缩长度> elapsed_ms=<解压和显示总耗时>
+```
+
+判定：屏幕正确显示原图且上述日志全部成功。若解压输出不是当前EPD类型要求的 `display_size`，必须使用 `ESP_LOGE` 拒绝入队。测试函数读取SD文件后先释放共享SPI锁，再同步等待EPD任务，测试期间不得出现共享SPI死锁。
+
+当前没有增加临时测试宏。`main.c` 完整保留 `TdxZlibEpdTest_Run(base_path)` 的启动调用代码，并使用局部 `#if 0` 关闭；如需重新验证，临时改为 `#if 1`，测试完成后恢复为 `#if 0`。正式功能宏保持不变。
+
+接收长度测试：分别通过cast、cast2pic和upload发送压缩后长度不同的合法zlib BIN，`bin_size`填写各自压缩后的实际长度。设备不得因为该长度不等于屏幕原始 `display_size` 而拒绝；把 `bin_size` 故意改成与实际 `bin` part长度不同，设备仍必须返回原有大小不匹配错误。将正式宏改为 `0` 后，使用未压缩BIN复测旧流程。

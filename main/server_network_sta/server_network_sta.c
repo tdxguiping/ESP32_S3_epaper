@@ -657,8 +657,8 @@ static wifi_credential_t read_saved_wifi(void)
             ESP_LOGI(TAG, "WiFi credential loaded ssid=%s password=%s",
                      credential.ssid, credential.password);
 #else
-            ESP_LOGI(TAG, "WiFi credential loaded ssid=%s password_len=%u",
-                     credential.ssid, (unsigned int)strlen(credential.password));
+            ESP_LOGI(TAG, "WiFi credential loaded ssid=%s",
+                     credential.ssid);
 #endif
             return credential;
         }
@@ -679,8 +679,8 @@ static wifi_credential_t read_saved_wifi(void)
         ESP_LOGI(TAG, "WiFi credential loaded ssid=%s password=%s",
                  credential.ssid, credential.password);
 #else
-        ESP_LOGI(TAG, "WiFi credential loaded ssid=%s password_len=%u",
-                 credential.ssid, (unsigned int)strlen(credential.password));
+        ESP_LOGI(TAG, "WiFi credential loaded ssid=%s",
+                 credential.ssid);
 #endif
     }
     return credential;

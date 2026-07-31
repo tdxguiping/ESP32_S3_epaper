@@ -23,6 +23,7 @@ esp_err_t DailyImageHttp_Download(
     const char *download_url,
     uint8_t *buffer,
     size_t buffer_size,
+    bool exact_size_required,
     size_t *downloaded_size,
     daily_image_continue_fn_t should_continue);
 

@@ -24,6 +24,51 @@
 
 static const char *TAG = "net-ota-upload";
 static int s_last_ota_result = TDX_JSON_RESULT_OK;
+static bool s_ota_restart_pending;
+
+bool NetworkOtaUpload_IsRestartPending(void)
+{
+    return __atomic_load_n(&s_ota_restart_pending, __ATOMIC_ACQUIRE);
+}
+
+static void ota_restart_task(void *arg)
+{
+    (void)arg;
+
+    ESP_LOGI(TAG, "ota restart pending delay_ms=%u",
+             (unsigned int)SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS);
+    vTaskDelay(pdMS_TO_TICKS(SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS));
+    ESP_LOGI(TAG, "ota restart now");
+    esp_restart();
+    vTaskDelete(NULL);
+}
+
+static void schedule_ota_restart(void)
+{
+    /*
+     * Keep restart scheduling inside the OTA module. The HTTP handler must return
+     * first so its request body, upload mutex, and socket can be released normally.
+     */
+    __atomic_store_n(&s_ota_restart_pending, true, __ATOMIC_RELEASE);
+    BaseType_t task_ret = xTaskCreate(ota_restart_task,
+                                      "ota_restart",
+                                      SERVER_NETWORK_STA_OTA_RESTART_TASK_STACK_SIZE,
+                                      NULL,
+                                      SERVER_NETWORK_STA_OTA_RESTART_TASK_PRIORITY,
+                                      NULL);
+    if (task_ret == pdPASS) {
+        return;
+    }
+
+    /*
+     * The new boot partition is already committed at this point. If the dedicated
+     * task cannot be created, preserve the original guaranteed-restart behavior.
+     */
+    ESP_LOGE(TAG, "ota restart task create failed ret=%ld, use blocking fallback",
+             (long)task_ret);
+    vTaskDelay(pdMS_TO_TICKS(SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS));
+    esp_restart();
+}
 
 static void log_heap_watermark(const char *point)
 {
@@ -60,59 +105,6 @@ static const esp_app_desc_t *get_firmware_app_desc(const uint8_t *firmware, size
         return NULL;
     }
     return (const esp_app_desc_t *)(firmware + desc_offset);
-}
-
-static const char *ota_state_name(esp_ota_img_states_t state)
-{
-    switch (state) {
-    case ESP_OTA_IMG_NEW:
-        return "ESP_OTA_IMG_NEW";
-    case ESP_OTA_IMG_PENDING_VERIFY:
-        return "ESP_OTA_IMG_PENDING_VERIFY";
-    case ESP_OTA_IMG_VALID:
-        return "ESP_OTA_IMG_VALID";
-    case ESP_OTA_IMG_INVALID:
-        return "ESP_OTA_IMG_INVALID";
-    case ESP_OTA_IMG_ABORTED:
-        return "ESP_OTA_IMG_ABORTED";
-    case ESP_OTA_IMG_UNDEFINED:
-        return "ESP_OTA_IMG_UNDEFINED";
-    default:
-        return "UNKNOWN";
-    }
-}
-
-esp_err_t NetworkOtaUpload_MarkCurrentAppValidIfPending(void)
-{
-    const esp_partition_t *running_partition = esp_ota_get_running_partition();
-    if (running_partition == NULL) {
-        ESP_LOGE(TAG, "mark current app valid failed: running partition is null");
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    ESP_LOGI(TAG, "mark current app valid check: running=%s addr=0x%lx",
-             running_partition->label,
-             (unsigned long)running_partition->address);
-    if (strcmp(running_partition->label, "factory") == 0) {
-        ESP_LOGI(TAG, "mark current app valid skipped: running from factory partition");
-        return ESP_OK;
-    }
-
-    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
-    esp_err_t err = esp_ota_get_state_partition(running_partition, &state);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "mark current app valid failed: get state ret=%s", esp_err_to_name(err));
-        return err;
-    }
-
-    ESP_LOGI(TAG, "mark current app valid state: %s", ota_state_name(state));
-    if (state != ESP_OTA_IMG_PENDING_VERIFY) {
-        return ESP_OK;
-    }
-
-    err = esp_ota_mark_app_valid_cancel_rollback();
-    ESP_LOGI(TAG, "mark current app valid ret=%s", esp_err_to_name(err));
-    return err;
 }
 
 bool NetworkOtaUpload_IsOtaRequest(httpd_req_t *req, const char *content_type)
@@ -734,53 +726,58 @@ esp_err_t NetworkOtaUpload_ProcessReceivedBody(httpd_req_t *req,
         return ota_stream_finish(req);
     }
 
-    send_ota_resultf(req, TDX_JSON_RESULT_OK, "ok", ESP_OK,
-                     ",\"reboot\":%u,\"firmware_size\":%u",
-                     meta.reboot ? 1 : 0,
-                     (unsigned int)firmware_field.len);
-    ESP_LOGI(TAG, "process ota body: success result sent reboot=%u", meta.reboot ? 1 : 0);
     UserLedStatus_OtaEnd(true);
-    send_ota_eventf(req, "rebooting", TDX_JSON_RESULT_OK, "rebooting", ESP_OK,
-                    ",\"delay_ms\":1000");
-    ota_stream_finish(req);
-    ESP_LOGI(TAG, "ota reboot scheduled after response");
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    esp_restart();
-    return ESP_OK;
+    esp_err_t event_ret = send_ota_eventf(req,
+                                         "rebooting",
+                                         TDX_JSON_RESULT_OK,
+                                         "rebooting",
+                                         ESP_OK,
+                                         ",\"delay_ms\":%u",
+                                         (unsigned int)SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS);
+    esp_err_t result_ret = send_ota_resultf(req,
+                                           TDX_JSON_RESULT_OK,
+                                           "ok",
+                                           ESP_OK,
+                                           ",\"reboot\":%u,\"firmware_size\":%u",
+                                           meta.reboot ? 1 : 0,
+                                           (unsigned int)firmware_field.len);
+    esp_err_t finish_ret = ota_stream_finish(req);
+
+    if (event_ret != ESP_OK || result_ret != ESP_OK || finish_ret != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "ota final response incomplete event=%s result=%s finish=%s",
+                 esp_err_to_name(event_ret),
+                 esp_err_to_name(result_ret),
+                 esp_err_to_name(finish_ret));
+    } else {
+        ESP_LOGI(TAG,
+                 "ota final response complete result_last=1 reboot=%u",
+                 meta.reboot ? 1U : 0U);
+    }
+
+    schedule_ota_restart();
+    return finish_ret;
 }
 
 
-// body_received        收完整 OTA body
-// parse_begin          开始解析
-// boundary_ok          multipart boundary 正常
-// meta_received        收到 meta
-// meta_ok              meta 解析成功
-// firmware_received    收到 firmware
-// power_hold           OTA 期间锁定功耗模式
-// write_prepare        准备写入
-// version_checked      版本校验通过
-// write_begin          开始写 ota_1
-// ota_begin_ok         esp_ota_begin 成功
-// write_progress       写入进度 5% ~ 100%
-// verify_begin         开始校验
-// verify_ok            esp_ota_end 成功
-// set_boot_ok          设置下次启动分区成功
-// write_done           写入完成
-// ota_result           最终成功
-// rebooting            准备重启
-
-
-// body_received       已收到升级包
-// meta_ok             升级信息解析成功
-// firmware_received   固件数据解析成功
-// write_begin         开始写入
-// write_progress      更新进度条
-// verify_begin        开始校验
-// verify_ok           校验成功
-// set_boot_ok         设置启动分区成功
-// write_done          写入完成
-// ota_result result=0 最终成功
-// rebooting           设备即将重启
+// body_received        The complete OTA HTTP body is available.
+// parse_begin          Multipart parsing has started.
+// boundary_ok          The multipart boundary is valid.
+// meta_received        The metadata field is available.
+// meta_ok              The metadata JSON is valid.
+// firmware_received    The firmware field is available.
+// power_hold           Power-off protection is active for OTA.
+// write_prepare        Firmware validation is starting.
+// version_checked      Image and metadata versions are compatible.
+// write_begin          Writing to the update partition is starting.
+// ota_begin_ok         esp_ota_begin() succeeded.
+// write_progress       A firmware write progress update is available.
+// verify_begin         Image verification is starting.
+// verify_ok            esp_ota_end() verified the image.
+// set_boot_ok          The next boot partition was selected.
+// write_done           The complete image was written.
+// rebooting            The device is preparing for its delayed restart.
+// ota_result           The final JSON line reports the operation result.
 
 #if 0
 增加一种 OTA 模式 （原本的 OTA 不要修改）

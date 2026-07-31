@@ -38,6 +38,8 @@
 #include "server_network_sta_slideshow.h"
 #include "server_network_sta_time.h"
 #include "server_network_sta_wifi_work_time.h"
+#include "network_ota_boot.h"
+#include "tdx_zlib_epd_test.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 #include "usb_console_echo.h"
@@ -215,6 +217,20 @@ void print_base_info(void)
     // 中文：当前项目没有保留 User_PrintWorkStateNvs()，这里直接打印已恢复的工作状态全局变量。
 }
 
+static bool startup_wifi_status_is_progressing(
+    const server_network_sta_status_t *status)
+{
+    if (status == NULL) {
+        return false;
+    }
+    return status->state == SERVER_NETWORK_STA_STATE_CONNECTING ||
+           status->state == SERVER_NETWORK_STA_STATE_DISCONNECTING ||
+           status->state == SERVER_NETWORK_STA_STATE_WAITING_IP ||
+           status->state == SERVER_NETWORK_STA_STATE_RETRY_WAIT ||
+           status->state == SERVER_NETWORK_STA_STATE_GOT_IP ||
+           status->state == SERVER_NETWORK_STA_STATE_STARTING_SERVICES;
+}
+
 void app_main(void)
 {
     ESP_ERROR_CHECK(UserDebugOutput_Init());
@@ -243,6 +259,7 @@ void app_main(void)
         nvs_ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(nvs_ret);
+    esp_err_t ota_boot_ret = NetworkOtaBoot_Init();
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(ServerNetworkStaTime_Init());
@@ -250,6 +267,14 @@ void app_main(void)
     ESP_ERROR_CHECK(TdxCastCore_Init());
     ESP_ERROR_CHECK(UsbConsoleEcho_Init());
     ESP_ERROR_CHECK(ServerNetworkStaWifiWorkTime_Init());
+    if (ota_boot_ret != ESP_OK) {
+        /*
+         * Retry before optional first-boot modules so a transient early otadata
+         * read failure cannot bypass pending power protection or OTA-only recovery.
+         */
+        (void)NetworkOtaBoot_Init();
+    }
+    NetworkOtaBoot_EnablePendingProtection();
     ESP_ERROR_CHECK(EpdDisplayMode_Init());
     ESP_LOGI(TAG, "EPD display mode=%u(%s)",
              (unsigned int)EpdDisplayMode_Get(),
@@ -276,7 +301,16 @@ void app_main(void)
 
 
     print_base_info();
-    ESP_ERROR_CHECK(GpioTest_Init());
+    if (NetworkOtaBoot_WasPendingVerify()) {
+        esp_err_t gpio_test_ret = GpioTest_Init();
+        if (gpio_test_ret != ESP_OK) {
+            ESP_LOGE(TAG,
+                     "optional GPIO test init failed during OTA first boot ret=%s",
+                     esp_err_to_name(gpio_test_ret));
+        }
+    } else {
+        ESP_ERROR_CHECK(GpioTest_Init());
+    }
     ESP_ERROR_CHECK(ServerNetworkSta_Init());
     // Start CH583 UART before LED status because C5 status LEDs are controlled by CH583 GPIO.
     // 先启动 CH583 串口再初始化 LED 状态，因为 C5 状态灯由 CH583 GPIO 控制。
@@ -307,7 +341,16 @@ void app_main(void)
                  esp_err_to_name(storage_ret));
     } else {
         UserLedStatus_SetStorageFailed(false);
-        ESP_ERROR_CHECK(FactoryReset_Init(base_path));
+        if (NetworkOtaBoot_WasPendingVerify()) {
+            esp_err_t factory_reset_ret = FactoryReset_Init(base_path);
+            if (factory_reset_ret != ESP_OK) {
+                ESP_LOGE(TAG,
+                         "optional factory reset init failed during OTA first boot ret=%s",
+                         esp_err_to_name(factory_reset_ret));
+            }
+        } else {
+            ESP_ERROR_CHECK(FactoryReset_Init(base_path));
+        }
     }
     esp_err_t power_test_ret = EpdSdPowerTest_Init();
     if (power_test_ret != ESP_OK) {
@@ -315,6 +358,21 @@ void app_main(void)
         ESP_LOGE(TAG, "EPD/SD independent power test init failed ret=%s",
                  esp_err_to_name(power_test_ret));
     }
+#if 0
+    /*
+     * Keep the verified zlib EPD test available for future diagnostics.
+     * Change this local test switch to 1 only while running the test.
+     */
+    if (storage_ret == ESP_OK && example_storage_is_sd_card()) {
+        esp_err_t zlib_test_ret = TdxZlibEpdTest_Run(base_path);
+        if (zlib_test_ret != ESP_OK) {
+            ESP_LOGE(TAG, "optional zlib EPD test failed ret=%s",
+                     esp_err_to_name(zlib_test_ret));
+        }
+    } else {
+        ESP_LOGW(TAG, "zlib EPD test skipped because SD card is not mounted");
+    }
+#endif
 
     /*
      * Initialize the DAILY synchronization state before HTTP can accept an APP
@@ -327,7 +385,24 @@ void app_main(void)
     }
     // Force the old read_value=0x02 path here: Server Network STA only, then start the HTTP file server.
     // 中文：在这里固定旧工程 read_value=0x02 路径：只进入 Server Network STA，然后启动 HTTP 文件服务器。
+    (void)ServerNetworkStaWifiWorkTime_StartWifiConnectGuardIfInactive(
+        WIFI_CONNECT_POWER_GUARD_MAX_MS);
     uint8_t network_ret = User_Network_mode_app_init(base_path);
+    server_network_sta_status_t startup_wifi_status = {0};
+    esp_err_t startup_status_ret =
+        ServerNetworkSta_GetStatus(&startup_wifi_status);
+    if (network_ret == SERVER_NETWORK_STA_OK) {
+        ServerNetworkStaWifiWorkTime_ClearWifiConnectGuard(
+            "startup_ready");
+    } else if (startup_status_ret == ESP_OK &&
+               !startup_wifi_status_is_progressing(&startup_wifi_status)) {
+        ServerNetworkStaWifiWorkTime_ClearWifiConnectGuard(
+            "startup_terminal");
+    } else if (startup_status_ret != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "startup WiFi status read failed; power guard remains bounded ret=%s",
+                 esp_err_to_name(startup_status_ret));
+    }
     if (network_ret != SERVER_NETWORK_STA_OK) {
         ESP_LOGE(TAG, "network init failed ret=0x%02x", network_ret);
         //return;
@@ -362,6 +437,10 @@ void app_main(void)
                  EpdDisplayMode_ToString(EpdDisplayMode_Get()));
     }
 
+    if (NetworkOtaBoot_IsPendingVerify()) {
+        ESP_LOGW(TAG,
+                 "OTA image is pending verification; keep light sleep disabled");
+    }
     app_auto_light_sleep_init();
 
     //  test power only

@@ -49,6 +49,7 @@
   - [11.2 wifi：保存配置并连接](#sec-11-2)
   - [11.3 wifi_wakeup：使用已保存配置连接](#sec-11-3)
   - [11.4 set_wifi_work_time / wifi_standby](#sec-11-4)
+- [12. zlib EPD 业务数据格式](#sec-12-zlib)
 
 ## 6. 网络 HTTP 数据入口汇总 <span id="sec-06"></span>
 
@@ -259,7 +260,11 @@ sequenceDiagram
     HTTP->>REDIR: body
     REDIR->>OTA: NetworkOtaUpload_IsOtaRequest()
     REDIR->>OTA: NetworkOtaUpload_ProcessReceivedBody()
-    OTA-->>APP: ota_result
+    OTA-->>APP: ota_event stage=rebooting
+    OTA-->>APP: ota_result（最后一条 JSON）
+    OTA-->>APP: 结束 chunked response
+    OTA-->>REDIR: handler 返回并清理请求资源
+    OTA->>OTA: 专用任务延时复位
 ```
 
 
@@ -292,6 +297,19 @@ HTTP POST /ota or /ota_upload
 - firmware 指针、boundary、field、firmware header 等细节日志默认关闭。
 - OTA 失败阶段使用 `ESP_LOGE`，可继续返回错误响应的异常使用 `ESP_LOGW` 或 OTA result JSON 表达。
 ```
+
+OTA 成功响应规则：
+
+- `ota_event/stage=rebooting` 必须在最终结果之前发送。
+- `ota_result/result=0` 是成功响应的最后一条 JSON，之后只允许结束 chunked response，不允许再发送 OTA event。
+- 结束响应后 HTTP handler 必须正常返回，以释放 request body、上传互斥锁和 socket。
+- 设备复位由 OTA 目录内的专用任务执行，延时由 `SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS` 配置。
+- restart-pending 期间保持 OTA 成功指示和 write power hold，避免外层清理误报失败或进入自动关机。
+- restart-pending 期间新的 OTA multipart 请求使用现有 `1713/upload_busy`，message 为 `restart_pending`；其他 multipart 上传使用现有 `dataup_result/1007`。GET 和非 multipart 请求不改变协议。
+- OTA 首次启动直接使用 bootloader `otadata` 的 `ESP_OTA_IMG_PENDING_VERIFY`，不新增 NVS key、手机字段或网络请求。
+- 启动最早阶段读取 otadata 失败时，设备会在 work-time 初始化后、可选首次启动模块运行前重试一次；该内部重试不改变网络协议。
+- `PENDING_VERIFY` 镜像在 `/dataUP`、`/ota`、`/ota_upload` 全部注册成功后调用 `esp_ota_mark_app_valid_cancel_rollback()`；确认成功解除 pending-verify power hold，确认失败保留 HTTP handler 和 hold，并用错误日志报告。
+- pending-verify、启动诊断和首次启动容错均为设备内部规则，不改变手机 APP 的 OTA 请求和返回格式。
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-06)
 
@@ -370,11 +388,6 @@ Ble_MAC 未取得：result=1405，message=Ble_MAC not ready，Ble_MAC 为空字�
 USB `/ping` 通过 `UsbConsolePing_Handle()` 提交异步请求，再由 `UsbConsolePing_Process()` 构造同字段 JSON；USB 路径调用 `ServerNetworkStaWifiWorkTime_OnNetworkData()`，网络 HTTP 路径调用 `ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()`，两者计时行为不同但响应字段一致。
 
 GET `/time` 在同一个 `download_get_handler()` 中紧接 `/ping` 检查，由 `ServerNetworkStaTime_ProcessGet()` 返回 `time_result`。
-
----
-
-
-
 
 存 / 取信息（含条件限制）：
 
@@ -1334,15 +1347,42 @@ CH583校验后回复ACK并关闭ESP32/WiFi电源。发送前必须通过HTTP/CH5
 轮播`wake_interval`小于`TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS`（当前10秒）时跳过本次关机；该阈值不改变轮播最小间隔60秒。
 ```
 
+Factory Reset 成功后的专用断电重启流程：
+
+```text
+factory_reset_task()
+├─ 长按达到5秒后设置 Factory Reset guard，短按不设置
+├─ 删除图片、轮播状态和 daily_cfg；真实文件删除失败进入总 ret
+├─ epd_mode 强制写入并读回校验 USER_EPD_DISPLAY_MODE_DEFAULT
+├─ 删除 wifi namespace 全部键
+├─ 删除 nvs.net80211:sta.ssid / sta.pswd
+├─ WIFI_PROVISION 40（未配网 + 默认 NORMAL）
+├─ ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle(10)
+├─ 无条件清除 Factory Reset guard
+└─ work_state_task()
+   ├─ 不等待普通 wifi_work_time，不使用普通或 DAILY one-shot
+   ├─ 保留 OTA、EPD、图片保存、daily 和 SPI 安全复检
+   ├─ WAKE_TIMER ON,10
+   ├─ LED 关机准备
+   ├─ WIFI_PROVISION 4F（未配网 + NORMAL 关机待机状态）
+   ├─ POWER_OFF
+   ├─ CH583 关闭 ESP32/WiFi，并从 POWER_OFF 后开始 10 秒计时
+   └─ 10 秒到期后 CH583 重新给 ESP32/WiFi 上电
+```
+
+Factory Reset 没有改变 `WAKE_TIMER`、`WIFI_PROVISION` 或 `POWER_OFF` 的帧格式。10 秒是 CH583 在断电期间执行的唤醒倒计时，不是 ESP32 关机前等待时间；请求只保存在 RAM，不修改用户的 WiFi 工作时间。guard 只在长按确认后、实际清理前设置；`work_state_task()`在普通入口、LED后的final guard和SPI锁内locked guard复检，发现清理中或刚发布的专用请求时取消普通关机。成功时先发布专用请求再清guard，失败时不发布请求并清guard，所有结果都必须清guard。必要NVS操作或实际文件删除失败时不提交关机请求。Factory Reset分支跳过普通工作计时以及HTTP/CH583活动保持时间，但不绕过硬件和写入安全复检；失败时沿用现有LED/WAKE_TIMER回滚并重试。
+
 
 存 / 取信息（含条件限制）：
 
 ```text
 存：
 - POWER_OFF 不写持久化数据。
+- Factory Reset 的 `WAKE_TIMER ON,10` 由 CH583 保存，并在收到后续 POWER_OFF 时开始断电唤醒计时。
 
 取：
 - 读取 WiFi 工作时间模块的 RAM 计时状态；超时后先配置 WAKE_TIMER，符合关电条件时发送 POWER_OFF。
+- Factory Reset 专用请求读取 RAM 中的固定唤醒秒数，不读取或覆盖普通工作时间 NVS。
 - PB8 拉低是 CH583 固件/硬件侧动作，不是 ESP32 当前源码直接写 GPIO。
 ```
 
@@ -2389,6 +2429,14 @@ AUTH_FAILED                   -> wifi_wakeup_result/1308
 
 后台连接完成后，成功返回 `wifi_info_result`；失败使用 `wifi_wakeup_result` 返回 `1007/1307/1308/1309`。
 
+`wifi_wakeup` 的通知层不会把一次可恢复的断线或 `NO_AP_FOUND` 立即作为最终 `1307` 发送：若底层 manager 仍处于 CONNECTING、DISCONNECTING、WAITING_IP、RETRY_WAIT、GOT_IP 或 STARTING_SERVICES，通知 task 从取得过早 `1307` 起只观察 10 秒，不发起连接或改变重试；期间进入 READY 则返回 `wifi_info_result`，10 秒到期仍未 READY 才发送原 `1307`。
+
+`wifi_wakeup` 尚未完成时允许手机提交普通 `wifi` 新配置。BLE层在写NVS前原子预留pending状态，保存成功后再发布READY；worker看到SAVING会等待，避免保存期间从wakeup切换后出现“配置已经写入但返回BUSY”。配置成功返回 `wifi_result/result=0`、`message=WiFi config saved and queued`；只保留最新一条pending配置，取消旧 `wifi_wakeup` 的尚未发送最终通知，并在当前同步调用返回后使用原 `NEW_CREDENTIAL` 路径应用最新配置。普通 `wifi` 自身正在连接时仍按原规则返回BUSY。
+
+冷启动自动联网以及BLE/CH583发起的WiFi连接具有独立的绝对关机保护窗口，单次请求最长45秒且不随重试续期；worker路径在READY、明确终止或到期后解除。若手机请求先于 `app_main()` 自动联网到达，冷启动使用原子 `StartWifiConnectGuardIfInactive()` 复用已有deadline，不把同一joined连接重新延长45秒。若收到 `wifi_wakeup` 时manager已经在连接，只设置同一自动到期guard，不重复提交连接。新 `wifi` 替代旧 `wifi_wakeup` 时，新请求按自身接收时间计算45秒上限。guard不得短于现有45秒同步请求超时，编译期会检查该关系；该保护只禁止关机，不修改manager、认证、DHCP或退避规则。
+
+当前开发阶段 `SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT=1`，WiFi凭据加载日志输出SSID和明文password，便于核对配网数据；设为0时只输出SSID。该开关不改变NVS保存格式、通信JSON或连接配置，正式发布前必须关闭。
+
 ### 11.4 set_wifi_work_time / wifi_standby <span id="sec-11-4"></span>
 
 CH583/BLE JSON 同时接受新旧 `func`，并同时兼容 `seconds` 和旧字段 `time`。新格式：
@@ -2406,3 +2454,16 @@ CH583/BLE JSON 同时接受新旧 `func`，并同时兼容 `seconds` 和旧字�
 取值经 `cJSON` number 的 `valueint` 读取，范围是 `60..3600` 秒。成功调用 `ServerNetworkStaWifiWorkTime_SetAndSave()` 并返回 `set_wifi_work_time_result/0`；缺少数值返回 `1351`，越界返回 `1352`，保存或应用失败返回 `1353/1354`。
 
 ---
+
+## 12. zlib EPD 业务数据格式 <span id="sec-12-zlib"></span>
+
+本功能不增加HTTP URI、USB路由、BLE JSON `func` 或CH583 UART命令。`USER_EPD_DISPLAY_DATA_ZLIB_ENABLE=1` 时，现有 cast、cast2pic、upload、slideshow和每日一图中的 BIN 显示数据改为 RFC 1950 zlib 数据流；JPEG数据不变。
+
+- `bin_size` 表示压缩后的实际字节数，仍必须等于实际 `bin` part长度。
+- cast、cast2pic和upload不要求压缩后的 `bin_size` 等于当前屏幕原始 `display_size`（例如960000字节）；该长度随压缩结果变化。
+- 为保持文件名、删除、轮播和保存协议兼容，SD卡业务文件仍可使用 `.bin` 扩展名，但其内容是zlib数据。
+- 公共EPD队列按当前屏幕的 `display_size` 解压；输出长度不等时拒绝显示。
+- `USER_EPD_DISPLAY_DATA_ZLIB_ENABLE=0` 时，BIN恢复为原始未压缩显示数据。
+- 每日一图下载在压缩模式下接受不超过 `compressBound(display_size)` 的可变Content-Length；非压缩模式继续要求长度严格等于 `display_size`。
+
+现有请求字段、响应字段和传输顺序不变，但宏为 `1` 时发送端必须同步改为发送zlib BIN。旧的未压缩BIN不能直接交给该固件显示。

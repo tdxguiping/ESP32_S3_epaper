@@ -33,7 +33,7 @@
   - [7.11 upload：上传并保存图片](#sec-07-11)
   - [7.12 wifi_work_time：WiFi 省电管理](#sec-07-12)
   - [7.13 time：RTC 默认时间与 SNTP 校时](#sec-07-13)
-  - [7.14 factory_reset：GPIO28 长按清除图片](#sec-07-14)
+  - [7.14 factory_reset：GPIO28 长按恢复出厂](#sec-07-14)
   - [7.15 daily_download_file：每日一图](#sec-07-15)
     - [7.15.1 Mermaid 时序图](#sec-07-15-1)
     - [7.15.2 相关目录](#sec-07-15-2)
@@ -50,6 +50,7 @@
   - [15.2 USB HTTP-like 投图链路](#sec-15-2)
   - [15.3 CH583 BLE 配网链路](#sec-15-3)
   - [15.4 OTA 链路](#sec-15-4)
+- [20. zlib 压缩数据与 EPD 显示](#sec-20-zlib)
 
 ## 存 / 取条件总表 <span id="sec-storage-summary"></span>
 
@@ -59,14 +60,14 @@
 |---|---|---|---|
 | `app_nvs` 通用 NVS | `PhotoPainter` namespace | `key != NULL`；写字符串时 `value != NULL`；写入后必须 `nvs_commit()`；`read_u8` 发现 key 不存在时会写入默认值 | `read_u8` 要求 `out_value != NULL`；`read_str` 要求 `value != NULL` 且 `value_size > 0`；打开失败或读取失败时按默认值回退 |
 | WiFi 配网 NVS | `wifi:ssid/password`，`nvs.net80211:sta.ssid/sta.pswd` | USB、BLE、CH583 配网都要求 `func=wifi`、`ssid` 可解析且长度 1..32、`key` 可解析且长度小于 65；两个 namespace 都写入成功后才提交 worker 连接 | STA 启动时从保存的 WiFi 配置恢复连接；请求侧只负责保存和提交 worker，真正连接在 `User_Network_mode_app_init()` / `server_network_sta.c` |
-| `cast` 图片保存 | `/data/cast_img/<fileName>.bin`，`/data/cast_img/<fileName>.jpg`，`/data/cast_img/last_cast.txt` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename；新 bin/jpg 保存和 last_cast 记录成功后，清理 `/data/cast_img` 中非本次文件名的旧 `.bin/.jpg` | `show=true && save=true` 时先成功停止轮播，再显示、保存并记录 last cast；启动时不读取或显示 last_cast |
-| `cast2pic` 数据接收 | 一次接收一组 `fileName/bin_size/image_size/bin/image` | 网络和 USB 只接受 `screen=a/b`；`ab` 和缺少 `screen` 返回 `1617`；字段完整、文件名安全且实际大小匹配后返回 `result=0` | `result=0` 只表示数据接收校验成功；显示和保存由后台处理，结果只写日志 |
-| `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | 字段、文件名安全、大小匹配、目录和剩余空间条件与 cast 类似；主要用于保存，`show=true` 时也可显示 | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存；图片列表、轮播、快照从 jpg/bin 目录取数据 |
+| `cast` 图片保存 | `/data/cast_img/<fileName>.bin`，`/data/cast_img/<fileName>.jpg`，`/data/cast_img/last_cast.txt` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；zlib模式下`bin_size`是压缩后的实际传输长度，不要求等于屏幕原始长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename；新 bin/jpg 保存和 last_cast 记录成功后，清理 `/data/cast_img` 中非本次文件名的旧 `.bin/.jpg` | `show=true && save=true` 时先成功停止轮播，再显示、保存并记录 last cast；启动时不读取或显示 last_cast |
+| `cast2pic` 数据接收 | 一次接收一组 `fileName/bin_size/image_size/bin/image` | 网络和 USB 只接受 `screen=a/b`；`ab` 和缺少 `screen` 返回 `1617`；字段完整、文件名安全且实际传输长度等于声明长度后返回 `result=0`；zlib模式不把压缩BIN长度与屏幕原始长度比较 | `result=0` 只表示数据接收校验成功；显示和保存由后台处理，结果只写日志 |
+| `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | 字段、文件名安全、实际传输长度等于声明长度、目录和剩余空间条件与cast类似；zlib模式不要求压缩BIN等于屏幕原始长度；主要用于保存，`show=true` 时也可显示 | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存；图片列表、轮播、快照从 jpg/bin 目录取数据 |
 | `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `TDX_DELETE_MAX_FILES=50` 限制；超过上限返回 `1514`，文件名非法返回 `1502`；网络与 USB 入口都先完整校验，校验失败不执行删除；只删除匹配的 bin/jpg；不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度 | 从 JSON `fileNames` 取删除列表；校验通过后按文件名拼路径并删除 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从轮播配置/control 文件读取轮播状态 |
 | `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 诊断/兼容进度 | 最终 `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=150` 限制，允许重复，且全部 bin 文件必须存在、是普通文件并且非空；APP 在 `random=true` 时负责将每个原始文件复制 3 次并打乱，设备按收到的最终顺序播放；列表校验失败不改动现有轮播状态；`startIndex` 必填且满足 `0 <= startIndex < file_count`；单个名称缓冲区受 `TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48` 限制；`interval` 限制在 `60..604800` 秒；设备保存的 `random` 永久强制为 `false` | 不兼容缺少 `startIndex` 的旧轮播协议/配置；启动时已有 SNTP 或运行中首次取得 SNTP 后，按最终 `fileNames + startIndex + anchor_epoch + interval` 使用绝对时间槽 |
 | `wifi_work_time` | `work_state` namespace blob；`PhotoPainter:work_continue/wifi_standby` 字符串兼容键 | 网络 HTTP 与 USB JSON 只接受 `seconds=0..3600`，旧字段 `time` 返回参数非法；BLE/CH583 继续保持原有协议和 `60..3600` 范围；内部 `SetAndSave()` clamp 到 `0..3600`；保存 blob 后会读回验证 | 启动时读取 blob；blob size 不匹配则回退默认值；兼容读取字符串键并解析为 u32；超时后保留原 CH583 POWER_OFF 关机链路，本地 EPD/SD GPIO4 电源保持开启 |
-| OTA | OTA update partition；boot partition 选择 | 请求必须被识别为 `/ota` 或 `/ota_upload`；body 不超过 `SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE=6MB`；meta/firmware 字段可解析；固件 magic、app_desc、版本、长度和目标分区大小检查通过；写入成功后才设置 boot partition；成功后固定自动复位 | 读取 meta JSON、firmware/bin 字段、running partition、next update partition、app desc 和 OTA 状态；OTA 接收与写入使用独立 power hold，任一阶段进行中都不发送 `POWER_OFF` |
+| OTA | OTA update partition；boot partition 选择 | 请求必须被识别为 `/ota` 或 `/ota_upload`；body 不超过 `SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE=6MB`；meta/firmware 字段可解析；固件 magic、app_desc、版本、长度和目标分区大小检查通过；写入成功后才设置 boot partition；成功响应固定以 `ota_result` 作为最后一条 JSON，HTTP handler 返回后由 OTA 专用任务延时自动复位 | 读取 meta JSON、firmware/bin 字段、running partition、next update partition、app desc 和 OTA 状态；OTA 接收与写入使用独立 power hold，任一阶段进行中都不发送 `POWER_OFF`；等待复位期间保留 OTA 成功状态 |
 | EPD 类型 | `PhotoPainter:epd_type` | 只允许保存 `EpdType_GetConfig(type)` 能找到的合法type；未变化时跳过写入；非法type返回 `ESP_ERR_INVALID_ARG` | 启动优先读取 `epd_type`；不存在或无效时回退 `USER_EPD_TYPE_DEFAULT`；DEVICE_INFO上报类型只保存供下次启动使用，不切换本次运行的显示驱动 |
 | EPD 显示队列 | RAM 队列 `s_epd_display_queue` | 队列长度受 `USER_EPD_DISPLAY_QUEUE_LENGTH=2` 限制；入队前需要分配/复制 display buffer；显示数据大小应匹配当前屏幕 `display_size`；队列满或内存不足则失败 | `ServerNetworkStaEpdDisplay_Task()` 从队列取 buffer，根据 EPD type 调用具体驱动 |
 | CH583 DEVICE_INFO | `PhotoPainter:ch583_ble_mac`、`PhotoPainter:ch583_ble_ver`、`PhotoPainter:epd_type` | 收到合法 `DEVICE_INFO` 后解析并保存MAC、CH583版本和映射后的EPD类型；EPD类型通过 `EpdType_SaveForNextBoot()` 保存，全部成功后回复ACK，但它不是ESP32通信准入条件 | 本次启动的EPD驱动始终采用启动时NVS合法值或默认值，迟到DEVICE_INFO不在运行中切换驱动；PING、BLE_DATA和主动发送仍正常运行 |
@@ -216,6 +217,10 @@ main/main.c
    ├─ ServerNetworkStaDailyImage_Init("/data")
    ├─ User_Network_mode_app_init("/data")
    │  └─ server_network_sta/server_network_sta.c 启动 STA / HTTP
+   │     └─ CH583/BLE 的 wifi_wakeup 若提前取得 1307、但 manager 仍处于连接或重试状态，通知 task 只观察现有状态并暂缓 10 秒；期间 READY 则返回 wifi_info_result，超时仍按原 1307 返回
+   │        ├─ wifi_wakeup 尚未完成时收到普通 wifi，BLE层先原子预留单槽 pending，再保存配置并发布READY；worker在保存完成前不退出，最新配置覆盖旧 pending，不返回 BUSY
+   │        └─ 冷启动自动联网及BLE/CH583 WiFi请求使用独立绝对关机guard，最长45秒；冷启动遇到已有有效guard时只复用原deadline、不刷新，worker路径在READY、明确终止或到期时解除，manager的连接和重试逻辑不变
+   └─ 当前开发阶段启用 `SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT=1`，读取有效WiFi凭据时打印SSID和明文password；正式发布前必须改为0
    ├─ ServerNetworkStaDailyImage_StartSaved()
    │  └─ 仅 epd_mode=DAILY 且 daily_cfg 合法时启动保存任务
    ├─ epd_mode == SLIDESHOW && storage_ret == ESP_OK
@@ -1066,6 +1071,12 @@ V2_相框传图协议.html 中没有定义网络 OTA 请求字段。
 ```text
 当前 OTA 请求仍先由 receive_data_redirect_handler() 完整接收 HTTP body，再交给 NetworkOtaUpload_ProcessReceivedBody() 解析 firmware part。
 OTA 写分区时会分块 esp_ota_write()，但 HTTP 接收阶段不是 streaming。
+成功响应先发送 `ota_event/rebooting`，再发送最终 `ota_result/result=0` 并结束 chunked response；`ota_result` 后不再发送其他 JSON。
+响应结束后由 OTA 模块的专用任务按 `SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS` 延时复位，使 HTTP handler 可以先释放 body、上传互斥锁和 socket。
+OTA restart-pending 期间拒绝新的 multipart 上传：OTA 返回现有 `1713/upload_busy`，其他 multipart 返回现有 `dataup_result/1007`；GET 和非 multipart 业务保持原处理方式。
+设备不新增应用 NVS OTA 标志，直接使用 bootloader `otadata` 中的 `ESP_OTA_IMG_PENDING_VERIFY` 作为 OTA 首次启动的权威标志。只有该状态会输出版本、运行分区、分区地址、OTA state 和 reset reason 的启动诊断，并设置 pending-verify power hold。启动最早阶段读取失败时，在 work-time 初始化后、GPIO test 前重试一次，使 OTA 首次启动容错和 power hold 能及时生效。
+新启动的 OTA 镜像只在 `/dataUP`、`/ota`、`/ota_upload` 全部注册成功后确认有效；确认成功清除 pending-verify hold，确认失败保留 hold 和已就绪的恢复接口。当前 PM 配置固定 `light_sleep_enable=false`，pending 状态会额外打印一次保护提示，不改变普通启动的 PM 配置。
+OTA 首次启动时，独立的 GPIO test 和 factory-reset task 初始化失败只记录错误并继续恢复流程；普通启动仍保留原有 `ESP_ERROR_CHECK()` 行为。网络、UART、LED、EPD 等有业务依赖的初始化保持原规则。
 开发阶段保持当前实现便于调试；如果后续固件体积增大或 PSRAM 压力明显，建议单独为 /ota 做 streaming handler，一边 httpd_req_recv() 一边 esp_ota_write()。
 ```
 
@@ -1076,10 +1087,15 @@ OTA 写分区时会分块 esp_ota_write()，但 HTTP 接收阶段不是 streamin
 - esp_ota_write() 写入 OTA update partition。
 - esp_ota_set_boot_partition() 保存下次启动分区选择。
 - OTA HTTP body 接收与固件写入分别设置 WiFi 工作时间模块的 receive/write power hold；任一 hold 有效时都禁止超时 `POWER_OFF`。
+- 成功后设置 OTA restart-pending 状态；外层网络清理不得把成功灯状态覆盖为失败，专用任务复位后该 RAM 状态自然清除。
+- OTA restart-pending 使用原子状态读写，只限制重启前的新 multipart 上传。
+- OTA boot 模块读取 `otadata`，只在本次由 `PENDING_VERIFY` 镜像启动时保存 RAM 状态；不写应用 NVS。
+- pending-verify hold 使用 `USER_WORK_STATE_OTA_HOLD_PENDING_VERIFY_BIT`，确认成功后清除，复位后 RAM 状态自然重建。
 
 取：
 - 读取 multipart meta JSON、firmware/bin 字段。
 - 读取当前 running partition、目标 update partition、固件 app_desc、版本信息。
+- 启动时读取 running partition、`esp_ota_img_states_t`、app description 和 reset reason。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -1375,7 +1391,7 @@ startIndex 必填；从 0 开始，必须小于 APP 最终发送的 fileNames �
 
 取：
 - ServerNetworkStaSlideshow_StartSavedDelayed() 只用于开机自动恢复轮播：启动位置仍保持在网络初始化之后，但先等待 `TDX_SLIDESHOW_STARTUP_DELAY_MS=10000` 毫秒；等待期间手机 APP 或 USB Serial 的 cast/cast2pic/upload `show=true` 请求优先进入 EPD 显示；延迟结束时如果 EPD task 仍忙，则继续推迟启动。
-- 延迟结束后先重新读取 control；如果 `show=true` 已把 control 写成 `sw=0`，则跳过自动恢复；EPD 忙时继续推迟。启动时没有 SNTP 就按原 CH583/CH585、anchor fallback 和 pending_file 逻辑运行，不等待网络时间；运行中首次取得 SNTP 时，等待当前 EPD 操作结束后一次性切换到绝对时间槽。
+- 延迟结束后先重新读取 control；如果 `show=true` 已把 control 写成 `sw=0`，则跳过自动恢复；EPD 忙时继续推迟。启动时没有 SNTP 就按原 CH583/CH585、anchor fallback 和 pending_file 逻辑运行，不等待网络时间；运行中首次取得 SNTP 时，等待当前 EPD 操作结束后一次性切换到绝对时间槽。若本次 runtime 已消费过播放事件，且此时 progress 的列表索引和文件名已经共同指向当前绝对槽的下一项，则认为当前槽已经消费，直接等待下一绝对播放点，不重复调用 EPD；否则显示 SNTP 计算出的当前槽。
 - 读取 SD 卡中的 control 时严格校验：`sw=1` 必须包含合法 `interval`、`timestamp` 和 `anchor_epoch`；旧格式如 `{"sw":1,"interval":90,"random":false,"run_mode":0}` 视为非法，打印 `legacy control rejected`，不启动轮播，也不回退到 task tick 计时。
 - ServerNetworkStaSlideshow_StartSaved() 仍用于立即启动已保存轮播，不带开机 10 秒延迟。
 - startIndex 会加入配置 hash；进度版本、配置 hash、随机模式、排列或文件名不匹配时，从 `fileNames[startIndex]` 重建进度。
@@ -2013,14 +2029,14 @@ SNTP 同步成功响应示例：
 
 ---
 
-### 7.14 factory_reset：GPIO28 长按清除图片 <span id="sec-07-14"></span>
+### 7.14 factory_reset：GPIO28 长按恢复出厂 <span id="sec-07-14"></span>
 
-功能说明：GPIO28 用作本地出厂默认图片清除按键。GPIO28 默认高电平，按下为低电平。设备每 300 ms 检测一次，只有连续低电平达到 `TDX_FACTORY_RESET_HOLD_MS=5000` ms 才触发；5 秒内任意一次采样为高电平，本次按键无效并重新计时。
+功能说明：GPIO28 用作本地恢复出厂按键。GPIO28 默认高电平，按下为低电平。设备每 300 ms 检测一次，只有连续低电平达到 `TDX_FACTORY_RESET_HOLD_MS=5000` ms 才触发；5 秒内任意一次采样为高电平，本次按键无效并重新计时。
 
 安全边界：
 
 ```text
-只删除图片和轮播状态：
+删除图片、播放状态和已保存的 WiFi 凭据：
 /data/bin_img/*.bin
 /data/jpg_img/*.jpg
 /data/cast_img/*.bin
@@ -2032,10 +2048,11 @@ NVS: slide_progress
 NVS: slide_last
 NVS: slide_random 写回 false
 NVS: daily_cfg 删除
-NVS: epd_mode 写回 0
+NVS: epd_mode 强制写入并读回校验 USER_EPD_DISPLAY_MODE_DEFAULT
+NVS namespace wifi: 全部键删除
+NVS namespace nvs.net80211: sta.ssid / sta.pswd 删除
 
 必须保留，不允许清除：
-WiFi 配网
 EPD type
 WiFi 工作时间 / standby 时间
 CH583 BLE MAC
@@ -2048,10 +2065,16 @@ OTA 状态
 ```text
 EPD busy 时不检测 GPIO28，不累计按键时间。
 只有 EPD IDLE 时，GPIO28 task 才读取按键。
+短按或误按不设置关机保护；只有连续低电平达到 5000 ms、正式确认执行恢复出厂后，才在删除文件和修改 NVS 前设置 Factory Reset guard，阻止普通 work_state_task 抢先关机。
 触发后先停止轮播，再删除 upload/slideshow 图片、cast/cast2pic 缓存图片和轮播配置。
-先把 `epd_mode` 保存为 NORMAL；只有保存成功后才删除 `daily_cfg`，避免运行中的 daily worker 恢复已清除配置。
+先把 `epd_mode` 强制保存为 `USER_EPD_DISPLAY_MODE_DEFAULT`；即使当前已经是默认模式也重新写入并读回校验。只有保存成功后才删除 `daily_cfg`，避免运行中的 daily worker 恢复已清除配置。
+文件不存在按无需删除处理；实际文件删除失败、路径过长或目录读取错误进入最终 `ret`，恢复失败时不提交 CH583 关机请求。
+全部清理成功后发送未配网 WIFI_PROVISION，并向 work_state_task 提交 Factory Reset 专用关机请求。
+成功时先发布专用关机请求再清除 Factory Reset guard；失败时不发布专用请求并清除 guard。无论成功或失败 guard 都必须清除。
+work_state_task 固定发送 WAKE_TIMER ON,10，再沿用 LED、SPI 和 busy 复检发送 POWER_OFF；CH583 断电计时 10 秒后重新给 ESP32/WiFi 上电。
+Factory Reset 专用请求不写工作时间 NVS，不修改普通 wifi_work_time、轮播或 DAILY 关机规则。
 长按触发后进入等待松手状态；GPIO28 恢复高电平前不会再次触发。
-默认不自动重启，TDX_FACTORY_RESET_RESTART_AFTER_DONE=0。
+TDX_FACTORY_RESET_RESTART_AFTER_DONE 保持为 0；重新上电由 CH583 WAKE_TIMER 完成。
 ```
 
 关键日志：
@@ -2059,7 +2082,7 @@ EPD busy 时不检测 GPIO28，不累计按键时间。
 ```text
 factory reset gpio init pin=28 active=0 check_ms=300 hold_ms=5000
 factory reset button held gpio=28 hold_ms=5100, start clear images
-factory reset done ret=ESP_OK upload_bin_deleted=... upload_jpg_deleted=... cast_bin_deleted=... cast_jpg_deleted=... cfg_deleted=... nvs_ret=ESP_OK
+factory reset done ret=ESP_OK upload_bin_deleted=... upload_jpg_deleted=... cast_bin_deleted=... cast_jpg_deleted=... cfg_deleted=... file_delete_failed=0 file_ret=ESP_OK nvs_ret=ESP_OK
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -2246,7 +2269,7 @@ flowchart TD
 | 存储不可用 | 关闭 | 中闪 | 亮 1.2 秒、灭 1.2 秒 | SD/SPIFFS 最终无法挂载或存储不可用 |
 | 普通业务操作失败 | 保持基础状态 | 常亮 | 保持 3000 ms | 单次显示、保存、删除等可恢复操作失败 |
 | OTA 升级中 | 常亮 | 中闪 | 红灯亮 1.2 秒、灭 1.2 秒 | 正在写入或校验固件，不允许断电 |
-| Factory Reset 清理中 | 快闪 | 常亮 | 绿灯亮 600 ms、灭 600 ms | 正在清除图片和轮播配置 |
+| Factory Reset 清理中 | 快闪 | 常亮 | 绿灯亮 600 ms、灭 600 ms | 正在清除图片、播放状态和 WiFi 配网 |
 | 准备关机、倒计时中 | 常亮 | 关闭 | 倒计时期间持续 | EPD 工作完成，等待发送 POWER_OFF |
 | 严重系统错误 | 关闭 | 常亮 | 持续 | 关键模块不可恢复错误 |
 | 即将软件重启 | 关闭 | 常亮 | 保持到重启 | OTA 或 Factory Reset 完成并准备重启 |
@@ -2553,3 +2576,38 @@ HTTP POST /ota or /ota_upload
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-15)
 
 ---
+
+## 20. zlib 压缩数据与 EPD 显示 <span id="sec-20-zlib"></span>
+
+`USER_EPD_DISPLAY_DATA_ZLIB_ENABLE` 是唯一新增的正式功能宏。设为 `1` 时，网络、USB、轮播和每日一图交给公共 EPD 队列的业务 BIN 数据必须是 RFC 1950 zlib 数据；设为 `0` 时保持原来的未压缩数据行为。EPD 队列内部和具体屏幕驱动始终只接收解压后的原始显示数据。
+
+对 cast、cast2pic 和 upload，宏为 `1` 时不把收到的压缩 BIN 长度与当前屏幕原始 `display_size`（例如960000字节）比较；`bin_size` 表示压缩后的实际传输长度，并继续与实际 `bin` part长度比较，防止截断数据通过校验。宏为 `0` 时沿用旧的raw流程。两种模式都保留请求总长度上限、非零长度、文件完整性、内存和存储空间检查。
+
+模块边界：
+
+```text
+components/zlib/
+└─ 只负责把项目根目录 zlib 源码注册为 ESP-IDF 组件
+
+main/data_compression/
+├─ tdx_zlib_buffer.c/.h
+│  └─ 提供内存 zlib 解压和压缩上界计算
+├─ tdx_zlib_file.c/.h
+│  └─ 保留流式文件压缩和解压接口
+└─ test/tdx_zlib_epd_test.c/.h
+   └─ 读取已生成的 .zlib 文件并提交公共 EPD 显示入口
+```
+
+旧的压缩、解压和逐字节比较函数以及压缩文件 EPD 显示测试函数均保留。`main.c` 中的 `TdxZlibEpdTest_Run()` 启动调用代码也完整保留，当前使用局部 `#if 0` 关闭，没有增加临时测试宏；以后需要测试时可临时改为 `#if 1`。测试读取 `/data/bin_img/2486aad8763e9822.bin.zlib`，释放 SD 的 `TdxSharedSpi` 锁后，再把压缩缓冲区交给公共 EPD 队列，避免等待显示任务时持锁造成死锁。
+
+公共 EPD 队列在宏为 `1` 时，按当前 `EpdType_GetCurrentConfig()->display_size` 申请 PSRAM并解压，实际解压长度必须严格等于屏幕需要的原始长度。解压成功后才进入原队列；失败不提交显示。EPD模块内部生成的色块测试数据继续走 raw内部入口，不受该宏影响。
+
+轮播原有的文件名SHA-256诊断针对未压缩BIN。压缩模式下为避免对压缩字节计算后产生错误的mismatch日志，该诊断只打印一次跳过信息；轮播读取、排队和显示流程不变。
+
+日志规则：
+
+- zlib解压成功和压缩文件显示成功使用 `ESP_LOGI`，并输出输入、输出长度和耗时。
+- SD卡不是当前存储时使用 `ESP_LOGW` 跳过启动测试。
+- 文件读取、内存、zlib、解压长度或EPD显示失败使用 `ESP_LOGE`。
+
+[⬆ 返回目录](#toc)

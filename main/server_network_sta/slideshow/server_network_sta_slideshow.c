@@ -87,6 +87,7 @@ typedef struct {
     bool rtc_enabled;
     bool force_first_display;
     bool sntp_schedule_enabled;
+    bool event_consumed_before_sntp;
     bool consumed_slot_valid;
     uint64_t consumed_slot;
     uint64_t scheduled_slot;
@@ -942,7 +943,11 @@ static esp_err_t slideshow_load_file(const char *base_path,
         return ESP_FAIL;
     }
 
+#if USER_EPD_DISPLAY_DATA_ZLIB_ENABLE
+    ESP_LOGI(TAG, "slideshow sha256 skipped for zlib input file=%s", file_name);
+#else
     slideshow_log_bin_sha256_tail(file_name, buf, read_len);
+#endif
     strlcpy(loaded->file_name, file_name, sizeof(loaded->file_name));
     loaded->buf = buf;
     loaded->len = read_len;
@@ -1389,10 +1394,7 @@ static bool slideshow_enable_sntp_schedule_if_ready(slideshow_runtime_t *runtime
                                                 runtime->request.file_count,
                                                 runtime->request.start_index,
                                                 (int64_t)now_time,
-                                                &schedule) ||
-        !slideshow_progress_select_index(&runtime->request,
-                                         &runtime->progress,
-                                         schedule.current_index)) {
+                                                &schedule)) {
         ESP_LOGE(TAG,
                  "slideshow SNTP switch failed anchor=%lld interval=%lu count=%u now=%lld",
                  (long long)runtime->request.anchor_epoch,
@@ -1402,15 +1404,56 @@ static bool slideshow_enable_sntp_schedule_if_ready(slideshow_runtime_t *runtime
         return false;
     }
 
+    size_t pending_index = runtime->request.file_count;
+    char pending_file[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
+    if (runtime->progress.position < runtime->progress.order_count) {
+        pending_index = runtime->progress.order[runtime->progress.position];
+    }
+    strlcpy(pending_file,
+            runtime->progress.pending_file,
+            sizeof(pending_file));
+
+    bool current_slot_already_consumed = false;
+    if (schedule.started && pending_index < runtime->request.file_count) {
+        size_t expected_next_index =
+            (schedule.current_index + 1U) % runtime->request.file_count;
+        current_slot_already_consumed =
+            runtime->event_consumed_before_sntp &&
+            pending_index == expected_next_index &&
+            strcmp(pending_file,
+                   runtime->request.file_names[expected_next_index]) == 0;
+    }
+
     runtime->sntp_schedule_enabled = true;
-    runtime->consumed_slot_valid = false;
-    runtime->scheduled_slot = schedule.slot;
-    runtime->next_epoch = schedule.started ? (int64_t)now_time : schedule.next_epoch;
+    if (current_slot_already_consumed) {
+        runtime->consumed_slot = schedule.slot;
+        runtime->consumed_slot_valid = true;
+        runtime->scheduled_slot = schedule.slot + 1U;
+        runtime->next_epoch = schedule.next_epoch;
+    } else {
+        if (!slideshow_progress_select_index(&runtime->request,
+                                             &runtime->progress,
+                                             schedule.current_index)) {
+            ESP_LOGE(TAG,
+                     "slideshow SNTP switch progress select failed index=%u file=%s",
+                     (unsigned int)schedule.current_index,
+                     runtime->request.file_names[schedule.current_index]);
+            runtime->sntp_schedule_enabled = false;
+            return false;
+        }
+        runtime->consumed_slot_valid = false;
+        runtime->scheduled_slot = schedule.slot;
+        runtime->next_epoch = schedule.started ? (int64_t)now_time : schedule.next_epoch;
+    }
     ESP_LOGI(TAG,
-             "slideshow SNTP ready, switch legacy to absolute slot=%llu index=%u file=%s now=%lld next=%lld",
+             "slideshow SNTP ready switch slot=%llu current_index=%u current_file=%s pending_index=%u pending_file=%s current_consumed=%d action=%s now=%lld next=%lld",
              (unsigned long long)schedule.slot,
              (unsigned int)schedule.current_index,
-             runtime->progress.pending_file,
+             runtime->request.file_names[schedule.current_index],
+             (unsigned int)pending_index,
+             pending_file,
+             current_slot_already_consumed ? 1 : 0,
+             current_slot_already_consumed ? "wait_next" : "display_current",
              (long long)now_time,
              (long long)runtime->next_epoch);
     return true;
@@ -2064,6 +2107,9 @@ static void slideshow_task(void *arg)
             if (!runtime->rtc_enabled) {
                 slideshow_begin_interval(runtime->request.interval, display_start_tick);
             }
+        }
+        if (!runtime->sntp_schedule_enabled) {
+            runtime->event_consumed_before_sntp = true;
         }
 
         slideshow_progress_t next;

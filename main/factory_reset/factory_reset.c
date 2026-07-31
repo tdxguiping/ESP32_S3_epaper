@@ -1,6 +1,7 @@
 #include "factory_reset.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -16,8 +17,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "led_status.h"
+#include "nvs.h"
+#include "ch583_wifi_uart_protocol.h"
 #include "server_network_sta_slideshow.h"
 #include "server_network_sta_daily_image.h"
+#include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 
@@ -25,6 +29,7 @@ static const char *TAG = "factory_reset";
 
 #define FACTORY_RESET_TASK_STACK_SIZE (5 * 1024)
 #define FACTORY_RESET_TASK_PRIORITY 3
+#define FACTORY_RESET_CH583_WAKE_SECONDS 10U
 
 typedef struct {
     char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
@@ -36,6 +41,8 @@ typedef struct {
     int cast_bin_deleted;
     int cast_jpg_deleted;
     int config_deleted;
+    int file_delete_failed;
+    esp_err_t file_ret;
     esp_err_t nvs_ret;
 } factory_reset_result_t;
 
@@ -55,26 +62,61 @@ static bool factory_reset_name_has_ext(const char *name, const char *ext)
     return name_len > ext_len && strcasecmp(name + name_len - ext_len, ext) == 0;
 }
 
-static bool factory_reset_delete_path_if_exists(const char *path)
+static void factory_reset_record_file_failure(factory_reset_result_t *result,
+                                              const char *path,
+                                              int error_number)
+{
+    if (result == NULL) {
+        return;
+    }
+    result->file_delete_failed++;
+    if (result->file_ret == ESP_OK) {
+        result->file_ret = ESP_FAIL;
+        ESP_LOGE(TAG,
+                 "factory reset file cleanup failed path=%s errno=%d",
+                 path != NULL ? path : "",
+                 error_number);
+    }
+}
+
+static bool factory_reset_delete_path_if_exists(const char *path,
+                                                factory_reset_result_t *result)
 {
     if (unlink(path) == 0) {
         return true;
     }
+    if (errno != ENOENT) {
+        factory_reset_record_file_failure(result, path, errno);
+    }
     return false;
 }
 
-static int factory_reset_delete_files_with_ext(const char *dir_path, const char *ext)
+static int factory_reset_delete_files_with_ext(const char *dir_path,
+                                               const char *ext,
+                                               factory_reset_result_t *result)
 {
     DIR *dir = opendir(dir_path);
     int deleted = 0;
 
     if (dir == NULL) {
-        ESP_LOGW(TAG, "factory reset image dir missing path=%s", dir_path);
+        if (errno == ENOENT) {
+            ESP_LOGW(TAG, "factory reset image dir missing path=%s", dir_path);
+        } else {
+            factory_reset_record_file_failure(result, dir_path, errno);
+        }
         return 0;
     }
 
     struct dirent *entry = NULL;
-    while ((entry = readdir(dir)) != NULL) {
+    while (true) {
+        errno = 0;
+        entry = readdir(dir);
+        if (entry == NULL) {
+            if (errno != 0) {
+                factory_reset_record_file_failure(result, dir_path, errno);
+            }
+            break;
+        }
         if (!factory_reset_name_has_ext(entry->d_name, ext)) {
             continue;
         }
@@ -82,27 +124,122 @@ static int factory_reset_delete_files_with_ext(const char *dir_path, const char 
         char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
         int len = snprintf(path, sizeof(path), "%s/%s", dir_path, entry->d_name);
         if (len < 0 || (size_t)len >= sizeof(path)) {
-            ESP_LOGW(TAG, "factory reset skip long path dir=%s name=%s", dir_path, entry->d_name);
+            factory_reset_record_file_failure(result, dir_path, ENAMETOOLONG);
             continue;
         }
-        if (factory_reset_delete_path_if_exists(path)) {
+        if (factory_reset_delete_path_if_exists(path, result)) {
             deleted++;
         }
     }
 
-    closedir(dir);
+    if (closedir(dir) != 0) {
+        factory_reset_record_file_failure(result, dir_path, errno);
+    }
     return deleted;
 }
 
-static void factory_reset_clear_slideshow_nvs(factory_reset_result_t *result)
+static esp_err_t factory_reset_save_default_epd_mode(void)
+{
+    const uint8_t default_mode = USER_EPD_DISPLAY_MODE_DEFAULT;
+    if (EpdDisplayMode_Get() != default_mode) {
+        return EpdDisplayMode_Set(default_mode);
+    }
+
+    esp_err_t ret =
+        app_nvs_write_u8(USER_EPD_DISPLAY_MODE_NVS_KEY, default_mode);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    uint8_t verified_mode = UINT8_MAX;
+    ret = app_nvs_read_u8(USER_EPD_DISPLAY_MODE_NVS_KEY,
+                          &verified_mode,
+                          USER_EPD_DISPLAY_MODE_DEFAULT);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    if (verified_mode != default_mode) {
+        ESP_LOGE(TAG,
+                 "factory reset default EPD mode verify failed expected=%u read=%u",
+                 (unsigned int)default_mode,
+                 (unsigned int)verified_mode);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t factory_reset_erase_wifi_namespace(void)
+{
+    nvs_handle_t handle = 0;
+    esp_err_t ret = nvs_open("wifi", NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "factory reset open WiFi namespace failed ret=%s",
+                 esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = nvs_erase_all(handle);
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "factory reset erase WiFi namespace failed ret=%s",
+                 esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+static esp_err_t factory_reset_erase_net80211_credentials(void)
+{
+    nvs_handle_t handle = 0;
+    esp_err_t ret = nvs_open("nvs.net80211", NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "factory reset open nvs.net80211 failed ret=%s",
+                 esp_err_to_name(ret));
+        return ret;
+    }
+
+    esp_err_t ssid_ret = nvs_erase_key(handle, "sta.ssid");
+    if (ssid_ret == ESP_ERR_NVS_NOT_FOUND) {
+        ssid_ret = ESP_OK;
+    }
+    esp_err_t password_ret = nvs_erase_key(handle, "sta.pswd");
+    if (password_ret == ESP_ERR_NVS_NOT_FOUND) {
+        password_ret = ESP_OK;
+    }
+    if (ssid_ret == ESP_OK && password_ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    } else {
+        ret = ssid_ret != ESP_OK ? ssid_ret : password_ret;
+    }
+    nvs_close(handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "factory reset erase nvs.net80211 credentials failed ret=%s",
+                 esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+static esp_err_t factory_reset_clear_wifi_credentials(void)
+{
+    esp_err_t wifi_ret = factory_reset_erase_wifi_namespace();
+    esp_err_t net80211_ret = factory_reset_erase_net80211_credentials();
+    if (wifi_ret != ESP_OK) {
+        return wifi_ret;
+    }
+    return net80211_ret;
+}
+
+static void factory_reset_clear_persistent_state(factory_reset_result_t *result)
 {
     esp_err_t ret = ESP_OK;
     esp_err_t one_ret;
 
     /*
-     * English: Only slideshow runtime keys are erased here. Do not erase the whole
-     * PhotoPainter namespace, because WiFi credentials, EPD type, work timers, and
-     * CH583 BLE MAC are production-critical settings that must survive this reset.
+     * English: Do not erase the whole PhotoPainter namespace. EPD type, work
+     * timers, and CH583 BLE MAC are production-critical settings that survive.
+     * Saved WiFi credentials are cleared separately from their two namespaces.
      */
     one_ret = app_nvs_erase_key(TDX_SLIDESHOW_NVS_PROGRESS_KEY);
     if (one_ret != ESP_OK && ret == ESP_OK) {
@@ -119,11 +256,11 @@ static void factory_reset_clear_slideshow_nvs(factory_reset_result_t *result)
     g_slideshow_random_enable = 0;
 
     /*
-     * Select NORMAL before erasing the daily configuration. A running daily
+     * Select and persist DEFAULT before erasing the daily configuration. A running daily
      * worker checks this mode under its config lock and cannot restore the
      * erased configuration after factory reset.
      */
-    one_ret = EpdDisplayMode_Set(USER_EPD_DISPLAY_MODE_NORMAL);
+    one_ret = factory_reset_save_default_epd_mode();
     if (one_ret != ESP_OK && ret == ESP_OK) {
         ret = one_ret;
     }
@@ -134,7 +271,12 @@ static void factory_reset_clear_slideshow_nvs(factory_reset_result_t *result)
         }
     } else {
         ESP_LOGE(TAG,
-                 "factory reset keeps daily config because NORMAL mode was not saved");
+                 "factory reset keeps daily config because DEFAULT mode was not saved");
+    }
+
+    one_ret = factory_reset_clear_wifi_credentials();
+    if (one_ret != ESP_OK && ret == ESP_OK) {
+        ret = one_ret;
     }
 
     if (result != NULL) {
@@ -142,7 +284,8 @@ static void factory_reset_clear_slideshow_nvs(factory_reset_result_t *result)
     }
 }
 
-static esp_err_t factory_reset_clear_images(const char *base_path, factory_reset_result_t *result)
+static esp_err_t factory_reset_execute(const char *base_path,
+                                       factory_reset_result_t *result)
 {
     char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
     char jpg_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
@@ -156,6 +299,7 @@ static esp_err_t factory_reset_clear_images(const char *base_path, factory_reset
         return ESP_ERR_INVALID_ARG;
     }
     memset(result, 0, sizeof(*result));
+    result->file_ret = ESP_OK;
     result->nvs_ret = ESP_OK;
 
     snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", base_path);
@@ -190,26 +334,31 @@ static esp_err_t factory_reset_clear_images(const char *base_path, factory_reset
     /*
      * English: Factory-default image cleanup deletes saved image payloads from
      * both upload/slideshow storage and cast/cast2pic cache. It intentionally
-     * keeps device identity, WiFi, EPD type, work timers, CH583 data, and OTA state.
+     * keeps device identity, EPD type, work timers, CH583 data, and OTA state.
+     * Saved WiFi credentials are cleared after releasing the shared SPI lock.
      */
-    result->upload_bin_deleted = factory_reset_delete_files_with_ext(bin_dir, ".bin");
-    result->upload_jpg_deleted = factory_reset_delete_files_with_ext(jpg_dir, ".jpg");
-    result->cast_bin_deleted = factory_reset_delete_files_with_ext(cast_dir, ".bin");
-    result->cast_jpg_deleted = factory_reset_delete_files_with_ext(cast_dir, ".jpg");
-    if (factory_reset_delete_path_if_exists(slideshow_config)) {
+    result->upload_bin_deleted =
+        factory_reset_delete_files_with_ext(bin_dir, ".bin", result);
+    result->upload_jpg_deleted =
+        factory_reset_delete_files_with_ext(jpg_dir, ".jpg", result);
+    result->cast_bin_deleted =
+        factory_reset_delete_files_with_ext(cast_dir, ".bin", result);
+    result->cast_jpg_deleted =
+        factory_reset_delete_files_with_ext(cast_dir, ".jpg", result);
+    if (factory_reset_delete_path_if_exists(slideshow_config, result)) {
         result->config_deleted++;
     }
-    if (factory_reset_delete_path_if_exists(slideshow_control)) {
+    if (factory_reset_delete_path_if_exists(slideshow_control, result)) {
         result->config_deleted++;
     }
-    if (factory_reset_delete_path_if_exists(last_cast)) {
+    if (factory_reset_delete_path_if_exists(last_cast, result)) {
         result->config_deleted++;
     }
 
     TdxSharedSpi_Unlock();
 
-    factory_reset_clear_slideshow_nvs(result);
-    return result->nvs_ret;
+    factory_reset_clear_persistent_state(result);
+    return result->file_ret != ESP_OK ? result->file_ret : result->nvs_ret;
 }
 
 static bool factory_reset_button_is_active(void)
@@ -259,19 +408,34 @@ static void factory_reset_task(void *arg)
                  (int)TDX_FACTORY_RESET_GPIO,
                  (unsigned long)held_ms);
 
+        ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(true);
         UserLedStatus_FactoryResetBegin();
         factory_reset_result_t result;
-        esp_err_t ret = factory_reset_clear_images(ctx->base_path, &result);
+        esp_err_t ret = factory_reset_execute(ctx->base_path, &result);
         ESP_LOGW(TAG,
-                 "factory reset done ret=%s upload_bin_deleted=%d upload_jpg_deleted=%d cast_bin_deleted=%d cast_jpg_deleted=%d cfg_deleted=%d nvs_ret=%s",
+                 "factory reset done ret=%s upload_bin_deleted=%d upload_jpg_deleted=%d cast_bin_deleted=%d cast_jpg_deleted=%d cfg_deleted=%d file_delete_failed=%d file_ret=%s nvs_ret=%s",
                  esp_err_to_name(ret),
                  result.upload_bin_deleted,
                  result.upload_jpg_deleted,
                  result.cast_bin_deleted,
                  result.cast_jpg_deleted,
                  result.config_deleted,
+                 result.file_delete_failed,
+                 esp_err_to_name(result.file_ret),
                  esp_err_to_name(result.nvs_ret));
 
+        if (ret == ESP_OK) {
+            int provision_ret = ch583_wifi_uart_send_wifi_provision_status(0);
+            if (provision_ret < 0) {
+                ESP_LOGE(TAG,
+                         "factory reset WIFI_PROVISION unconfigured send failed ret=%d",
+                         provision_ret);
+            }
+            ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle(
+                FACTORY_RESET_CH583_WAKE_SECONDS);
+        }
+        ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(false);
+        UserLedStatus_FactoryResetEnd();
 #if TDX_FACTORY_RESET_RESTART_AFTER_DONE
         if (ret == ESP_OK) {
             UserLedStatus_SetRestartPending(true);
@@ -279,7 +443,6 @@ static void factory_reset_task(void *arg)
             esp_restart();
         }
 #endif
-        UserLedStatus_FactoryResetEnd();
     }
 }
 

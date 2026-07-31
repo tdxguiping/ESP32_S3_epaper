@@ -11,8 +11,9 @@ extern "C" {
 #endif
 
 bool NetworkOtaUpload_IsOtaRequest(httpd_req_t *req, const char *content_type);
+// Report the short interval after a successful response and before the OTA-owned restart task runs.
+bool NetworkOtaUpload_IsRestartPending(void);
 size_t NetworkOtaUpload_GetMaxBodySize(void);
-esp_err_t NetworkOtaUpload_MarkCurrentAppValidIfPending(void);
 esp_err_t NetworkOtaUpload_SendErrorAndFinish(httpd_req_t *req,
                                               const char *stage,
                                               const char *message,

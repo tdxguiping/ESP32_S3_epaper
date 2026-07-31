@@ -402,6 +402,120 @@ static json_sender_t s_wifi_connect_reply_sender = NULL;
 static bool s_wifi_connect_notify_result = false;
 static const char *s_wifi_connect_result_func = NULL;
 static bool s_wifi_connect_new_credential = false;
+// Only a wifi_wakeup-owned worker accepts one latest saved credential as pending work.
+static portMUX_TYPE s_wifi_connect_flow_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_wifi_connect_submit_in_progress = false;
+static bool s_wifi_connect_wakeup_flow = false;
+static uint8_t s_wifi_pending_config_state = WIFI_PENDING_CONFIG_NONE;
+static uint32_t s_wifi_pending_config_generation = 0;
+static json_sender_t s_wifi_pending_config_sender = NULL;
+static TickType_t s_wifi_pending_config_start_tick = 0;
+
+static bool wifi_connect_task_is_active(void)
+{
+    bool active = false;
+    portENTER_CRITICAL(&s_wifi_connect_flow_lock);
+    active = s_wifi_connect_task != NULL ||
+             s_wifi_connect_submit_in_progress;
+    portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+    return active;
+}
+
+static uint32_t reserve_wifi_config_behind_wakeup(json_sender_t reply_sender)
+{
+    uint32_t generation = 0;
+    TickType_t request_start_tick = xTaskGetTickCount();
+    portENTER_CRITICAL(&s_wifi_connect_flow_lock);
+    if ((s_wifi_connect_task != NULL ||
+         s_wifi_connect_submit_in_progress) &&
+        s_wifi_connect_wakeup_flow) {
+        generation = ++s_wifi_pending_config_generation;
+        if (generation == 0) {
+            generation = ++s_wifi_pending_config_generation;
+        }
+        s_wifi_pending_config_state = WIFI_PENDING_CONFIG_SAVING;
+        s_wifi_pending_config_sender = reply_sender;
+        s_wifi_pending_config_start_tick = request_start_tick;
+    }
+    portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+    return generation;
+}
+
+static bool finish_wifi_config_reservation(uint32_t generation, bool saved)
+{
+    bool finished = false;
+    portENTER_CRITICAL(&s_wifi_connect_flow_lock);
+    if (generation != 0 &&
+        generation == s_wifi_pending_config_generation &&
+        s_wifi_pending_config_state == WIFI_PENDING_CONFIG_SAVING) {
+        bool wakeup_owner_active =
+            (s_wifi_connect_task != NULL ||
+             s_wifi_connect_submit_in_progress) &&
+            s_wifi_connect_wakeup_flow;
+        if (saved && wakeup_owner_active) {
+            s_wifi_pending_config_state = WIFI_PENDING_CONFIG_READY;
+            finished = true;
+        } else {
+            s_wifi_pending_config_state = WIFI_PENDING_CONFIG_NONE;
+            s_wifi_pending_config_sender = NULL;
+            s_wifi_pending_config_start_tick = 0;
+            finished = !saved;
+        }
+    }
+    portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+    return finished;
+}
+
+static bool wifi_config_is_queued_behind_wakeup(void)
+{
+    bool queued = false;
+    portENTER_CRITICAL(&s_wifi_connect_flow_lock);
+    queued = s_wifi_pending_config_state != WIFI_PENDING_CONFIG_NONE;
+    portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+    return queued;
+}
+
+static int take_pending_wifi_config_or_finish(
+    json_sender_t *reply_sender,
+    TickType_t *request_start_tick)
+{
+    int action = WIFI_PENDING_TAKE_FINISH;
+    portENTER_CRITICAL(&s_wifi_connect_flow_lock);
+    if (s_wifi_pending_config_state == WIFI_PENDING_CONFIG_READY) {
+        if (reply_sender != NULL) {
+            *reply_sender = s_wifi_pending_config_sender;
+        }
+        if (request_start_tick != NULL) {
+            *request_start_tick = s_wifi_pending_config_start_tick;
+        }
+        s_wifi_pending_config_state = WIFI_PENDING_CONFIG_NONE;
+        s_wifi_pending_config_sender = NULL;
+        s_wifi_pending_config_start_tick = 0;
+        s_wifi_connect_wakeup_flow = false;
+        action = WIFI_PENDING_TAKE_READY;
+    } else if (s_wifi_pending_config_state == WIFI_PENDING_CONFIG_SAVING) {
+        action = WIFI_PENDING_TAKE_WAIT;
+    } else {
+        s_wifi_connect_wakeup_flow = false;
+        s_wifi_connect_task = NULL;
+    }
+    portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+    return action;
+}
+
+static void wait_wifi_connect_task_published(void)
+{
+    while (true) {
+        bool published = false;
+        portENTER_CRITICAL(&s_wifi_connect_flow_lock);
+        published = !s_wifi_connect_submit_in_progress;
+        portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+        if (published) {
+            return;
+        }
+        vTaskDelay(1);
+    }
+}
 
 static const char *wifi_stage_from_status(const server_network_sta_status_t& status)
 {
@@ -439,6 +553,162 @@ static bool wifi_status_is_progressing(const server_network_sta_status_t& status
            status.state == SERVER_NETWORK_STA_STATE_RETRY_WAIT ||
            status.state == SERVER_NETWORK_STA_STATE_GOT_IP ||
            status.state == SERVER_NETWORK_STA_STATE_STARTING_SERVICES;
+}
+
+static bool wifi_status_is_ready(const server_network_sta_status_t& status)
+{
+    return status.state == SERVER_NETWORK_STA_STATE_READY &&
+           status.has_ip &&
+           status.http_ready &&
+           status.ip[0] != '\0';
+}
+
+static int wait_wifi_wakeup_ready_during_grace(
+    TickType_t request_start_tick,
+    server_network_sta_status_t *final_status)
+{
+    const TickType_t total_timeout_ticks =
+        pdMS_TO_TICKS(WIFI_CONNECT_POWER_GUARD_MAX_MS);
+    const TickType_t grace_timeout_ticks =
+        pdMS_TO_TICKS(WIFI_WAKEUP_EARLY_1307_GRACE_MS);
+    const TickType_t poll_ticks =
+        pdMS_TO_TICKS(WIFI_WAKEUP_RESULT_POLL_DELAY_MS);
+    const TickType_t grace_start_tick = xTaskGetTickCount();
+    server_network_sta_status_t status = {};
+
+    while (true) {
+        if (wifi_config_is_queued_behind_wakeup()) {
+            if (final_status != NULL) {
+                *final_status = status;
+            }
+            ESP_LOGI(TAG, "wifi_wakeup deferred notify cancelled by new credential");
+            return WIFI_WAKEUP_WAIT_CONFIG_QUEUED;
+        }
+
+        if (ServerNetworkSta_GetStatus(&status) != ESP_OK) {
+            ESP_LOGE(TAG, "wifi_wakeup deferred result status read failed");
+            if (final_status != NULL) {
+                memset(final_status, 0, sizeof(*final_status));
+            }
+            return WIFI_WAKEUP_WAIT_STATUS_ERROR;
+        }
+
+        if (wifi_status_is_ready(status)) {
+            if (final_status != NULL) {
+                *final_status = status;
+            }
+            ESP_LOGI(TAG,
+                     "wifi_wakeup recovered before notify timeout ip=%s elapsed_ms=%lu",
+                     status.ip,
+                     (unsigned long)pdTICKS_TO_MS(xTaskGetTickCount() -
+                                                 request_start_tick));
+            return WIFI_WAKEUP_WAIT_READY;
+        }
+
+        if (!wifi_status_is_progressing(status)) {
+            if (final_status != NULL) {
+                *final_status = status;
+            }
+            ESP_LOGW(TAG,
+                     "wifi_wakeup deferred result stopped state=%s last=%d reason=%d",
+                     ServerNetworkSta_StateName(status.state),
+                     status.last_result,
+                     status.disconnect_reason);
+            return WIFI_WAKEUP_WAIT_TERMINAL;
+        }
+
+        TickType_t now = xTaskGetTickCount();
+        TickType_t total_elapsed_ticks = now - request_start_tick;
+        TickType_t grace_elapsed_ticks = now - grace_start_tick;
+        if (total_elapsed_ticks >= total_timeout_ticks ||
+            grace_elapsed_ticks >= grace_timeout_ticks) {
+            /*
+             * Re-read once at the boundary so READY cannot race with the
+             * final 1307 notification.
+             */
+            server_network_sta_status_t boundary_status = {};
+            if (ServerNetworkSta_GetStatus(&boundary_status) == ESP_OK) {
+                status = boundary_status;
+            }
+            if (final_status != NULL) {
+                *final_status = status;
+            }
+            if (wifi_status_is_ready(status)) {
+                ESP_LOGI(TAG,
+                         "wifi_wakeup recovered at notify timeout boundary ip=%s",
+                         status.ip);
+                return WIFI_WAKEUP_WAIT_READY;
+            }
+            ESP_LOGW(TAG,
+                     "wifi_wakeup grace expired state=%s last=%d grace_ms=%lu total_ms=%lu",
+                     ServerNetworkSta_StateName(status.state),
+                     status.last_result,
+                     (unsigned long)pdTICKS_TO_MS(grace_elapsed_ticks),
+                     (unsigned long)pdTICKS_TO_MS(total_elapsed_ticks));
+            return WIFI_WAKEUP_WAIT_NOTIFY_TIMEOUT;
+        }
+
+        TickType_t total_remaining_ticks =
+            total_timeout_ticks - total_elapsed_ticks;
+        TickType_t grace_remaining_ticks =
+            grace_timeout_ticks - grace_elapsed_ticks;
+        TickType_t delay_ticks = poll_ticks;
+        if (delay_ticks > total_remaining_ticks) {
+            delay_ticks = total_remaining_ticks;
+        }
+        if (delay_ticks > grace_remaining_ticks) {
+            delay_ticks = grace_remaining_ticks;
+        }
+        vTaskDelay(delay_ticks);
+    }
+}
+
+static int wait_wifi_wakeup_power_guard_or_pending_config(
+    TickType_t request_start_tick,
+    server_network_sta_status_t *final_status)
+{
+    const TickType_t timeout_ticks =
+        pdMS_TO_TICKS(WIFI_CONNECT_POWER_GUARD_MAX_MS);
+    const TickType_t poll_ticks =
+        pdMS_TO_TICKS(WIFI_WAKEUP_RESULT_POLL_DELAY_MS);
+    server_network_sta_status_t status = {};
+    bool status_error_logged = false;
+
+    while ((xTaskGetTickCount() - request_start_tick) < timeout_ticks) {
+        if (wifi_config_is_queued_behind_wakeup()) {
+            if (final_status != NULL) {
+                *final_status = status;
+            }
+            return WIFI_WAKEUP_WAIT_CONFIG_QUEUED;
+        }
+        if (ServerNetworkSta_GetStatus(&status) != ESP_OK) {
+            if (!status_error_logged) {
+                ESP_LOGE(TAG,
+                         "wifi_wakeup power guard status read failed; guard remains active");
+                status_error_logged = true;
+            }
+            vTaskDelay(poll_ticks);
+            continue;
+        }
+        if (wifi_status_is_ready(status)) {
+            if (final_status != NULL) {
+                *final_status = status;
+            }
+            return WIFI_WAKEUP_WAIT_READY;
+        }
+        if (!wifi_status_is_progressing(status)) {
+            if (final_status != NULL) {
+                *final_status = status;
+            }
+            return WIFI_WAKEUP_WAIT_TERMINAL;
+        }
+        vTaskDelay(poll_ticks);
+    }
+
+    if (final_status != NULL) {
+        (void)ServerNetworkSta_GetStatus(final_status);
+    }
+    return WIFI_WAKEUP_WAIT_POWER_GUARD_TIMEOUT;
 }
 
 static bool notify_wifi_info_if_ip_ready(json_sender_t reply_sender,
@@ -519,67 +789,206 @@ static bool notify_wifi_info_if_ip_ready(json_sender_t reply_sender,
 static void wifi_connect_task(void *arg)
 {
     (void)arg;
-    bool new_credential = s_wifi_connect_new_credential;
-    uint8_t init_result = new_credential
-                              ? ::User_Network_mode_app_new_credential("/data")
-                              : ::User_Network_mode_app_init("/data");
-    int connect_result = ServerNetworkSta_GetLastConnectResult();
-    ESP_LOGI(TAG, "BLE/CH583 WiFi connect task finished init=%u connect_result=%d",
-             (unsigned int)init_result,
-             connect_result);
+    wait_wifi_connect_task_published();
     json_sender_t reply_sender = s_wifi_connect_reply_sender;
     bool notify_result = s_wifi_connect_notify_result;
     const char *result_func = s_wifi_connect_result_func != NULL
                                   ? s_wifi_connect_result_func
                                   : "wifi_wakeup_result";
+    bool new_credential = s_wifi_connect_new_credential;
+    TickType_t request_start_tick = xTaskGetTickCount();
     s_wifi_connect_reply_sender = NULL;
     s_wifi_connect_notify_result = false;
     s_wifi_connect_result_func = NULL;
     s_wifi_connect_new_credential = false;
-    if (notify_result && reply_sender != NULL) {
-        if (init_result == SERVER_NETWORK_STA_CONNECT_SUPERSEDED) {
-            send_simple_result_with_sender(reply_sender,
-                                           result_func,
-                                           TDX_JSON_RESULT_BUSY,
-                                           "WiFi connect request superseded");
-        } else if (init_result == SERVER_NETWORK_STA_OK) {
-            bool ip_ready = false;
-            if (!notify_wifi_info_if_ip_ready(reply_sender, "wifi_connect_task", true, &ip_ready)) {
-                if (ip_ready) {
-                    ESP_LOGE(TAG, "WiFi got IP but wifi_info_result send failed");
-                } else {
-                    ESP_LOGW(TAG, "WiFi connect result OK but network was not ready for wifi_info_result");
+
+    while (true) {
+        bool is_wakeup_result =
+            strcmp(result_func, "wifi_wakeup_result") == 0;
+        uint8_t init_result = new_credential
+                                  ? ::User_Network_mode_app_new_credential("/data")
+                                  : ::User_Network_mode_app_init("/data");
+        int connect_result = ServerNetworkSta_GetLastConnectResult();
+        ESP_LOGI(TAG,
+                 "BLE/CH583 WiFi initial wait finished func=%s init=%u connect_result=%d",
+                 result_func,
+                 (unsigned int)init_result,
+                 connect_result);
+
+        bool wakeup_ready_after_wait = false;
+        int wakeup_wait_result = WIFI_WAKEUP_WAIT_TERMINAL;
+        server_network_sta_status_t wakeup_status = {};
+        bool cancel_wakeup_for_config =
+            is_wakeup_result && wifi_config_is_queued_behind_wakeup();
+        if (init_result != SERVER_NETWORK_STA_CONNECT_SUPERSEDED &&
+            init_result != SERVER_NETWORK_STA_OK &&
+            connect_result == TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT &&
+            is_wakeup_result &&
+            !cancel_wakeup_for_config) {
+            esp_err_t status_ret =
+                ServerNetworkSta_GetStatus(&wakeup_status);
+            if (status_ret == ESP_OK &&
+                wifi_status_is_progressing(wakeup_status)) {
+                ESP_LOGW(TAG,
+                         "wifi_wakeup early 1307 suppressed grace_ms=%u state=%s "
+                         "retry=%lu retry_after_ms=%lu",
+                         WIFI_WAKEUP_EARLY_1307_GRACE_MS,
+                         ServerNetworkSta_StateName(wakeup_status.state),
+                         (unsigned long)wakeup_status.wifi_retry_count,
+                         (unsigned long)wifi_retry_after_ms(wakeup_status));
+                wakeup_wait_result =
+                    wait_wifi_wakeup_ready_during_grace(request_start_tick,
+                                                        &wakeup_status);
+                wakeup_ready_after_wait =
+                    wakeup_wait_result == WIFI_WAKEUP_WAIT_READY;
+                cancel_wakeup_for_config =
+                    wakeup_wait_result == WIFI_WAKEUP_WAIT_CONFIG_QUEUED;
+                if (!wakeup_ready_after_wait) {
+                    connect_result = wakeup_status.last_result;
+                }
+            } else if (status_ret != ESP_OK) {
+                ESP_LOGE(TAG,
+                         "wifi_wakeup early 1307 status read failed err=%s",
+                         esp_err_to_name(status_ret));
+                wakeup_wait_result = WIFI_WAKEUP_WAIT_STATUS_ERROR;
+            }
+        }
+
+        if (is_wakeup_result && wifi_config_is_queued_behind_wakeup()) {
+            cancel_wakeup_for_config = true;
+        }
+
+        if (!cancel_wakeup_for_config) {
+            if (notify_result && reply_sender != NULL) {
+                if (init_result == SERVER_NETWORK_STA_CONNECT_SUPERSEDED) {
                     send_simple_result_with_sender(reply_sender,
                                                    result_func,
-                                                   TDX_JSON_RESULT_WIFI_GOT_IP_FAILED,
-                                                   "WiFi network was not ready");
+                                                   TDX_JSON_RESULT_BUSY,
+                                                   "WiFi connect request superseded");
+                } else if (init_result == SERVER_NETWORK_STA_OK ||
+                           wakeup_ready_after_wait) {
+                    bool ip_ready = false;
+                    const char *notify_reason = wakeup_ready_after_wait
+                                                    ? "wifi_wakeup_retry_ready"
+                                                    : "wifi_connect_task";
+                    if (!notify_wifi_info_if_ip_ready(
+                            reply_sender,
+                            notify_reason,
+                            !wakeup_ready_after_wait,
+                            &ip_ready)) {
+                        if (ip_ready) {
+                            ESP_LOGE(TAG,
+                                     "WiFi got IP but wifi_info_result send failed");
+                        } else {
+                            ESP_LOGW(TAG,
+                                     "WiFi connect result OK but network was not ready for wifi_info_result");
+                            send_simple_result_with_sender(
+                                reply_sender,
+                                result_func,
+                                TDX_JSON_RESULT_WIFI_GOT_IP_FAILED,
+                                "WiFi network was not ready");
+                        }
+                    }
+                } else if (connect_result ==
+                           TDX_JSON_RESULT_WIFI_AUTH_FAILED) {
+                    send_simple_result_with_sender(
+                        reply_sender,
+                        result_func,
+                        TDX_JSON_RESULT_WIFI_AUTH_FAILED,
+                        "WiFi authentication failed");
+                } else if (connect_result ==
+                           TDX_JSON_RESULT_WIFI_GOT_IP_FAILED) {
+                    send_simple_result_with_sender(
+                        reply_sender,
+                        result_func,
+                        TDX_JSON_RESULT_WIFI_GOT_IP_FAILED,
+                        "WiFi did not obtain IP");
+                } else {
+                    send_simple_result_with_sender(
+                        reply_sender,
+                        result_func,
+                        TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT,
+                        "WiFi connect timed out");
                 }
+            } else {
+                ESP_LOGW(TAG,
+                         "WiFi connect task finished without notify sender notify=%d sender_set=%d result=%d",
+                         notify_result ? 1 : 0,
+                         reply_sender != NULL ? 1 : 0,
+                         connect_result);
             }
-        } else if (connect_result == TDX_JSON_RESULT_WIFI_AUTH_FAILED) {
-            send_simple_result_with_sender(reply_sender,
-                                           result_func,
-                                           TDX_JSON_RESULT_WIFI_AUTH_FAILED,
-                                           "WiFi authentication failed");
-        } else if (connect_result == TDX_JSON_RESULT_WIFI_GOT_IP_FAILED) {
-            send_simple_result_with_sender(reply_sender,
-                                           result_func,
-                                           TDX_JSON_RESULT_WIFI_GOT_IP_FAILED,
-                                           "WiFi did not obtain IP");
-        } else {
-            send_simple_result_with_sender(reply_sender,
-                                           result_func,
-                                           TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT,
-                                           "WiFi connect timed out");
         }
-    } else {
-        ESP_LOGW(TAG, "WiFi connect task finished without notify sender notify=%d sender_set=%d result=%d",
-                 notify_result ? 1 : 0,
-                 reply_sender != NULL ? 1 : 0,
-                 connect_result);
+
+        if (is_wakeup_result && wifi_config_is_queued_behind_wakeup()) {
+            cancel_wakeup_for_config = true;
+        }
+        bool keep_power_guard_observer =
+            is_wakeup_result &&
+            !cancel_wakeup_for_config &&
+            ((wakeup_wait_result == WIFI_WAKEUP_WAIT_NOTIFY_TIMEOUT &&
+              wifi_status_is_progressing(wakeup_status)) ||
+             wakeup_wait_result == WIFI_WAKEUP_WAIT_STATUS_ERROR);
+        if (keep_power_guard_observer) {
+            int guard_wait_result =
+                wait_wifi_wakeup_power_guard_or_pending_config(
+                    request_start_tick,
+                    &wakeup_status);
+            cancel_wakeup_for_config =
+                guard_wait_result == WIFI_WAKEUP_WAIT_CONFIG_QUEUED;
+            if (!cancel_wakeup_for_config) {
+                const char *clear_reason =
+                    guard_wait_result == WIFI_WAKEUP_WAIT_READY
+                        ? "ready_after_1307"
+                        : guard_wait_result == WIFI_WAKEUP_WAIT_TERMINAL
+                              ? "terminal_after_1307"
+                              : "deadline";
+                ServerNetworkStaWifiWorkTime_ClearWifiConnectGuard(
+                    clear_reason);
+            }
+        } else if (!cancel_wakeup_for_config) {
+            const char *clear_reason =
+                (init_result == SERVER_NETWORK_STA_OK ||
+                 wakeup_ready_after_wait)
+                    ? "ready"
+                    : "terminal";
+            ServerNetworkStaWifiWorkTime_ClearWifiConnectGuard(clear_reason);
+        }
+
+        json_sender_t pending_sender = NULL;
+        TickType_t pending_request_start_tick = 0;
+        int pending_action = WIFI_PENDING_TAKE_WAIT;
+        while (pending_action == WIFI_PENDING_TAKE_WAIT) {
+            pending_action =
+                take_pending_wifi_config_or_finish(&pending_sender,
+                                                   &pending_request_start_tick);
+            if (pending_action == WIFI_PENDING_TAKE_WAIT) {
+                vTaskDelay(pdMS_TO_TICKS(WIFI_WAKEUP_RESULT_POLL_DELAY_MS));
+            }
+        }
+        if (pending_action != WIFI_PENDING_TAKE_READY) {
+            break;
+        }
+
+        ESP_LOGI(TAG, "apply queued WiFi credential after wifi_wakeup");
+        TickType_t pending_elapsed_ticks =
+            xTaskGetTickCount() - pending_request_start_tick;
+        uint32_t pending_elapsed_ms =
+            (uint32_t)pdTICKS_TO_MS(pending_elapsed_ticks);
+        uint32_t pending_guard_remaining_ms =
+            pending_elapsed_ms < WIFI_CONNECT_POWER_GUARD_MAX_MS
+                ? WIFI_CONNECT_POWER_GUARD_MAX_MS - pending_elapsed_ms
+                : 1U;
+        ServerNetworkStaWifiWorkTime_StartWifiConnectGuard(
+            pending_guard_remaining_ms);
+        request_start_tick = pending_request_start_tick;
+        reply_sender = pending_sender;
+        notify_result = true;
+        result_func = "wifi_result";
+        new_credential = true;
     }
+
     WiFi_config_from_ch583 = false;
     WiFi_config_from_ble = false;
-    s_wifi_connect_task = NULL;
     vTaskDelete(NULL);
 }
 
@@ -588,25 +997,45 @@ static esp_err_t submit_wifi_connect(json_sender_t reply_sender,
                                      const char *result_func,
                                      bool new_credential)
 {
-    if (s_wifi_connect_task != NULL) {
+    portENTER_CRITICAL(&s_wifi_connect_flow_lock);
+    if (s_wifi_connect_task != NULL || s_wifi_connect_submit_in_progress) {
+        portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
         return ESP_ERR_INVALID_STATE;
     }
+    s_wifi_connect_submit_in_progress = true;
     s_wifi_connect_reply_sender = reply_sender;
     s_wifi_connect_notify_result = notify_result;
     s_wifi_connect_result_func = result_func;
     s_wifi_connect_new_credential = new_credential;
+    s_wifi_connect_wakeup_flow =
+        result_func != NULL &&
+        strcmp(result_func, "wifi_wakeup_result") == 0;
+    portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+    ServerNetworkStaWifiWorkTime_StartWifiConnectGuard(
+        WIFI_CONNECT_POWER_GUARD_MAX_MS);
+    TaskHandle_t created_task = NULL;
     if (xTaskCreate(wifi_connect_task,
                     "ble_wifi_connect",
                     6144,
                     NULL,
                     4,
-                    &s_wifi_connect_task) != pdPASS) {
+                    &created_task) != pdPASS) {
+        portENTER_CRITICAL(&s_wifi_connect_flow_lock);
         s_wifi_connect_reply_sender = NULL;
         s_wifi_connect_notify_result = false;
         s_wifi_connect_result_func = NULL;
         s_wifi_connect_new_credential = false;
+        s_wifi_connect_submit_in_progress = false;
+        s_wifi_connect_wakeup_flow = false;
+        portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+        ServerNetworkStaWifiWorkTime_ClearWifiConnectGuard(
+            "task_create_failed");
         return ESP_ERR_NO_MEM;
     }
+    portENTER_CRITICAL(&s_wifi_connect_flow_lock);
+    s_wifi_connect_task = created_task;
+    s_wifi_connect_submit_in_progress = false;
+    portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
     return ESP_OK;
 }
 
@@ -658,7 +1087,10 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
 
     // Keep this scope local; s_wifi_connect_task is the single BLE/CH583 BUSY guard.
     {
-            if (s_wifi_connect_task != NULL) {
+            uint32_t pending_reservation =
+                reserve_wifi_config_behind_wakeup(s_active_send_json);
+            if (pending_reservation == 0 &&
+                wifi_connect_task_is_active()) {
                 send_simple_result_with_sender(s_active_send_json,
                                                "wifi_result",
                                                TDX_JSON_RESULT_BUSY,
@@ -686,11 +1118,40 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
             SsidManager::GetInstance().Clear();
             esp_err_t save_ret = wifi_ap.Save(wifi_ssid, wifi_password);
             if (save_ret != ESP_OK) {
+                (void)finish_wifi_config_reservation(pending_reservation,
+                                                     false);
                 send_simple_result_with_sender(s_active_send_json,
                                                "wifi_result",
                                                TDX_JSON_RESULT_WIFI_SAVE_FAILED,
                                                "save WiFi config failed");
                 return 0;
+            }
+
+            if (pending_reservation != 0) {
+                if (finish_wifi_config_reservation(pending_reservation, true)) {
+                    WiFi_config_net = true;
+                    Wifi_connect_OK = 1;
+                    ESP_LOGI(TAG,
+                             "WiFi config queued behind wifi_wakeup; latest saved credential wins");
+                    send_simple_result_with_sender(
+                        s_active_send_json,
+                        "wifi_result",
+                        TDX_JSON_RESULT_OK,
+                        "WiFi config saved and queued");
+                    return 0;
+                }
+                if (wifi_connect_task_is_active()) {
+                    ESP_LOGW(TAG,
+                             "WiFi pending reservation superseded before publication");
+                    send_simple_result_with_sender(
+                        s_active_send_json,
+                        "wifi_result",
+                        TDX_JSON_RESULT_BUSY,
+                        "WiFi config superseded by a newer request");
+                    return 0;
+                }
+                ESP_LOGW(TAG,
+                         "WiFi wakeup owner ended during config save; submit saved credential directly");
             }
 
             esp_err_t submit_ret = submit_wifi_connect(s_active_send_json, true, "wifi_result", true);
@@ -761,10 +1222,18 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
     if (status.state == SERVER_NETWORK_STA_STATE_READY &&
         status.has_ip && status.ip[0] != '\0')
     {
+       ServerNetworkStaWifiWorkTime_ClearWifiConnectGuard(
+           "wakeup_already_ready");
        (void)notify_wifi_info_if_ip_ready(s_active_send_json, "wifi_wakeup_got_ip", false, NULL);
     }
     else if (wifi_status_is_progressing(status))
     {
+        /*
+         * This path observes an existing manager attempt and does not create
+         * wifi_connect_task, so use the bounded auto-expiring guard directly.
+         */
+        ServerNetworkStaWifiWorkTime_StartWifiConnectGuard(
+            WIFI_CONNECT_POWER_GUARD_MAX_MS);
         char reply_json[256];
         snprintf(reply_json, sizeof(reply_json),
                  "{\"func\":\"wifi_wakeup_result\",\"result\":%d,"
@@ -803,6 +1272,11 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
             #endif
     }
     else {
+        if (wifi_connect_task_is_active()) {
+            ESP_LOGW(TAG,
+                     "WiFi wakeup ignored: connection task already in progress");
+            return 0;
+        }
         esp_err_t submit_ret = submit_wifi_connect(s_active_send_json, true, "wifi_wakeup_result", false);
         if (submit_ret == ESP_OK) {
             char reply_json[192];

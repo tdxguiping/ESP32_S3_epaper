@@ -864,6 +864,10 @@ esp_err_t TdxImageTransfer_ParseSingle(const char *body,
         set_result(result, TDX_JSON_RESULT_UPLOAD_IMAGE_MISSING, "image transfer failed", "missing_image");
         return ESP_ERR_INVALID_ARG;
     }
+    /*
+     * Validate only transport integrity here. In zlib mode bin_size is the
+     * compressed wire size and is not required to match the raw EPD size.
+     */
     if (cast->bin_part.len != cast->bin_size) {
         set_result(result, TDX_JSON_RESULT_UPLOAD_SIZE_MISMATCH, "image transfer failed", "bin_size_mismatch");
         return ESP_ERR_INVALID_SIZE;

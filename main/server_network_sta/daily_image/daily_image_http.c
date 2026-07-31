@@ -219,6 +219,7 @@ esp_err_t DailyImageHttp_Download(
     const char *download_url,
     uint8_t *buffer,
     size_t buffer_size,
+    bool exact_size_required,
     size_t *downloaded_size,
     daily_image_continue_fn_t should_continue)
 {
@@ -228,8 +229,10 @@ esp_err_t DailyImageHttp_Download(
     }
     *downloaded_size = 0;
 
-    ESP_LOGI(TAG, "download GET url=%s expected=%u",
-             download_url, (unsigned int)buffer_size);
+    ESP_LOGI(TAG, "download GET url=%s capacity=%u exact=%d",
+             download_url,
+             (unsigned int)buffer_size,
+             exact_size_required ? 1 : 0);
     esp_http_client_handle_t client = init_https_client(download_url, HTTP_METHOD_GET);
     if (client == NULL) {
         return ESP_ERR_NO_MEM;
@@ -238,10 +241,14 @@ esp_err_t DailyImageHttp_Download(
     esp_err_t ret = open_and_check_response(client, 0, NULL);
     if (ret == ESP_OK) {
         int64_t content_length = esp_http_client_get_content_length(client);
-        if (content_length >= 0 && content_length != (int64_t)buffer_size) {
-            ESP_LOGE(TAG, "download Content-Length mismatch actual=%lld expected=%u",
+        if (content_length >= 0 &&
+            ((exact_size_required && content_length != (int64_t)buffer_size) ||
+             (!exact_size_required &&
+              (content_length <= 0 || content_length > (int64_t)buffer_size)))) {
+            ESP_LOGE(TAG, "download Content-Length invalid actual=%lld capacity=%u exact=%d",
                      (long long)content_length,
-                     (unsigned int)buffer_size);
+                     (unsigned int)buffer_size,
+                     exact_size_required ? 1 : 0);
             ret = ESP_ERR_INVALID_SIZE;
         } else if (content_length < 0) {
             ESP_LOGW(TAG, "download has no Content-Length, validate accumulated bytes");
@@ -277,13 +284,16 @@ esp_err_t DailyImageHttp_Download(
         }
     }
 
+    bool complete = esp_http_client_is_complete_data_received(client);
     if (ret == ESP_OK &&
-        (*downloaded_size != buffer_size ||
-         !esp_http_client_is_complete_data_received(client))) {
-        ESP_LOGE(TAG, "download size mismatch actual=%u expected=%u complete=%d",
+        (*downloaded_size == 0 ||
+         (exact_size_required && *downloaded_size != buffer_size) ||
+         !complete)) {
+        ESP_LOGE(TAG, "download size invalid actual=%u capacity=%u exact=%d complete=%d",
                  (unsigned int)*downloaded_size,
                  (unsigned int)buffer_size,
-                 esp_http_client_is_complete_data_received(client) ? 1 : 0);
+                 exact_size_required ? 1 : 0,
+                 complete ? 1 : 0);
         ret = ESP_ERR_INVALID_SIZE;
     }
 

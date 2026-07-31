@@ -28,6 +28,7 @@
   - [12.16 EPD/SD 共用电源测试](#sec-12-16)
 - [14. 文件服务器静态资源与旧接口](#sec-14)
 - [16. 目录到功能索引](#sec-16)
+- [17. zlib 文件压缩模块与自检索引](#sec-17-zlib)
 - [按功能整理的相关文件与辅助函数](#moved-code-index)
 
 ## 调试日志与敏感信息约定 <span id="sec-debug-log"></span>
@@ -172,6 +173,13 @@ USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE=0
 
 SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE=0
 只保留 OTA 关键节点和错误日志。
+
+SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS=3000
+OTA 成功响应结束且 HTTP handler 返回后，专用任务等待该时长再复位。
+
+SERVER_NETWORK_STA_OTA_RESTART_TASK_STACK_SIZE=3072
+SERVER_NETWORK_STA_OTA_RESTART_TASK_PRIORITY=5
+仅供 network_ota_upload 模块的延时复位任务使用，不复用其他业务任务配置。
 ```
 
 ---
@@ -209,6 +217,16 @@ SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE=0
 WiFi、DHCP、HTTP 与 mDNS 由唯一的 `wifi_manager` Task 管理。BLE / CH583 和 USB 的普通 `wifi` 配网请求先保存配置，再通过一个 `NEW_CREDENTIAL` 命令交给 manager；调用者不再先发送 PROVISIONING 后再发送 FORCE_CONNECT。后台结果仍使用 `1307`（连接超时）、`1308`（连续认证失败）和 `1309`（已关联但未取得 IP）。`wifi_wakeup` 会识别 CONNECTING、DISCONNECTING、WAITING_IP、RETRY_WAIT、GOT_IP、STARTING_SERVICES、READY、AUTH_FAILED、NO_CONFIG 和 FAILED；已有连接、主动断线或恢复流程时只返回当前 stage，不重复强制重连。进入 DISCONNECTING 时立即清除旧 IP、HTTP ready 和 mDNS ready。USB `/wifi` 仍只同步返回保存和 worker 提交结果，`wifi_status` 可查询完整状态快照及 last_result、连接/凭据代次、断线目的和 READY 稳定窗口剩余时间。
 
 WiFi 重试间隔固定为 `1000/2000/3000/3500/4000/4500 ms`，第6次以后保持4500 ms。进入 READY 后必须连续稳定30秒才清零连接、抖动和认证累计计数，因此短时间反复掉线会逐级退避；稳定30秒后的第一次掉线仍从1000 ms开始。driver 的 `failure_retry_cnt=0`，不存在第二套 driver 重试。
+
+CH583/BLE 的 `wifi_wakeup` 结果通知在 `ble_data_handler.cpp` 层单独防止过早 `1307`：旧同步调用先返回失败、但状态快照仍为 CONNECTING、DISCONNECTING、WAITING_IP、RETRY_WAIT、GOT_IP 或 STARTING_SERVICES 时，通知 task 从取得该结果起最多 10 秒、每 200 ms 只读一次状态。READY 且已有 IP、HTTP ready 时发送 `wifi_info_result`；明确终止或 10 秒到期才按原结果发送。该观察逻辑不调用 connect/disconnect，不修改 manager、退避、认证或 DHCP 状态机。
+
+同一BLE worker内维护一个只用于wakeup流程的最新配置pending槽，状态为NONE/SAVING/READY。`wifi_wakeup` 尚未完成时，普通 `wifi` 在flow lock内先预留SAVING及generation，再写NVS，成功后只把匹配generation发布为READY；worker检测到SAVING时等待，检测到READY后取消旧wakeup尚未发送的最终通知，并使用相同任务进入现有 `User_Network_mode_app_new_credential()`。重复请求只保留最新generation，普通 `wifi` worker忙时仍保留原BUSY规则。
+
+BLE/CH583 worker提交使用同一flow lock发布 `submit_in_progress`，成功占用提交状态后才启动对应关机guard，再创建task并发布handle。并发BUSY请求不启动或清除guard，避免失败请求误清除另一条已受理请求的保护。
+
+`wifi_work_time` 模块独立维护WiFi connect guard的绝对FreeRTOS deadline，宏 `WIFI_CONNECT_POWER_GUARD_MAX_MS` 固定为45000，不复用但不得短于 `SERVER_NETWORK_STA_SYNC_REQUEST_TIMEOUT_MS`，`tdx_cfg.h` 使用编译期检查保持该关系。冷启动在调用现有同步联网函数前调用原子 `ServerNetworkStaWifiWorkTime_StartWifiConnectGuardIfInactive()`：没有有效guard才创建新deadline，手机请求已经建立guard时只复用且不刷新；READY或明确终止时清除，manager仍进行中时保留到绝对上限。guard在初始关机判断、LED准备后的final guard和SPI锁内locked guard三处检查；单次请求不随retry延长。worker路径在READY、终止或到期时清除；收到 `wifi_wakeup` 时manager已经在连接的无worker路径也设置同一45秒自动到期guard，且不提交新的连接命令。新配置排队期间沿用旧guard，worker接管后按新配置的接收tick只设置剩余窗口，确保新请求从接收起也不超过45秒。
+
+`read_saved_wifi()` 的有效凭据日志由 `tdx_cfg.h` 中的 `SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT` 控制。当前开发阶段设为1，两个NVS读取来源都输出SSID和明文password；设为0时只输出SSID。该开关不改变NVS凭据和ESP-IDF WiFi配置，正式发布前必须设为0。
 
 Mermaid 时序图：
 
@@ -2088,6 +2106,8 @@ server_network_sta_data.c
 ```text
 main/server_network_sta/ota/network_ota_upload.c
 main/server_network_sta/ota/network_ota_upload.h
+main/server_network_sta/ota/network_ota_boot.c
+main/server_network_sta/ota/network_ota_boot.h
 ```
 
 ---
@@ -2099,11 +2119,28 @@ main/server_network_sta/ota/network_ota_upload.h
 ```text
 network_ota_upload.c
 ├─ NetworkOtaUpload_IsOtaRequest()
+├─ NetworkOtaUpload_IsRestartPending()
 ├─ NetworkOtaUpload_GetMaxBodySize()
 ├─ NetworkOtaUpload_ProcessReceivedBody()
-├─ NetworkOtaUpload_MarkCurrentAppValidIfPending()
+├─ schedule_ota_restart()
+├─ ota_restart_task()
 └─ write_firmware_to_ota_partition()
+
+network_ota_boot.c
+├─ NetworkOtaBoot_Init()
+├─ NetworkOtaBoot_WasPendingVerify()
+├─ NetworkOtaBoot_IsPendingVerify()
+├─ NetworkOtaBoot_EnablePendingProtection()
+└─ NetworkOtaBoot_ConfirmCurrentImage()
 ```
+
+成功 OTA 的 `rebooting` event 位于最终 `ota_result` 之前。chunked response 结束后，处理函数返回到网络数据入口完成 body、mutex 和 socket 清理；随后 OTA 专用任务延时复位。restart-pending 状态使用原子读写；网络入口用它保留成功指示并拒绝重启前的新 multipart 上传，GET 和非 multipart 路径不变。
+
+`network_ota_boot` 直接读取 bootloader `otadata`，仅把 `ESP_OTA_IMG_PENDING_VERIFY` 视为 OTA 首次启动标志，不增加应用 NVS key。该模块保存本次启动和当前待确认两个原子 RAM 状态，输出一次关键启动诊断，并通过 `USER_WORK_STATE_OTA_HOLD_PENDING_VERIFY_BIT` 阻止自动关机。启动最早阶段读取失败时，`main.c` 在 work-time 初始化后、GPIO test 前调用 `NetworkOtaBoot_Init()` 重试一次；调用方不重复打印模块已经报告的读取错误。
+
+`NetworkOtaBoot_ConfirmCurrentImage()` 在 `/dataUP`、`/ota`、`/ota_upload` 全部注册成功后执行，避免恢复接口尚未就绪时提前确认新镜像。确认成功清除 pending-verify hold；确认失败使用 `ESP_LOGE`，注册函数保留 HTTP handler 并返回成功，使设备仍可接受恢复请求。确认时会再次读取权威 otadata 状态，避免启动早期的瞬时读取错误漏掉确认。
+
+普通启动不启用上述保护。只有本次从 `PENDING_VERIFY` 启动时，`GpioTest_Init()` 和 `FactoryReset_Init()` 失败才降级为记录错误并继续；其他初始化规则不变。当前 `app_auto_light_sleep_init()` 固定配置 `light_sleep_enable=false`，pending 状态只增加一次明确提示。
 
 ---
 
@@ -2826,6 +2863,8 @@ ch583_send_json()
 
 ```text
 main/server_network_sta/wifi_work_time/server_network_sta_wifi_work_time.c
+main/server_network_sta/wifi_work_time/server_network_sta_wifi_work_time.h
+main/factory_reset/factory_reset.c
 main/ch583_uart/ch583_wifi_uart_protocol.c
 main/ch583_uart/ch583_wifi_uart_protocol.h
 ```
@@ -2842,6 +2881,8 @@ work_state_task()
 ServerNetworkStaWifiWorkTime_OnNetworkData()
 ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()
 ServerNetworkStaWifiWorkTime_OnCh583Activity()
+ServerNetworkStaWifiWorkTime_SetFactoryResetGuard()
+ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle()
 ServerNetworkStaWifiWorkTime_SetOtaWriteInProgress()
 ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress()
 UserLedStatus_PreparePowerOffSync()
@@ -2849,6 +2890,10 @@ UserLedStatus_CancelPowerOffSync()
 ch583_wifi_uart_send_power_off()
 ch583_wifi_send_frame()
 ```
+
+Factory Reset 长按达到5秒后、删除任何文件前调用 `ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(true)`；短按不设置。`work_state_task()`在普通入口、LED后的final guard和SPI锁内locked guard复检该原子RAM标志，避免普通关机抢占清理。成功时先调用 `ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle(10)`再清guard；失败时不发布请求并清guard，所有结果都必须清除。文件清理按best-effort继续执行，`ENOENT`不算失败，真实unlink、路径长度、目录读取或关闭错误累计到 `file_delete_failed/file_ret`，任一失败都会使总ret失败并禁止关机。
+
+Factory Reset 成功后清除 `wifi` namespace 全部键以及 `nvs.net80211:sta.ssid/sta.pswd`，把 `PhotoPainter:epd_mode` 强制写入并读回校验为 `USER_EPD_DISPLAY_MODE_DEFAULT`。随后 `work_state_task()`强制发送 `WAKE_TIMER ON,10`，再沿用现有LED、SPI和busy复检发送 `WIFI_PROVISION 4F`、`POWER_OFF`。CH583断电计时10秒后重新上电。该请求不写工作时间NVS，也不改变普通、轮播或DAILY关机路径。
 
 ---
 
@@ -2958,6 +3003,82 @@ main/ble/user_app.h
 main/ch583_uart/ch583_uart_app.c
 main/ch583_uart/ch583_wifi_uart_protocol.c
 ```
+
+---
+
+## 17. zlib 文件压缩模块与自检索引 <span id="sec-17-zlib"></span>
+
+第三方组件：
+
+```text
+components/zlib/CMakeLists.txt
+components/zlib/idf_component.yml
+zlib/
+```
+
+项目模块：
+
+```text
+main/data_compression/tdx_zlib_file.h
+main/data_compression/tdx_zlib_file.c
+main/data_compression/tdx_zlib_buffer.h
+main/data_compression/tdx_zlib_buffer.c
+main/data_compression/test/tdx_zlib_self_test.h
+main/data_compression/test/tdx_zlib_self_test.c
+main/data_compression/test/tdx_zlib_epd_test.h
+main/data_compression/test/tdx_zlib_epd_test.c
+```
+
+公开函数：
+
+```c
+esp_err_t TdxZlibFile_Compress(const char *source_path,
+                               const char *compressed_path,
+                               uint64_t *source_size,
+                               uint64_t *compressed_size);
+
+esp_err_t TdxZlibFile_Decompress(const char *compressed_path,
+                                 const char *output_path,
+                                 uint64_t *compressed_size,
+                                 uint64_t *output_size);
+
+esp_err_t TdxZlibSelfTest_Run(const char *base_path);
+
+size_t TdxZlibBuffer_GetCompressBound(size_t input_size);
+
+esp_err_t TdxZlibBuffer_Decompress(const uint8_t *compressed_data,
+                                   size_t compressed_size,
+                                   uint8_t *output_data,
+                                   size_t output_capacity,
+                                   size_t *output_size);
+
+esp_err_t TdxZlibEpdTest_Run(const char *base_path);
+```
+
+正式格式开关位于 `main/tdx_cfg.h` 的EPD配置章节：
+
+```text
+USER_EPD_DISPLAY_DATA_ZLIB_ENABLE
+```
+
+原文件测试参数仍集中在“Zlib File Compression Self-Test”章节，但旧测试函数没有启动调用：
+
+```text
+USER_ZLIB_COMPRESSION_LEVEL
+USER_ZLIB_STREAM_BUFFER_SIZE
+USER_ZLIB_TEST_PATH_BUFFER_SIZE
+USER_ZLIB_TEST_SOURCE_RELATIVE_PATH
+USER_ZLIB_TEST_COMPRESSED_RELATIVE_PATH
+USER_ZLIB_TEST_DECOMPRESSED_RELATIVE_PATH
+```
+
+公共业务入口 `ServerNetworkStaEpdDisplay_QueueToScreen()` 和 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 根据 `USER_EPD_DISPLAY_DATA_ZLIB_ENABLE` 决定解压或复制，队列任务与具体EPD驱动不变。内部 `test_epd_display_and_wait()` 通过静态raw入口继续显示未压缩测试图。
+
+cast、cast2pic和upload入口只校验 `bin_size` 是否等于实际收到的 `bin` part长度，不把压缩输入长度与屏幕原始 `display_size` 比较。宏为 `1` 时由公共EPD入口解压并校验输出长度；宏为 `0` 时继续把raw数据交给原有EPD长度检查。
+
+每日一图下载接口增加 `exact_size_required` 参数：非压缩模式维持严格原始长度，压缩模式使用 `TdxZlibBuffer_GetCompressBound()` 作为容量并接受实际压缩长度。轮播在压缩模式下跳过旧的原始BIN文件名SHA诊断，避免对压缩字节产生误报；非压缩模式保留原诊断。
+
+`main/main.c` 完整保留 `TdxZlibEpdTest_Run()` 的启动调用代码，当前使用局部 `#if 0` 关闭，没有增加临时测试宏；以后需要诊断时可临时改为 `#if 1`。该函数读取已生成的 `.bin.zlib` 并提交公共EPD入口；读取期间持有 `TdxSharedSpi`，提交显示前释放锁，避免同步等待EPD任务时死锁。
 
 ---
 

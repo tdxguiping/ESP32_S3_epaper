@@ -16,6 +16,7 @@
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
+#include "tdx_zlib_buffer.h"
 #include "epd_type.h"
 #include "epd_test_1360_480_1085_3color_const.h"
 
@@ -104,34 +105,77 @@ static void release_epd_job(epd_display_job_t *job)
     }
 }
 
-static esp_err_t copy_display_buffer(epd_display_job_t *job, const uint8_t *display_buf, size_t display_size)
+static uint8_t *allocate_display_buffer(size_t display_size)
+{
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(
+        display_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (buffer == NULL && display_size <= USER_INTERNAL_RAM_FALLBACK_MAX_SIZE) {
+        buffer = (uint8_t *)heap_caps_malloc(display_size, MALLOC_CAP_8BIT);
+    }
+    return buffer;
+}
+
+static esp_err_t prepare_display_buffer(epd_display_job_t *job,
+                                        const uint8_t *display_buf,
+                                        size_t display_size,
+                                        bool input_is_zlib)
 {
     if (job == NULL || display_buf == NULL || display_size == 0) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* English: Copy display data because receive_data_redirect_handler frees the HTTP body after dispatch. */
-    /* 中文：复制显示数据，因为 receive_data_redirect_handler 分发完成后会释放 HTTP body。 */
-    uint8_t *copy = (uint8_t *)heap_caps_malloc(display_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (copy == NULL) {
-        if (display_size > USER_INTERNAL_RAM_FALLBACK_MAX_SIZE) {
-            ESP_LOGE(TAG, "display PSRAM alloc failed, size too large for internal RAM size=%u",
-                     (unsigned int)display_size);
-            return ESP_ERR_NO_MEM;
+    size_t prepared_size = display_size;
+    if (input_is_zlib) {
+        const epd_type_config_t *config = EpdType_GetCurrentConfig();
+        if (config == NULL || config->display_size == 0) {
+            ESP_LOGE(TAG, "zlib display rejected because EPD type is invalid");
+            return ESP_ERR_INVALID_STATE;
         }
-
-        // English: Only small display buffers may fall back to internal RAM.
-        // 中文：只有小显示缓冲允许退回内部 RAM，避免大图挤占系统内存。
-        copy = (uint8_t *)heap_caps_malloc(display_size, MALLOC_CAP_8BIT);
+        prepared_size = config->display_size;
     }
+
+    uint8_t *copy = allocate_display_buffer(prepared_size);
     if (copy == NULL) {
-        ESP_LOGE(TAG, "display buffer alloc failed size=%u", (unsigned int)display_size);
+        ESP_LOGE(TAG, "display buffer alloc failed size=%u",
+                 (unsigned int)prepared_size);
         return ESP_ERR_NO_MEM;
     }
 
-    memcpy(copy, display_buf, display_size);
+    if (input_is_zlib) {
+        int64_t start_us = esp_timer_get_time();
+        size_t decoded_size = 0;
+        esp_err_t ret = TdxZlibBuffer_Decompress(display_buf,
+                                                display_size,
+                                                copy,
+                                                prepared_size,
+                                                &decoded_size);
+        uint64_t elapsed_us = (uint64_t)(esp_timer_get_time() - start_us);
+        if (ret != ESP_OK || decoded_size != prepared_size) {
+            ESP_LOGE(TAG,
+                     "zlib display decode failed input=%u output=%u expected=%u ret=%s elapsed_ms=%llu",
+                     (unsigned int)display_size,
+                     (unsigned int)decoded_size,
+                     (unsigned int)prepared_size,
+                     esp_err_to_name(ret != ESP_OK ? ret : ESP_ERR_INVALID_SIZE),
+                     (unsigned long long)(elapsed_us / 1000U));
+            heap_caps_free(copy);
+            return ret != ESP_OK ? ret : ESP_ERR_INVALID_SIZE;
+        }
+        ESP_LOGI(TAG,
+                 "zlib display decode passed input=%u output=%u elapsed_ms=%llu",
+                 (unsigned int)display_size,
+                 (unsigned int)decoded_size,
+                 (unsigned long long)(elapsed_us / 1000U));
+    } else {
+        /*
+         * Copy raw display data because the request owner may release its
+         * receive buffer immediately after the queue operation returns.
+         */
+        memcpy(copy, display_buf, display_size);
+    }
+
     job->data = copy;
-    job->size = display_size;
+    job->size = prepared_size;
     return ESP_OK;
 }
 
@@ -306,7 +350,11 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, s
     }
 
     epd_display_job_t job = {};
-    esp_err_t ret = copy_display_buffer(&job, display_buf, display_size);
+    esp_err_t ret = prepare_display_buffer(
+        &job,
+        display_buf,
+        display_size,
+        USER_EPD_DISPLAY_DATA_ZLIB_ENABLE != 0);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -334,7 +382,10 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, s
 #endif
 }
 
-esp_err_t ServerNetworkStaEpdDisplay_QueueToScreenAndWait(const uint8_t *display_buf, size_t display_size, uint8_t epd_which_one)
+static esp_err_t queue_to_screen_and_wait_internal(const uint8_t *display_buf,
+                                                   size_t display_size,
+                                                   uint8_t epd_which_one,
+                                                   bool input_is_zlib)
 {
 #if USER_EPD_ENABLE
     // Keep the synchronous queue entry equivalent to the asynchronous queue entry.
@@ -351,7 +402,8 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreenAndWait(const uint8_t *display
     }
 
     epd_display_job_t job = {};
-    esp_err_t ret = copy_display_buffer(&job, display_buf, display_size);
+    esp_err_t ret = prepare_display_buffer(
+        &job, display_buf, display_size, input_is_zlib);
     if (ret != ESP_OK) {
         release_completion(completion);
         release_completion(completion);
@@ -386,9 +438,21 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreenAndWait(const uint8_t *display
     (void)display_buf;
     (void)display_size;
     (void)epd_which_one;
+    (void)input_is_zlib;
     ESP_LOGW(TAG, "EPD display wait ignored because USER_EPD_ENABLE=0");
     return ESP_OK;
 #endif
+}
+
+esp_err_t ServerNetworkStaEpdDisplay_QueueToScreenAndWait(const uint8_t *display_buf,
+                                                          size_t display_size,
+                                                          uint8_t epd_which_one)
+{
+    return queue_to_screen_and_wait_internal(
+        display_buf,
+        display_size,
+        epd_which_one,
+        USER_EPD_DISPLAY_DATA_ZLIB_ENABLE != 0);
 }
 
 bool ServerNetworkStaEpdDisplay_IsBusy(void)
@@ -443,9 +507,10 @@ esp_err_t test_epd_display_and_wait(void)
                                : 1U;
     esp_err_t ret = ESP_OK;
     for (uint8_t target = 1U; target <= target_count && ret == ESP_OK; ++target) {
-        ret = ServerNetworkStaEpdDisplay_QueueToScreenAndWait(test_buf,
-                                                              config->display_size,
-                                                              target);
+        ret = queue_to_screen_and_wait_internal(test_buf,
+                                                config->display_size,
+                                                target,
+                                                false);
     }
     heap_caps_free(test_buf);
     return ret;

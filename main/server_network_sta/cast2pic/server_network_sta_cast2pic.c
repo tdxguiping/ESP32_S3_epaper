@@ -523,6 +523,10 @@ static const char *validate_cast2pic_meta(const cast2pic_meta_t *meta)
         if (!image->image_part.present || image->image_part.data == NULL) {
             return "missing_image_file";
         }
+        /*
+         * Validate only transport integrity here. A zlib BIN has a variable
+         * wire size; its decoded EPD size is validated by the display module.
+         */
         if (image->bin_part.len != image->bin_size) {
             return "bin_size_mismatch";
         }

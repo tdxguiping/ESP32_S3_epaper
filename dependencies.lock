@@ -21,7 +21,8 @@ dependencies:
     version: '*'
 direct_dependencies:
 - espressif/mdns
+- idf
 - protocol_examples_common
-manifest_hash: d3c53e18afc5885977e293b9fcbf8fc93e2aa104db6b438ac0e9fcabe5bc1047
+manifest_hash: 007dd870589e1413aaeb7d74986d53352c6b2063fd28eaaa7a9e9898500f6f7c
 target: esp32c5
 version: 2.0.0

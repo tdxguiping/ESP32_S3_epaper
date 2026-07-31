@@ -86,6 +86,10 @@ static esp_err_t cast2pic_parse_one(const usb_console_http_request_t *request,
         !UsbConsoleCommon_ParsePartSize(bin_size_part, &bin_size) ||
         !UsbConsoleCommon_ParsePartSize(image_size_part, &image_size) ||
         !bin_part->present || !image_part->present ||
+        /*
+         * bin_size is the received wire size. It may vary when the BIN part
+         * contains zlib data, but it must still match the actual part length.
+         */
         bin_part->len != bin_size || image_part->len != image_size) {
         ESP_LOGW(TAG,
                  "cast2pic invalid user_file=%s bin=%u/%u image=%u/%u",

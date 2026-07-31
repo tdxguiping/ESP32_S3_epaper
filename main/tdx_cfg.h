@@ -287,7 +287,6 @@ extern "C" {
 
 // Development-only: print the WiFi password in plaintext for bring-up debugging.
 // Keep this enabled only during local WiFi debugging and set it to 0 before release testing.
-#define SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT 1
 
 // Keep Server Network STA return codes here so main.c and the STA module share one result contract.
 #define SERVER_NETWORK_STA_OK 1
@@ -326,6 +325,38 @@ extern "C" {
 
 // Maximum time a legacy synchronous caller waits for the manager to report a connect result.
 #define SERVER_NETWORK_STA_SYNC_REQUEST_TIMEOUT_MS 45000
+// Maximum absolute lifetime of a BLE/CH583 WiFi connection power guard.
+#define WIFI_CONNECT_POWER_GUARD_MAX_MS 45000
+// Development only: print the saved WiFi password in plaintext for connection debugging.
+#define SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT 1
+// Wait this long after an early wifi_wakeup 1307 while the manager is still progressing.
+#define WIFI_WAKEUP_EARLY_1307_GRACE_MS 10000
+// Polling interval for the isolated wifi_wakeup result observer.
+#define WIFI_WAKEUP_RESULT_POLL_DELAY_MS 200
+// Internal wifi_wakeup observer outcomes; keep them separate from protocol result codes.
+#define WIFI_WAKEUP_WAIT_READY               0
+#define WIFI_WAKEUP_WAIT_NOTIFY_TIMEOUT      1
+#define WIFI_WAKEUP_WAIT_TERMINAL            2
+#define WIFI_WAKEUP_WAIT_CONFIG_QUEUED       3
+#define WIFI_WAKEUP_WAIT_STATUS_ERROR        4
+#define WIFI_WAKEUP_WAIT_POWER_GUARD_TIMEOUT 5
+// Pending credential publication states used only by the BLE/CH583 WiFi worker.
+#define WIFI_PENDING_CONFIG_NONE   0
+#define WIFI_PENDING_CONFIG_SAVING 1
+#define WIFI_PENDING_CONFIG_READY  2
+// Results returned when the worker atomically consumes pending credential work.
+#define WIFI_PENDING_TAKE_FINISH 0
+#define WIFI_PENDING_TAKE_WAIT   1
+#define WIFI_PENDING_TAKE_READY  2
+#if WIFI_CONNECT_POWER_GUARD_MAX_MS > 45000
+#error "WiFi connect power guard must not exceed 45 seconds"
+#endif
+#if WIFI_CONNECT_POWER_GUARD_MAX_MS < SERVER_NETWORK_STA_SYNC_REQUEST_TIMEOUT_MS
+#error "WiFi connect power guard must cover the synchronous request timeout"
+#endif
+#if WIFI_WAKEUP_EARLY_1307_GRACE_MS > WIFI_CONNECT_POWER_GUARD_MAX_MS
+#error "wifi_wakeup grace must not exceed the WiFi connect power guard"
+#endif
 
 // Maximum time to wait for an expected disconnect before escalating to recovery handling.
 #define SERVER_NETWORK_STA_EXPECTED_DISCONNECT_TIMEOUT_MS 3000
@@ -474,6 +505,15 @@ extern "C" {
 // Print OTA low-level multipart and firmware-header details only during OTA parser bring-up.
 #define SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE 0
 
+// Allow the HTTP handler to return and close the OTA response before restarting the device.
+#define SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS 3000U
+
+// Keep the OTA restart worker independent from HTTP server and application worker stacks.
+#define SERVER_NETWORK_STA_OTA_RESTART_TASK_STACK_SIZE 3072U
+
+// Run the restart worker above background application tasks without competing with system services.
+#define SERVER_NETWORK_STA_OTA_RESTART_TASK_PRIORITY 5U
+
 /* -------------------------------------------------------------------------- */
 /* 09. Saved Images / Cast / Snapshot / Delete                                 */
 /* -------------------------------------------------------------------------- */
@@ -605,12 +645,14 @@ extern "C" {
 #define USER_WORK_STATE_HTTP_ACTIVITY_HOLD_SECONDS 20
 // Hold WiFi power after CH583 startup or validated business activity.
 #define USER_WORK_STATE_CH583_ACTIVITY_HOLD_SECONDS 20
-// OTA hold bits keep receive and flash-write lifetimes independent.
+// OTA hold bits keep receive, flash-write, and first-boot verification lifetimes independent.
 #define USER_WORK_STATE_OTA_HOLD_WRITE_BIT   (1UL << 0)
 #define USER_WORK_STATE_OTA_HOLD_RECEIVE_BIT (1UL << 1)
+#define USER_WORK_STATE_OTA_HOLD_PENDING_VERIFY_BIT (1UL << 2)
 // Guard-log bits ensure short power-off holds produce one useful log without per-second noise.
 #define USER_WORK_STATE_GUARD_LOG_HTTP_BIT (1UL << 0)
 #define USER_WORK_STATE_GUARD_LOG_CH583_BIT (1UL << 1)
+#define USER_WORK_STATE_GUARD_LOG_WIFI_CONNECT_BIT (1UL << 2)
 // Runtime state bits keep startup and power-off cancellation guards centralized.
 #define USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT (1UL << 0)
 #define USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT    (1UL << 1)
@@ -905,6 +947,11 @@ extern "C" {
 #define USER_EPD_DISPLAY_TASK_PRIORITY 5
 // Bound synchronous display waits; completion lifetime remains owned by both waiter and EPD task.
 #define USER_EPD_DISPLAY_WAIT_TIMEOUT_MS (5 * 60 * 1000)
+// Select zlib-compressed business display data when set to 1, or raw display data when set to 0.
+#define USER_EPD_DISPLAY_DATA_ZLIB_ENABLE 1
+#if USER_EPD_DISPLAY_DATA_ZLIB_ENABLE != 0 && USER_EPD_DISPLAY_DATA_ZLIB_ENABLE != 1
+#error "USER_EPD_DISPLAY_DATA_ZLIB_ENABLE must be 0 or 1"
+#endif
 
 // NVS key used by USER EPD TYPE NVS KEY; keep storage compatibility before changing it.
 #define USER_EPD_TYPE_NVS_KEY "epd_type"
@@ -1168,7 +1215,24 @@ extern "C" {
 #define USER_LED_STATUS_TASK_PRIORITY 3
 
 /* -------------------------------------------------------------------------- */
-/* 20. Global Runtime Variables / Shared APIs                                  */
+/* 20. Zlib File Compression Self-Test                                         */
+/* -------------------------------------------------------------------------- */
+
+// Use the fastest zlib compression level to limit startup test time.
+#define USER_ZLIB_COMPRESSION_LEVEL 1
+// Bound each streaming file read and write without loading the whole BIN file.
+#define USER_ZLIB_STREAM_BUFFER_SIZE (8U * 1024U)
+// Bound absolute paths constructed from the mounted base path and test paths.
+#define USER_ZLIB_TEST_PATH_BUFFER_SIZE 160U
+// Source BIN file used by the SD-card compression test.
+#define USER_ZLIB_TEST_SOURCE_RELATIVE_PATH "/bin_img/2486aad8763e9822.bin"
+// Keep the zlib stream beside its source so it can be inspected after the test.
+#define USER_ZLIB_TEST_COMPRESSED_RELATIVE_PATH "/bin_img/2486aad8763e9822.bin.zlib"
+// Use a separate temporary output so the source BIN file is never overwritten.
+#define USER_ZLIB_TEST_DECOMPRESSED_RELATIVE_PATH "/bin_img/2486aad8763e9822.bin.unzlib.tmp"
+
+/* -------------------------------------------------------------------------- */
+/* 21. Global Runtime Variables / Shared APIs                                  */
 /* -------------------------------------------------------------------------- */
 
 extern uint16_t sleep_time;

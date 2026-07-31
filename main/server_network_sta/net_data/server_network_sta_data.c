@@ -18,6 +18,7 @@
 #include "freertos/semphr.h"
 #include "led_status.h"
 #include "network_ota_upload.h"
+#include "network_ota_boot.h"
 #include "server_network_sta_cast2pic.h"
 #include "server_network_sta_cast.h"
 #include "server_network_sta_daily_image.h"
@@ -486,6 +487,19 @@ static esp_err_t receive_data_redirect_handler_impl(httpd_req_t *req)
 
     bool is_network_ota = NetworkOtaUpload_IsOtaRequest(req, content_type);
     bool is_multipart = (strstr(content_type, "multipart/form-data") != NULL);
+    if (is_multipart && NetworkOtaUpload_IsRestartPending()) {
+        ESP_LOGW(TAG, "HTTP multipart rejected while OTA restart is pending uri=%s",
+                 uri != NULL ? uri : "<null>");
+        if (is_network_ota) {
+            return NetworkOtaUpload_SendErrorAndFinish(req,
+                                                       "upload_busy",
+                                                       "restart_pending",
+                                                       ESP_ERR_INVALID_STATE);
+        }
+        return send_json_response(req,
+                                  "{\"func\":\"dataup_result\",\"result\":1007,\"message\":\"restart_pending\",\"error\":\"restart_pending\"}");
+    }
+
     server_network_sta_dataup_async_state_t async_state = ServerNetworkStaDataupAsync_GetState();
     bool epd_busy = ServerNetworkStaEpdDisplay_IsBusy();
     if (!is_network_ota && is_multipart &&
@@ -677,7 +691,14 @@ static esp_err_t receive_data_redirect_handler_impl(httpd_req_t *req)
         UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_NETWORK);
     }
     if (is_network_ota) {
-        UserLedStatus_OtaEnd(false);
+        /*
+         * A successful OTA now returns from the HTTP handler before its dedicated
+         * restart task runs. Preserve the success indication during that short
+         * window; failed OTA requests continue to use the existing failure state.
+         */
+        if (!NetworkOtaUpload_IsRestartPending()) {
+            UserLedStatus_OtaEnd(false);
+        }
         ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress(false);
     }
 
@@ -699,7 +720,6 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
 esp_err_t server_network_sta_net_data_register_handlers(httpd_handle_t server, const char *base_path)
 {
     strlcpy(s_base_path, base_path, sizeof(s_base_path));
-    (void)NetworkOtaUpload_MarkCurrentAppValidIfPending();
     esp_err_t async_ret = ServerNetworkStaDataupAsync_Init();
     if (async_ret != ESP_OK) {
         ESP_LOGE(TAG, "net handlers: dataup async init failed ret=%s", esp_err_to_name(async_ret));
@@ -757,5 +777,13 @@ esp_err_t server_network_sta_net_data_register_handlers(httpd_handle_t server, c
     }
 
     ESP_LOGI(TAG, "HTTP POST ready /dataUP /ota /ota_upload");
+    /*
+     * Confirm a pending OTA image only after every upload endpoint is available.
+     * A validation failure must not remove the recovery endpoints from service.
+     */
+    esp_err_t ota_valid_ret = NetworkOtaBoot_ConfirmCurrentImage();
+    if (ota_valid_ret != ESP_OK) {
+        ESP_LOGW(TAG, "HTTP POST remains ready after OTA app validation failure");
+    }
     return ESP_OK;
 }

@@ -776,6 +776,10 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
         !UsbConsoleCommon_ParsePartSize(bin_size_part, &bin_size) ||
         !UsbConsoleCommon_ParsePartSize(image_size_part, &image_size) ||
         !bin_part->present || !image_part->present ||
+        /*
+         * Keep the declared-versus-received check in both modes. In zlib mode
+         * this is the compressed wire size, not the raw EPD display size.
+         */
         bin_part->len != bin_size || image_part->len != image_size) {
         return UsbConsoleCommon_SetJsonf(response, 200, "OK",
                                          "{\"func\":\"%s\",\"result\":%d,\"message\":\"invalid upload\"}",

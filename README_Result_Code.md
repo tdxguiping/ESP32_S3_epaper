@@ -65,6 +65,7 @@
   - [6.9 EPD result 编码](#sec-06-9)
   - [6.9.1 daily_download_file result 编码](#sec-06-9-1)
   - [6.10 result 编码范围总表](#sec-06-10)
+- [7. zlib 内部文件测试返回规则](#sec-07-zlib)
 
 ---
 
@@ -143,6 +144,8 @@
 `daily_download_file sw=1` 保存成功后写 `epd_mode=2`，`sw=0` 停止daily和轮播后写 `epd_mode=0`；合法 cast/cast2pic 成功接收后写 `epd_mode=0`；`start_slideshow` 或 `set_slideshow sw=1` 成功后写 `epd_mode=1`。所有模式写入必须通过统一模式接口持久化到 NVS。
 
 `WIFI_PROVISION` 是 ESP32-C5 与 CH583/CH585 的 UART 命令，不属于接口返回 JSON，不新增 result code。该命令固定 `LEN=2`，`ARG` 使用 2 位十六进制文本，表示 1 个复合状态 byte：第 1 位十六进制字符是 WiFi 配网状态，未配网为 `4`，已配网为 `5`；第 2 位十六进制字符是 `epd_mode`。例如 `ARG=50/51/52` 分别表示已配网 + 普通/轮播/每日模式，`ARG=40` 表示未配网 + 普通模式。`epd_mode` 写入成功后，必须使用最近一次 WiFi 配网状态重新组合 `ARG` 并再次上报 CH583/CH585。代码中保留的单字节二进制 ARG 发送函数只作为以后可能恢复二进制协议时使用，当前不调用。
+
+GPIO28 Factory Reset 是本地物理操作，不返回 JSON，也不新增 result code。恢复成功后使用现有 `WIFI_PROVISION`、`WAKE_TIMER ON,10` 和 `POWER_OFF` 命令完成未配网状态同步及 CH583 断电 10 秒重启。实际文件删除或必要NVS操作失败只记录本地错误并禁止本次关机，不映射新的正式result code。
 
 [⬆ 返回目录](#toc)
 
@@ -720,6 +723,10 @@ wifi_info_result
 | `1308` | `TDX_JSON_RESULT_WIFI_AUTH_FAILED` | WiFi 认证失败 |
 | `1309` | `TDX_JSON_RESULT_WIFI_GOT_IP_FAILED` | 获取 IP 失败 |
 
+对 `wifi_wakeup_result`，底层 manager 仍处于连接或重试状态时不立即发送过早 `1307`。通知 task 从该过早结果起观察 10 秒；期间 READY 改发 `wifi_info_result`，10 秒到期仍未 READY 才发送 `1307`。若期间收到普通 `wifi` 新配置，BLE层先预留pending再保存，旧wakeup最终通知取消，新配置返回现有 `wifi_result/result=0` 并进入最新单槽pending；保存失败仍使用现有 `1305`，普通worker忙仍使用现有 `1007`。冷启动和这些请求的关机guard不新增返回码，也不改变底层WiFi重试逻辑。
+
+冷启动复用已有WiFi guard deadline以及开发阶段的password日志开关都属于内部调试规则，不新增或改变任何正式返回码；password只进入本地调试日志，不进入返回JSON。
+
 [⬆ 返回目录](#toc)
 
 ### 4.4 set_wifi_work_time / wifi_standby：CH583 设置 WiFi 工作时间 <span id="sec-04-4"></span>
@@ -958,7 +965,15 @@ PhotoPainter:epd_mode
 | `1710` | `TDX_JSON_RESULT_OTA_SET_BOOT_FAILED` | 设置 boot partition 失败 |
 | `1711` | `TDX_JSON_RESULT_OTA_VERSION_MISMATCH` | meta version 与固件版本不一致 |
 | `1712` | `TDX_JSON_RESULT_OTA_PARTITION_TOO_SMALL` | OTA 分区空间不足 |
-| `1713` | `TDX_JSON_RESULT_OTA_BUSY` | OTA 正在执行 |
+| `1713` | `TDX_JSON_RESULT_OTA_BUSY` | OTA 正在执行，或设备已完成 OTA 并等待复位；等待复位时 message 为 `restart_pending` |
+
+OTA 返回顺序规则：失败响应以对应的非零 `ota_result` 结束；成功响应先发送 `ota_event/stage=rebooting`，再以 `ota_result/result=0` 作为最后一条 JSON。延时复位和 HTTP/TCP 断开不新增 result code；最终响应发送不完整时使用设备端 `ESP_LOGE` 记录 event/result/finish 状态，因为 OTA 镜像写入结果与手机是否完整收到 HTTP 响应是两个独立状态。
+
+非 OTA multipart 在 OTA restart-pending 窗口内继续使用通用 busy 返回码 `1007`，message/error 为 `restart_pending`，不新增正式返回码。
+
+OTA 首次启动检测使用 bootloader `otadata/ESP_OTA_IMG_PENDING_VERIFY`。启动诊断、pending-verify power hold、镜像确认和首次启动可选模块容错均为设备内部状态，不新增 NVS 标志、`ota_result` 字段或正式返回码。
+
+启动阶段的 otadata 重试同样属于设备内部恢复逻辑；读取失败只记录设备日志，不映射新的网络 result code。
 
 [⬆ 返回目录](#toc)
 
@@ -1006,3 +1021,19 @@ PhotoPainter:epd_mode
 | `1901~1999` | 每日一图错误 |
 
 [⬆ 返回目录](#toc)
+
+## 7. zlib 内部文件测试返回规则 <span id="sec-07-zlib"></span>
+
+zlib EPD输入切换和压缩文件显示测试不增加正式JSON result code，也不占用新的编码范围。现有业务仍使用原来的无内存、尺寸错误、显示队列失败和EPD显示失败返回码。
+
+zlib模式下，cast、cast2pic和upload的 `bin_size` 是压缩后的实际传输长度，不要求等于屏幕原始 `display_size`。但声明的 `bin_size` 与实际收到的 `bin` part长度不相等仍沿用原有大小不匹配返回码；该检查用于发现传输截断，不应关闭。
+
+模块内部只返回 `esp_err_t`：
+
+- 成功返回 `ESP_OK`。
+- 参数、路径长度或解压长度问题使用现有 `ESP_ERR_INVALID_ARG` / `ESP_ERR_INVALID_SIZE`。
+- 文件不存在使用 `ESP_ERR_NOT_FOUND`。
+- 内存不足使用 `ESP_ERR_NO_MEM`。
+- 文件 I/O、zlib数据错误或EPD显示失败使用 `ESP_FAIL`。
+
+具体zlib原始错误值、压缩输入长度、解压输出长度和耗时只通过设备端 `ESP_LOGE/ESP_LOGI` 输出，不发送给网络、USB、BLE或CH583客户端。
