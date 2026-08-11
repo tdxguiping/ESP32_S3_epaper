@@ -33,6 +33,7 @@ esp_err_t ServerNetworkStaSlideshowControl_ProcessJson(httpd_req_t *req,
 esp_err_t ServerNetworkStaSlideshowControl_ApplyJson(const char *body,
                                                      const char *base_path,
                                                      server_network_sta_slideshow_control_result_t *result);
+esp_err_t ServerNetworkStaSlideshowControl_Disable(const char *base_path);
 
 #ifdef __cplusplus
 }

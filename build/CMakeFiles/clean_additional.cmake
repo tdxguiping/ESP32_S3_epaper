@@ -21,6 +21,7 @@ if("${CONFIG}" STREQUAL "" OR "${CONFIG}" STREQUAL "")
   "ldgen_libraries.in"
   "project_elf_src_esp32c5.c"
   "upload_script.html.S"
+  "welcome.bin.S"
   "x509_crt_bundle.S"
   )
 endif()

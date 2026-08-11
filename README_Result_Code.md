@@ -137,15 +137,20 @@
 0 NORMAL     普通模式
 1 SLIDESHOW  轮播模式
 2 DAILY      每日更新模式
+3 LOCAL_IMAGE_BROWSING  本地图片浏览模式
 ```
 
 规则：凡是 `show_control.txt` 的 `sw` 写入成功，`epd_mode` 必须同步写入。`sw=1` 写 `epd_mode=1`，`sw=0` 写 `epd_mode=0`。
 
 `daily_download_file sw=1` 保存成功后写 `epd_mode=2`，`sw=0` 停止daily和轮播后写 `epd_mode=0`；合法 cast/cast2pic 成功接收后写 `epd_mode=0`；`start_slideshow` 或 `set_slideshow sw=1` 成功后写 `epd_mode=1`。所有模式写入必须通过统一模式接口持久化到 NVS。
 
-`WIFI_PROVISION` 是 ESP32-C5 与 CH583/CH585 的 UART 命令，不属于接口返回 JSON，不新增 result code。该命令固定 `LEN=2`，`ARG` 使用 2 位十六进制文本，表示 1 个复合状态 byte：第 1 位十六进制字符是 WiFi 配网状态，未配网为 `4`，已配网为 `5`；第 2 位十六进制字符是 `epd_mode`。例如 `ARG=50/51/52` 分别表示已配网 + 普通/轮播/每日模式，`ARG=40` 表示未配网 + 普通模式。`epd_mode` 写入成功后，必须使用最近一次 WiFi 配网状态重新组合 `ARG` 并再次上报 CH583/CH585。代码中保留的单字节二进制 ARG 发送函数只作为以后可能恢复二进制协议时使用，当前不调用。
+`WIFI_PROVISION` 是 ESP32-C5 与 CH583/CH585 的 UART 命令，不属于接口返回 JSON，不新增 result code。该命令固定 `LEN=2`，`ARG` 使用 2 位十六进制文本，表示 1 个复合状态 byte：第 1 位十六进制字符是 WiFi 配网状态，未配网为 `4`，已配网为 `5`；第 2 位十六进制字符是 `epd_mode`。例如 `ARG=50/51/52/53` 分别表示已配网 + 普通/轮播/每日/本地图片浏览模式，`ARG=40` 表示未配网 + 普通模式。`epd_mode` 写入成功后，必须使用最近一次 WiFi 配网状态重新组合 `ARG` 并再次上报 CH583/CH585。代码中保留的单字节二进制 ARG 发送函数只作为以后可能恢复二进制协议时使用，当前不调用。
 
-GPIO28 Factory Reset 是本地物理操作，不返回 JSON，也不新增 result code。恢复成功后使用现有 `WIFI_PROVISION`、`WAKE_TIMER ON,10` 和 `POWER_OFF` 命令完成未配网状态同步及 CH583 断电 10 秒重启。实际文件删除或必要NVS操作失败只记录本地错误并禁止本次关机，不映射新的正式result code。
+`DEVICE_INFO.wake_reason=KEY_PB2` 与 `KEY_EVENT ARG=PB2,PRESS` 在协议ACK成功后请求一次本地图片浏览；`DEVICE_INFO.wake_reason=KEY_PB1` 与 `KEY_EVENT ARG=PB1,PRESS` 请求恢复出厂。两类UART事件都不新增JSON result code；业务失败只写关键日志，不改变已经发送的协议ACK。相同KEY_EVENT SEQ或重复DEVICE_INFO只重发ACK，不重复执行业务。
+
+合法KEY_EVENT不依赖DEVICE_INFO状态，ESP32独立重启后提前到达也正常ACK并执行业务，不使用UART帧级 `ERR,DEVICE_INFO_REQUIRED`。启动依赖未就绪属于ESP32内部FIFO或单请求RAM状态调度，不新增正式JSON result code。BLE_DATA队列无法接收时使用UART帧级`ERR,BUSY`，内存申请失败时使用UART帧级`ERR,NO_MEM`；这些都不是BLE/WiFi JSON正式返回码。完整通信规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
+
+GPIO28、`DEVICE_INFO(KEY_PB1)` 和 `KEY_EVENT(PB1,PRESS)` 共用同一个Factory Reset执行逻辑，不返回JSON，也不新增result code。文件和NVS清理成功后先显示固件内置欢迎图并等待EPD完成，随后使用现有 `WIFI_PROVISION`、`WAKE_TIMER ON,10` 和 `POWER_OFF` 命令完成未配网状态同步及CH583断电10秒重启。实际文件删除、必要NVS操作或欢迎图显示失败只记录本地错误并禁止本次专用关机，不映射新的正式result code。
 
 [⬆ 返回目录](#toc)
 

@@ -2247,6 +2247,26 @@ void ServerNetworkStaSlideshow_Stop(void)
     s_slideshow_stop = true;
 }
 
+esp_err_t ServerNetworkStaSlideshow_StopAndWait(void)
+{
+    bool was_running = s_slideshow_task != NULL;
+    ServerNetworkStaSlideshow_Stop();
+    TickType_t start_tick = xTaskGetTickCount();
+    TickType_t timeout_ticks = pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS + 5000U);
+    while (s_slideshow_task != NULL &&
+           (xTaskGetTickCount() - start_tick) < timeout_ticks) {
+        vTaskDelay(pdMS_TO_TICKS(50U));
+    }
+    if (s_slideshow_task != NULL) {
+        ESP_LOGE(TAG, "slideshow task stop timeout");
+        return ESP_ERR_TIMEOUT;
+    }
+    if (was_running) {
+        ESP_LOGI(TAG, "slideshow task stopped");
+    }
+    return ESP_OK;
+}
+
 static esp_err_t start_slideshow_runtime(const char *base_path,
                                          const slideshow_request_t *request,
                                          const slideshow_progress_t *progress,

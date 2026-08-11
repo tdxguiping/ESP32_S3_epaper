@@ -41,8 +41,10 @@ EventGroupHandle_t sleep_group = NULL;
 
 static QueueHandle_t s_epd_display_queue = NULL;
 static TaskHandle_t s_epd_display_task = NULL;
+static SemaphoreHandle_t s_epd_display_admission_mutex = NULL;
 static volatile uint32_t s_epd_display_pending_jobs = 0;
 static volatile bool s_epd_display_active = false;
+static volatile bool s_epd_display_idle_reserved = false;
 
 static epd_display_completion_t *create_completion(void)
 {
@@ -214,6 +216,31 @@ static void epd_display_restore_wifi_power_save(bool restore, wifi_ps_type_t sav
     }
 }
 
+static esp_err_t queue_prepared_job(epd_display_job_t *job)
+{
+    if (job == NULL || job->data == NULL || job->size == 0 ||
+        s_epd_display_queue == NULL || s_epd_display_admission_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_epd_display_admission_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (__atomic_load_n(&s_epd_display_idle_reserved, __ATOMIC_ACQUIRE)) {
+        xSemaphoreGive(s_epd_display_admission_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    job->pending_counted = true;
+    __atomic_add_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
+    BaseType_t queue_ret = xQueueSend(s_epd_display_queue, job, 0);
+    if (queue_ret != pdTRUE) {
+        __atomic_sub_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
+        job->pending_counted = false;
+    }
+    xSemaphoreGive(s_epd_display_admission_mutex);
+    return queue_ret == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
 static void ServerNetworkStaEpdDisplay_Task(void *arg)
 {
     (void)arg;
@@ -223,10 +250,11 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
         if (xQueueReceive(s_epd_display_queue, &job, portMAX_DELAY) != pdTRUE) {
             continue;
         }
+        // Publish active before removing the pending count so IsBusy never has an idle gap.
+        __atomic_store_n(&s_epd_display_active, true, __ATOMIC_RELEASE);
         if (job.pending_counted) {
             __atomic_sub_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
         }
-        __atomic_store_n(&s_epd_display_active, true, __ATOMIC_RELEASE);
 
         ServerNetworkStaWifiWorkTime_OnNetworkData();
         int64_t display_start_us = esp_timer_get_time();
@@ -320,6 +348,14 @@ esp_err_t ServerNetworkStaEpdDisplay_Init(void)
         }
     }
 
+    if (s_epd_display_admission_mutex == NULL) {
+        s_epd_display_admission_mutex = xSemaphoreCreateMutex();
+        if (s_epd_display_admission_mutex == NULL) {
+            ESP_LOGE(TAG, "create EPD admission mutex failed");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
     if (s_epd_display_task == NULL) {
         BaseType_t task_ret = xTaskCreate(ServerNetworkStaEpdDisplay_Task,
                                           "epd_display",
@@ -344,7 +380,7 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, s
 #if USER_EPD_ENABLE
     // A new EPD request must restore GPIO4 before the display task reaches shared SPI.
     EpdSdPowerTest_OnEpdTaskRequested();
-    if (s_epd_display_queue == NULL) {
+    if (s_epd_display_queue == NULL || s_epd_display_admission_mutex == NULL) {
         ESP_LOGE(TAG, "display queue not initialized");
         return ESP_ERR_INVALID_STATE;
     }
@@ -361,8 +397,20 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreen(const uint8_t *display_buf, s
     job.epd_which_one = (epd_which_one == 2) ? 2 : 1;
     job.pending_counted = true;
 
+    if (xSemaphoreTake(s_epd_display_admission_mutex, portMAX_DELAY) != pdTRUE) {
+        release_epd_job(&job);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (__atomic_load_n(&s_epd_display_idle_reserved, __ATOMIC_ACQUIRE)) {
+        xSemaphoreGive(s_epd_display_admission_mutex);
+        ESP_LOGW(TAG, "display rejected while idle reservation is active");
+        release_epd_job(&job);
+        return ESP_ERR_INVALID_STATE;
+    }
     __atomic_add_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
-    if (xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+    BaseType_t queue_ret = xQueueSend(s_epd_display_queue, &job, 0);
+    xSemaphoreGive(s_epd_display_admission_mutex);
+    if (queue_ret != pdTRUE) {
         __atomic_sub_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
         ESP_LOGE(TAG, "display queue full, keep old jobs and reject new ptr=%p size=%u",
                  job.data, (unsigned int)job.size);
@@ -390,7 +438,7 @@ static esp_err_t queue_to_screen_and_wait_internal(const uint8_t *display_buf,
 #if USER_EPD_ENABLE
     // Keep the synchronous queue entry equivalent to the asynchronous queue entry.
     EpdSdPowerTest_OnEpdTaskRequested();
-    if (s_epd_display_queue == NULL) {
+    if (s_epd_display_queue == NULL || s_epd_display_admission_mutex == NULL) {
         ESP_LOGE(TAG, "display queue not initialized");
         return ESP_ERR_INVALID_STATE;
     }
@@ -413,8 +461,24 @@ static esp_err_t queue_to_screen_and_wait_internal(const uint8_t *display_buf,
     job.completion = completion;
     job.pending_counted = true;
 
+    if (xSemaphoreTake(s_epd_display_admission_mutex, portMAX_DELAY) != pdTRUE) {
+        release_epd_job(&job);
+        release_completion(completion);
+        release_completion(completion);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (__atomic_load_n(&s_epd_display_idle_reserved, __ATOMIC_ACQUIRE)) {
+        xSemaphoreGive(s_epd_display_admission_mutex);
+        ESP_LOGW(TAG, "sync display rejected while idle reservation is active");
+        release_epd_job(&job);
+        release_completion(completion);
+        release_completion(completion);
+        return ESP_ERR_INVALID_STATE;
+    }
     __atomic_add_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
-    if (xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+    BaseType_t queue_ret = xQueueSend(s_epd_display_queue, &job, 0);
+    xSemaphoreGive(s_epd_display_admission_mutex);
+    if (queue_ret != pdTRUE) {
         __atomic_sub_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
         ESP_LOGE(TAG, "display queue full, reject sync job ptr=%p size=%u",
                  job.data, (unsigned int)job.size);
@@ -455,11 +519,136 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueToScreenAndWait(const uint8_t *display
         USER_EPD_DISPLAY_DATA_ZLIB_ENABLE != 0);
 }
 
+esp_err_t ServerNetworkStaEpdDisplay_TryReserveIdle(epd_display_reservation_t *reservation)
+{
+#if USER_EPD_ENABLE
+    if (reservation == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    reservation->valid = false;
+    if (s_epd_display_queue == NULL || s_epd_display_admission_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_epd_display_admission_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    bool busy = __atomic_load_n(&s_epd_display_idle_reserved, __ATOMIC_ACQUIRE) ||
+                __atomic_load_n(&s_epd_display_active, __ATOMIC_ACQUIRE) ||
+                __atomic_load_n(&s_epd_display_pending_jobs, __ATOMIC_ACQUIRE) > 0U ||
+                uxQueueMessagesWaiting(s_epd_display_queue) > 0U;
+    if (!busy) {
+        __atomic_store_n(&s_epd_display_idle_reserved, true, __ATOMIC_RELEASE);
+        reservation->valid = true;
+    }
+    xSemaphoreGive(s_epd_display_admission_mutex);
+    return busy ? ESP_ERR_INVALID_STATE : ESP_OK;
+#else
+    (void)reservation;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
+void ServerNetworkStaEpdDisplay_ReleaseReservation(epd_display_reservation_t *reservation)
+{
+#if USER_EPD_ENABLE
+    if (reservation == NULL || !reservation->valid ||
+        s_epd_display_admission_mutex == NULL) {
+        return;
+    }
+    if (xSemaphoreTake(s_epd_display_admission_mutex, portMAX_DELAY) == pdTRUE) {
+        __atomic_store_n(&s_epd_display_idle_reserved, false, __ATOMIC_RELEASE);
+        reservation->valid = false;
+        xSemaphoreGive(s_epd_display_admission_mutex);
+    }
+#else
+    (void)reservation;
+#endif
+}
+
+esp_err_t ServerNetworkStaEpdDisplay_QueueReservedToScreenAndWait(
+    epd_display_reservation_t *reservation,
+    const uint8_t *display_buf,
+    size_t display_size,
+    uint8_t epd_which_one)
+{
+#if USER_EPD_ENABLE
+    if (reservation == NULL || !reservation->valid || display_buf == NULL ||
+        display_size == 0 || s_epd_display_queue == NULL ||
+        s_epd_display_admission_mutex == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    EpdSdPowerTest_OnEpdTaskRequested();
+    epd_display_completion_t *completion = create_completion();
+    if (completion == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    epd_display_job_t job = {};
+    esp_err_t ret = prepare_display_buffer(
+        &job, display_buf, display_size, USER_EPD_DISPLAY_DATA_ZLIB_ENABLE != 0);
+    if (ret != ESP_OK) {
+        release_completion(completion);
+        release_completion(completion);
+        return ret;
+    }
+    job.epd_which_one = epd_which_one == 2 ? 2 : 1;
+    job.completion = completion;
+    job.pending_counted = true;
+
+    if (xSemaphoreTake(s_epd_display_admission_mutex, portMAX_DELAY) != pdTRUE) {
+        release_epd_job(&job);
+        release_completion(completion);
+        release_completion(completion);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!reservation->valid ||
+        !__atomic_load_n(&s_epd_display_idle_reserved, __ATOMIC_ACQUIRE)) {
+        xSemaphoreGive(s_epd_display_admission_mutex);
+        release_epd_job(&job);
+        release_completion(completion);
+        release_completion(completion);
+        return ESP_ERR_INVALID_STATE;
+    }
+    __atomic_add_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
+    BaseType_t queue_ret = xQueueSend(s_epd_display_queue, &job, 0);
+    if (queue_ret == pdTRUE) {
+        __atomic_store_n(&s_epd_display_idle_reserved, false, __ATOMIC_RELEASE);
+        reservation->valid = false;
+    }
+    xSemaphoreGive(s_epd_display_admission_mutex);
+    if (queue_ret != pdTRUE) {
+        __atomic_sub_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
+        release_epd_job(&job);
+        release_completion(completion);
+        release_completion(completion);
+        return ESP_ERR_NOT_FINISHED;
+    }
+
+    ESP_LOGI(TAG, "reserved EPD queued wait target=%u size=%u",
+             (unsigned int)job.epd_which_one, (unsigned int)job.size);
+    if (xSemaphoreTake(completion->done,
+                       pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS)) != pdTRUE) {
+        release_completion(completion);
+        return ESP_ERR_TIMEOUT;
+    }
+    ret = completion->result;
+    release_completion(completion);
+    return ret;
+#else
+    (void)reservation;
+    (void)display_buf;
+    (void)display_size;
+    (void)epd_which_one;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
 bool ServerNetworkStaEpdDisplay_IsBusy(void)
 {
 #if USER_EPD_ENABLE
     UBaseType_t queued = s_epd_display_queue != NULL ? uxQueueMessagesWaiting(s_epd_display_queue) : 0U;
     return __atomic_load_n(&s_epd_display_active, __ATOMIC_ACQUIRE) ||
+           __atomic_load_n(&s_epd_display_idle_reserved, __ATOMIC_ACQUIRE) ||
            __atomic_load_n(&s_epd_display_pending_jobs, __ATOMIC_ACQUIRE) > 0U ||
            queued > 0U;
 #else
@@ -612,8 +801,7 @@ static void test_epd_display_type(uint8_t requested_type)
         job.size = test_size;
         job.epd_which_one = target;
 
-        if (s_epd_display_queue == NULL ||
-            xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+        if (queue_prepared_job(&job) != ESP_OK) {
             ESP_LOGE(TAG, "EPD test queue failed target=%u name=%s size=%u",
                      (unsigned int)target,
                      config->name,
@@ -708,8 +896,7 @@ void test_epd_display_EPD_800_480_4S_75_2(void)
         job.size = test_size;
         job.epd_which_one = target;
 
-        if (s_epd_display_queue == NULL ||
-            xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+        if (queue_prepared_job(&job) != ESP_OK) {
             ESP_LOGE(TAG, "EPD DKE 4S test queue failed target=%u size=%u",
                      (unsigned int)target,
                      (unsigned int)test_size);
@@ -768,8 +955,7 @@ void test_epd_display_EPD_800_480_4S_75_3(void)
         job.size = test_size;
         job.epd_which_one = target;
 
-        if (s_epd_display_queue == NULL ||
-            xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+        if (queue_prepared_job(&job) != ESP_OK) {
             ESP_LOGE(TAG, "EPD mofang 4S test queue failed target=%u size=%u",
                      (unsigned int)target,
                      (unsigned int)test_size);
@@ -832,8 +1018,7 @@ void test_epd_display_EPD_1360_480_1085_3COLOR_horizontal(void)
     job.size = test_size;
     job.epd_which_one = 1;
 
-    if (s_epd_display_queue == NULL ||
-        xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+    if (queue_prepared_job(&job) != ESP_OK) {
         ESP_LOGE(TAG, "EPD test queue failed name=%s size=%u",
                  config->name, (unsigned int)test_size);
         release_epd_job(&job);
@@ -897,8 +1082,7 @@ void test_epd_display_EPD_1360_480_1085_3COLOR_vertical(void)
     job.size = test_size;
     job.epd_which_one = 1;
 
-    if (s_epd_display_queue == NULL ||
-        xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+    if (queue_prepared_job(&job) != ESP_OK) {
         ESP_LOGE(TAG, "EPD vertical test queue failed name=%s size=%u",
                  config->name, (unsigned int)test_size);
         release_epd_job(&job);
@@ -964,8 +1148,7 @@ void test_epd_display_EPD_1360_480_1085_3COLOR_const(void)
     job.size = test_size;
     job.epd_which_one = 1;
 
-    if (s_epd_display_queue == NULL ||
-        xQueueSend(s_epd_display_queue, &job, 0) != pdTRUE) {
+    if (queue_prepared_job(&job) != ESP_OK) {
         ESP_LOGE(TAG, "EPD const test queue failed name=%s size=%u",
                  config->name, (unsigned int)test_size);
         release_epd_job(&job);

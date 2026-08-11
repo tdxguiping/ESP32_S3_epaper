@@ -29,6 +29,7 @@
 - [14. 文件服务器静态资源与旧接口](#sec-14)
 - [16. 目录到功能索引](#sec-16)
 - [17. zlib 文件压缩模块与自检索引](#sec-17-zlib)
+- [Local Image Browsing 源码参考](#sec-local-image-reference)
 - [按功能整理的相关文件与辅助函数](#moved-code-index)
 
 ## 调试日志与敏感信息约定 <span id="sec-debug-log"></span>
@@ -451,9 +452,10 @@ PhotoPainter:epd_mode，u8
 0 NORMAL     普通模式
 1 SLIDESHOW  轮播模式
 2 DAILY      每日更新模式
+3 LOCAL_IMAGE_BROWSING  本地图片浏览模式
 ```
 
-启动时 `EpdDisplayMode_Init()` 读取 `epd_mode`，不存在时写入默认 `0`。如果读到非法值，恢复为 `0`。`app_main()` 会打印当前模式，例如 `EPD display mode=0(NORMAL)`。
+启动时 `EpdDisplayMode_Init()` 读取 `epd_mode`，不存在时写入默认 `0`。如果读到非法值，恢复为 `0`。模式为 `3` 时初始化本地图片浏览状态，不启动 DAILY 或 SLIDESHOW，并等待 PB2 事件。`app_main()` 会打印当前模式，例如 `EPD display mode=0(NORMAL)`。
 
 同步规则：
 
@@ -2891,9 +2893,9 @@ ch583_wifi_uart_send_power_off()
 ch583_wifi_send_frame()
 ```
 
-Factory Reset 长按达到5秒后、删除任何文件前调用 `ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(true)`；短按不设置。`work_state_task()`在普通入口、LED后的final guard和SPI锁内locked guard复检该原子RAM标志，避免普通关机抢占清理。成功时先调用 `ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle(10)`再清guard；失败时不发布请求并清guard，所有结果都必须清除。文件清理按best-effort继续执行，`ENOENT`不算失败，真实unlink、路径长度、目录读取或关闭错误累计到 `file_delete_failed/file_ret`，任一失败都会使总ret失败并禁止关机。
+GPIO28长按达到5秒后、删除任何文件前调用 `ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(true)`；短按不设置。PB1远程请求使用单个RAM状态合并，在Factory Reset任务已就绪时立即设置同一guard，初始化前请求则在任务创建成功后补设。`work_state_task()`在普通入口、LED后和SPI锁内复检该标志，避免普通关机抢占等待、清理或欢迎图显示。欢迎图完成后先调用 `ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle(10)`再清guard；失败时不发布请求并清guard。文件清理按best-effort继续执行，`ENOENT`不算失败，真实unlink、路径长度、目录读取或关闭错误累计到 `file_delete_failed/file_ret`，任一失败都会使总ret失败并禁止关机。
 
-Factory Reset 成功后清除 `wifi` namespace 全部键以及 `nvs.net80211:sta.ssid/sta.pswd`，把 `PhotoPainter:epd_mode` 强制写入并读回校验为 `USER_EPD_DISPLAY_MODE_DEFAULT`。随后 `work_state_task()`强制发送 `WAKE_TIMER ON,10`，再沿用现有LED、SPI和busy复检发送 `WIFI_PROVISION 4F`、`POWER_OFF`。CH583断电计时10秒后重新上电。该请求不写工作时间NVS，也不改变普通、轮播或DAILY关机路径。
+Factory Reset 开始清理前通过统一EPD准入接口预约IDLE状态，并持有预约直到文件和NVS清理完成，避免PB2本地浏览在BUSY检查之后插入。成功后清除 `wifi` namespace 全部键以及 `nvs.net80211:sta.ssid/sta.pswd`，清除本地浏览 `PhotoPainter:local_img_state`，并把 `PhotoPainter:epd_mode` 强制写入并读回校验为 `USER_EPD_DISPLAY_MODE_DEFAULT`。`main/CMakeLists.txt`把 `DOC/welcome.bin`作为二进制常量嵌入固件；Factory Reset校验当前EPD原始显示长度为960000字节后，将该zlib数据通过已有预约提交到1号屏并同步等待完成，等待上限沿用 `USER_EPD_DISPLAY_WAIT_TIMEOUT_MS=5分钟`。只有显示返回 `ESP_OK` 后，`work_state_task()`才强制发送 `WAKE_TIMER ON,10`，再沿用现有LED、SPI和busy复检发送 `WIFI_PROVISION 4F`、`POWER_OFF`；显示失败不提交专用关机请求，但guard仍清除。CH583断电计时10秒后重新上电并以 `DEVICE_INFO.wake_reason=TIMER` 握手。PB1远程请求使用IDLE/PENDING/RUNNING/COMPLETED RAM状态合并重复帧，并复用同一Factory Reset任务；该请求不写工作时间NVS，也不改变普通、轮播、DAILY或LOCAL_IMAGE_BROWSING关机路径。
 
 ---
 
@@ -3003,6 +3005,31 @@ main/ble/user_app.h
 main/ch583_uart/ch583_uart_app.c
 main/ch583_uart/ch583_wifi_uart_protocol.c
 ```
+
+## Local Image Browsing 源码参考 <span id="sec-local-image-reference"></span>
+
+```text
+main/local_image_browsing/local_image_browsing.h
+├─ 模式3和本功能全部专用宏
+├─ PB2触发来源枚举
+└─ 初始化、请求、状态和Factory Reset接口
+
+main/local_image_browsing/local_image_browsing.c
+├─ /data/bin_img扫描与稳定排序
+├─ local_img_state NVS CRC32持久化
+├─ PREPARED/IDLE断电事务
+├─ 缺失文件有界跳过
+├─ DAILY/SLIDESHOW同步停止
+└─ EPD空闲预留、BIN加载和同步显示
+```
+
+EPD显示模块增加空闲预留接口。预留建立后 `ServerNetworkStaEpdDisplay_IsBusy()` 返回true，普通显示入口在预留有效时拒绝新任务；本地浏览完成文件准备后消费预留并排队。EPD worker先发布active再减少pending，避免任务从队列取出时出现瞬时IDLE。
+
+本地浏览worker栈为8 KB。目录列表最大占用约7.2 KB，因此扫描过程直接构建模块级 `s_list`，禁止在 `refresh_list()` 或其调用链中复制完整列表到栈。worker在每次请求结束后检查栈最低余量，仅低于 `LOCAL_IMAGE_BROWSING_STACK_WARNING_BYTES` 时输出 `ESP_LOGW`。
+
+`ch583_wifi_uart_protocol.c` 仍拥有DEVICE_INFO保存和协议ACK/ERR，并通过一个统一按键分发函数保持两种来源的映射一致：PB2交给本地浏览模块，PB1交给Factory Reset异步请求。DEVICE_INFO严格解析五字段，首次成功ACK才执行该帧的wake_reason业务，重发只重ACK；合法KEY_EVENT不依赖DEVICE_INFO状态，相同SEQ只重ACK。PB3/PB4在业务未定义前返回BAD_ARG。完整通信规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
+
+`ch583_uart_app.c` 使用长度为4的BLE_DATA指针队列和独立业务任务，隔离UART协议任务与业务模块就绪状态。UART在DEVICE_INFO或业务初始化之前也可接收完整BLE_DATA，但必须先成功预留队列和内存，之后才ACK并提交；预留失败回复`ERR,BUSY`或`ERR,NO_MEM`。SD、EPD、网络完成启动尝试并恢复保存的DAILY/SLIDESHOW状态后，`Ch583UartApp_SetBleDataBusinessReady()`通知业务任务按FIFO处理。DEVICE_INFO或KEY_EVENT的PB2可进入本地浏览启动FIFO，PB1进入Factory Reset单请求状态；KEY_EVENT无论DEVICE_INFO是否完成都按合法帧分发。
 
 ---
 

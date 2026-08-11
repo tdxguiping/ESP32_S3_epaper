@@ -40,6 +40,7 @@ static SemaphoreHandle_t s_daily_config_mutex;
 static volatile uint32_t s_daily_request_generation;
 static volatile uint32_t s_daily_running_generation;
 static volatile uint32_t s_daily_relative_wake_seconds;
+static volatile bool s_daily_job_active;
 static bool s_daily_initialized;
 static bool s_daily_app_job_submitted;
 static char s_daily_base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
@@ -717,6 +718,7 @@ static void daily_worker(void *arg)
         __atomic_store_n(&s_daily_running_generation,
                          job.generation,
                          __ATOMIC_RELEASE);
+        __atomic_store_n(&s_daily_job_active, true, __ATOMIC_RELEASE);
         ESP_LOGI(TAG, "job start source=%s generation=%lu mode=%u",
                  job.source,
                  (unsigned long)job.generation,
@@ -830,6 +832,7 @@ static void daily_worker(void *arg)
             ESP_LOGW(TAG, "job canceled source=%s mode=%u",
                      job.source, (unsigned int)EpdDisplayMode_Get());
         }
+        __atomic_store_n(&s_daily_job_active, false, __ATOMIC_RELEASE);
         memset(&job, 0, sizeof(job));
     }
 }
@@ -956,6 +959,44 @@ esp_err_t ServerNetworkStaDailyImage_StartSaved(void)
 #else
     return ESP_OK;
 #endif
+}
+
+static void stop_daily_work(void)
+{
+#if USER_DAILY_IMAGE_ENABLE
+    bool had_work = __atomic_load_n(&s_daily_job_active, __ATOMIC_ACQUIRE) ||
+                    (s_daily_queue != NULL &&
+                     uxQueueMessagesWaiting(s_daily_queue) > 0U);
+    uint32_t generation = __atomic_add_fetch(&s_daily_request_generation,
+                                              1U,
+                                              __ATOMIC_ACQ_REL);
+    __atomic_store_n(&s_daily_relative_wake_seconds, 0U, __ATOMIC_RELEASE);
+    if (s_daily_queue != NULL) {
+        xQueueReset(s_daily_queue);
+    }
+    if (had_work) {
+        ESP_LOGI(TAG, "daily work stopped generation=%lu",
+                 (unsigned long)generation);
+    }
+#endif
+}
+
+esp_err_t ServerNetworkStaDailyImage_StopAndWait(void)
+{
+    stop_daily_work();
+#if USER_DAILY_IMAGE_ENABLE
+    TickType_t start_tick = xTaskGetTickCount();
+    TickType_t timeout_ticks = pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS + 5000U);
+    while (__atomic_load_n(&s_daily_job_active, __ATOMIC_ACQUIRE) &&
+           (xTaskGetTickCount() - start_tick) < timeout_ticks) {
+        vTaskDelay(pdMS_TO_TICKS(50U));
+    }
+    if (__atomic_load_n(&s_daily_job_active, __ATOMIC_ACQUIRE)) {
+        ESP_LOGE(TAG, "daily job stop timeout");
+        return ESP_ERR_TIMEOUT;
+    }
+#endif
+    return ESP_OK;
 }
 
 esp_err_t ServerNetworkStaDailyImage_GetPowerOffWakeSeconds(

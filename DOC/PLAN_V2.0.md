@@ -1,7 +1,7 @@
-# CH583/CH585 与 WiFi 模组 UART 通讯协议 V2.0
+# CH583/CH585 与 WiFi 模组 UART 通讯协议 V2.1
 
 ## Summary
-本协议用于 CH583/CH585 与 WiFi 模组之间的 UART 通讯。CH583/CH585 负责 BLE 低功耗连接、唤醒 WiFi、转发前端数据、接收 WiFi 控制命令，并在 WiFi 需要时把配网结果/IP 原文 notify 给前端。V2.0 将 BLE MAC、BLE 固件版本、屏幕类型、板卡信息合并为 DEVICE_INFO 设备信息同步命令；ESP32 不把它作为通信准入条件。WIFI_VER 保留为 WiFi 版本上报命令，组合版本信息继续通过 BLE 私有广播字段发布。
+本协议用于 CH583/CH585 与 WiFi 模组之间的 UART 通讯。CH583/CH585 负责 BLE 低功耗连接、唤醒 WiFi、转发前端数据、接收 WiFi 控制命令，并在 WiFi 需要时把配网结果/IP 原文 notify 给前端。V2.1 沿用 V2.0 的 DEVICE_INFO 必达握手，并在 DEVICE_INFO 中新增 wake_reason 字段，用于告诉 WiFi 本轮被唤醒的来源；WIFI_VER 保留为 WiFi 版本上报命令，组合版本信息继续通过 BLE 私有广播字段发布。
 
 ## 1. 通讯基础
 
@@ -123,24 +123,25 @@ DENY_GPIO            禁止操作该 GPIO
 BLE_NOT_CONNECTED    BLE 当前未连接，无法回传前端
 BLE_NOTIFY_DISABLED  前端未开启 notify
 BLE_NOTIFY_FAIL      notify 发送失败
+DEVICE_INFO_REQUIRED DEVICE_INFO 未 ACK 前，不接受会改变状态或进入业务流程的命令
 ```
 
-## 5. DEVICE_INFO 设备信息同步
+## 5. DEVICE_INFO 必达握手
 
 BLE 连接 CH583/CH585 后，CH583/CH585 拉高 WiFi 电源/唤醒控制脚唤醒 WiFi。
 
-WiFi 唤醒延时结束后，CH583/CH585 发送 DEVICE_INFO 同步设备信息。ESP32 单独重启而 CH583/CH585 保持运行时，CH583/CH585 可能沿用原会话直接发送普通心跳；ESP32 必须兼容该情况。
+WiFi 唤醒延时结束后，CH583/CH585 先等待一个很短的 DEVICE_INFO 首发延时，再发送 DEVICE_INFO 握手帧，避免 WiFi 刚启动时 RX 协议任务尚未准备完成。不立即进入普通心跳，也不释放 pending BLE_DATA。
 
-CH583/CH585 每 2 秒发送一次：
+DEVICE_INFO 帧格式：
 
 ```text
-@#V1|SEQ=<seq>|CMD=DEVICE_INFO|LEN=<len>|PART=1|TOTAL=1|ARG=<mac>,<ble_ver_dec>,<screen_type>,<board_info_hex>|CRC=<crc>^&
+@#V1|SEQ=<seq>|CMD=DEVICE_INFO|LEN=<len>|PART=1|TOTAL=1|ARG=<mac>,<ble_ver_dec>,<screen_type>,<board_info_hex>,<wake_reason>|CRC=<crc>^&
 ```
 
 示例：
 
 ```text
-@#V1|SEQ=20|CMD=DEVICE_INFO|LEN=21|PART=1|TOTAL=1|ARG=AABBCCDDEEFF,100,d,40|CRC=XXXX^&
+@#V1|SEQ=20|CMD=DEVICE_INFO|LEN=29|PART=1|TOTAL=1|ARG=AABBCCDDEEFF,100,d,40,KEY_PB2|CRC=XXXX^&
 ```
 
 参数说明：
@@ -150,6 +151,20 @@ mac             CH583/CH585 自身 BLE MAC，12 位大写 HEX，不带冒号
 ble_ver_dec     BLE/CH583/CH585 固件版本，十进制文本，来自固件宏 VER，范围 0..255
 screen_type     屏幕类型字符，来自 EPD_GetScreenType()，对应蓝牙名第 2 位
 board_info_hex  板卡信息字节，两位大写 HEX，来自 EPD_GetBoardInfo()，对应蓝牙名第 18 位
+wake_reason     本轮唤醒 WiFi 的原因，固定 ASCII 枚举
+```
+
+`wake_reason` 枚举值：
+
+```text
+BOOT         CH583/CH585 开机或复位后主动唤醒 WiFi
+USB          USB 插入检测唤醒 WiFi
+KEY_PB2      PB2 按键唤醒 WiFi
+BLE_CONNECT  BLE 连接后唤醒 WiFi
+BLE_WRITE    BLE 写入数据时唤醒 WiFi
+NFC          NFC 授权后唤醒 WiFi
+TIMER        WAKE_TIMER 定时到期唤醒 WiFi
+UNKNOWN      未识别或默认唤醒原因
 ```
 
 `mac` 字节顺序使用广播显示顺序：
@@ -158,7 +173,7 @@ board_info_hex  板卡信息字节，两位大写 HEX，来自 EPD_GetBoardInfo(
 Mac[5] Mac[4] Mac[3] Mac[2] Mac[1] Mac[0]
 ```
 
-WiFi 收到 `DEVICE_INFO` 后必须完成字段解析和合法性检查，解析成功后回复 ACK：
+WiFi 收到 `DEVICE_INFO` 后必须完成字段解析和合法性检查，解析成功后回复 ACK。V2.1 按 5 个字段解析 `mac,ble_ver_dec,screen_type,board_info_hex,wake_reason`；如需兼容旧 V2.0 固件，可允许 4 字段 DEVICE_INFO，并把缺失的 `wake_reason` 按 `UNKNOWN` 处理。
 
 ```text
 @#V1|SEQ=<seq>|CMD=ACK|LEN=<len>|PART=1|TOTAL=1|ARG=<device_info_seq>|CRC=<crc>^&
@@ -173,18 +188,21 @@ CH583/CH585 收到 ACK 且 `ARG` 等于最近一次 `DEVICE_INFO` 的 SEQ 后：
 允许处理后续 WiFi 业务
 ```
 
-如果未收到匹配 ACK，CH583/CH585 可以按自身状态机继续重发 DEVICE_INFO；ESP32 不把 DEVICE_INFO 作为通信准入条件：
+如果未收到匹配 ACK：
 
 ```text
-ESP32 收到 PING 时正常回复 PONG
-ESP32 收到 BLE_DATA 时正常校验、拼包并进入原业务回调
-ESP32 可以正常发送 GPIO / WIFI_PROVISION / NFC_SET / TIME_SET 等业务命令
-DEVICE_INFO 参数或保存失败只拒绝该帧，不影响其他通信
-ESP32 不因 DEVICE_INFO 状态限制 WAKE_TIMER / POWER_OFF；工作超时后沿用原流程向 CH583 发送 POWER_OFF，由 CH583 关闭 ESP32/WiFi 电源
+CH583/CH585 按 DEVICE_INFO 重试周期重发 DEVICE_INFO，重试周期可短于普通 PING/PONG heartbeat 周期
+当前 DEVICE_INFO 重试周期为 1 秒，连续 10 次未收到匹配 ACK 后按超时处理
+不发送 PING
+不发送 BLE_DATA
+不执行 pending BLE_DATA 释放
+允许 ACK / ERR / TIME_GET / GPIO_READ / LED_BLINK / LED_BLINK_STOP 这类无害查询或提示命令
+限制 BLE_DATA / WIFI_PROVISION / NFC_SET / TIME_SET / WAKE_TIMER / POWER_OFF / LOWPOWER 等会改变状态或进入业务流程的命令，并返回 ERR,DEVICE_INFO_REQUIRED
+连续超时后的关电策略沿用现有逻辑
 USB 供电场景沿用现有逻辑继续等待
 ```
 
-ESP32 不等待 DEVICE_INFO ACK 流程即可执行后续业务。启动时优先使用 NVS 中合法的 EPD 类型，NVS 非法时使用默认类型；后续收到合法 DEVICE_INFO 时更新 MAC、版本，并把映射后的 EPD 类型保存供下次启动使用，不切换本次运行的显示驱动。
+WiFi 必须等 DEVICE_INFO ACK 流程完成后，再执行后续业务。
 
 ### 5.1 屏幕类型编码
 
@@ -247,7 +265,7 @@ EPD_GetBoardInfo() 放在各屏驱动文件中维护，参考 EPD_GetScreenType(
 
 ## 6. 普通心跳
 
-CH583/CH585 按自身状态机进入普通 PING/PONG 心跳并每 2 秒发送一次。ESP32 无论本次启动是否已收到 DEVICE_INFO，都正常回复：
+DEVICE_INFO 握手成功后，CH583/CH585 才开始普通 PING/PONG 心跳。CH583/CH585 每 10 秒发送一次：
 
 ```text
 @#V1|SEQ=<seq>|CMD=PING|LEN=0|PART=1|TOTAL=1|ARG=|CRC=<crc>^&
@@ -259,8 +277,6 @@ WiFi 回复：
 @#V1|SEQ=<seq>|CMD=PONG|LEN=<len>|PART=1|TOTAL=1|ARG=<ping_seq>|CRC=<crc>^&
 ```
 
-ESP32 单独重启且首次 PING 早于 DEVICE_INFO 时，在正常回复 PONG 后额外发送一次 WIFI_VER；发送失败使用 ESP_LOGE 并在后续 PING 重试，发送成功后本次启动不再由 PING 重复发送。PONG UART 发送失败使用 ESP_LOGE，成功时不增加普通日志。
-
 合法 PONG 必须满足：
 
 ```text
@@ -270,6 +286,8 @@ PART=1
 TOTAL=1
 ARG 等于对应 PING 的 SEQ
 ```
+
+当前普通心跳周期为 10 秒，连续 6 次未收到匹配 PONG 后按超时处理。
 
 连续超时后 CH583 会拉低 WiFi 电源/唤醒控制脚，关闭 WiFi，并进入低功耗。
 
@@ -395,11 +413,11 @@ CH583/CH585 行为：
 校验 CRC/LEN/PART/TOTAL
 只接受 2 位十六进制 ARG
 高 4bit 只接受 4 或 5
-低 4bit 接受 0、1、2、F
+低 4bit 当前只接受 0、1、2
 合法配网状态进入 pending 队列
-合法工作模式 0、1、2 进入 pending 队列；F 只作为一次性待机通知
+合法工作模式进入 pending 队列
 立即回复 ACK，避免阻塞后续 UART 收帧
-约 200ms 后异步保存配网状态和工作模式到 DataFlash；F 不保存为工作模式
+约 200ms 后异步保存配网状态和工作模式到 DataFlash
 约 200ms 后异步刷新 TDX scan response 中的 scanRspData[22]
 WIFI_PROVISION 会同时更新复合状态 byte 的高 4bit 和低 4bit
 未保存过、读到 0xFF 或非法保存值时，配网状态默认 0，工作模式默认 0
@@ -438,8 +456,7 @@ scanRspData[22] = (provision_name_nibble << 4) | frame_work_mode
 0000 = 普通模式
 0001 = 轮播模式
 0010 = 每日更新模式
-0011..1110 = 保留
-1111 = 待机模式（仅在发送 POWER_OFF 前临时上报）
+0011..1111 = 保留
 ```
 
 示例：
@@ -452,16 +469,20 @@ scanRspData[22] = (provision_name_nibble << 4) | frame_work_mode
 0x42 = 未配网 + 每日更新模式，ASCII 'B'
 ```
 
-关机前示例：
+扩展示例：
 
 ```text
-0x41 = 未配网 + 轮播模式，ASCII 'A'
-0x51 = 已配网 + 轮播模式，ASCII 'Q'
-0x4F = 未配网 + 临时待机模式，ASCII 'O'
-0x5F = 已配网 + 临时待机模式，ASCII '_'
+40~4F = 未配网 + 16 种工作模式，均为可见 ASCII
+50~5F = 已配网 + 16 种工作模式，均为可见 ASCII
+
+0x53 = 已配网 + 第 4 种工作模式，ASCII 'S'
+0x54 = 已配网 + 第 5 种工作模式，ASCII 'T'
+0x5F = 已配网 + 第 16 种工作模式，ASCII '_'
+0x43 = 未配网 + 第 4 种工作模式，ASCII 'C'
+0x4F = 未配网 + 第 16 种工作模式，ASCII 'O'
 ```
 
-说明：`0xF` 是临时待机通知，不是持久化工作模式。高 4bit 固定使用 `4/5`，使该字节落在可见 ASCII 字符范围内。
+说明：低 4bit 取值范围为 `0x0~0xF`，因此工作模式最多 16 种；`0x5F` 表示“已配网 + 第 16 种工作模式”，不是第 18 种工作模式。高 4bit 固定使用 `4/5`，是为了让该字节落在可见 ASCII 字符范围内。
 
 刷新与恢复规则：
 
@@ -472,29 +493,6 @@ scanRspData[22] = (provision_name_nibble << 4) | frame_work_mode
 未保存过、读到 0xFF 或非法保存值时，配网默认 0，工作模式默认 0
 scanRspData[20] 保持原有逻辑，不因该复合状态规则改变
 ```
-
-### WIFI_PROVISION 关机前一次性状态通知（现行补充规则）
-
-关机前的一次性通知规则如下：
-
-```text
-低 4bit：
-0x0 = 普通模式
-0x1 = 轮播模式
-0x2 = 每日更新模式
-0x3..0xE = 保留
-0xF = 临时待机模式
-```
-
-ESP32 在所有关机保护检查通过、确定即将发送 `POWER_OFF` 后，先发送一次
-`WIFI_PROVISION`。轮播开启时低 4bit 使用 `0x1`；轮播未开启时使用 `0xF`。
-该值只用于通知 CH583 本次将进入何种状态，不修改 ESP32 的 `EpdDisplayMode`
-变量，也不写入 ESP32 NVS。通知发送失败不阻止原有 `POWER_OFF`；如果通知
-发送成功但 `POWER_OFF` UART 写入失败，ESP32 重新上报当前持久工作模式。
-
-CH583 对 `0xF` 只按一次性待机通知处理，不把它保存为持久化相框工作模式。
-对应组合值为：未配网轮播 `0x41`、已配网轮播 `0x51`、未配网待机 `0x4F`、
-已配网待机 `0x5F`。
 
 ## 10. 版本交换与私有广播版本字段
 
@@ -520,15 +518,15 @@ BLE 版本字段为 DEVICE_INFO 的 ble_ver_dec
 BLE 版本字段来自本机固件宏 VER
 BLE 版本字段范围为 0..255
 BLE 版本不再使用独立上报命令
-WiFi 收到 DEVICE_INFO 并 ACK 后，即可认为 BLE MAC、BLE 版本、屏幕类型、板卡信息都已可靠接收
+WiFi 收到 DEVICE_INFO 并 ACK 后，即可认为 BLE MAC、BLE 版本、屏幕类型、板卡信息、唤醒原因都已可靠接收
 ```
 
 DEVICE_INFO 与后续透传关系：
 
 ```text
-CH583/CH585 可以继续使用原有 pending BLE_DATA 和 DEVICE_INFO 重试策略
-ESP32 不以 DEVICE_INFO ACK 状态限制收到的 BLE_DATA 或 PING/PONG
-ESP32 单独重启时，CH583/CH585 沿用旧会话发送的数据仍会被正常处理
+前端 BLE 写入发生在 DEVICE_INFO ACK 前：CH583/CH585 继续缓存到 pending BLE_DATA
+DEVICE_INFO ACK 后：pending BLE_DATA 才允许发送给 WiFi
+DEVICE_INFO ACK 后：普通 PING/PONG 心跳才允许启动
 CH583/CH585 不因为 WIFI_VER 未返回而继续积压前端数据
 WIFI_VER 晚到也可以正常处理和刷新广播
 保留现有 pending 溢出保护，版本交换不能扩大 BLE_DATA 溢出风险
@@ -536,7 +534,7 @@ WIFI_VER 晚到也可以正常处理和刷新广播
 
 ### 10.2 WiFi 上报 WiFi 版本
 
-WiFi 可以在 DEVICE_INFO ACK 完成后，或后续任意合适时机，上报自己的版本。为兼容 ESP32 单独重启而 CH583/CH585 保留旧会话的情况，ESP32 在本次启动首次收到早于 DEVICE_INFO 的 PING 时还会补发一次 WIFI_VER：
+WiFi 可以在 DEVICE_INFO ACK 完成后，或后续任意合适时机，上报自己的版本：
 
 ```text
 CMD=WIFI_VER
@@ -617,8 +615,8 @@ WIFI_VER=65536          => ERR,BAD_ARG，不更新广播，不写 DataFlash
 2. CH583/CH585 发送 DEVICE_INFO
 3. WiFi ACK DEVICE_INFO
 4. CH583/CH585 开始发送 pending BLE_DATA 或 PING
-5. WiFi 在方便时发送 WIFI_VER；若首次 PING 早于 DEVICE_INFO，则在 PONG 后补发一次
-6. WiFi 业务完成并满足原有关机保护条件后发送 POWER_OFF，由 CH583 关闭 ESP32/WiFi 电源；ESP32 本地 EPD/SD GPIO4 保持开启
+5. WiFi 在方便时发送 WIFI_VER
+6. WiFi 业务完成后发送 POWER_OFF 或 LOWPOWER
 ```
 
 ## 11. GPIO 控制
@@ -1280,7 +1278,49 @@ CH583/CH585 收到并校验通过后：
 CH583/CH585 进入低功耗
 ```
 
-## 19. WiFi 发送建议
+## 19. PB2 按键事件上报
+
+该命令用于 CH583/CH585 在 WiFi 已经处于唤醒会话中时，主动通知 WiFi：PB2 按键发生了一次稳定按下。
+
+```text
+CMD=KEY_EVENT
+```
+
+CH583/CH585 发送：
+
+```text
+@#V1|SEQ=<seq>|CMD=KEY_EVENT|LEN=<len>|PART=1|TOTAL=1|ARG=<key>,<action>|CRC=<crc>^&
+```
+
+当前定义：
+
+```text
+key=PB2
+action=PRESS
+```
+
+示例：
+
+```text
+@#V1|SEQ=88|CMD=KEY_EVENT|LEN=9|PART=1|TOTAL=1|ARG=PB2,PRESS|CRC=XXXX^&
+```
+
+WiFi 收到后按普通协议帧规则校验，成功后可以回复 ACK：
+
+```text
+@#V1|SEQ=<seq>|CMD=ACK|LEN=<len>|PART=1|TOTAL=1|ARG=<key_event_seq>|CRC=<crc>^&
+```
+
+与 `DEVICE_INFO.wake_reason` 的关系：
+
+```text
+DEVICE_INFO.wake_reason=KEY_PB2 表示 PB2 把睡眠中的 WiFi 唤醒
+KEY_EVENT ARG=PB2,PRESS 表示 WiFi 已醒期间又发生了一次 PB2 按下
+WiFi 未完成 DEVICE_INFO ACK 前发生 PB2 按下时，CH583/CH585 会在 ACK 后补发一次 KEY_EVENT
+WiFi 睡眠时由 PB2 唤醒，只通过 DEVICE_INFO.wake_reason=KEY_PB2 上报，不额外发送 KEY_EVENT
+```
+
+## 20. WiFi 发送建议
 
 由于 UART 无硬件流控，WiFi 发送重要协议帧时建议：
 
@@ -1291,7 +1331,7 @@ CH583/CH585 进入低功耗
 发送协议帧后 200ms 再恢复普通日志
 ```
 
-## 20. V2.0 必须实现的命令
+## 21. V2.1 必须实现的命令
 
 ```text
 DEVICE_INFO
@@ -1317,9 +1357,10 @@ BLE_DATA
 WIFI_DATA
 WIFI_PROVISION
 WIFI_VER
+KEY_EVENT
 ```
 
-## 21. 接收方处理原则
+## 22. 接收方处理原则
 
 ```text
 没有 @# 和 ^&：忽略

@@ -23,6 +23,7 @@
   - [2.15 daily_download_file：每日一图](#sec-02-15)
   - [2.16 wifi_wakeup：首次连接失败后快速恢复](#sec-02-16)
   - [2.17 zlib 压缩文件 EPD 显示测试](#sec-02-17)
+  - [2.18 Local Image Browsing 本地图片浏览测试](#sec-02-18)
 
 ## 1. 测试约定 <span id="sec-01"></span>
 
@@ -488,14 +489,16 @@ Factory Reset 断电重启测试：
 2. 把 epd_mode 设为 SLIDESHOW 或 DAILY，长按 GPIO28 约 5.1 秒。
 3. 确认图片、轮播配置、daily_cfg、wifi namespace 和 nvs.net80211 的 sta.ssid/sta.pswd 均被清除。
 4. 确认 PhotoPainter:epd_mode 已写入 USER_EPD_DISPLAY_MODE_DEFAULT，并能读回相同值。
-5. 确认 UART 顺序包含未配网 WIFI_PROVISION、WAKE_TIMER ON,10、关机前 WIFI_PROVISION 4F、POWER_OFF。
+5. 确认清理成功后显示固件内置欢迎图，约40～50秒刷新期间不得出现未配网 WIFI_PROVISION、WAKE_TIMER ON,10或POWER_OFF；EPD完成日志之后，UART顺序才包含未配网 WIFI_PROVISION、WAKE_TIMER ON,10、关机前 WIFI_PROVISION 4F、POWER_OFF。
 6. 确认 CH583 关闭 ESP32/WiFi 电源，断电约 10 秒后重新上电。
 7. 重启后应为默认显示模式且没有可用 WiFi 配置；EPD type、WiFi 工作时间、BLE MAC 和 OTA 状态保持不变。
+8. 分别使用首次 DEVICE_INFO(KEY_PB1) 和合法 KEY_EVENT(PB1,PRESS) 重复以上测试，确认与 GPIO28 使用同一清理及关机流程；KEY_EVENT应分别覆盖DEVICE_INFO之前和之后。
+9. 10 秒后重新上电的 DEVICE_INFO 必须是 TIMER；如果仍是 KEY_PB1 应判定 CH583 唤醒原因错误，防止循环恢复出厂。
 ```
 
 短按GPIO28后松开不得设置Factory Reset guard，也不得影响普通关机。连续低电平达到5秒后，应先设置guard再开始删除；把普通 `wifi_work_time`设置到即将超时时，恢复出厂清理期间不得出现普通 `WAKE_TIMER OFF,0` 或 `POWER_OFF`。成功时先提交10秒专用请求再清除guard；失败时不提交专用请求并清除guard，无论哪种结果普通关机都不能因guard永久失效。
 
-恢复出厂任一必要 NVS 操作或实际文件删除失败时不得提交 Factory Reset 关机请求。通过测试钩子模拟一个 `unlink()`失败时，应继续尝试剩余文件，最终看到 `file_delete_failed>0`、`file_ret!=ESP_OK`、总 `ret!=ESP_OK`，且不发送 `WAKE_TIMER ON,10` 和 `POWER_OFF`。文件原本不存在不算失败。Factory Reset 专用请求不使用普通 one-shot，不写工作时间 NVS；OTA、EPD、图片保存、daily 或 SPI busy 时仍由 `work_state_task()`推迟关机。
+恢复出厂任一必要 NVS 操作、实际文件删除或欢迎图显示失败时不得提交 Factory Reset 关机请求。通过测试钩子模拟一个 `unlink()`失败时，应继续尝试剩余文件，最终看到 `file_delete_failed>0`、`file_ret!=ESP_OK`、总 `ret!=ESP_OK`，且不显示欢迎图、不发送 `WAKE_TIMER ON,10` 和 `POWER_OFF`。再分别模拟欢迎图尺寸不匹配、zlib解压失败和EPD显示失败，确认 `welcome_display_ret!=ESP_OK`、不发送上述关机命令且guard仍被清除。文件原本不存在不算失败。Factory Reset 专用请求不使用普通 one-shot，不写工作时间 NVS；OTA、EPD、图片保存、daily 或 SPI busy 时仍由 `work_state_task()`推迟关机。
 
 ---
 
@@ -617,3 +620,33 @@ I zlib-epd-test: compressed EPD test passed input=<压缩长度> elapsed_ms=<解
 当前没有增加临时测试宏。`main.c` 完整保留 `TdxZlibEpdTest_Run(base_path)` 的启动调用代码，并使用局部 `#if 0` 关闭；如需重新验证，临时改为 `#if 1`，测试完成后恢复为 `#if 0`。正式功能宏保持不变。
 
 接收长度测试：分别通过cast、cast2pic和upload发送压缩后长度不同的合法zlib BIN，`bin_size`填写各自压缩后的实际长度。设备不得因为该长度不等于屏幕原始 `display_size` 而拒绝；把 `bin_size` 故意改成与实际 `bin` part长度不同，设备仍必须返回原有大小不匹配错误。将正式宏改为 `0` 后，使用未压缩BIN复测旧流程。
+
+### 2.18 Local Image Browsing 本地图片浏览测试 <span id="sec-02-18"></span>
+
+准备：在 `/data/bin_img` 放入三个可正常显示的非空 zlib BIN，例如 `A.bin/B.bin/C.bin`，同时放入 `.jpg`、`.BIN`、`.bin.zlib`、空 `.bin` 和子目录作为过滤样本。确认正式模式值为 `3`，不启用临时测试宏。
+
+DEVICE_INFO按键测试：发送严格五字段帧 `ARG=AABBCCDDEEFF,100,d,40,KEY_PB2`，确认先返回匹配ACK，再出现本地浏览accepted/selected/display completed日志；冷启动发送 `KEY_PB1`，确认ACK后只生成一个Factory Reset pending请求并执行现有恢复出厂。分别发送BOOT、USB、BLE_CONNECT、BLE_WRITE、NFC、TIMER、UNKNOWN，必须正常ACK但不执行按键业务。旧四字段、未知wake_reason、KEY_PB3/KEY_PB4、空字段或第六字段必须返回BAD_ARG。
+
+DEVICE_INFO重发测试：分别重发同一上电会话的 `DEVICE_INFO(...,KEY_PB2)` 和 `DEVICE_INFO(...,KEY_PB1)`，必须继续回复ACK，但不得再次换图或再次执行恢复出厂；断电重新供电后首次DEVICE_INFO允许重新执行业务。
+
+KEY_EVENT测试：无论DEVICE_INFO是否完成，分别发送 `PB2,PRESS` 和 `PB1,PRESS`，前者ACK后只尝试一次换图，后者ACK后只提交一次恢复出厂。相同SEQ重发必须继续ACK但不重复业务；`PB3,PRESS`、`PB4,PRESS`、`PB1,RELEASE`、仅`PB1`、错误PART/TOTAL或LEN均不得执行。
+
+模式互斥测试：分别从NORMAL、SLIDESHOW和DAILY触发PB2。EPD IDLE时最终 `epd_mode=3` 并读回一致；SLIDESHOW任务退出、show_control sw=0，DAILY generation失效且不再提交EPD。EPD BUSY时触发不得停止旧模式或保存模式3。
+
+启动交界测试：在CH583 UART已经启动、LocalImageBrowsing初始化尚未完成时发送合法KEY_PB2 DEVICE_INFO，确认日志显示deferred，初始化后尝试一次；不得出现永久pending。相同DEVICE_INFO重发不得在启动FIFO中增加第二项。
+
+恢复出厂互斥测试：PB2显示期间发送PB1恢复请求，确认PB1协议帧先ACK、请求保持PENDING，EPD空闲后Factory Reset取得预约并执行；不能与BIN文件读取、显示或本地浏览NVS更新并行。清理期间重复PB1必须合并。
+
+循环测试：连续在每次EPD恢复IDLE后触发PB2，预期按稳定顺序显示A、B、C、A。每次成功显示后读取 `PhotoPainter:local_img_state`，确认transaction=IDLE、last/next和成功次数同步推进。
+
+缺失文件测试：让列表选中B后，在扫描与读取之间删除B，预期打印skip并在同一次请求中显示C；连续删除多个候选时继续跳过，最多尝试本次列表数量。全部候选消失时打印一次错误并结束，不死循环。内存不足、SPI错误、读取不完整或解压失败不得作为NOT_FOUND批量跳图。
+
+断电恢复测试：A成功后断电，重启确认模式3恢复但不自动刷新；下一次PB2显示B。制造PREPARED=B后在EPD完成前断电，重启后下一次PB2重试B。破坏state版本、长度或CRC，预期ESP_LOGE并从安全默认游标恢复。
+
+启动早期测试：让 `DEVICE_INFO(KEY_PB2)` 在LocalImageBrowsing_Init之前到达并成功ACK，确认进入启动FIFO并在模块初始化后执行一次。让 `DEVICE_INFO(KEY_PB1)` 在FactoryReset_Init之前到达，确认只保存一个RAM pending请求并在任务就绪后执行。
+
+独立重启兼容测试：本轮不发送DEVICE_INFO，分别发送 `PB2,PRESS` 和 `PB1,PRESS`，必须正常ACK并分别执行一次本地浏览和恢复出厂，不得返回 `DEVICE_INFO_REQUIRED`。再在DEVICE_INFO完成后重复两条新SEQ事件，确认处理规则一致；BLE_DATA、PING等既有专项测试保持各自规则。详细协议预期见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
+
+目录扫描栈回归测试：在 `/data/bin_img` 放入接近150个合法文件后发送 `KEY_EVENT ARG=PB2,PRESS`，确认依次出现request accepted、BIN list refreshed、selected及显示结果日志，ESP32不得重启。正常情况下不得出现worker low stack watermark；若出现该警告，应记录余量并停止继续增加worker栈内局部变量。
+
+目录限制和Factory Reset测试：确认功能从不读取 `/data/cast_img`、`/data/jpg_img` 或子目录。执行Factory Reset后确认local_img_state清除、epd_mode恢复默认，重启不进入本地浏览。

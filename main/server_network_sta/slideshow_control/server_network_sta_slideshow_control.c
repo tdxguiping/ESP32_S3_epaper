@@ -790,6 +790,24 @@ esp_err_t ServerNetworkStaSlideshowControl_ApplyJson(const char *body,
     return ESP_OK;
 }
 
+esp_err_t ServerNetworkStaSlideshowControl_Disable(const char *base_path)
+{
+    /*
+     * Keep the persisted slideshow switch update inside its owning module so
+     * callers do not need to construct or interpret the control JSON format.
+     */
+    static const char stop_json[] = "{\"func\":\"set_slideshow\",\"sw\":0}";
+    server_network_sta_slideshow_control_result_t result = {0};
+    esp_err_t ret =
+        ServerNetworkStaSlideshowControl_ApplyJson(stop_json, base_path, &result);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    return (result.result == TDX_JSON_RESULT_OK && result.sw == 0)
+               ? ESP_OK
+               : ESP_FAIL;
+}
+
 esp_err_t ServerNetworkStaSlideshowControl_ProcessJson(httpd_req_t *req,
                                                        const char *body,
                                                        size_t body_len,

@@ -33,6 +33,7 @@
 #include "file_serving_example_common.h"
 #include "gpio_test.h"
 #include "led_status.h"
+#include "local_image_browsing.h"
 #include "server_network_sta.h"
 #include "server_network_sta_daily_image.h"
 #include "server_network_sta_slideshow.h"
@@ -383,6 +384,11 @@ void app_main(void)
         ESP_LOGE(TAG, "daily image base init failed ret=%s",
                  esp_err_to_name(daily_ret));
     }
+    esp_err_t local_browsing_ret = LocalImageBrowsing_Init(base_path);
+    if (local_browsing_ret != ESP_OK) {
+        ESP_LOGE(TAG, "local image browsing init failed ret=%s",
+                 esp_err_to_name(local_browsing_ret));
+    }
     // Force the old read_value=0x02 path here: Server Network STA only, then start the HTTP file server.
     // 中文：在这里固定旧工程 read_value=0x02 路径：只进入 Server Network STA，然后启动 HTTP 文件服务器。
     (void)ServerNetworkStaWifiWorkTime_StartWifiConnectGuardIfInactive(
@@ -429,7 +435,17 @@ void app_main(void)
         }
     } else if (startup_mode == USER_EPD_DISPLAY_MODE_SLIDESHOW) {
         ESP_LOGE(TAG, "slideshow startup blocked because storage is not ready");
+    } else if (startup_mode == USER_EPD_DISPLAY_MODE_LOCAL_IMAGE_BROWSING) {
+        ESP_LOGI(TAG,
+                 "local image browsing startup restored, waiting for PB2 event storage_ready=%d",
+                 storage_ret == ESP_OK ? 1 : 0);
     }
+
+    /*
+     * Restore saved scheduled modes before releasing deferred BLE_DATA. A new
+     * BLE command can then supersede startup state without being started twice.
+     */
+    Ch583UartApp_SetBleDataBusinessReady();
 
     if (daily_ret == ESP_OK) {
         ESP_LOGI(TAG, "startup mode selected=%u(%s)",

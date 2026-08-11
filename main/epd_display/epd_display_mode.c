@@ -2,6 +2,7 @@
 
 #include "ch583_wifi_uart_protocol.h"
 #include "esp_log.h"
+#include "local_image_browsing.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "epd_display_mode";
@@ -11,7 +12,8 @@ static bool epd_display_mode_is_valid(uint8_t mode)
 {
     return mode == USER_EPD_DISPLAY_MODE_NORMAL ||
            mode == USER_EPD_DISPLAY_MODE_SLIDESHOW ||
-           mode == USER_EPD_DISPLAY_MODE_DAILY;
+           mode == USER_EPD_DISPLAY_MODE_DAILY ||
+           mode == USER_EPD_DISPLAY_MODE_LOCAL_IMAGE_BROWSING;
 }
 
 const char *EpdDisplayMode_ToString(uint8_t mode)
@@ -23,6 +25,8 @@ const char *EpdDisplayMode_ToString(uint8_t mode)
         return "SLIDESHOW";
     case USER_EPD_DISPLAY_MODE_DAILY:
         return "DAILY";
+    case USER_EPD_DISPLAY_MODE_LOCAL_IMAGE_BROWSING:
+        return "LOCAL_IMAGE_BROWSING";
     default:
         return "INVALID";
     }

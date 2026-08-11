@@ -5,7 +5,35 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef void (*ch583_wifi_ble_data_callback_t)(const char *data);
+#include "esp_err.h"
+
+typedef enum {
+    CH583_WIFI_BLE_DATA_ADMIT = 0,
+    CH583_WIFI_BLE_DATA_COMMIT,
+    CH583_WIFI_BLE_DATA_CANCEL,
+} ch583_wifi_ble_data_action_t;
+
+/*
+ * ADMIT must reserve every resource needed to retain one complete BLE_DATA.
+ * The protocol sends ACK only after ADMIT succeeds, then calls COMMIT. If ACK
+ * transmission fails, CANCEL releases the reservation without dispatching it.
+ */
+typedef esp_err_t (*ch583_wifi_ble_data_callback_t)(
+    const char *data,
+    ch583_wifi_ble_data_action_t action);
+
+// Preserve existing internal values; the UART wake-reason field remains ASCII.
+typedef enum {
+    CH583_WAKE_REASON_BOOT = 0,
+    CH583_WAKE_REASON_USB = 1,
+    CH583_WAKE_REASON_KEY_PB2 = 2,
+    CH583_WAKE_REASON_BLE_CONNECT = 3,
+    CH583_WAKE_REASON_BLE_WRITE = 4,
+    CH583_WAKE_REASON_NFC = 5,
+    CH583_WAKE_REASON_TIMER = 6,
+    CH583_WAKE_REASON_UNKNOWN = 7,
+    CH583_WAKE_REASON_KEY_PB1 = 8,
+} ch583_wake_reason_t;
 
 #ifdef __cplusplus
 extern "C" {

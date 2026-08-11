@@ -14,6 +14,8 @@ extern "C" {
 /* Base initialization is intentionally separate from loading a saved job. */
 esp_err_t ServerNetworkStaDailyImage_Init(const char *base_path);
 esp_err_t ServerNetworkStaDailyImage_StartSaved(void);
+// Invalidate queued and running DAILY work without erasing its saved configuration.
+esp_err_t ServerNetworkStaDailyImage_StopAndWait(void);
 esp_err_t ServerNetworkStaDailyImage_GetPowerOffWakeSeconds(
     uint32_t *wake_seconds,
     bool *keep_awake);

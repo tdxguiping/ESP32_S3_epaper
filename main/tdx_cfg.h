@@ -808,10 +808,16 @@ extern "C" {
 #define CH583_WIFI_UART_BAD_CRC_RETRY_MAX 5
 // DEVICE_INFO replaces the former BLE_MAC and BLE_VER receive commands.
 #define CH583_DEVICE_INFO_CMD "DEVICE_INFO"
-#define CH583_WIFI_VER_COMPAT_ON_PING_ENABLE 1
+#define CH583_KEY_EVENT_CMD "KEY_EVENT"
+// Keep early BLE_DATA bounded until storage, display, and network startup finish.
+#define CH583_BLE_DATA_STARTUP_QUEUE_LENGTH 4U
+// The BLE_DATA worker runs JSON business outside the UART protocol task.
+#define CH583_BLE_DATA_BUSINESS_TASK_STACK_SIZE (12U * 1024U)
+#define CH583_BLE_DATA_BUSINESS_TASK_PRIORITY 3U
 #define CH583_DEVICE_INFO_MAC_HEX_LEN 12
 #define CH583_DEVICE_INFO_BLE_VER_TEXT_MAX_LEN 3
-#define CH583_DEVICE_INFO_ARG_MAX_LEN 21
+// Five-field DEVICE_INFO is bounded by the longest BLE_CONNECT wake reason.
+#define CH583_DEVICE_INFO_ARG_MAX_LEN 33
 #define CH583_DEVICE_INFO_SCREEN_TYPE_133 'd'
 #define CH583_DEVICE_INFO_SCREEN_TYPE_709 'e'
 // board_info_hex is the complete visible ASCII byte: 0x40 vendor 0, 0x41 vendor 1.

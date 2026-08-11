@@ -50,6 +50,7 @@
   - [11.3 wifi_wakeup：使用已保存配置连接](#sec-11-3)
   - [11.4 set_wifi_work_time / wifi_standby](#sec-11-4)
 - [12. zlib EPD 业务数据格式](#sec-12-zlib)
+- [13. PB2本地浏览与PB1恢复出厂事件](#sec-13-local-image)
 
 ## 6. 网络 HTTP 数据入口汇总 <span id="sec-06"></span>
 
@@ -815,13 +816,13 @@ sequenceDiagram
     CH583->>CH583: 拉高当前硬件定义的 WiFi 电源/唤醒控制脚
     CH583->>CH583: 等待 WiFi 唤醒延时结束
     loop CH583 需要同步设备信息时，按其重试策略发送
-        CH583->>ESP32: CMD=DEVICE_INFO, ARG=<mac>,<ble_ver>,<screen>,<board>
-        ESP32->>ESP32: 校验并保存 MAC、CH583 版本、EPD 类型
+        CH583->>ESP32: CMD=DEVICE_INFO, ARG=<mac>,<ble_ver>,<screen>,<board>,<wake_reason>
+        ESP32->>ESP32: 校验并保存 MAC、CH583 版本、EPD 类型，解析唤醒原因
         ESP32->>ESP32: 刷新 CH583 20 秒关机保护
         ESP32-->>CH583: CMD=ACK, ARG=<DEVICE_INFO seq>
     end
     ESP32-->>CH583: CMD=WIFI_VER, ARG=<wifi_ver_dec>
-    Note over CH583,ESP32: DEVICE_INFO 未完成也不阻止 PING、BLE_DATA 或双方其他通信
+    Note over CH583,ESP32: DEVICE_INFO 用于信息同步；其他合法命令无需等待该 ACK
 ```
 
 树状时序：
@@ -843,18 +844,20 @@ CH583
          ├─ 记录本次启动已收到 DEVICE_INFO
          ├─ ch583_wifi_uart_send_wifi_ver()
          ├─ ch583_wifi_uart_send_current_wifi_provision_status()
-         └─ 可靠时间存在时 ServerNetworkStaTime_BackupCurrentToCh583()
+         ├─ 可靠时间存在时 ServerNetworkStaTime_BackupCurrentToCh583()
+         └─ 首次ACK后：KEY_PB2调用LocalImageBrowsing_RequestNext()，KEY_PB1调用FactoryReset_Request()
 ```
 
 精简协议内容：
 
 ```text
 CMD=DEVICE_INFO
-ARG=<mac>,<ble_ver_dec>,<screen_type>,<board_info_hex>
+ARG=<mac>,<ble_ver_dec>,<screen_type>,<board_info_hex>,<wake_reason>
 mac：CH583 自身 BLE MAC，12 位大写 HEX，不带冒号
 ble_ver_dec：CH583 固件版本，纯十进制文本，范围 0..255
 screen_type：d=13.3 寸 HD 六色屏，e=7.09 寸 HD 六色屏
 board_info_hex：40=兴泰，41=DKE
+wake_reason：BOOT/USB/KEY_PB1/KEY_PB2/BLE_CONNECT/BLE_WRITE/NFC/TIMER/UNKNOWN
 ble_ver_dec 来自 CH583/CH585 固件宏 VER
 screen_type 和 board_info_hex 由 CH583 在 DEVICE_INFO 中上报
 ESP32-C5 在 ch583_wifi_parse_device_info_arg() 中解析并映射为本地 EPD type
@@ -862,15 +865,16 @@ BLE 连接后先拉高当前硬件定义的 WiFi 电源/唤醒控制脚
 CH583 需要同步当前设备信息时发送 DEVICE_INFO，并可在未收到匹配 ACK 时按自身策略重发
 ESP32 全部字段解析和保存成功后刷新 20 秒保护并 ACK
 ACK 的 ARG 必须等于 DEVICE_INFO 的 SEQ
-DEVICE_INFO 是信息同步命令，不是 ESP32 的通信准入条件
-本次 ESP32 启动未收到 DEVICE_INFO 时，PING、BLE_DATA、GPIO、时间、配网和关电通信仍正常处理
+DEVICE_INFO 是本轮唤醒会话的设备信息同步；当前开发协议只接受完整五字段，不兼容旧四字段格式
+ESP32可能因USB、看门狗或软件异常独立重启，此时CH583可能仍保留原会话状态。因此DEVICE_INFO不是业务准入条件；无论DEVICE_INFO是否完成，CH583发来的合法消息都按各自规则立即处理
+首次成功ACK的DEVICE_INFO若wake_reason=KEY_PB2，尝试本地图片浏览一次；若为KEY_PB1，提交一次恢复出厂请求。重发帧只重ACK，不重复业务
 ```
 
 完整帧与示例：
 
 ```text
-@#V1|SEQ=<seq>|CMD=DEVICE_INFO|LEN=<len>|PART=1|TOTAL=1|ARG=<mac>,<ble_ver_dec>,<screen_type>,<board_info_hex>|CRC=<crc>^&
-@#V1|SEQ=20|CMD=DEVICE_INFO|LEN=21|PART=1|TOTAL=1|ARG=AABBCCDDEEFF,100,d,40|CRC=XXXX^&
+@#V1|SEQ=<seq>|CMD=DEVICE_INFO|LEN=<len>|PART=1|TOTAL=1|ARG=<mac>,<ble_ver_dec>,<screen_type>,<board_info_hex>,<wake_reason>|CRC=<crc>^&
+@#V1|SEQ=20|CMD=DEVICE_INFO|LEN=29|PART=1|TOTAL=1|ARG=AABBCCDDEEFF,100,d,40,KEY_PB1|CRC=XXXX^&
 ```
 
 MAC 使用广播显示顺序 `Mac[5] Mac[4] Mac[3] Mac[2] Mac[1] Mac[0]`，文本必须为 12 位大写 HEX。`board_info_hex` 是完整 byte 的两位大写 HEX，不是单独字符；映射时 `40` 表示厂家 ID 0，`41` 表示厂家 ID 1。
@@ -936,27 +940,27 @@ screen_type=e, board_info_hex=40 -> EPD_TYPE_1600_1200_79
 screen_type=e, board_info_hex=41 -> ESP_LOGE 后返回 ERR,<seq>,BAD_ARG
 ```
 
-错误与兼容处理：
+错误与当前协议处理：
 
 ```text
 字段或 EPD 组合非法：ESP_LOGE，返回 BAD_ARG。
 MAC、版本或 EPD 类型保存失败：ESP_LOGE，返回 DEVICE_INFO_SAVE_FAILED，本帧不 ACK。
 ACK UART 发送失败：ESP_LOGE，不记录本次 DEVICE_INFO 已成功接收，等待 CH583 后续重发。
-DEVICE_INFO 到达前收到 PING：正常回复 PONG，不打印协议错误，也不返回握手类错误。
-DEVICE_INFO 到达前收到 BLE_DATA：按原 BLE_DATA 校验、拼包和业务回调正常处理。
+四字段 DEVICE_INFO、未知 wake_reason 或其他字段错误：ESP_LOGE，返回 BAD_ARG，不做兼容解析。
+DEVICE_INFO 到达前收到 BLE_DATA 或 KEY_EVENT：按各自协议规则 ACK 和处理，不返回握手类错误。
 ESP32 主动发送 GPIO / WIFI_PROVISION / NFC_SET / TIME_SET / WAKE_TIMER / POWER_OFF / LOWPOWER 等命令时不检查 DEVICE_INFO 状态。
-DEVICE_INFO_SAVE_FAILED 只表示本帧设备信息未完整保存，不限制 PING、BLE_DATA 或其他业务。
-ESP32 单独重启而 CH583 保持运行时，双方可以沿用 CH583 当前业务状态继续通信；新 DEVICE_INFO 后续到达时再更新保存信息。
+DEVICE_INFO_SAVE_FAILED 表示本帧设备信息未完整保存，本帧不 ACK，CH583 按必达握手策略重发。
 ```
 
 当前 ESP32-C5 实现说明：
 
 ```text
-DEVICE_INFO 不控制公共发送、PING、BLE_DATA 或 work_state 关电流程。
+DEVICE_INFO记录本轮冷启动信息，但不作为KEY_EVENT、BLE_DATA或其他CH583消息的准入条件。ESP32独立重启后，即使CH583不知道需要重发DEVICE_INFO，合法消息仍按各自规则处理。
 本次启动尚未收到合法 DEVICE_INFO 时，MAC、CH583 版本和 EPD 类型暂用 NVS 保存值或默认值。
 收到 CRC 正确但参数错误的 DEVICE_INFO 只拒绝该帧，不清除以前成功接收的信息状态，也不影响其他通信。
 本次运行的EPD类型只在启动时从NVS加载；NVS值非法时使用 `USER_EPD_TYPE_DEFAULT`。迟到的DEVICE_INFO只保存上报类型供下次启动，不在显示任务运行中切换驱动。
-后续修改 DEVICE_INFO 时不得重新加入通信准入门控；如需新的信息有效性判断，应限制在实际依赖该信息的模块内。
+UART早于SD、EPD和网络业务完成初始化时，完整合法的BLE_DATA先申请长度为4的业务队列位置；申请成功后回复ACK并提交到队列，申请失败则回复`ERR,BUSY`或`ERR,NO_MEM`，不会先ACK后丢数据。保存的DAILY/SLIDESHOW启动状态恢复完成后，`Ch583UartApp_SetBleDataBusinessReady()`通知独立业务任务按FIFO处理。DEVICE_INFO或KEY_EVENT的PB2业务使用本地图片浏览启动FIFO，PB1使用Factory Reset单请求RAM状态；两种来源都不依赖DEVICE_INFO握手状态。
+DEVICE_INFO 保持五字段严格解析；协议仍在开发中，不保留旧四字段兼容路径。
 ```
 
 DEVICE_INFO 成功后的同步动作：
@@ -993,7 +997,7 @@ wifi_ver_dec 为十进制文本，范围 0..65535
 
 ```text
 收到合法 DEVICE_INFO 并成功 ACK 后，立即上报一次 WIFI_VER。
-ESP32单独重启且CH583沿用旧会话时，如果首次PING早于DEVICE_INFO，ESP32回复PONG后额外发送一次WIFI_VER；发送成功后本次启动不再由PING重复补发。
+PING/PONG与DEVICE_INFO信息同步相互独立；PING早于DEVICE_INFO时ESP32直接回复PONG，不额外补发WIFI_VER。
 WIFI_VER 来自当前 app version，按 <high_dec>.<low_dec> 解析为 (high_dec << 8) | low_dec。
 high_dec 和 low_dec 都是十进制数值，范围分别为 0..255；代码不要求每段固定为三位。
 例如 PROJECT_VER "000.003" 上报 WIFI_VER=3。
@@ -1089,7 +1093,7 @@ CH583
 精简协议内容：
 
 ```text
-CH583 进入心跳状态后按其周期发送 PING；ESP32 是否收到 DEVICE_INFO 不影响该流程
+CH583可以在DEVICE_INFO之前或之后进入心跳状态并按周期发送PING；ESP32均按正常规则回复PONG
 WiFi 收到后立即回复 PONG，不返回握手类错误
 PONG 的 ARG 必须等于对应 PING 的 SEQ
 如果 CH583 连续多次没有收到合法 PONG，则关闭 WiFi 电源并进入低功耗
@@ -1127,8 +1131,9 @@ sequenceDiagram
     Phone->>CH583: BLE write JSON
     CH583->>ESP32: CMD=BLE_DATA, ARG=<frontend_data>
     ESP32->>ESP32: 刷新 CH583 20 秒关机保护
-    ESP32->>ESP32: ACK 当前 BLE_DATA 帧
-    ESP32->>BLE: Ch583Uart_HandleBleDataText(ARG)
+    ESP32->>ESP32: 预留业务队列和数据副本
+    ESP32->>CH583: ACK 当前 BLE_DATA 帧
+    ESP32->>BLE: 提交到独立业务任务
     BLE->>BLE: User_HandleWifiJsonTextFromCh583(ARG)
 ```
 
@@ -1141,10 +1146,10 @@ Phone BLE write
       └─ ESP32-C5 ch583_wifi_handle_frame_body()
          ├─ CMD == BLE_DATA
          ├─ ch583_wifi_handle_ble_data()
-         │  ├─ 单包：刷新 CH583 保护后 ACK
+         │  ├─ 单包：刷新 CH583 保护，成功预留业务队列后 ACK
          │  ├─ 多包：按 PART/TOTAL 重组，每个有效分片刷新 CH583 保护
-         │  └─ 重组完成后回调 ble_data_callback()
-         └─ Ch583Uart_HandleBleDataText()
+         │  └─ 重组完成：预留、ACK、提交；失败回复 ERR
+         └─ Ch583Uart_BleDataBusinessTask()
             └─ User_HandleWifiJsonTextFromCh583()
 ```
 
@@ -1158,6 +1163,8 @@ CH583 不修改 frontend_data
 每包最大 ARG 长度 300 字节
 超过 300 字节时，CH583 自动分包
 ESP32-C5 侧重组后，把 ARG 原文交给 JSON 业务层
+业务队列或内存预留失败时回复 ERR,BUSY 或 ERR,NO_MEM，不回复 ACK
+业务未就绪时最多保存 4 条，保存模式恢复后由独立任务按 FIFO 处理
 合法单包和每个顺序正确、长度合法的分片都刷新 20 秒 CH583 关机保护
 乱序、重复、超长或其他非法分片不刷新保护
 ```
@@ -1291,7 +1298,7 @@ sequenceDiagram
     Work->>ESP32: UserLedStatus_PreparePowerOffSync()
     ESP32->>CH583: LED_BLINK_STOP GREEN + GPIO PB6 OFF
     Work->>ESP32: ch583_wifi_uart_send_wifi_provision_mode_before_power_off()
-    ESP32->>CH583: WIFI_PROVISION（NORMAL=F；SLIDESHOW=1；DAILY=2）
+    ESP32->>CH583: WIFI_PROVISION（NORMAL=F；SLIDESHOW=1；DAILY=2；LOCAL_IMAGE_BROWSING=F）
     Work->>ESP32: ch583_wifi_uart_send_power_off()
     ESP32->>CH583: CMD=POWER_OFF
     CH583-->>ESP32: ACK
@@ -1327,7 +1334,7 @@ work_state_task()
    └─ final guard 仍为空闲
       ├─ TdxSharedSpi_Lock(10s)
       ├─ 锁内再次检查工作计时及 HTTP/CH583/OTA/EPD/image-save guard
-      ├─ 一次性发送WIFI_PROVISION：NORMAL=F，SLIDESHOW=1，DAILY=2
+      ├─ 一次性发送WIFI_PROVISION：NORMAL=F，SLIDESHOW=1，DAILY=2，LOCAL_IMAGE_BROWSING=F
       ├─ ch583_wifi_uart_send_power_off()
       │  └─ ch583_wifi_send_frame("POWER_OFF", "")
       ├─ 发送失败：GPIO4 保持 HIGH，释放 SPI 锁并回滚 LED/WAKE_TIMER
@@ -1342,7 +1349,7 @@ work_state_task()
 CMD=POWER_OFF
 ARG 为空
 WiFi 任务完成后，如果允许 CH583 关闭 WiFi 电源，ESP32-C5 发送 POWER_OFF
-CH583校验后回复ACK并关闭ESP32/WiFi电源。发送前必须通过HTTP/CH583、OTA、EPD、图片保存、每日一图和SPI复检；取消关机时回滚LED及已开启的WAKE_TIMER。关机前上报模式：NORMAL使用临时`F`，SLIDESHOW使用`1`，DAILY使用`2`。`POWER_OFF`成功后GPIO4保持HIGH；2秒内仍未断电则软件重启。
+CH583校验后回复ACK并关闭ESP32/WiFi电源。发送前必须通过HTTP/CH583、OTA、EPD、图片保存、每日一图和SPI复检；取消关机时回滚LED及已开启的WAKE_TIMER。关机前上报模式：NORMAL和LOCAL_IMAGE_BROWSING使用临时`F`，SLIDESHOW使用`1`，DAILY使用`2`。`POWER_OFF`成功后GPIO4保持HIGH；2秒内仍未断电则软件重启。
 
 轮播`wake_interval`小于`TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS`（当前10秒）时跳过本次关机；该阈值不改变轮播最小间隔60秒。
 ```
@@ -1351,11 +1358,15 @@ Factory Reset 成功后的专用断电重启流程：
 
 ```text
 factory_reset_task()
-├─ 长按达到5秒后设置 Factory Reset guard，短按不设置
+├─ GPIO28长按5秒，或接收DEVICE_INFO/KEY_EVENT的PB1异步请求
+├─ PB1请求使用IDLE/PENDING/RUNNING/COMPLETED RAM状态合并重复帧
+├─ 任务已就绪时，PB1请求在等待EPD期间保持Factory Reset guard
+├─ GPIO28长按达到5秒后设置guard，短按不设置
 ├─ 删除图片、轮播状态和 daily_cfg；真实文件删除失败进入总 ret
 ├─ epd_mode 强制写入并读回校验 USER_EPD_DISPLAY_MODE_DEFAULT
 ├─ 删除 wifi namespace 全部键
 ├─ 删除 nvs.net80211:sta.ssid / sta.pswd
+├─ 显示固件内置 zlib 欢迎图，并等待 EPD 实际完成
 ├─ WIFI_PROVISION 40（未配网 + 默认 NORMAL）
 ├─ ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle(10)
 ├─ 无条件清除 Factory Reset guard
@@ -1370,7 +1381,7 @@ factory_reset_task()
    └─ 10 秒到期后 CH583 重新给 ESP32/WiFi 上电
 ```
 
-Factory Reset 没有改变 `WAKE_TIMER`、`WIFI_PROVISION` 或 `POWER_OFF` 的帧格式。10 秒是 CH583 在断电期间执行的唤醒倒计时，不是 ESP32 关机前等待时间；请求只保存在 RAM，不修改用户的 WiFi 工作时间。guard 只在长按确认后、实际清理前设置；`work_state_task()`在普通入口、LED后的final guard和SPI锁内locked guard复检，发现清理中或刚发布的专用请求时取消普通关机。成功时先发布专用请求再清guard，失败时不发布请求并清guard，所有结果都必须清guard。必要NVS操作或实际文件删除失败时不提交关机请求。Factory Reset分支跳过普通工作计时以及HTTP/CH583活动保持时间，但不绕过硬件和写入安全复检；失败时沿用现有LED/WAKE_TIMER回滚并重试。
+Factory Reset 没有改变 `WAKE_TIMER`、`WIFI_PROVISION` 或 `POWER_OFF` 的帧格式。文件和NVS清理成功后，ESP32先显示固件内置zlib欢迎图，并等待EPD实际完成；正常刷新约40～50秒，在完成前不得发送未配网 `WIFI_PROVISION`、`WAKE_TIMER ON,10` 或 `POWER_OFF`。欢迎图尺寸、解压、入队或显示失败时不发布本次专用关机请求。10秒是CH583在ESP32完全断电期间执行的唤醒倒计时，不是关机前等待时间；请求只保存在RAM，不修改用户WiFi工作时间。GPIO28在长按确认后设置guard；PB1远程请求若早于Factory Reset初始化则先保存PENDING，任务初始化成功后补设guard，若任务已就绪则请求接受后立即设置guard并等待EPD空闲。`work_state_task()`继续在普通入口、LED后和SPI锁内复检。显示成功时先发布专用请求再清guard，任一失败时不发布请求并清guard，所有结果都必须清guard。10秒后CH583重新供电并上报 `DEVICE_INFO.wake_reason=TIMER`，不得继续上报KEY_PB1。
 
 
 存 / 取信息（含条件限制）：
@@ -1516,7 +1527,7 @@ ch583_wifi_uart_process_bytes()
 
 ```text
 任何命令必须先通过 CRC、LEN、PART/TOTAL 校验，再执行实际动作。
-DEVICE_INFO 不是 ESP32 的通信准入条件；无论本次启动是否已收到 DEVICE_INFO，合法命令都按各自规则执行。
+DEVICE_INFO 只用于当前唤醒会话的设备信息同步，不是业务准入条件。BLE_DATA、KEY_EVENT、ACK、ERR、PONG、GPIO_VALUE、TIME_STATUS、NFC_STATUS等命令或响应无论DEVICE_INFO是否完成，都先通过自身CRC、LEN、PART/TOTAL和参数规则再处理。
 WiFi 会记录上一条合法 CH583 -> WiFi 帧的 SEQ；如果下一条合法帧的 SEQ 不是 last+1，则打印错误日志提示可能丢帧。
 SEQ 按 uint16_t 处理，65535 -> 0 属于正常连续递增。
 SEQ gap 只用于诊断打印，不触发补包、重发或业务状态修正。
@@ -2075,6 +2086,7 @@ ARG bit 定义：
 0000 = 普通模式
 0001 = 轮播模式
 0010 = 每日更新模式
+0011 = 本地图片浏览模式
 0011..1110 = 保留
 1111 = 待机模式（仅在发送 POWER_OFF 前临时上报）
 ```
@@ -2085,7 +2097,7 @@ ARG bit 定义：
 普通状态：ARG = (provision_status_nibble << 4) | epd_mode
 关机之前：ARG = (provision_status_nibble << 4) | shutdown_mode
 provision_status_nibble: 未配网=0x4，已配网=0x5
-shutdown_mode: NORMAL=0xF，SLIDESHOW=0x1，DAILY=0x2
+shutdown_mode: NORMAL=0xF，SLIDESHOW=0x1，DAILY=0x2，LOCAL_IMAGE_BROWSING=0xF
 ```
 
 示例：
@@ -2099,6 +2111,7 @@ shutdown_mode: NORMAL=0xF，SLIDESHOW=0x1，DAILY=0x2
 0x50 = 已配网 + 普通模式，ASCII 'P'
 0x51 = 已配网 + 轮播模式，ASCII 'Q'
 0x52 = 已配网 + 每日更新模式，ASCII 'R'
+0x53 = 已配网 + 本地图片浏览模式，ASCII 'S'
 0x42 = 未配网 + 每日更新模式，ASCII 'B'
 ```
 
@@ -2123,7 +2136,7 @@ CH583/CH585 行为：
 高 4bit 当前只接受 4 或 5
 低 4bit 接受 0、1、2、F
 合法配网状态保存到 DataFlash
-合法工作模式 0、1、2 保存到 DataFlash
+合法工作模式 0、1、2、3 保存到 DataFlash
 F 只表示即将进入待机，不作为持久化工作模式保存
 WIFI_PROVISION 会同时更新复合状态 byte 的高 4bit 和低 4bit
 保存并刷新成功后回复 ACK
@@ -2174,7 +2187,7 @@ EpdDisplayMode_Set()
 work_state_task()
 └─ 所有关机 guard 通过并取得 SPI 锁后
    ├─ ch583_wifi_uart_send_wifi_provision_mode_before_power_off(epd_mode)
-   ├─ NORMAL=F，SLIDESHOW=1，DAILY=2
+   ├─ NORMAL=F，SLIDESHOW=1，DAILY=2，LOCAL_IMAGE_BROWSING=F
    └─ 随后发送 POWER_OFF
 ```
 
@@ -2467,3 +2480,34 @@ CH583/BLE JSON 同时接受新旧 `func`，并同时兼容 `seconds` 和旧字�
 - 每日一图下载在压缩模式下接受不超过 `compressBound(display_size)` 的可变Content-Length；非压缩模式继续要求长度严格等于 `display_size`。
 
 现有请求字段、响应字段和传输顺序不变，但宏为 `1` 时发送端必须同步改为发送zlib BIN。旧的未压缩BIN不能直接交给该固件显示。
+
+---
+
+## 13. PB2本地浏览与PB1恢复出厂事件 <span id="sec-13-local-image"></span>
+
+PB1/PB2都有两个互斥上报来源。WiFi睡眠表示CH583已经关闭ESP32电源；按键唤醒是重新供电并从 `app_main()` 冷启动，通过五字段 `DEVICE_INFO.wake_reason=KEY_PB1/KEY_PB2` 上报。当前上电会话发生的新按键通过KEY_EVENT上报；通常位于DEVICE_INFO ACK之后，但ESP32因USB、看门狗或软件异常独立重启时，也允许KEY_EVENT在DEVICE_INFO之前到达并立即处理。同一次物理按键不得通过两个来源重复上报。
+
+```text
+CMD=KEY_EVENT
+LEN=9
+PART=1
+TOTAL=1
+ARG=PB1,PRESS 或 PB2,PRESS
+```
+
+完整示例：
+
+```text
+@#V1|SEQ=88|CMD=KEY_EVENT|LEN=9|PART=1|TOTAL=1|ARG=PB1,PRESS|CRC=XXXX^&
+@#V1|SEQ=89|CMD=KEY_EVENT|LEN=9|PART=1|TOTAL=1|ARG=PB2,PRESS|CRC=XXXX^&
+```
+
+ESP32-C5无论DEVICE_INFO是否完成，都严格接受合法的 `PB1,PRESS` 和 `PB2,PRESS`。合法帧先刷新CH583活动保护并回复 `ACK,<key_event_seq>`；ACK成功后PB2尝试一次本地图片浏览，PB1提交一次恢复出厂请求。其他key/action、错误PART/TOTAL或错误LEN/ARG返回对应协议错误。
+
+协议ACK只确认帧已接收，不代表图片显示或恢复出厂完成。PB2遇到EPD BUSY时本次事件不执行、不缓存、不切换模式、不推进图片游标；PB1恢复请求则保留到原有Factory Reset任务可安全执行。重复DEVICE_INFO或相同KEY_EVENT SEQ仍ACK，但不重复执行业务。
+
+同一个物理按键不能同时通过KEY_EVENT和 `DEVICE_INFO.wake_reason` 重复表示。使已断电ESP32重新上电的按键只放在DEVICE_INFO中；当前上电会话发生的新按键使用KEY_EVENT。KEY_EVENT不需要等待DEVICE_INFO，CH583可以立即发送，ESP32按合法帧正常ACK并执行。PB3/PB4按相同命名格式预留，业务定义前返回BAD_ARG。
+
+ESP32启动时UART可能早于本地浏览模块就绪。该窗口内首次DEVICE_INFO携带的合法PB2请求进入长度为10的启动FIFO；模块初始化时执行正常EPD预约判断。初始化完成与事件入队使用同一临界区，事件不会卡在初始化交界点。PB1不进入该FIFO，只进入Factory Reset单请求RAM状态。
+
+本地浏览只读取 `/data/bin_img/<fileName>.bin`，按稳定文件名顺序循环。目标文件在扫描后消失时跳过并继续本次请求中的下一张；其他 SD I/O、内存、解压或 EPD 错误中止本次请求。

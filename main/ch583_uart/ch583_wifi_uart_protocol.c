@@ -7,7 +7,9 @@
 #include "epd_display_mode.h"
 #include "epd_sd_power_test.h"
 #include "epd_type.h"
+#include "factory_reset.h"
 #include "led_status.h"
+#include "local_image_browsing.h"
 #include "server_network_sta_time.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
@@ -81,6 +83,7 @@ typedef struct {
     char screen_type;
     uint8_t board_info;
     uint8_t epd_type;
+    ch583_wake_reason_t wake_reason;
 } ch583_wifi_device_info_t;
 
 typedef enum {
@@ -88,6 +91,16 @@ typedef enum {
     CH583_DEVICE_INFO_PARSE_BAD_ARG,
     CH583_DEVICE_INFO_PARSE_UNSUPPORTED_EPD,
 } ch583_wifi_device_info_parse_result_t;
+
+typedef enum {
+    CH583_KEY_SOURCE_DEVICE_INFO = 0,
+    CH583_KEY_SOURCE_KEY_EVENT,
+} ch583_key_source_t;
+
+typedef enum {
+    CH583_KEY_PB1 = 1,
+    CH583_KEY_PB2 = 2,
+} ch583_key_id_t;
 
 // Keep the TX sequence independent because each sender owns its own SEQ counter.
 static uint16_t s_tx_seq;
@@ -124,13 +137,10 @@ static char s_ble_mac[CH583_DEVICE_INFO_MAC_HEX_LEN + 1];
 static uint8_t s_ble_ver;
 static bool s_device_info_loaded;
 static bool s_ble_ver_nvs_valid;
-// DEVICE_INFO is optional for transport readiness. This flag only records whether
-// this ESP32 boot has successfully received and acknowledged current device data.
+// Track the required startup handshake and suppress repeated wake actions.
 static bool s_device_info_received;
-#if CH583_WIFI_VER_COMPAT_ON_PING_ENABLE
-// Send the ESP32 version once when CH583 continues an old session after an ESP32-only restart.
-static bool s_compat_wifi_ver_sent;
-#endif
+static bool s_key_event_seq_seen;
+static uint16_t s_last_key_event_seq;
 static uint8_t s_wifi_provision_status;
 static bool s_wifi_provision_status_valid;
 
@@ -606,12 +616,57 @@ static bool ch583_wifi_parse_hex_byte(const char *text, uint8_t *value)
     return true;
 }
 
+static bool ch583_wifi_parse_wake_reason(const char *text,
+                                         ch583_wake_reason_t *wake_reason)
+{
+    if (text == NULL || wake_reason == NULL) {
+        return false;
+    }
+    static const struct {
+        const char *text;
+        ch583_wake_reason_t value;
+    } reasons[] = {
+        {"BOOT", CH583_WAKE_REASON_BOOT},
+        {"USB", CH583_WAKE_REASON_USB},
+        {"KEY_PB1", CH583_WAKE_REASON_KEY_PB1},
+        {"KEY_PB2", CH583_WAKE_REASON_KEY_PB2},
+        {"BLE_CONNECT", CH583_WAKE_REASON_BLE_CONNECT},
+        {"BLE_WRITE", CH583_WAKE_REASON_BLE_WRITE},
+        {"NFC", CH583_WAKE_REASON_NFC},
+        {"TIMER", CH583_WAKE_REASON_TIMER},
+        {"UNKNOWN", CH583_WAKE_REASON_UNKNOWN},
+    };
+    for (size_t i = 0; i < sizeof(reasons) / sizeof(reasons[0]); ++i) {
+        if (strcmp(text, reasons[i].text) == 0) {
+            *wake_reason = reasons[i].value;
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char *ch583_wifi_wake_reason_to_string(ch583_wake_reason_t wake_reason)
+{
+    switch (wake_reason) {
+    case CH583_WAKE_REASON_BOOT: return "BOOT";
+    case CH583_WAKE_REASON_USB: return "USB";
+    case CH583_WAKE_REASON_KEY_PB1: return "KEY_PB1";
+    case CH583_WAKE_REASON_KEY_PB2: return "KEY_PB2";
+    case CH583_WAKE_REASON_BLE_CONNECT: return "BLE_CONNECT";
+    case CH583_WAKE_REASON_BLE_WRITE: return "BLE_WRITE";
+    case CH583_WAKE_REASON_NFC: return "NFC";
+    case CH583_WAKE_REASON_TIMER: return "TIMER";
+    case CH583_WAKE_REASON_UNKNOWN: return "UNKNOWN";
+    default: return "INVALID";
+    }
+}
+
 static ch583_wifi_device_info_parse_result_t ch583_wifi_parse_device_info_arg(
     const ch583_wifi_frame_t *frame,
     ch583_wifi_device_info_t *device_info)
 {
     char arg_copy[CH583_DEVICE_INFO_ARG_MAX_LEN + 1];
-    char *fields[4] = {0};
+    char *fields[5] = {0};
     char *separator = NULL;
 
     if (frame == NULL || device_info == NULL || frame->arg == NULL ||
@@ -621,7 +676,7 @@ static ch583_wifi_device_info_parse_result_t ch583_wifi_parse_device_info_arg(
 
     memcpy(arg_copy, frame->arg, frame->arg_len + 1);
     fields[0] = arg_copy;
-    for (size_t i = 1; i < 4; ++i) {
+    for (size_t i = 1; i < 5; ++i) {
         separator = strchr(fields[i - 1], ',');
         if (separator == NULL) {
             return CH583_DEVICE_INFO_PARSE_BAD_ARG;
@@ -630,7 +685,7 @@ static ch583_wifi_device_info_parse_result_t ch583_wifi_parse_device_info_arg(
         fields[i] = separator + 1;
     }
 
-    if (strchr(fields[3], ',') != NULL ||
+    if (strchr(fields[4], ',') != NULL ||
         strlen(fields[0]) != CH583_DEVICE_INFO_MAC_HEX_LEN ||
         !ch583_wifi_is_upper_hex_string(fields[0], CH583_DEVICE_INFO_MAC_HEX_LEN) ||
         strlen(fields[1]) == 0 ||
@@ -639,7 +694,8 @@ static ch583_wifi_device_info_parse_result_t ch583_wifi_parse_device_info_arg(
         strlen(fields[2]) != 1 ||
         (fields[2][0] != CH583_DEVICE_INFO_SCREEN_TYPE_133 &&
          fields[2][0] != CH583_DEVICE_INFO_SCREEN_TYPE_709) ||
-        !ch583_wifi_parse_hex_byte(fields[3], &device_info->board_info)) {
+        !ch583_wifi_parse_hex_byte(fields[3], &device_info->board_info) ||
+        !ch583_wifi_parse_wake_reason(fields[4], &device_info->wake_reason)) {
         return CH583_DEVICE_INFO_PARSE_BAD_ARG;
     }
 
@@ -876,6 +932,34 @@ static void ch583_wifi_reset_ble_join(void)
     s_ble_len = 0;
 }
 
+static bool ch583_wifi_admit_and_ack_ble_data(
+    uint16_t seq,
+    const char *data,
+    ch583_wifi_ble_data_callback_t ble_data_callback)
+{
+    if (ble_data_callback == NULL) {
+        return ch583_wifi_send_ack(seq) == 0;
+    }
+
+    esp_err_t ret =
+        ble_data_callback(data, CH583_WIFI_BLE_DATA_ADMIT);
+    if (ret != ESP_OK) {
+        ch583_wifi_send_err(seq, ret == ESP_ERR_NO_MEM ? "NO_MEM" : "BUSY");
+        return false;
+    }
+    if (ch583_wifi_send_ack(seq) != 0) {
+        (void)ble_data_callback(NULL, CH583_WIFI_BLE_DATA_CANCEL);
+        return false;
+    }
+    ret = ble_data_callback(NULL, CH583_WIFI_BLE_DATA_COMMIT);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "BLE_DATA commit failed after ACK seq=%u ret=%s",
+                 (unsigned int)seq, esp_err_to_name(ret));
+        return false;
+    }
+    return true;
+}
+
 static bool ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame,
                                        ch583_wifi_ble_data_callback_t ble_data_callback)
 {
@@ -890,18 +974,15 @@ static bool ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame,
                (unsigned int)frame->arg_len,
                frame->arg);
         ServerNetworkStaWifiWorkTime_OnCh583Activity();
-        ch583_wifi_send_ack(frame->seq);
         if (activity_active) {
             UserLedStatus_ActivityBegin(USER_LED_ACTIVITY_UART_RX);
         }
-        if (ble_data_callback != NULL) {
-            // Pass only ARG Data to the WiFi JSON handler, not the whole UART protocol frame.
-            ble_data_callback(frame->arg);
-        }
+        bool accepted = ch583_wifi_admit_and_ack_ble_data(
+            frame->seq, frame->arg, ble_data_callback);
         if (activity_active) {
             UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_UART_RX);
         }
-        return true;
+        return accepted;
     }
 
     if (frame->part == 1) {
@@ -944,19 +1025,43 @@ static bool ch583_wifi_handle_ble_data(const ch583_wifi_frame_t *frame,
     s_ble_len += frame->arg_len;
     s_ble_buf[s_ble_len] = '\0';
     s_ble_expected_part++;
-    ch583_wifi_send_ack(frame->seq);
-
     if (frame->part == frame->total) {
         CH583_WIFI_DEBUG_PRINTF("CH583_PROTO ble join done seq=%u total_len=%u\r\n",
                (unsigned int)frame->seq,
                (unsigned int)s_ble_len);
-        if (ble_data_callback != NULL) {
-            // Pass the reassembled ARG Data as one string so upper JSON logic sees the original BLE write.
-            ble_data_callback(s_ble_buf);
-        }
+        bool accepted = ch583_wifi_admit_and_ack_ble_data(
+            frame->seq, s_ble_buf, ble_data_callback);
         ch583_wifi_reset_ble_join();
+        return accepted;
     }
+    ch583_wifi_send_ack(frame->seq);
     return true;
+}
+
+static const char *ch583_wifi_key_action_to_string(ch583_key_id_t key)
+{
+    return key == CH583_KEY_PB2 ? "LOCAL_BROWSING" : "FACTORY_RESET";
+}
+
+static esp_err_t ch583_wifi_dispatch_key_action(ch583_key_source_t source,
+                                                ch583_key_id_t key,
+                                                uint16_t protocol_seq)
+{
+    if (key == CH583_KEY_PB2) {
+        local_image_browsing_trigger_t trigger =
+            source == CH583_KEY_SOURCE_DEVICE_INFO
+                ? LOCAL_IMAGE_BROWSING_TRIGGER_DEVICE_INFO_KEY_PB2
+                : LOCAL_IMAGE_BROWSING_TRIGGER_KEY_EVENT_PB2_PRESS;
+        return LocalImageBrowsing_RequestNext(trigger, protocol_seq);
+    }
+    if (key == CH583_KEY_PB1) {
+        factory_reset_trigger_t trigger =
+            source == CH583_KEY_SOURCE_DEVICE_INFO
+                ? FACTORY_RESET_TRIGGER_DEVICE_INFO_KEY_PB1
+                : FACTORY_RESET_TRIGGER_KEY_EVENT_PB1_PRESS;
+        return FactoryReset_Request(trigger, protocol_seq);
+    }
+    return ESP_ERR_INVALID_ARG;
 }
 
 static void ch583_wifi_handle_device_info(const ch583_wifi_frame_t *frame)
@@ -1067,15 +1172,19 @@ static void ch583_wifi_handle_device_info(const ch583_wifi_frame_t *frame)
 
     s_device_info_received = true;
     if (was_received) {
-        ESP_LOGW(TAG, "DEVICE_INFO repeated seq=%u, ACK sent again", (unsigned int)frame->seq);
+        ESP_LOGW(TAG, "DEVICE_INFO repeated seq=%u wake_reason=%s, ACK sent again",
+                 (unsigned int)frame->seq,
+                 ch583_wifi_wake_reason_to_string(device_info.wake_reason));
     } else {
         ESP_LOGI(TAG,
-                 "DEVICE_INFO synced seq=%u MAC=%s BLE version=%u screen=%c board=%02X reported_epd=%u active_epd=%u saved_changed=%d",
+                 "DEVICE_INFO synced seq=%u MAC=%s BLE version=%u screen=%c board=%02X wake_reason=%s(%u) reported_epd=%u active_epd=%u saved_changed=%d",
                  (unsigned int)frame->seq,
                  s_ble_mac,
                  (unsigned int)s_ble_ver,
                  device_info.screen_type,
                  (unsigned int)device_info.board_info,
+                 ch583_wifi_wake_reason_to_string(device_info.wake_reason),
+                 (unsigned int)device_info.wake_reason,
                  (unsigned int)device_info.epd_type,
                  (unsigned int)EPD_type,
                  epd_saved_changed ? 1 : 0);
@@ -1103,6 +1212,95 @@ static void ch583_wifi_handle_device_info(const ch583_wifi_frame_t *frame)
             }
         }
     }
+
+    if (!was_received) {
+        ch583_key_id_t key = 0;
+        if (device_info.wake_reason == CH583_WAKE_REASON_KEY_PB1) {
+            key = CH583_KEY_PB1;
+        } else if (device_info.wake_reason == CH583_WAKE_REASON_KEY_PB2) {
+            key = CH583_KEY_PB2;
+        }
+        if (key != 0) {
+            esp_err_t action_ret = ch583_wifi_dispatch_key_action(
+                CH583_KEY_SOURCE_DEVICE_INFO, key, frame->seq);
+            if (action_ret == ESP_OK) {
+                ESP_LOGI(TAG,
+                         "DEVICE_INFO key action seq=%u key=PB%u action=%s",
+                         (unsigned int)frame->seq,
+                         (unsigned int)key,
+                         ch583_wifi_key_action_to_string(key));
+            } else {
+                ESP_LOGE(TAG,
+                         "DEVICE_INFO key action request failed seq=%u key=PB%u action=%s ret=%s",
+                         (unsigned int)frame->seq,
+                         (unsigned int)key,
+                         ch583_wifi_key_action_to_string(key),
+                         esp_err_to_name(action_ret));
+            }
+        }
+    }
+}
+
+static void ch583_wifi_handle_key_event(const ch583_wifi_frame_t *frame)
+{
+    if (frame == NULL) {
+        return;
+    }
+    if (frame->part != 1 || frame->total != 1) {
+        ESP_LOGE(TAG, "KEY_EVENT bad part seq=%u part=%u total=%u",
+                 (unsigned int)frame->seq,
+                 (unsigned int)frame->part,
+                 (unsigned int)frame->total);
+        ch583_wifi_send_err(frame->seq, "BAD_PART");
+        return;
+    }
+    ch583_key_id_t key;
+    if (frame->arg_len == strlen(LOCAL_IMAGE_BROWSING_KEY_EVENT_ARG) &&
+        strcmp(frame->arg, LOCAL_IMAGE_BROWSING_KEY_EVENT_ARG) == 0) {
+        key = CH583_KEY_PB2;
+    } else if (strcmp(frame->arg, "PB1,PRESS") == 0) {
+        key = CH583_KEY_PB1;
+    } else {
+        ESP_LOGE(TAG, "KEY_EVENT bad arg seq=%u len=%u arg=%s",
+                 (unsigned int)frame->seq,
+                 (unsigned int)frame->arg_len,
+                 frame->arg);
+        ch583_wifi_send_err(frame->seq, "BAD_ARG");
+        return;
+    }
+
+    ServerNetworkStaWifiWorkTime_OnCh583Activity();
+    if (ch583_wifi_send_ack(frame->seq) != 0) {
+        ESP_LOGE(TAG, "KEY_EVENT ACK send failed seq=%u", (unsigned int)frame->seq);
+        return;
+    }
+    if (s_key_event_seq_seen && s_last_key_event_seq == frame->seq) {
+        ESP_LOGI(TAG,
+                 "KEY_EVENT duplicate seq=%u key=PB%u, ACK sent without repeat action",
+                 (unsigned int)frame->seq,
+                 (unsigned int)key);
+        return;
+    }
+    s_key_event_seq_seen = true;
+    s_last_key_event_seq = frame->seq;
+
+    esp_err_t action_ret = ch583_wifi_dispatch_key_action(
+        CH583_KEY_SOURCE_KEY_EVENT, key, frame->seq);
+    const char *action = ch583_wifi_key_action_to_string(key);
+    if (action_ret == ESP_OK) {
+        ESP_LOGI(TAG,
+                 "KEY_EVENT accepted seq=%u key=PB%u action=%s",
+                 (unsigned int)frame->seq,
+                 (unsigned int)key,
+                 action);
+    } else {
+        ESP_LOGE(TAG,
+                 "KEY_EVENT action request failed seq=%u key=PB%u action=%s ret=%s",
+                 (unsigned int)frame->seq,
+                 (unsigned int)key,
+                 action,
+                 esp_err_to_name(action_ret));
+    }
 }
 
 static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_callback_t ble_data_callback)
@@ -1119,6 +1317,8 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
         return;
     }
 
+    CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
+           (unsigned int)frame.seq, frame.cmd, frame.arg);
     CH583_WIFI_DEBUG_PRINTF("CH583_PROTO rx seq=%u cmd=%s len=%u part=%u total=%u crc=%04X arg=%s\r\n",
            (unsigned int)frame.seq,
            frame.cmd,
@@ -1135,30 +1335,17 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
     ch583_wifi_check_rx_seq_gap(&frame);
     if (strcmp(frame.cmd, CH583_DEVICE_INFO_CMD) == 0) {
         ch583_wifi_handle_device_info(&frame);
+    } else if (strcmp(frame.cmd, CH583_KEY_EVENT_CMD) == 0) {
+        ch583_wifi_handle_key_event(&frame);
     } else if (strcmp(frame.cmd, "PING") == 0) {
         char arg[8];
         snprintf(arg, sizeof(arg), "%u", (unsigned int)frame.seq);
         if (ch583_wifi_send_frame("PONG", arg, 0) != 0) {
             ESP_LOGE(TAG, "PONG send failed seq=%u", (unsigned int)frame.seq);
         }
-#if CH583_WIFI_VER_COMPAT_ON_PING_ENABLE
-        if (!s_device_info_received && !s_compat_wifi_ver_sent) {
-            if (ch583_wifi_uart_send_wifi_ver(ch583_wifi_get_current_wifi_ver()) == 0) {
-                s_compat_wifi_ver_sent = true;
-                ESP_LOGI(TAG, "WIFI_VER sent for continued CH583 session before DEVICE_INFO");
-            } else {
-                ESP_LOGE(TAG, "WIFI_VER compatibility send failed before DEVICE_INFO");
-            }
-        }
-#endif
-
-       // CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
-       //      (unsigned int)frame.seq,frame.cmd,frame.arg);
     } else if (strcmp(frame.cmd, "BLE_DATA") == 0) {
         // Only a validated BLE_DATA frame received from CH583 may interrupt the rail-off test.
         EpdSdPowerTest_OnCh583BleDataReceived();
-        CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
-           (unsigned int)frame.seq,frame.cmd,frame.arg);
         if (ch583_wifi_handle_ble_data(&frame, ble_data_callback)) {
             // Preserve the original full work timer reset only for accepted BLE data.
             ServerNetworkStaWifiWorkTime_OnNetworkData();
@@ -1169,10 +1356,6 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
                strcmp(frame.cmd, "GPIO_VALUE") == 0 ||
                strcmp(frame.cmd, "TIME_STATUS") == 0 ||
                strcmp(frame.cmd, "NFC_STATUS") == 0) {
-
-      CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
-           (unsigned int)frame.seq,frame.cmd,frame.arg);
-
         if (strcmp(frame.cmd, "TIME_STATUS") == 0) {
             ServerNetworkStaTime_OnCh583TimeStatus(frame.arg);
         }
@@ -1269,7 +1452,7 @@ int ch583_wifi_uart_send_wifi_provision_status(uint8_t status)
     s_wifi_provision_status_valid = true;
 
     uint8_t mode = EpdDisplayMode_Get();
-    if (mode > USER_EPD_DISPLAY_MODE_DAILY) {
+    if (mode > USER_EPD_DISPLAY_MODE_LOCAL_IMAGE_BROWSING) {
         mode = USER_EPD_DISPLAY_MODE_NORMAL;
     }
     uint8_t provision_nibble = (status == 1U) ? 0x5U : 0x4U;
@@ -1306,8 +1489,8 @@ int ch583_wifi_uart_send_wifi_provision_before_power_off(bool slideshow_enabled)
 int ch583_wifi_uart_send_wifi_provision_mode_before_power_off(uint8_t mode)
 {
     // This is a one-shot CH583 notification. Do not update the cached provision
-    // status or persistent EPD mode. NORMAL uses standby while scheduled modes
-    // remain visible to CH583 so their wake policy is not overwritten at shutdown.
+    // status or persistent EPD mode. Non-scheduled NORMAL and local browsing use
+    // standby while scheduled modes remain visible for CH583 wake policy.
     uint8_t provision_status = s_wifi_provision_status_valid ? s_wifi_provision_status : 0U;
     uint8_t provision_nibble = (provision_status == 1U) ? 0x5U : 0x4U;
     uint8_t shutdown_mode;

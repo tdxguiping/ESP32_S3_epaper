@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ble_data_handler.h"
@@ -18,8 +19,14 @@
 static const char *TAG = "ch583_uart";
 static QueueHandle_t s_ch583_uart_event_queue;
 static bool s_ch583_uart_started;
+static QueueHandle_t s_ble_data_business_queue;
+static TaskHandle_t s_ble_data_business_task;
+static volatile bool s_ble_data_business_ready;
+static volatile uint32_t s_deferred_ble_data_count;
+static char *s_pending_ble_data_admission;
+static bool s_pending_ble_data_deferred;
 
-static void Ch583Uart_HandleBleDataText(const char *data)
+static void Ch583Uart_DispatchBleDataText(const char *data)
 {
     if (data == NULL || data[0] == '\0') {
         ESP_LOGI(TAG, "CH583 BLE_DATA empty");
@@ -27,10 +34,93 @@ static void Ch583Uart_HandleBleDataText(const char *data)
         return;
     }
 
-    // Keep CH583 BLE_DATA visible during bring-up until the current project has a real command dispatcher.
-    /* 中文：当前工程接入真实命令分发前先打印 CH583 BLE_DATA，便于确认协议链路。 */
-    // ESP_LOGI(TAG, "CH583 BLE_DATA text=%s", data);
     User_HandleWifiJsonTextFromCh583(data);
+}
+
+static void Ch583Uart_BleDataBusinessTask(void *argument)
+{
+    (void)argument;
+    for (;;) {
+        while (!__atomic_load_n(&s_ble_data_business_ready, __ATOMIC_ACQUIRE)) {
+            (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        }
+        char *data = NULL;
+        if (xQueueReceive(s_ble_data_business_queue, &data, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        Ch583Uart_DispatchBleDataText(data != NULL ? data : "");
+        free(data);
+    }
+}
+
+static esp_err_t Ch583Uart_HandleBleDataText(
+    const char *data,
+    ch583_wifi_ble_data_action_t action)
+{
+    if (action == CH583_WIFI_BLE_DATA_CANCEL) {
+        free(s_pending_ble_data_admission);
+        s_pending_ble_data_admission = NULL;
+        s_pending_ble_data_deferred = false;
+        return ESP_OK;
+    }
+    if (action == CH583_WIFI_BLE_DATA_COMMIT) {
+        if (s_pending_ble_data_admission == NULL ||
+            s_ble_data_business_queue == NULL) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        char *accepted = s_pending_ble_data_admission;
+        bool deferred = s_pending_ble_data_deferred;
+        s_pending_ble_data_admission = NULL;
+        s_pending_ble_data_deferred = false;
+        if (xQueueSend(s_ble_data_business_queue, &accepted, 0) != pdTRUE) {
+            ESP_LOGE(TAG, "BLE_DATA reserved queue commit failed");
+            free(accepted);
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (deferred &&
+            !__atomic_load_n(&s_ble_data_business_ready, __ATOMIC_ACQUIRE)) {
+            uint32_t deferred_count =
+                __atomic_add_fetch(&s_deferred_ble_data_count,
+                                   1U,
+                                   __ATOMIC_ACQ_REL);
+            ESP_LOGI(TAG, "startup BLE_DATA deferred count=%lu",
+                     (unsigned long)deferred_count);
+        }
+        return ESP_OK;
+    }
+    if (action != CH583_WIFI_BLE_DATA_ADMIT || data == NULL ||
+        s_ble_data_business_queue == NULL || s_pending_ble_data_admission != NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (uxQueueSpacesAvailable(s_ble_data_business_queue) == 0U) {
+        ESP_LOGE(TAG, "BLE_DATA business queue full len=%u",
+                 (unsigned int)strlen(data));
+        return ESP_ERR_TIMEOUT;
+    }
+    size_t data_len = strlen(data);
+    char *copy = (char *)malloc(data_len + 1U);
+    if (copy == NULL) {
+        ESP_LOGE(TAG, "BLE_DATA queue alloc failed len=%u", (unsigned int)data_len);
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(copy, data, data_len + 1U);
+    s_pending_ble_data_admission = copy;
+    s_pending_ble_data_deferred =
+        !__atomic_load_n(&s_ble_data_business_ready, __ATOMIC_ACQUIRE);
+    return ESP_OK;
+}
+
+void Ch583UartApp_SetBleDataBusinessReady(void)
+{
+    __atomic_store_n(&s_ble_data_business_ready, true, __ATOMIC_RELEASE);
+    if (s_ble_data_business_task != NULL) {
+        xTaskNotifyGive(s_ble_data_business_task);
+    }
+    uint32_t deferred = __atomic_exchange_n(&s_deferred_ble_data_count,
+                                             0U,
+                                             __ATOMIC_ACQ_REL);
+    ESP_LOGI(TAG, "BLE_DATA business ready deferred=%lu",
+             (unsigned long)deferred);
 }
 
 static void Ch583Uart_ReadAndProcess(size_t rx_size)
@@ -155,6 +245,27 @@ esp_err_t Ch583UartApp_Init(void)
         ESP_LOGW(TAG, "CH583 UART already started");
         ServerNetworkStaWifiWorkTime_OnCh583Initialized();
         return ESP_OK;
+    }
+
+    if (s_ble_data_business_queue == NULL) {
+        s_ble_data_business_queue =
+            xQueueCreate(CH583_BLE_DATA_STARTUP_QUEUE_LENGTH, sizeof(char *));
+        if (s_ble_data_business_queue == NULL) {
+            ESP_LOGE(TAG, "create BLE_DATA business queue failed");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (s_ble_data_business_task == NULL) {
+        if (xTaskCreate(Ch583Uart_BleDataBusinessTask,
+                        "ch583_ble_data",
+                        CH583_BLE_DATA_BUSINESS_TASK_STACK_SIZE,
+                        NULL,
+                        CH583_BLE_DATA_BUSINESS_TASK_PRIORITY,
+                        &s_ble_data_business_task) != pdPASS) {
+            s_ble_data_business_task = NULL;
+            ESP_LOGE(TAG, "create BLE_DATA business task failed");
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     uart_config_t uart_config = {

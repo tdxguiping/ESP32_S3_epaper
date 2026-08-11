@@ -38,6 +38,8 @@ bool ServerNetworkStaSlideshow_GetScheduleTiming(uint32_t *interval,
                                                  uint32_t *remain,
                                                  bool *running);
 void ServerNetworkStaSlideshow_Stop(void);
+// Stop the slideshow and wait until its worker releases all runtime state.
+esp_err_t ServerNetworkStaSlideshow_StopAndWait(void);
 
 #ifdef __cplusplus
 }

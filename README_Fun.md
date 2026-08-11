@@ -19,6 +19,7 @@
 - [1. 启动总流程](#sec-01)
 - [3. NVS 配置读写](#sec-03)
 - [4. 存储挂载：SD / SPIFFS](#sec-04)
+- [Local Image Browsing 本地图片浏览](#sec-local-image-browsing)
 - [7. 网络 HTTP 功能汇总](#sec-07)
   - [7.1 cast：投屏业务模块](#sec-07-1)
   - [7.2 cast2pic：投屏转图片缓存 / 显示](#sec-07-2)
@@ -33,7 +34,7 @@
   - [7.11 upload：上传并保存图片](#sec-07-11)
   - [7.12 wifi_work_time：WiFi 省电管理](#sec-07-12)
   - [7.13 time：RTC 默认时间与 SNTP 校时](#sec-07-13)
-  - [7.14 factory_reset：GPIO28 长按恢复出厂](#sec-07-14)
+  - [7.14 factory_reset：GPIO28/PB1 恢复出厂](#sec-07-14)
   - [7.15 daily_download_file：每日一图](#sec-07-15)
     - [7.15.1 Mermaid 时序图](#sec-07-15-1)
     - [7.15.2 相关目录](#sec-07-15-2)
@@ -70,7 +71,7 @@
 | OTA | OTA update partition；boot partition 选择 | 请求必须被识别为 `/ota` 或 `/ota_upload`；body 不超过 `SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE=6MB`；meta/firmware 字段可解析；固件 magic、app_desc、版本、长度和目标分区大小检查通过；写入成功后才设置 boot partition；成功响应固定以 `ota_result` 作为最后一条 JSON，HTTP handler 返回后由 OTA 专用任务延时自动复位 | 读取 meta JSON、firmware/bin 字段、running partition、next update partition、app desc 和 OTA 状态；OTA 接收与写入使用独立 power hold，任一阶段进行中都不发送 `POWER_OFF`；等待复位期间保留 OTA 成功状态 |
 | EPD 类型 | `PhotoPainter:epd_type` | 只允许保存 `EpdType_GetConfig(type)` 能找到的合法type；未变化时跳过写入；非法type返回 `ESP_ERR_INVALID_ARG` | 启动优先读取 `epd_type`；不存在或无效时回退 `USER_EPD_TYPE_DEFAULT`；DEVICE_INFO上报类型只保存供下次启动使用，不切换本次运行的显示驱动 |
 | EPD 显示队列 | RAM 队列 `s_epd_display_queue` | 队列长度受 `USER_EPD_DISPLAY_QUEUE_LENGTH=2` 限制；入队前需要分配/复制 display buffer；显示数据大小应匹配当前屏幕 `display_size`；队列满或内存不足则失败 | `ServerNetworkStaEpdDisplay_Task()` 从队列取 buffer，根据 EPD type 调用具体驱动 |
-| CH583 DEVICE_INFO | `PhotoPainter:ch583_ble_mac`、`PhotoPainter:ch583_ble_ver`、`PhotoPainter:epd_type` | 收到合法 `DEVICE_INFO` 后解析并保存MAC、CH583版本和映射后的EPD类型；EPD类型通过 `EpdType_SaveForNextBoot()` 保存，全部成功后回复ACK，但它不是ESP32通信准入条件 | 本次启动的EPD驱动始终采用启动时NVS合法值或默认值，迟到DEVICE_INFO不在运行中切换驱动；PING、BLE_DATA和主动发送仍正常运行 |
+| CH583 DEVICE_INFO | `PhotoPainter:ch583_ble_mac`、`PhotoPainter:ch583_ble_ver`、`PhotoPainter:epd_type` | 收到合法 `DEVICE_INFO` 后解析并保存MAC、CH583版本和映射后的EPD类型；EPD类型通过 `EpdType_SaveForNextBoot()` 保存，全部成功后回复ACK；首次ACK后 `KEY_PB2` 浏览本地图片、`KEY_PB1` 请求恢复出厂 | 本次启动的EPD驱动始终采用启动时NVS合法值或默认值，迟到DEVICE_INFO不在运行中切换驱动；重复DEVICE_INFO只重发ACK，不重复按键业务。合法KEY_EVENT不依赖DEVICE_INFO；启动依赖未就绪时PB2进入本地浏览FIFO，PB1进入Factory Reset单请求状态。完整通信规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image) |
 | USB 请求 / worker | RAM request buffer、response buffer、worker queue | 请求头/body 受 `USB_CONSOLE_HTTP_HEADER_MAX`、`USB_CONSOLE_HTTP_BODY_MAX` 限制；worker queue 长度受 `USB_CONSOLE_WORKER_QUEUE_LENGTH=4` 限制 | `UsbConsoleEcho_Task()` 读取 USB Serial/JTAG 数据，router/worker 取任务执行 |
 
 图片显示与保存说明：
@@ -350,7 +351,7 @@ sequenceDiagram
 
 主要调用：
 - EPD 类型保存 / 读取。
-- EPD 显示模式保存 / 读取：PhotoPainter:epd_mode，u8，0=NORMAL，1=SLIDESHOW，2=DAILY。
+- EPD 显示模式保存 / 读取：PhotoPainter:epd_mode，u8，0=NORMAL，1=SLIDESHOW，2=DAILY，3=LOCAL_IMAGE_BROWSING。
 - CH583 BLE MAC 保存 / 读取。
 - WiFi 工作时间字符串兼容保存 / 读取。
 - 独立轮播控制写入show_control.txt后同步模式：sw=1写SLIDESHOW，sw=0写NORMAL。每日一图启用会先停止轮播，再显式写DAILY；cast/cast2pic写NORMAL。
@@ -2029,9 +2030,9 @@ SNTP 同步成功响应示例：
 
 ---
 
-### 7.14 factory_reset：GPIO28 长按恢复出厂 <span id="sec-07-14"></span>
+### 7.14 factory_reset：GPIO28/PB1 恢复出厂 <span id="sec-07-14"></span>
 
-功能说明：GPIO28 用作本地恢复出厂按键。GPIO28 默认高电平，按下为低电平。设备每 300 ms 检测一次，只有连续低电平达到 `TDX_FACTORY_RESET_HOLD_MS=5000` ms 才触发；5 秒内任意一次采样为高电平，本次按键无效并重新计时。
+功能说明：GPIO28继续作为本地恢复出厂按键，默认高电平、按下为低电平，每300ms检测并要求连续低电平达到 `TDX_FACTORY_RESET_HOLD_MS=5000` ms。CH583的PB1通过首次 `DEVICE_INFO.wake_reason=KEY_PB1` 或合法的 `KEY_EVENT ARG=PB1,PRESS` 提交同一恢复出厂逻辑；KEY_EVENT不依赖DEVICE_INFO状态，UART任务只保存RAM请求，由原有Factory Reset任务执行。帧格式及USB独立重启规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 
 安全边界：
 
@@ -2066,12 +2067,14 @@ OTA 状态
 EPD busy 时不检测 GPIO28，不累计按键时间。
 只有 EPD IDLE 时，GPIO28 task 才读取按键。
 短按或误按不设置关机保护；只有连续低电平达到 5000 ms、正式确认执行恢复出厂后，才在删除文件和修改 NVS 前设置 Factory Reset guard，阻止普通 work_state_task 抢先关机。
+PB1请求使用IDLE/PENDING/RUNNING/COMPLETED RAM状态合并重复帧；请求早于Factory Reset初始化时先保留PENDING，任务创建成功后补设guard，任务已就绪时接受请求后立即设guard并等待EPD空闲。
 触发后先停止轮播，再删除 upload/slideshow 图片、cast/cast2pic 缓存图片和轮播配置。
 先把 `epd_mode` 强制保存为 `USER_EPD_DISPLAY_MODE_DEFAULT`；即使当前已经是默认模式也重新写入并读回校验。只有保存成功后才删除 `daily_cfg`，避免运行中的 daily worker 恢复已清除配置。
-文件不存在按无需删除处理；实际文件删除失败、路径过长或目录读取错误进入最终 `ret`，恢复失败时不提交 CH583 关机请求。
-全部清理成功后发送未配网 WIFI_PROVISION，并向 work_state_task 提交 Factory Reset 专用关机请求。
+文件不存在按无需删除处理；实际文件删除失败、路径过长或目录读取错误进入最终 `ret`，恢复失败时不显示欢迎图，也不提交 CH583 关机请求。
+全部清理成功后，使用固件内置的 `DOC/welcome.bin` zlib 常量显示欢迎图，并同步等待 EPD 实际完成。当前同步等待上限为5分钟，可覆盖约40～50秒的正常刷新时间；不使用固定延时推测显示完成。
+欢迎图显示成功后发送未配网 WIFI_PROVISION，并向 work_state_task 提交 Factory Reset 专用关机请求；尺寸不匹配、解压、入队或显示失败时记录关键错误且不提交该请求。
 成功时先发布专用关机请求再清除 Factory Reset guard；失败时不发布专用请求并清除 guard。无论成功或失败 guard 都必须清除。
-work_state_task 固定发送 WAKE_TIMER ON,10，再沿用 LED、SPI 和 busy 复检发送 POWER_OFF；CH583 断电计时 10 秒后重新给 ESP32/WiFi 上电。
+只有欢迎图显示完成后，work_state_task 才固定发送 WAKE_TIMER ON,10，再沿用 LED、SPI 和 busy 复检发送 POWER_OFF；CH583关闭ESP32电源并计时10秒后重新供电，随后以 `DEVICE_INFO.wake_reason=TIMER` 完成新一轮冷启动握手，不得继续上报KEY_PB1。
 Factory Reset 专用请求不写工作时间 NVS，不修改普通 wifi_work_time、轮播或 DAILY 关机规则。
 长按触发后进入等待松手状态；GPIO28 恢复高电平前不会再次触发。
 TDX_FACTORY_RESET_RESTART_AFTER_DONE 保持为 0；重新上电由 CH583 WAKE_TIMER 完成。
@@ -2082,7 +2085,8 @@ TDX_FACTORY_RESET_RESTART_AFTER_DONE 保持为 0；重新上电由 CH583 WAKE_TI
 ```text
 factory reset gpio init pin=28 active=0 check_ms=300 hold_ms=5000
 factory reset button held gpio=28 hold_ms=5100, start clear images
-factory reset done ret=ESP_OK upload_bin_deleted=... upload_jpg_deleted=... cast_bin_deleted=... cast_jpg_deleted=... cfg_deleted=... file_delete_failed=0 file_ret=ESP_OK nvs_ret=ESP_OK
+factory reset welcome display completed compressed_size=278250
+factory reset done source=GPIO28 seq=0 ret=ESP_OK upload_bin_deleted=... upload_jpg_deleted=... cast_bin_deleted=... cast_jpg_deleted=... cfg_deleted=... file_delete_failed=0 file_ret=ESP_OK nvs_ret=ESP_OK welcome_display_ret=ESP_OK
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -2191,7 +2195,7 @@ daily_download_file
 存：
 - PhotoPainter:daily_cfg保存版本、CRC、尺寸、orientation、api_url、timestamp、
   initial_run_pending、retry状态、last_daily_epd_epoch和last_completed_target_epoch。
-- PhotoPainter:epd_mode保存NORMAL/SLIDESHOW/DAILY；show_control.txt只用于停止轮播。
+- PhotoPainter:epd_mode保存NORMAL/SLIDESHOW/DAILY/LOCAL_IMAGE_BROWSING；show_control.txt只用于停止轮播。
 - BIN只在PSRAM中下载并交给EPD，不写SD；mbedTLS大块内存可按项目malloc策略进入PSRAM。
 - `api_url`和`dailyImageUrl`都必须直接返回HTTPS 2xx；当前关闭自动重定向，不接受30x。
 
@@ -2609,5 +2613,19 @@ main/data_compression/
 - zlib解压成功和压缩文件显示成功使用 `ESP_LOGI`，并输出输入、输出长度和耗时。
 - SD卡不是当前存储时使用 `ESP_LOGW` 跳过启动测试。
 - 文件读取、内存、zlib、解压长度或EPD显示失败使用 `ESP_LOGE`。
+
+## Local Image Browsing 本地图片浏览 <span id="sec-local-image-browsing"></span>
+
+`epd_mode=3(LOCAL_IMAGE_BROWSING)` 是独立持久模式。功能代码只位于 `main/local_image_browsing/`，专用宏统一定义在 `local_image_browsing.h`。启动读到模式3时恢复浏览游标，不启动 DAILY 或 SLIDESHOW，也不自动换图；首次 `DEVICE_INFO.wake_reason=KEY_PB2` 或合法的 `KEY_EVENT ARG=PB2,PRESS` 都可触发，KEY_EVENT不依赖DEVICE_INFO状态。UART早于本模块初始化收到的PB2事件进入长度为10的启动FIFO，初始化阶段按到达顺序逐个尝试；第一项预约EPD后，其余项仍按EPD BUSY规则拒绝，不合并也不丢失初始化交界点事件。帧格式及来源互斥规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
+
+BIN目录扫描直接复用模块内的文件列表，不在8 KB worker栈中创建约7.2 KB的临时列表。每次请求完成后只在任务栈最低余量小于 `LOCAL_IMAGE_BROWSING_STACK_WARNING_BYTES` 时打印警告，避免正常运行产生重复调试日志。
+
+每个新的、合法且 ACK 成功的 PB2 事件尝试一次换图；相同KEY_EVENT SEQ或重复DEVICE_INFO不重复执行业务。先通过 EPD 专用空闲预留原子判断 BUSY/IDLE：BUSY 时本次事件立即结束，不排队、不切模式、不推进游标；IDLE 时预留 EPD，停止并等待 DAILY/SLIDESHOW退出，保存模式3，再扫描 `/data/bin_img`。
+
+文件列表只包含普通、非空、精确小写 `.bin` 文件，不递归目录，不读取 cast_img、jpg_img、`.bin.zlib` 或其他扩展名。列表按不区分大小写的字典序排序，大小写相同时用区分大小写比较保证稳定。每次 PB2 请求重新扫描，最多保留150项。
+
+浏览状态保存在 `PhotoPainter:local_img_state`，包含版本、CRC32、事务状态、last/pending/next文件名和成功显示次数。显示前保存 `PREPARED`；显示成功后保存 `IDLE` 并推进 next。断电读到PREPARED时下次PB2重试同一张，避免跳图。目标文件不存在、已不是普通文件或为空时保存推进后的next并继续尝试下一项；单次最多尝试本次列表数量，全部无效时结束，禁止无限循环。内存、SPI、读取不完整、解压和EPD错误不按“文件不存在”跳过。
+
+CH583 UART可能早于本模块初始化。启动早期首次DEVICE_INFO中收到并成功ACK的PB2进入现有启动FIFO，本模块初始化完成后提交；重复DEVICE_INFO不重复入队，正常运行阶段BUSY事件不缓存。PB1不进入浏览FIFO，只进入Factory Reset单请求RAM状态。Factory Reset清除local_img_state并把epd_mode恢复默认值。
 
 [⬆ 返回目录](#toc)
