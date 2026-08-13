@@ -732,13 +732,13 @@ SPI DMA 分包规则：
 ```text
 EPD 显示数据可能来自 PSRAM。ESP-IDF SPI driver 对 PSRAM 源数据可能临时申请内部 DMA TX buffer；
 如果一次发送 30000/32768 bytes，在内部 DMA heap 碎片化时可能返回 ESP_ERR_NO_MEM。
-因此 EPD 大数据发送统一使用 NT61522_SPI_SAFE_DMA_TX_CHUNK=4092 bytes 小分包。
-spiTransmitData() 会兜底拆包；EPD_Sendbuffera()、EPD_WriteMultiData_ToMaster/Slave/Both() 也按同一安全分包发送。
-EPD_WriteMultiData_ToMaster/Slave/Both/Target() 返回 esp_err_t；任一 SPI transaction 失败时打印 ESP_LOGE，调用 EpdType_ReportDisplayFailure(ret)，并让本次 EPD 显示最终返回失败。
+因此 EPD 大数据发送统一使用 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072`，并由 `NT61522_SPI_SAFE_DMA_TX_CHUNK` 引用该配置。3072 bytes 低于实测碎片化场景的 3968 bytes 最大 DMA 空闲块。
+spiTransmitData() 会兜底拆包；EPD_Sendbuffera()、EPD_WriteMultiData_ToMaster/Slave/Both() 以及各屏型直接发送路径也按同一安全分包发送。
+EPD_Sendbuffera() 和 EPD_WriteMultiData_ToMaster/Slave/Both/Target() 返回 esp_err_t；任一 SPI transaction 失败时只打印关键 ESP_LOGE，调用 EpdType_ReportDisplayFailure(ret)，并让本次 EPD 显示最终返回失败。
+spiTransmitCommand() 发送失败时不使用断言终止系统；它打印一次包含命令和错误码的 ESP_LOGE、上报显示失败并返回原始错误。`USER_EPD_SPI_SAFE_DMA_TX_CHUNK` 带非0编译期检查，避免错误配置导致发送循环无法推进。
 NT61522_Display_net() 返回当前 EPD 显示结果；外层屏幕适配在数据加载失败时直接退出，不继续调用 update / refresh / sleep 刷新流程。
 直接调用 EPD_WriteMultiData_Target() 的屏幕适配也会在失败时停止后续数据加载/刷新流程，避免底层 SPI 已失败但上层仍继续按成功刷新。
-800x480、1024x600、1360x480、800x480 4S、DKE、mofang 等驱动若走上述底层函数，即自动受该规则保护。
-1024x600 旧直接 polling 路径本身使用 256 bytes 小包，不需要额外修改。
+800x480、1024x600、1600x1200 7.9/13.3、1360x480、800x480 4S、DKE、mofang 等驱动均受该规则保护。发送失败后当前驱动立即停止装载，外层不得继续 update/refresh，也不得把本地浏览或轮播游标按成功推进。
 ```
 
 存 / 取信息（含条件限制）：
@@ -814,7 +814,7 @@ type=EPD_TYPE_800_480, width=800, height=480, display_size=192000, color=BWR_3_C
 存：
 - 本驱动不写 SD/NVS；只向 EPD 控制器写命令和显示数据。
 - 是否保存屏幕类型由 EpdType_SetAndSave() 统一处理，不在本文件直接保存。
-- 帧数据通过 spiTransmitData() 发送，按 NT61522_SPI_SAFE_DMA_TX_CHUNK=4092 bytes 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
+- 帧数据通过 spiTransmitData() 发送，按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072` 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
 
 取：
 - 从 RAM buffer 读取待显示数据。
@@ -882,7 +882,7 @@ type=EPD_TYPE_1024_600, width=1024, height=600, display_size=307200, color=BWYRB
 存：
 - 本驱动不写 SD/NVS；只向 EPD 控制器写命令和显示数据。
 - 是否保存屏幕类型由 EpdType_SetAndSave() 统一处理，不在本文件直接保存。
-- 帧数据通过 spiTransmitData() 发送，按 NT61522_SPI_SAFE_DMA_TX_CHUNK=4092 bytes 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
+- 帧数据通过 spiTransmitData() 发送，按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072` 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
 
 取：
 - 从 RAM buffer 读取待显示数据。
@@ -1015,7 +1015,7 @@ type=EPD_TYPE_1600_1200_79, width=1600, height=1200, display_size=960000, color=
 实现说明：
 
 ```text
-- 帧数据通过 spiTransmitData() 发送，按 NT61522_SPI_SAFE_DMA_TX_CHUNK=4092 bytes 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
+- 帧数据通过 spiTransmitData() 发送，按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072` 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
 ```
 
 存 / 取信息（含条件限制）：
@@ -1089,7 +1089,7 @@ type=EPD_TYPE_1600_1200_133, width=1600, height=1200, display_size=960000, color
 实现说明：
 
 ```text
-- 帧数据通过 spiTransmitData() 发送，按 NT61522_SPI_SAFE_DMA_TX_CHUNK=4092 bytes 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
+- 帧数据通过 spiTransmitData() 发送，按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072` 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。首个发送错误立即中止MASTER/SLAVE数据装载并上报，本次不继续刷新。
 ```
 
 存 / 取信息（含条件限制）：
@@ -1185,7 +1185,7 @@ type=EPD_TYPE_1600_1200_133_DKE, width=1600, height=1200, display_size=960000, c
 - DKE 13.3 与 EPD_TYPE_1600_1200_133 分开实现，不复用兴泰 13.3 的初始化参数，避免影响已验证成功的兴泰屏。
 - DKE 参考工厂 EL133UF1.cpp / EPD_IO.cpp：初始化、分帧写入、PON/DRF/POF 更新和 sleep 参数独立维护。
 - 图像总长度 960000 bytes；MASTER 和 SLAVE 各写 480000 bytes。
-- DKE 帧数据按 4092 bytes 小分包调用 spiTransmitData()；轮播/投图数据常在 PSRAM，SPI driver 可能临时申请内部 DMA TX buffer，小分包可避免内部 DMA heap 碎片化时出现 `ESP_ERR_NO_MEM`。任一半帧写入失败时不继续 update，调用方不推进轮播进度。
+- DKE 帧数据按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072` 小分包调用 spiTransmitData()；轮播/投图数据常在 PSRAM，SPI driver 可能临时申请内部 DMA TX buffer，小分包可避免内部 DMA heap 碎片化时出现 `ESP_ERR_NO_MEM`。任一半帧写入失败时不继续 update，调用方不推进轮播进度。
 - 调试日志会打印 init、master write、slave write、update、busy timeout 等步骤，便于确认卡在哪个阶段。
 ```
 
@@ -2212,11 +2212,12 @@ main/server_network_sta/slideshow/server_network_sta_slideshow.h
 轮播容量与状态参考：
 
 - `TDX_SLIDESHOW_MAX_FILES=150`；该常量只控制轮播，`TDX_DELETE_MAX_FILES` 仍为 50。
+- `TDX_IMAGE_BASE_NAME_MAX_BYTES=16` 是 APP/USB 业务基础文件名上限；`TDX_IMAGE_BASE_NAME_BUFFER_SIZE=17` 包含字符串结尾，`TDX_SLIDESHOW_FILE_NAME_MAX_LEN` 是该缓冲区大小的兼容别名。multipart 原始 `filename` 仍使用 `SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX=96`，以便先保留完整输入再拒绝超长业务名；legacy multipart fallback 按去掉匹配的 `.bin/.jpg` 扩展名后的基础名执行相同上限。
 - `slideshow_progress_t.order_count`、`position` 和 `order[]` 使用 `uint8_t`，索引 `0..149` 在当前范围内安全；如果未来超过 255，必须先调整这些字段及配置 hash 中的数量编码。
 - APP 在 `random=true` 时负责将每个原始文件复制 3 次并打乱；ESP32-C5 允许最终列表重复、不再次随机，保存状态仍为 `random=false`。
 - `startIndex` 始终索引 APP 最终发送的列表，校验条件为 `startIndex < file_count`，不得再次乘 3。
 - 允许重复后，SNTP 开机恢复使用 `progress.order[progress.position]` 与目标索引比较，并同时核对 `pending_file`，不能只按文件名判断。
-- `slideshow_progress_t` 随 `order[]` 扩大而改变 blob 大小；旧 NVS `slide_progress` 会因大小不匹配返回 `ESP_ERR_INVALID_SIZE`，随后由现有流程按配置重建，不需要迁移或主动删除。
+- `slideshow_progress_t` 随名称缓冲区缩小而改变 blob 大小，progress version 同步升级；旧 NVS `slide_progress` 会因大小/版本不匹配由现有流程按配置重建，不需要迁移或主动删除。本地图片浏览持久化状态版本也同步升级并重建旧尺寸状态。
 - 网络 small JSON 仍受 `SERVER_NETWORK_STA_SMALL_JSON_BODY_MAX=4096` 限制，`slideshow_config` 生成缓冲仍为 `SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX=8192`；150 个当前常用的 16 位名称在这两个边界内，长名称组合必须单独核对请求总长度。
 
 ---
@@ -3015,7 +3016,7 @@ main/local_image_browsing/local_image_browsing.h
 └─ 初始化、请求、状态和Factory Reset接口
 
 main/local_image_browsing/local_image_browsing.c
-├─ /data/bin_img扫描与稳定排序
+├─ /data/bin_img常量内存扫描与稳定有序选择
 ├─ local_img_state NVS CRC32持久化
 ├─ PREPARED/IDLE断电事务
 ├─ 缺失文件有界跳过
@@ -3025,7 +3026,7 @@ main/local_image_browsing/local_image_browsing.c
 
 EPD显示模块增加空闲预留接口。预留建立后 `ServerNetworkStaEpdDisplay_IsBusy()` 返回true，普通显示入口在预留有效时拒绝新任务；本地浏览完成文件准备后消费预留并排队。EPD worker先发布active再减少pending，避免任务从队列取出时出现瞬时IDLE。
 
-本地浏览worker栈为8 KB。目录列表最大占用约7.2 KB，因此扫描过程直接构建模块级 `s_list`，禁止在 `refresh_list()` 或其调用链中复制完整列表到栈。worker在每次请求结束后检查栈最低余量，仅低于 `LOCAL_IMAGE_BROWSING_STACK_WARNING_BYTES` 时输出 `ESP_LOGW`。
+本地浏览worker栈为8 KB。扫描过程不保存完整目录列表，只在栈中保留全局最小两项、游标之后最小两项和扫描结果等少量17字节缓冲；模块级150项 `s_list` 已删除，静态内部RAM减少2556字节。算法保持原有不区分大小写优先、原始大小写次序补充的稳定顺序，并同时得到当前项、下一项和有效文件总数。worker在每次请求结束后检查栈最低余量，仅低于 `LOCAL_IMAGE_BROWSING_STACK_WARNING_BYTES` 时输出 `ESP_LOGW`。
 
 `ch583_wifi_uart_protocol.c` 仍拥有DEVICE_INFO保存和协议ACK/ERR，并通过一个统一按键分发函数保持两种来源的映射一致：PB2交给本地浏览模块，PB1交给Factory Reset异步请求。DEVICE_INFO严格解析五字段，首次成功ACK才执行该帧的wake_reason业务，重发只重ACK；合法KEY_EVENT不依赖DEVICE_INFO状态，相同SEQ只重ACK。PB3/PB4在业务未定义前返回BAD_ARG。完整通信规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 

@@ -37,10 +37,10 @@ typedef struct {
 } local_image_browsing_persisted_state_t;
 
 typedef struct {
-    char file_names[LOCAL_IMAGE_BROWSING_MAX_FILES]
-                   [LOCAL_IMAGE_BROWSING_FILE_NAME_MAX_LEN];
+    char selected_file[LOCAL_IMAGE_BROWSING_FILE_NAME_MAX_LEN];
+    char next_file[LOCAL_IMAGE_BROWSING_FILE_NAME_MAX_LEN];
     size_t file_count;
-} local_image_browsing_list_t;
+} local_image_browsing_scan_result_t;
 
 typedef struct {
     local_image_browsing_trigger_t trigger;
@@ -58,7 +58,6 @@ static local_image_browsing_request_t
 static size_t s_startup_request_head;
 static size_t s_startup_request_count;
 static char s_base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
-static local_image_browsing_list_t s_list;
 static local_image_browsing_persisted_state_t s_state;
 
 static const char *trigger_to_string(local_image_browsing_trigger_t trigger)
@@ -193,6 +192,12 @@ static bool bin_entry_name_valid(const char *entry_name,
     if (base_len == 0 || base_len >= base_name_size) {
         return false;
     }
+    for (size_t i = 0; i < base_len; ++i) {
+        unsigned char c = (unsigned char)entry_name[i];
+        if (c < 0x20U || c > 0x7EU) {
+            return false;
+        }
+    }
     memcpy(base_name, entry_name, base_len);
     base_name[base_len] = '\0';
     return true;
@@ -218,8 +223,35 @@ static bool build_bin_path(const char *file_name,
     return true;
 }
 
-static esp_err_t refresh_list(void)
+static void update_two_smallest(const char *file_name,
+                                char *smallest,
+                                char *second_smallest)
 {
+    if (smallest[0] == '\0' || file_name_compare(file_name, smallest) < 0) {
+        strlcpy(second_smallest,
+                smallest,
+                LOCAL_IMAGE_BROWSING_FILE_NAME_MAX_LEN);
+        strlcpy(smallest,
+                file_name,
+                LOCAL_IMAGE_BROWSING_FILE_NAME_MAX_LEN);
+    } else if (strcmp(file_name, smallest) != 0 &&
+               (second_smallest[0] == '\0' ||
+                file_name_compare(file_name, second_smallest) < 0)) {
+        strlcpy(second_smallest,
+                file_name,
+                LOCAL_IMAGE_BROWSING_FILE_NAME_MAX_LEN);
+    }
+}
+
+static esp_err_t scan_next_file(const char *reference_file,
+                                bool include_reference,
+                                local_image_browsing_scan_result_t *result)
+{
+    if (result == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(result, 0, sizeof(*result));
+
     char directory_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 24];
     snprintf(directory_path,
              sizeof(directory_path),
@@ -242,10 +274,13 @@ static esp_err_t refresh_list(void)
     }
 
     /*
-     * Build directly in the module list. A temporary list is about 7.2 KB and
-     * must not be placed on this worker's 8 KB task stack.
+     * Keep only two global minima and two minima after the persisted cursor.
+     * This preserves stable sorted traversal without a RAM directory list.
      */
-    memset(&s_list, 0, sizeof(s_list));
+    char global_first[LOCAL_IMAGE_BROWSING_FILE_NAME_MAX_LEN] = {0};
+    char global_second[LOCAL_IMAGE_BROWSING_FILE_NAME_MAX_LEN] = {0};
+    char eligible_first[LOCAL_IMAGE_BROWSING_FILE_NAME_MAX_LEN] = {0};
+    char eligible_second[LOCAL_IMAGE_BROWSING_FILE_NAME_MAX_LEN] = {0};
     esp_err_t scan_ret = ESP_OK;
     struct dirent *entry = NULL;
     while (true) {
@@ -267,7 +302,10 @@ static esp_err_t refresh_list(void)
         char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX +
                   LOCAL_IMAGE_BROWSING_FILE_NAME_MAX_LEN + 24];
         struct stat file_stat = {0};
-        if (!build_bin_path(entry->d_name, "", path, sizeof(path))) {
+        if (!build_bin_path(base_name,
+                            LOCAL_IMAGE_BROWSING_FILE_EXTENSION,
+                            path,
+                            sizeof(path))) {
             ESP_LOGE(TAG, "BIN file path is too long file=%s", base_name);
             scan_ret = ESP_ERR_INVALID_SIZE;
             break;
@@ -287,15 +325,17 @@ static esp_err_t refresh_list(void)
         if (!S_ISREG(file_stat.st_mode) || file_stat.st_size <= 0) {
             continue;
         }
-        if (s_list.file_count >= LOCAL_IMAGE_BROWSING_MAX_FILES) {
-            ESP_LOGW(TAG, "BIN list reached limit=%u, remaining files ignored",
-                     (unsigned int)LOCAL_IMAGE_BROWSING_MAX_FILES);
-            break;
+        result->file_count++;
+        update_two_smallest(base_name, global_first, global_second);
+
+        bool eligible = reference_file == NULL || reference_file[0] == '\0';
+        if (!eligible) {
+            int compare = file_name_compare(base_name, reference_file);
+            eligible = compare > 0 || (include_reference && compare == 0);
         }
-        strlcpy(s_list.file_names[s_list.file_count],
-                base_name,
-                sizeof(s_list.file_names[s_list.file_count]));
-        s_list.file_count++;
+        if (eligible) {
+            update_two_smallest(base_name, eligible_first, eligible_second);
+        }
     }
     errno = 0;
     if (closedir(directory) != 0 && scan_ret == ESP_OK) {
@@ -309,61 +349,26 @@ static esp_err_t refresh_list(void)
         return scan_ret;
     }
 
-    if (s_list.file_count > 1U) {
-        qsort(s_list.file_names,
-              s_list.file_count,
-              sizeof(s_list.file_names[0]),
-              file_name_compare);
+    if (result->file_count == 0U) {
+        return ESP_ERR_NOT_FOUND;
     }
-    ESP_LOGI(TAG, "BIN list refreshed count=%u", (unsigned int)s_list.file_count);
-    return s_list.file_count > 0U ? ESP_OK : ESP_ERR_NOT_FOUND;
-}
-
-static size_t find_exact_file(const char *file_name)
-{
-    if (file_name == NULL || file_name[0] == '\0') {
-        return s_list.file_count;
+    const char *selected = eligible_first[0] != '\0'
+                               ? eligible_first
+                               : global_first;
+    const char *next = eligible_first[0] != '\0' &&
+                               eligible_second[0] != '\0'
+                           ? eligible_second
+                           : global_first;
+    if (strcmp(next, selected) == 0 && global_second[0] != '\0') {
+        next = global_second;
     }
-    for (size_t i = 0; i < s_list.file_count; ++i) {
-        if (strcmp(s_list.file_names[i], file_name) == 0) {
-            return i;
-        }
-    }
-    return s_list.file_count;
-}
-
-static size_t find_successor_file(const char *file_name)
-{
-    if (s_list.file_count == 0U || file_name == NULL || file_name[0] == '\0') {
-        return 0U;
-    }
-    for (size_t i = 0; i < s_list.file_count; ++i) {
-        if (file_name_compare(s_list.file_names[i], file_name) > 0) {
-            return i;
-        }
-    }
-    return 0U;
-}
-
-static size_t select_start_index(void)
-{
-    const char *preferred = NULL;
-    if (s_state.transaction_state == LOCAL_IMAGE_BROWSING_TRANSACTION_PREPARED &&
-        s_state.pending_file[0] != '\0') {
-        preferred = s_state.pending_file;
-    } else if (s_state.next_file[0] != '\0') {
-        preferred = s_state.next_file;
-    }
-
-    size_t exact = find_exact_file(preferred);
-    if (exact < s_list.file_count) {
-        return exact;
-    }
-    if (preferred != NULL) {
-        ESP_LOGW(TAG, "saved file missing, continue after file=%s", preferred);
-        return find_successor_file(preferred);
-    }
-    return find_successor_file(s_state.last_displayed_file);
+    strlcpy(result->selected_file, selected, sizeof(result->selected_file));
+    strlcpy(result->next_file, next, sizeof(result->next_file));
+    ESP_LOGI(TAG, "BIN scan completed count=%u selected=%s next=%s",
+             (unsigned int)result->file_count,
+             result->selected_file,
+             result->next_file);
+    return ESP_OK;
 }
 
 static esp_err_t save_prepared_file(const char *file_name)
@@ -373,27 +378,23 @@ static esp_err_t save_prepared_file(const char *file_name)
     return save_state_locked();
 }
 
-static esp_err_t save_skipped_file(size_t next_index)
+static esp_err_t save_skipped_file(const char *next_file)
 {
     s_state.transaction_state = LOCAL_IMAGE_BROWSING_TRANSACTION_IDLE;
     s_state.pending_file[0] = '\0';
-    strlcpy(s_state.next_file,
-            s_list.file_names[next_index],
-            sizeof(s_state.next_file));
+    strlcpy(s_state.next_file, next_file, sizeof(s_state.next_file));
     return save_state_locked();
 }
 
-static esp_err_t save_display_success(size_t displayed_index)
+static esp_err_t save_display_success(const char *displayed_file,
+                                      const char *next_file)
 {
-    size_t next_index = (displayed_index + 1U) % s_list.file_count;
     s_state.transaction_state = LOCAL_IMAGE_BROWSING_TRANSACTION_IDLE;
     strlcpy(s_state.last_displayed_file,
-            s_list.file_names[displayed_index],
+            displayed_file,
             sizeof(s_state.last_displayed_file));
     s_state.pending_file[0] = '\0';
-    strlcpy(s_state.next_file,
-            s_list.file_names[next_index],
-            sizeof(s_state.next_file));
+    strlcpy(s_state.next_file, next_file, sizeof(s_state.next_file));
     s_state.successful_display_count++;
     return save_state_locked();
 }
@@ -528,24 +529,36 @@ static esp_err_t process_request(local_image_browsing_request_t *request)
         return ret;
     }
 
-    ret = refresh_list();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "no usable local BIN image ret=%s", esp_err_to_name(ret));
-        return ret;
-    }
-
     if (xSemaphoreTake(s_state_mutex, portMAX_DELAY) != pdTRUE) {
         return ESP_ERR_INVALID_STATE;
     }
-    size_t index = select_start_index();
+    const char *reference_file = s_state.last_displayed_file;
+    bool include_reference = false;
+    if (s_state.transaction_state == LOCAL_IMAGE_BROWSING_TRANSACTION_PREPARED &&
+        s_state.pending_file[0] != '\0') {
+        reference_file = s_state.pending_file;
+        include_reference = true;
+    } else if (s_state.next_file[0] != '\0') {
+        reference_file = s_state.next_file;
+        include_reference = true;
+    }
+
+    local_image_browsing_scan_result_t scan = {0};
+    ret = scan_next_file(reference_file, include_reference, &scan);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "no usable local BIN image ret=%s", esp_err_to_name(ret));
+        xSemaphoreGive(s_state_mutex);
+        return ret;
+    }
+
+    size_t maximum_attempts = scan.file_count;
     bool image_displayed = false;
-    for (size_t attempt = 0; attempt < s_list.file_count; ++attempt) {
-        const char *file_name = s_list.file_names[index];
+    for (size_t attempt = 0; attempt < maximum_attempts; ++attempt) {
+        const char *file_name = scan.selected_file;
         ESP_LOGI(TAG,
-                 "selected index=%u/%u file=%s trigger=%s seq=%u",
-                 (unsigned int)index,
-                 (unsigned int)s_list.file_count,
+                 "selected file=%s total=%u trigger=%s seq=%u",
                  file_name,
+                 (unsigned int)scan.file_count,
                  trigger_to_string(request->trigger),
                  (unsigned int)request->protocol_seq);
 
@@ -558,16 +571,20 @@ static esp_err_t process_request(local_image_browsing_request_t *request)
         size_t size = 0;
         ret = load_file(file_name, &buffer, &size);
         if (ret == ESP_ERR_NOT_FOUND) {
-            size_t next_index = (index + 1U) % s_list.file_count;
-            ret = save_skipped_file(next_index);
+            char skipped_file[LOCAL_IMAGE_BROWSING_FILE_NAME_MAX_LEN];
+            strlcpy(skipped_file, file_name, sizeof(skipped_file));
+            local_image_browsing_scan_result_t next_scan = {0};
+            ret = scan_next_file(skipped_file, false, &next_scan);
             if (ret != ESP_OK) {
                 break;
             }
-            ESP_LOGW(TAG, "file skipped index=%u file=%s next=%s",
-                     (unsigned int)index,
-                     file_name,
-                     s_list.file_names[next_index]);
-            index = next_index;
+            ret = save_skipped_file(next_scan.selected_file);
+            if (ret != ESP_OK) {
+                break;
+            }
+            ESP_LOGW(TAG, "file skipped file=%s next=%s",
+                     skipped_file, next_scan.selected_file);
+            scan = next_scan;
             continue;
         }
         if (ret != ESP_OK) {
@@ -584,7 +601,7 @@ static esp_err_t process_request(local_image_browsing_request_t *request)
         }
 
         image_displayed = true;
-        ret = save_display_success(index);
+        ret = save_display_success(file_name, scan.next_file);
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "display completed file=%s next=%s count=%lu",
                      file_name,
@@ -594,7 +611,7 @@ static esp_err_t process_request(local_image_browsing_request_t *request)
         break;
     }
     if (!image_displayed && ret == ESP_OK) {
-        ESP_LOGE(TAG, "all listed BIN files disappeared or became invalid");
+        ESP_LOGE(TAG, "all scanned BIN files disappeared or became invalid");
         ret = ESP_ERR_NOT_FOUND;
     }
     xSemaphoreGive(s_state_mutex);

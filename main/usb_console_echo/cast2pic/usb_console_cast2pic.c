@@ -82,8 +82,16 @@ static esp_err_t cast2pic_parse_one(const usb_console_http_request_t *request,
 
     UsbConsoleCommon_CopyPartText(file_name_part, user_file_name, sizeof(user_file_name));
     if (!UsbConsoleCommon_FileNameIsSafe(user_file_name) ||
-        !UsbConsoleCommon_FileNameIsSafe(save_name) ||
-        !UsbConsoleCommon_ParsePartSize(bin_size_part, &bin_size) ||
+        !UsbConsoleCommon_FileNameIsSafe(save_name)) {
+        ESP_LOGW(TAG,
+                 "cast2pic invalid fileName len=%u max=%u",
+                 (unsigned int)strlen(user_file_name),
+                 (unsigned int)TDX_IMAGE_BASE_NAME_MAX_BYTES);
+        return set_cast2pic_error(response,
+                                  TDX_JSON_RESULT_UPLOAD_FILE_NAME_INVALID,
+                                  "invalid_fileName");
+    }
+    if (!UsbConsoleCommon_ParsePartSize(bin_size_part, &bin_size) ||
         !UsbConsoleCommon_ParsePartSize(image_size_part, &image_size) ||
         !bin_part->present || !image_part->present ||
         /*
@@ -117,7 +125,7 @@ static esp_err_t cast2pic_parse_one(const usb_console_http_request_t *request,
         return ESP_ERR_INVALID_ARG;
     }
     memset(item, 0, sizeof(*item));
-    snprintf(item->save_name, sizeof(item->save_name), "%s", save_name);
+    strlcpy(item->save_name, save_name, sizeof(item->save_name));
     item->save = save;
     item->show = show;
     item->record_last_cast = false;

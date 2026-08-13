@@ -290,7 +290,7 @@ esp_err_t UsbConsoleUpload_Process(const usb_console_http_request_t *request,
             .bin_part = upload.bin_part,
             .image_part = upload.image_part,
         };
-        snprintf(item.save_name, sizeof(item.save_name), "%s", upload.file_name);
+        strlcpy(item.save_name, upload.file_name, sizeof(item.save_name));
         (void)TdxImageTransfer_ProcessItems(&item, 1, USB_CONSOLE_BASE_PATH, "usb upload", &result);
     }
 

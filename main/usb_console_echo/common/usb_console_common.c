@@ -201,7 +201,17 @@ bool UsbConsoleCommon_FileNameIsSafe(const char *name)
     if (strstr(name, "..") != NULL || strchr(name, '/') != NULL || strchr(name, '\\') != NULL || strchr(name, '"') != NULL) {
         return false;
     }
-    return strlen(name) < TDX_SLIDESHOW_FILE_NAME_MAX_LEN;
+    size_t len = strlen(name);
+    if (len > TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+        return false;
+    }
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char c = (unsigned char)name[i];
+        if (c < 0x20U || c > 0x7EU) {
+            return false;
+        }
+    }
+    return true;
 }
 
 esp_err_t UsbConsoleCommon_SetJsonf(usb_console_http_response_t *response,
@@ -263,17 +273,20 @@ esp_err_t UsbConsoleCommon_ListSavedImages(char *json, size_t json_size, size_t 
     struct dirent *entry = NULL;
     while ((entry = readdir(dir)) != NULL) {
         const char *name = saved_image_entry_name(entry->d_name);
-        if (name == NULL || !has_jpg_extension(name) || !UsbConsoleCommon_FileNameIsSafe(name)) {
+        if (name == NULL || !has_jpg_extension(name)) {
             continue;
         }
 
-        char file_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX] = {0};
+        char file_name[TDX_IMAGE_BASE_NAME_BUFFER_SIZE] = {0};
         size_t stem_len = strlen(name) - 4;
-        if (stem_len == 0 || stem_len >= sizeof(file_name)) {
+        if (stem_len == 0 || stem_len > TDX_IMAGE_BASE_NAME_MAX_BYTES) {
             continue;
         }
         memcpy(file_name, name, stem_len);
         file_name[stem_len] = '\0';
+        if (!UsbConsoleCommon_FileNameIsSafe(file_name)) {
+            continue;
+        }
         esp_err_t append_ret = append_format(json,
                                              json_size,
                                              used,
@@ -353,14 +366,21 @@ esp_err_t UsbConsoleCommon_AppendSnapshot(char *json, size_t json_size, size_t *
             array++;
             char file_name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
             size_t name_len = 0;
-            while (*array != '\0' && *array != '"' && name_len + 1 < sizeof(file_name)) {
-                file_name[name_len++] = *array++;
+            bool name_too_long = false;
+            while (*array != '\0' && *array != '"') {
+                if (name_len < TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+                    file_name[name_len] = *array;
+                } else {
+                    name_too_long = true;
+                }
+                name_len++;
+                array++;
             }
             if (*array != '"') {
                 break;
             }
             array++;
-            if (UsbConsoleCommon_FileNameIsSafe(file_name)) {
+            if (!name_too_long && UsbConsoleCommon_FileNameIsSafe(file_name)) {
                 ESP_RETURN_ON_ERROR(append_format(json,
                                                   json_size,
                                                   used,
@@ -703,6 +723,7 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
     char boundary[SERVER_NETWORK_STA_OTA_BOUNDARY_MAX] = {0};
     char func[16] = {0};
     char screen[8] = {0};
+    // Preserve the full multipart field so overlength names are rejected, never truncated to a valid prefix.
     char file_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX] = {0};
     size_t bin_size = 0;
     size_t image_size = 0;
@@ -772,8 +793,18 @@ esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t 
     save = UsbConsoleCommon_ParsePartBool(save_part, true);
     show = UsbConsoleCommon_ParsePartBool(show_part, strcmp(expected_func, "upload") == 0 ? false : true);
 
-    if (!UsbConsoleCommon_FileNameIsSafe(file_name) ||
-        !UsbConsoleCommon_ParsePartSize(bin_size_part, &bin_size) ||
+    if (!UsbConsoleCommon_FileNameIsSafe(file_name)) {
+        ESP_LOGW(TAG,
+                 "%s invalid fileName len=%u max=%u",
+                 expected_func,
+                 (unsigned int)strlen(file_name),
+                 (unsigned int)TDX_IMAGE_BASE_NAME_MAX_BYTES);
+        return UsbConsoleCommon_SetJsonf(response, 200, "OK",
+                                         "{\"func\":\"%s\",\"result\":%d,\"message\":\"invalid fileName\"}",
+                                         result_func,
+                                         TDX_JSON_RESULT_UPLOAD_FILE_NAME_INVALID);
+    }
+    if (!UsbConsoleCommon_ParsePartSize(bin_size_part, &bin_size) ||
         !UsbConsoleCommon_ParsePartSize(image_size_part, &image_size) ||
         !bin_part->present || !image_part->present ||
         /*

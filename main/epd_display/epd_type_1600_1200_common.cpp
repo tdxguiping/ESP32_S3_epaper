@@ -32,7 +32,12 @@ void ePaperPort::NT61522_DisplayImage(const uint8_t *imageData, size_t imageSize
 #if 1
     offset=0;
     for (i = 0; i < 1600; ++i) {
-        spiTransmitData(imageData + offset, 300);
+        esp_err_t tx_ret = spiTransmitData(imageData + offset, 300);
+        if (tx_ret != ESP_OK) {
+            EpdType_ReportDisplayFailure(tx_ret);
+            setPinCsAll(1);
+            return;
+        }
         //memset(Data_Buffer, 0x11,300);        
         //spiTransmitData(Data_Buffer, 300);
         offset += 300;
@@ -41,7 +46,12 @@ void ePaperPort::NT61522_DisplayImage(const uint8_t *imageData, size_t imageSize
     EPD_Select_Slave();
     spiTransmitCommand(R10_DTM);
     for (i = 0; i < 1600; ++i) {
-        spiTransmitData(imageData + offset, 300);
+        esp_err_t tx_ret = spiTransmitData(imageData + offset, 300);
+        if (tx_ret != ESP_OK) {
+            EpdType_ReportDisplayFailure(tx_ret);
+            setPinCsAll(1);
+            return;
+        }
         //memset(Data_Buffer, 0x33,300);        
         //spiTransmitData(Data_Buffer, 300);
         offset += 300;

@@ -25,7 +25,7 @@
 #include "tdx_shared_spi.h"
 
 typedef struct {
-    char file_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX];
+    char file_name[TDX_IMAGE_BASE_NAME_BUFFER_SIZE];
     char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
     const char *bin_data;
     size_t bin_len;
@@ -68,7 +68,7 @@ void TdxCastCore_ResultOk(tdx_cast_core_result_t *result, const char *file_name,
         return;
     }
     set_result(result, TDX_JSON_RESULT_OK, message != NULL ? message : "ok", NULL);
-    snprintf(result->file_name, sizeof(result->file_name), "%s", file_name != NULL ? file_name : "");
+    strlcpy(result->file_name, file_name != NULL ? file_name : "", sizeof(result->file_name));
 }
 
 static bool part_text_len(const usb_console_multipart_part_t *part, size_t *len)
@@ -475,7 +475,7 @@ static esp_err_t submit_save_item_and_wait(const tdx_image_transfer_item_t *item
         .error_out = save_error,
         .error_out_size = sizeof(save_error),
     };
-    snprintf(job.file_name, sizeof(job.file_name), "%s", item->save_name);
+    strlcpy(job.file_name, item->save_name, sizeof(job.file_name));
     snprintf(job.base_path, sizeof(job.base_path), "%s", base_path);
 
     if (xQueueSend(s_cast_save_queue, &job, 0) != pdTRUE) {
@@ -940,7 +940,7 @@ static esp_err_t process_validated_with_storage(const tdx_cast_core_request_t *c
         .bin_part = cast->bin_part,
         .image_part = cast->image_part,
     };
-    snprintf(item.save_name, sizeof(item.save_name), "%s", cast->file_name);
+    strlcpy(item.save_name, cast->file_name, sizeof(item.save_name));
 
     esp_err_t ret = TdxImageTransfer_ProcessItems(&item, 1, base_path, log_prefix, result);
     if (ret != ESP_OK) {

@@ -544,8 +544,12 @@ extern "C" {
 #define TDX_SLIDESHOW_RUN_MODE TDX_SLIDESHOW_RUN_MODE_SOFTWARE
 #endif
 
-// Keep slideshow limits and state file names here so JSON parsing and saved config stay in sync.
-#define TDX_SLIDESHOW_FILE_NAME_MAX_LEN 48
+// APP image base names contain at most 16 ASCII bytes, without extension or trailing NUL.
+#define TDX_IMAGE_BASE_NAME_MAX_BYTES 16U
+// Internal C-string storage includes one byte for the trailing NUL.
+#define TDX_IMAGE_BASE_NAME_BUFFER_SIZE (TDX_IMAGE_BASE_NAME_MAX_BYTES + 1U)
+// Keep the existing name as a buffer-size alias so slideshow/delete/snapshot stay in sync.
+#define TDX_SLIDESHOW_FILE_NAME_MAX_LEN TDX_IMAGE_BASE_NAME_BUFFER_SIZE
 // Configuration value for TDX SLIDESHOW MAX FILES; update local references before changing it.
 #define TDX_SLIDESHOW_MAX_FILES 150
 // Timing value for TDX SLIDESHOW INTERVAL MIN SECONDS; verify related wake, sleep, and retry behavior if it changes.
@@ -951,6 +955,11 @@ extern "C" {
 #define USER_EPD_DISPLAY_TASK_STACK_SIZE (8 * 1024)
 // FreeRTOS task priority for USER EPD DISPLAY TASK PRIORITY; keep scheduler side effects in mind when changing it.
 #define USER_EPD_DISPLAY_TASK_PRIORITY 5
+// Keep PSRAM-backed SPI transfers below fragmented internal DMA block sizes.
+#define USER_EPD_SPI_SAFE_DMA_TX_CHUNK 3072U
+#if USER_EPD_SPI_SAFE_DMA_TX_CHUNK == 0
+#error "USER_EPD_SPI_SAFE_DMA_TX_CHUNK must be greater than zero"
+#endif
 // Bound synchronous display waits; completion lifetime remains owned by both waiter and EPD task.
 #define USER_EPD_DISPLAY_WAIT_TIMEOUT_MS (5 * 60 * 1000)
 // Select zlib-compressed business display data when set to 1, or raw display data when set to 0.

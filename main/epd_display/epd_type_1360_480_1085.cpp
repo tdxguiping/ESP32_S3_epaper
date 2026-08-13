@@ -79,7 +79,7 @@ void ePaperPort::EpdType1360480_1085_NT61522_DisplayNet(const uint8_t *imageData
     }
 
     uint8_t converted[256];
-    auto send_internal_controller = [this, imageData, imageSize, &converted](uint8_t selector) {
+    auto send_internal_controller = [this, imageData, imageSize, &converted](uint8_t selector) -> bool {
         EPD_WriteCMD(0xA2);
         EPD_WriteDATA(selector);
         EPD_WriteCMD(0x10);
@@ -93,20 +93,27 @@ void ePaperPort::EpdType1360480_1085_NT61522_DisplayNet(const uint8_t *imageData
             for (size_t i = 0; i < chunk; ++i) {
                 converted[i] = convert_1085_color_byte(imageData[offset + i]);
             }
-            EPD_Sendbuffera(converted, (int)chunk);
+            if (EPD_Sendbuffera(converted, chunk) != ESP_OK) {
+                return false;
+            }
             offset += chunk;
         }
+        return true;
     };
 
     // This panel has one physical CS. Command 0xA2 selects its internal master/slave.
     int64_t stage_start_us = esp_timer_get_time();
-    send_internal_controller(0x01);
+    if (!send_internal_controller(0x01)) {
+        return;
+    }
     ESP_LOGI(TAG, "EPD 1360x480 internal master loaded size=%u elapsed_ms=%lld",
              (unsigned int)imageSize,
              (long long)((esp_timer_get_time() - stage_start_us) / 1000));
 
     stage_start_us = esp_timer_get_time();
-    send_internal_controller(0x02);
+    if (!send_internal_controller(0x02)) {
+        return;
+    }
     ESP_LOGI(TAG, "EPD 1360x480 internal slave loaded size=%u elapsed_ms=%lld",
              (unsigned int)imageSize,
              (long long)((esp_timer_get_time() - stage_start_us) / 1000));

@@ -73,7 +73,17 @@ static bool file_name_is_safe(const char *file_name)
         strchr(file_name, '\\') != NULL || strchr(file_name, '"') != NULL) {
         return false;
     }
-    return strlen(file_name) < TDX_SLIDESHOW_FILE_NAME_MAX_LEN;
+    size_t len = strlen(file_name);
+    if (len > TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+        return false;
+    }
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char c = (unsigned char)file_name[i];
+        if (c < 0x20U || c > 0x7EU) {
+            return false;
+        }
+    }
+    return true;
 }
 
 typedef enum {
@@ -126,13 +136,28 @@ static delete_parse_result_t parse_file_names(const char *body, delete_request_t
 
         char file_name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
         size_t len = 0;
-        while (*pos != '\0' && *pos != '"' && len + 1 < sizeof(file_name)) {
-            file_name[len++] = *pos++;
+        bool name_too_long = false;
+        while (*pos != '\0' && *pos != '"') {
+            if (len < TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+                file_name[len] = *pos;
+            } else {
+                name_too_long = true;
+            }
+            len++;
+            pos++;
         }
         if (*pos != '"') {
             return DELETE_PARSE_INVALID_JSON;
         }
         pos++;
+        if (name_too_long) {
+            ESP_LOGE(TAG,
+                     "delete rejected: fileName too long index=%u len=%u max=%u",
+                     (unsigned int)request->file_count,
+                     (unsigned int)len,
+                     (unsigned int)TDX_IMAGE_BASE_NAME_MAX_BYTES);
+            return DELETE_PARSE_INVALID_NAME;
+        }
         file_name[len] = '\0';
 
         if (!file_name_is_safe(file_name)) {

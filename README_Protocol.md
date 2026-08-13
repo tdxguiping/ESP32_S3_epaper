@@ -213,6 +213,8 @@ HTTP POST /dataUP
 
 `start_slideshow.fileNames` 表示 APP 最终生成的播放事件列表，不是唯一文件集合。最终列表允许同一文件名出现多次，最少 1 项、最多 150 项；`startIndex` 索引最终列表，必须满足 `0 <= startIndex < fileNames.length`，不得对最终数量再次乘 3。APP 在 `random=true` 时使用最多 50 个原始文件，把每个名称复制 3 次并对扩展后的列表打乱；ESP32-C5 不再次随机，也不校验每个名称是否刚好出现 3 次，按收到的最终顺序播放，并继续在配置、NVS 和 snapshot 中保存/返回 `random=false`。
 
+网络和 USB 图片业务的 `fileName` / `fileNames[]` 是不带扩展名的基础文件名，必须为 1..16 个安全 ASCII 字节；不允许 `..`、`/`、`\`、双引号或控制字符。APP 新生成名称统一建议使用 16 位小写十六进制；设备兼容较短旧名称。超过 16 字节时使用各接口现有“文件名非法”结果并丢弃整次请求，不截断。multipart 头中的原始 `filename` 可以包含 `.bin/.jpg`，接收缓冲仍保留 96 字节；legacy multipart fallback 保存前按去掉匹配扩展名后的基础名执行 16 字节检查。
+
 ```json
 {
   "func": "start_slideshow",
@@ -2510,4 +2512,4 @@ ESP32-C5无论DEVICE_INFO是否完成，都严格接受合法的 `PB1,PRESS` 和
 
 ESP32启动时UART可能早于本地浏览模块就绪。该窗口内首次DEVICE_INFO携带的合法PB2请求进入长度为10的启动FIFO；模块初始化时执行正常EPD预约判断。初始化完成与事件入队使用同一临界区，事件不会卡在初始化交界点。PB1不进入该FIFO，只进入Factory Reset单请求RAM状态。
 
-本地浏览只读取 `/data/bin_img/<fileName>.bin`，按稳定文件名顺序循环。目标文件在扫描后消失时跳过并继续本次请求中的下一张；其他 SD I/O、内存、解压或 EPD 错误中止本次请求。
+本地浏览只读取 `/data/bin_img/<fileName>.bin`，每次请求单遍扫描目录并按稳定文件名顺序选择当前项和下一项，不在RAM或SD建立完整索引。目标文件在扫描后消失时重新扫描后继项并继续本次请求；其他 SD I/O、内存、解压或 EPD 错误中止本次请求。

@@ -335,15 +335,24 @@ static esp_err_t ensure_dir(const char *path)
     return ESP_FAIL;
 }
 
-static bool upload_file_name_is_safe(const char *file_name)
+static bool upload_file_name_is_safe(const char *file_name, const char *expected_ext)
 {
     if (file_name == NULL || file_name[0] == '\0') {
         return true;
     }
-    return strcmp(file_name, ".") != 0 &&
-           strcmp(file_name, "..") != 0 &&
-           strchr(file_name, '/') == NULL &&
-           strchr(file_name, '\\') == NULL;
+    if (strcmp(file_name, ".") == 0 || strcmp(file_name, "..") == 0 ||
+        strchr(file_name, '/') != NULL || strchr(file_name, '\\') != NULL) {
+        return false;
+    }
+
+    size_t name_len = strlen(file_name);
+    size_t base_len = name_len;
+    size_t ext_len = expected_ext != NULL ? strlen(expected_ext) : 0U;
+    if (ext_len > 0U && name_len > ext_len &&
+        strcmp(file_name + name_len - ext_len, expected_ext) == 0) {
+        base_len -= ext_len;
+    }
+    return base_len > 0U && base_len <= TDX_IMAGE_BASE_NAME_MAX_BYTES;
 }
 
 static esp_err_t save_upload_part(const char *field_name, const char *file_name,
@@ -367,8 +376,12 @@ static esp_err_t save_upload_part(const char *field_name, const char *file_name,
         return ESP_OK;
     }
 
-    if (!upload_file_name_is_safe(file_name)) {
-        ESP_LOGW(TAG, "multipart file name rejected field=%s", field_name);
+    if (!upload_file_name_is_safe(file_name, ext)) {
+        ESP_LOGW(TAG,
+                 "multipart file name rejected field=%s len=%u max_base=%u",
+                 field_name,
+                 (unsigned int)(file_name != NULL ? strlen(file_name) : 0U),
+                 (unsigned int)TDX_IMAGE_BASE_NAME_MAX_BYTES);
         return ESP_ERR_INVALID_ARG;
     }
 

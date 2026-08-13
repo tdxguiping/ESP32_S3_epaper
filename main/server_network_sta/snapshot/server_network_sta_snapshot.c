@@ -78,6 +78,37 @@ static bool file_name_is_safe(const char *name)
     if (strstr(name, "..") != NULL || strchr(name, '/') != NULL || strchr(name, '\\') != NULL || strchr(name, '"') != NULL) {
         return false;
     }
+    size_t len = strlen(name);
+    if (len > TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+        return false;
+    }
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char c = (unsigned char)name[i];
+        if (c < 0x20U || c > 0x7EU) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool jpg_name_is_safe(const char *name)
+{
+    if (name == NULL || !has_jpg_extension(name) ||
+        strstr(name, "..") != NULL || strchr(name, '/') != NULL ||
+        strchr(name, '\\') != NULL || strchr(name, '"') != NULL) {
+        return false;
+    }
+    size_t name_len = strlen(name);
+    if (name_len <= 4U ||
+        (name_len - 4U) > TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+        return false;
+    }
+    for (size_t i = 0; i < name_len - 4U; ++i) {
+        unsigned char c = (unsigned char)name[i];
+        if (c < 0x20U || c > 0x7EU) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -313,13 +344,25 @@ static void parse_slideshow_file_names(const char *json, snapshot_slideshow_t *s
 
         char file_name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
         size_t len = 0;
-        while (*pos != '\0' && *pos != '"' && len + 1 < sizeof(file_name)) {
-            file_name[len++] = *pos++;
+        bool name_too_long = false;
+        while (*pos != '\0' && *pos != '"') {
+            if (len < TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+                file_name[len] = *pos;
+            } else {
+                name_too_long = true;
+            }
+            len++;
+            pos++;
         }
         if (*pos != '"') {
+            slideshow->file_count = 0;
             return;
         }
         pos++;
+        if (name_too_long) {
+            slideshow->file_count = 0;
+            return;
+        }
         file_name[len] = '\0';
 
         if (file_name_is_safe(file_name)) {
@@ -458,11 +501,11 @@ static esp_err_t append_images_json(char *json, size_t json_size, size_t *used, 
     struct dirent *entry = NULL;
     while ((entry = readdir(dir)) != NULL) {
         const char *name = snapshot_image_entry_name(entry->d_name);
-        if (name == NULL || !has_jpg_extension(name) || !file_name_is_safe(name)) {
+        if (!jpg_name_is_safe(name)) {
             continue;
         }
 
-        char file_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX] = {0};
+        char file_name[TDX_IMAGE_BASE_NAME_BUFFER_SIZE] = {0};
         size_t name_len = strlen(name);
         size_t stem_len = name_len - 4;
         if (stem_len == 0 || stem_len >= sizeof(file_name)) {

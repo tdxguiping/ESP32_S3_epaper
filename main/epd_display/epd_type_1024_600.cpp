@@ -125,7 +125,7 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
 
     /* 中文注释：       主屏区域总长度边界       0 ~ (1600*300 - 1) 属于 MASTER       >= 1600*300 属于 SLAVE    */
     //const uint32_t master_limit = 1024U * 150U;//=307200;
-    const uint32_t master_limit = 3072U * 50U;//=307200;   DMA 模式默认只有约 4092 bytes
+    const uint32_t master_limit = 3072U * 50U;//=153600; panel master data boundary
     /* 中文注释：       参数保护       按你的描述 imageSize 范围为 1 ~ 900    */
     if (imageData == nullptr || imageSize != expected_image_size) {
         ESP_LOGE(TAG, "EPD 1024x600 image size invalid input=%u expected=%u",
@@ -147,7 +147,7 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
     while (remain > 0) {
         /* 中文注释：           单次最多处理 300        */
         //uint32_t chunk = (remain > 300) ? 300U : (uint32_t)remain;
-        uint32_t chunk = (remain > 3072) ? 3072U : (uint32_t)remain;
+        uint32_t chunk = (remain > NT61522_SPI_SAFE_DMA_TX_CHUNK) ? (uint32_t)NT61522_SPI_SAFE_DMA_TX_CHUNK : (uint32_t)remain;
         /* 中文注释：           情况1：当前还在 MASTER 区域        */
 
         //LOG_Cyan("image_countger_ %ld, master_limit %ld",image_countger_, master_limit);
@@ -161,7 +161,11 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
                 //setPinCs(TARGET_MASTER, chunk);
                 EPD_Select_Master();
                 //spiTransmitCommand(R10_DTM);
-                spiTransmitData(imageData+u32posi, chunk);
+                esp_err_t tx_ret = spiTransmitData(imageData + u32posi, chunk);
+                if (tx_ret != ESP_OK) {
+                    EpdType_ReportDisplayFailure(tx_ret);
+                    return;
+                }
                 //spiTransmitData(u8dat, chunk);
                 u32posi = u32posi + chunk;  
                 //setPinCs(TARGET_MASTER, 1);
@@ -176,7 +180,11 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
                     //setPinCs(TARGET_MASTER, master_remain);
                     EPD_Select_Master();
                     //spiTransmitCommand(R10_DTM);
-                    spiTransmitData(imageData+u32posi, master_remain);
+                    esp_err_t tx_ret = spiTransmitData(imageData + u32posi, master_remain);
+                    if (tx_ret != ESP_OK) {
+                        EpdType_ReportDisplayFailure(tx_ret);
+                        return;
+                    }
                     //spiTransmitData(u8dat, master_remain);
                     //setPinCsAll(1);
                     u32posi = u32posi + master_remain;  
@@ -201,7 +209,11 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
                         {
                             u8flag_ = 0;
                         }                        
-                        spiTransmitData(imageData+u32posi, slave_part);
+                        esp_err_t tx_ret = spiTransmitData(imageData + u32posi, slave_part);
+                        if (tx_ret != ESP_OK) {
+                            EpdType_ReportDisplayFailure(tx_ret);
+                            return;
+                        }
                         //spiTransmitData(u8dat, slave_part);
                         u32posi = u32posi + slave_part;  
                         //setPinCs(TARGET_SLAVE, 1);
@@ -222,7 +234,11 @@ void ePaperPort::EpdType1024600_NT61522_DisplayNet(const uint8_t *imageData, siz
              spiTransmitCommand(R10_DTM);
              u8flag_ = 0;
             }                        
-            spiTransmitData(imageData+u32posi, chunk);
+            esp_err_t tx_ret = spiTransmitData(imageData + u32posi, chunk);
+            if (tx_ret != ESP_OK) {
+                EpdType_ReportDisplayFailure(tx_ret);
+                return;
+            }
             //spiTransmitData(u8dat, chunk);
 
             u32posi = u32posi + chunk;  

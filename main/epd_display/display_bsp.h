@@ -221,7 +221,7 @@ class ePaperPort {
     void    SPI_Write(uint8_t data);
     void    EPD_SendCommand(uint8_t Reg);
     void    EPD_SendData(uint8_t Data);
-    void    EPD_Sendbuffera(uint8_t *Data, uint16_t len);
+    esp_err_t EPD_Sendbuffera(uint8_t *Data, size_t len);
     void    EPD_TurnOnDisplay(void);
     void    EPD_TurnOnDisplay_480(void);
     bool    EnsureDispBuffer();
@@ -327,7 +327,8 @@ class ePaperPort {
 
 
     static constexpr size_t NT61522_SPI_MAX_BUFFER_SIZE = 32768;
-    static constexpr size_t NT61522_SPI_SAFE_DMA_TX_CHUNK = 4092;
+    static constexpr size_t NT61522_SPI_SAFE_DMA_TX_CHUNK =
+        USER_EPD_SPI_SAFE_DMA_TX_CHUNK;
 
     uint8_t nt61522_chip_id_[3] = {0};
   

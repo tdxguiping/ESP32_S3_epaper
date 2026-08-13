@@ -1,7 +1,7 @@
-# CH583/CH585 与 WiFi 模组 UART 通讯协议 V2.1
+# CH583/CH585 与 WiFi 模组 UART 通讯协议 V2.2
 
 ## Summary
-本协议用于 CH583/CH585 与 WiFi 模组之间的 UART 通讯。CH583/CH585 负责 BLE 低功耗连接、唤醒 WiFi、转发前端数据、接收 WiFi 控制命令，并在 WiFi 需要时把配网结果/IP 原文 notify 给前端。V2.1 沿用 V2.0 的 DEVICE_INFO 必达握手，并在 DEVICE_INFO 中新增 wake_reason 字段，用于告诉 WiFi 本轮被唤醒的来源；WIFI_VER 保留为 WiFi 版本上报命令，组合版本信息继续通过 BLE 私有广播字段发布。
+本协议用于 CH583/CH585 与 WiFi 模组之间的 UART 通讯。CH583/CH585 负责 BLE 低功耗连接、唤醒 WiFi、转发前端数据、接收 WiFi 控制命令，并在 WiFi 需要时把配网结果/IP 原文 notify 给前端。V2.2 沿用 V2.1 的 DEVICE_INFO 必达握手和 wake_reason 字段，并新增 PB1 长按按键唤醒渠道；WIFI_VER 保留为 WiFi 版本上报命令，组合版本信息继续通过 BLE 私有广播字段发布。
 
 ## 1. 通讯基础
 
@@ -142,6 +142,7 @@ DEVICE_INFO 帧格式：
 
 ```text
 @#V1|SEQ=20|CMD=DEVICE_INFO|LEN=29|PART=1|TOTAL=1|ARG=AABBCCDDEEFF,100,d,40,KEY_PB2|CRC=XXXX^&
+@#V1|SEQ=21|CMD=DEVICE_INFO|LEN=29|PART=1|TOTAL=1|ARG=AABBCCDDEEFF,100,d,40,KEY_PB1|CRC=XXXX^&
 ```
 
 参数说明：
@@ -159,6 +160,7 @@ wake_reason     本轮唤醒 WiFi 的原因，固定 ASCII 枚举
 ```text
 BOOT         CH583/CH585 开机或复位后主动唤醒 WiFi
 USB          USB 插入检测唤醒 WiFi
+KEY_PB1      PB1 长按按键唤醒 WiFi
 KEY_PB2      PB2 按键唤醒 WiFi
 BLE_CONNECT  BLE 连接后唤醒 WiFi
 BLE_WRITE    BLE 写入数据时唤醒 WiFi
@@ -173,7 +175,7 @@ UNKNOWN      未识别或默认唤醒原因
 Mac[5] Mac[4] Mac[3] Mac[2] Mac[1] Mac[0]
 ```
 
-WiFi 收到 `DEVICE_INFO` 后必须完成字段解析和合法性检查，解析成功后回复 ACK。V2.1 按 5 个字段解析 `mac,ble_ver_dec,screen_type,board_info_hex,wake_reason`；如需兼容旧 V2.0 固件，可允许 4 字段 DEVICE_INFO，并把缺失的 `wake_reason` 按 `UNKNOWN` 处理。
+WiFi 收到 `DEVICE_INFO` 后必须完成字段解析和合法性检查，解析成功后回复 ACK。V2.2 按 5 个字段解析 `mac,ble_ver_dec,screen_type,board_info_hex,wake_reason`；如需兼容旧 V2.0 固件，可允许 4 字段 DEVICE_INFO，并把缺失的 `wake_reason` 按 `UNKNOWN` 处理。
 
 ```text
 @#V1|SEQ=<seq>|CMD=ACK|LEN=<len>|PART=1|TOTAL=1|ARG=<device_info_seq>|CRC=<crc>^&
@@ -1278,9 +1280,9 @@ CH583/CH585 收到并校验通过后：
 CH583/CH585 进入低功耗
 ```
 
-## 19. PB2 按键事件上报
+## 19. PB1/PB2 按键事件上报
 
-该命令用于 CH583/CH585 在 WiFi 已经处于唤醒会话中时，主动通知 WiFi：PB2 按键发生了一次稳定按下。
+该命令用于 CH583/CH585 在 WiFi 已经处于唤醒会话中时，主动通知 WiFi：PB1 或 PB2 按键发生了一次有效按下。PB1 固件侧由长按触发，但协议事件名仍使用 `PB1,PRESS`，恢复出厂语义由 WiFi 端根据 PB1 渠道处理。
 
 ```text
 CMD=KEY_EVENT
@@ -1295,6 +1297,9 @@ CH583/CH585 发送：
 当前定义：
 
 ```text
+key=PB1
+action=PRESS
+
 key=PB2
 action=PRESS
 ```
@@ -1302,6 +1307,7 @@ action=PRESS
 示例：
 
 ```text
+@#V1|SEQ=87|CMD=KEY_EVENT|LEN=9|PART=1|TOTAL=1|ARG=PB1,PRESS|CRC=XXXX^&
 @#V1|SEQ=88|CMD=KEY_EVENT|LEN=9|PART=1|TOTAL=1|ARG=PB2,PRESS|CRC=XXXX^&
 ```
 
@@ -1314,10 +1320,12 @@ WiFi 收到后按普通协议帧规则校验，成功后可以回复 ACK：
 与 `DEVICE_INFO.wake_reason` 的关系：
 
 ```text
+DEVICE_INFO.wake_reason=KEY_PB1 表示 PB1 长按把睡眠中的 WiFi 唤醒
 DEVICE_INFO.wake_reason=KEY_PB2 表示 PB2 把睡眠中的 WiFi 唤醒
+KEY_EVENT ARG=PB1,PRESS 表示 WiFi 已醒期间又发生了一次 PB1 长按触发
 KEY_EVENT ARG=PB2,PRESS 表示 WiFi 已醒期间又发生了一次 PB2 按下
-WiFi 未完成 DEVICE_INFO ACK 前发生 PB2 按下时，CH583/CH585 会在 ACK 后补发一次 KEY_EVENT
-WiFi 睡眠时由 PB2 唤醒，只通过 DEVICE_INFO.wake_reason=KEY_PB2 上报，不额外发送 KEY_EVENT
+WiFi 未完成 DEVICE_INFO ACK 前发生 PB1/PB2 按键事件时，CH583/CH585 会在 ACK 后补发一次 KEY_EVENT
+WiFi 睡眠时由 PB1/PB2 唤醒，只通过 DEVICE_INFO.wake_reason 上报，不额外发送 KEY_EVENT
 ```
 
 ## 20. WiFi 发送建议
@@ -1331,7 +1339,7 @@ WiFi 睡眠时由 PB2 唤醒，只通过 DEVICE_INFO.wake_reason=KEY_PB2 上报�
 发送协议帧后 200ms 再恢复普通日志
 ```
 
-## 21. V2.1 必须实现的命令
+## 21. V2.2 必须实现的命令
 
 ```text
 DEVICE_INFO

@@ -284,7 +284,7 @@ delete_result
 | `1001` | `TDX_JSON_RESULT_JSON_INVALID` | JSON 格式错误 |
 | `1003` | `TDX_JSON_RESULT_FIELD_MISSING` | 缺少必要字段 |
 | `1501` | `TDX_JSON_RESULT_FILE_NAMES_MISSING` | `fileNames` 缺失或为空 |
-| `1502` | `TDX_JSON_RESULT_FILE_NAME_INVALID` | 文件名非法 |
+| `1502` | `TDX_JSON_RESULT_FILE_NAME_INVALID` | 文件名非法，包括业务基础名超过 16 个 ASCII 字节；整批不删除且不截断名称 |
 | `1503` | `TDX_JSON_RESULT_DELETE_FAILED` | 删除文件或清理关联状态失败 |
 | `1514` | `TDX_JSON_RESULT_FILE_NAMES_TOO_MANY` | `fileNames` 数量超过单次删除上限 50 个；不执行本次删除 |
 
@@ -308,7 +308,7 @@ start_slideshow_result
 |---:|---|---|
 | `0` | `TDX_JSON_RESULT_OK` | 轮播启动成功 |
 | `1501` | `TDX_JSON_RESULT_FILE_NAMES_MISSING` | `fileNames` 缺失 |
-| `1502` | `TDX_JSON_RESULT_FILE_NAME_INVALID` | 文件名非法，或 APP / 网络端 start_slideshow 的 `fileNames` 数组分隔格式非法 |
+| `1502` | `TDX_JSON_RESULT_FILE_NAME_INVALID` | 文件名非法（包括业务基础名超过 16 个 ASCII 字节），或 APP / 网络端 start_slideshow 的 `fileNames` 数组分隔格式非法；整条指令不执行且不截断名称 |
 | `1504` | `TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED` | 轮播配置保存失败 |
 | `1505` | `TDX_JSON_RESULT_SLIDESHOW_START_FAILED` | 轮播启动失败 |
 | `1506` | `TDX_JSON_RESULT_SLIDESHOW_RUNTIME_FAILED` | 轮播运行时启动失败 |
@@ -911,7 +911,7 @@ PhotoPainter:epd_mode
 | result | 源码宏 | 含义 |
 |---:|---|---|
 | `1501` | `TDX_JSON_RESULT_FILE_NAMES_MISSING` | `fileNames` 缺失 |
-| `1502` | `TDX_JSON_RESULT_FILE_NAME_INVALID` | 文件名非法，或 APP / 网络端 start_slideshow 的 `fileNames` 数组分隔格式非法 |
+| `1502` | `TDX_JSON_RESULT_FILE_NAME_INVALID` | 文件名非法（包括业务基础名超过 16 个 ASCII 字节），或 APP / 网络端 start_slideshow 的 `fileNames` 数组分隔格式非法；整条指令不执行且不截断名称 |
 | `1503` | `TDX_JSON_RESULT_DELETE_FAILED` | 删除失败 |
 | `1504` | `TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED` | 轮播配置保存失败 |
 | `1505` | `TDX_JSON_RESULT_SLIDESHOW_START_FAILED` | 轮播启动失败 |
@@ -945,7 +945,7 @@ PhotoPainter:epd_mode
 | `1609` | `TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED` | EPD 显示队列提交失败 |
 | `1610` | `TDX_JSON_RESULT_LAST_CAST_SAVE_FAILED` | last cast 保存失败 |
 | `1611` | `TDX_JSON_RESULT_SAVE_REQUIRED_FOR_LAST_CAST` | cast 需要 `save=true` 才能记录 last cast |
-| `1612` | `TDX_JSON_RESULT_UPLOAD_FILE_NAME_INVALID` | 上传文件名非法 |
+| `1612` | `TDX_JSON_RESULT_UPLOAD_FILE_NAME_INVALID` | 上传业务基础文件名非法，包括超过 16 个 ASCII 字节；不显示、不保存且不截断名称 |
 | `1613` | `TDX_JSON_RESULT_UPLOAD_RAW_PATH_MISSING` | raw upload 缺少 path |
 | `1614` | `TDX_JSON_RESULT_UPLOAD_RAW_PATH_INVALID` | raw upload path 非法 |
 | `1615` | `TDX_JSON_RESULT_UPLOAD_RAW_SAVE_FAILED` | raw upload 保存失败 |

@@ -58,6 +58,17 @@ static bool saved_image_name_is_safe(const char *name)
     if (strstr(name, "..") != NULL || strchr(name, '/') != NULL || strchr(name, '\\') != NULL || strchr(name, '"') != NULL) {
         return false;
     }
+    size_t name_len = strlen(name);
+    if (!has_jpg_extension(name) || name_len <= 4U ||
+        (name_len - 4U) > TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+        return false;
+    }
+    for (size_t i = 0; i < name_len - 4U; ++i) {
+        unsigned char c = (unsigned char)name[i];
+        if (c < 0x20U || c > 0x7EU) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -158,10 +169,10 @@ esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
             continue;
         }
 
-        char file_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX] = {0};
+        char file_name[TDX_IMAGE_BASE_NAME_BUFFER_SIZE] = {0};
         size_t name_len = strlen(name);
         size_t stem_len = name_len - 4;
-        if (stem_len == 0 || stem_len >= sizeof(file_name)) {
+        if (stem_len == 0 || stem_len > TDX_IMAGE_BASE_NAME_MAX_BYTES) {
             ESP_LOGW(TAG, "get_saved_images skip long file: %s", name);
             continue;
         }

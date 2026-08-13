@@ -12,6 +12,7 @@ extern "C" {
 #endif
 
 typedef struct {
+    // Keep the multipart text buffer large enough to detect and reject overlength input without truncation.
     char file_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX];
     bool save;
     bool show;
@@ -25,7 +26,7 @@ typedef struct {
     int result;
     char message[64];
     char error[64];
-    char file_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX];
+    char file_name[TDX_IMAGE_BASE_NAME_BUFFER_SIZE];
 } tdx_cast_core_result_t;
 
 typedef enum {
@@ -34,7 +35,7 @@ typedef enum {
 } tdx_image_transfer_storage_t;
 
 typedef struct {
-    char save_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX];
+    char save_name[TDX_IMAGE_BASE_NAME_BUFFER_SIZE];
     bool save;
     bool show;
     bool record_last_cast;

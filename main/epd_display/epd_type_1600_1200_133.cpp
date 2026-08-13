@@ -433,7 +433,11 @@ void ePaperPort::EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData
                 //setPinCs(TARGET_MASTER, chunk);
                 EPD_Select_Master();
                 //spiTransmitCommand(R10_DTM);
-                spiTransmitData(imageData+u32posi, chunk);
+                esp_err_t tx_ret = spiTransmitData(imageData + u32posi, chunk);
+                if (tx_ret != ESP_OK) {
+                    EpdType_ReportDisplayFailure(tx_ret);
+                    return;
+                }
                 //spiTransmitData(u8dat, chunk);
                 u32posi = u32posi + chunk;  
                 //setPinCs(TARGET_MASTER, 1);
@@ -448,7 +452,12 @@ void ePaperPort::EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData
                     //setPinCs(TARGET_MASTER, master_remain);
                     EPD_Select_Master();
                     //spiTransmitCommand(R10_DTM);
-                    spiTransmitData(imageData+u32posi, master_remain);
+                    esp_err_t tx_ret =
+                        spiTransmitData(imageData + u32posi, master_remain);
+                    if (tx_ret != ESP_OK) {
+                        EpdType_ReportDisplayFailure(tx_ret);
+                        return;
+                    }
                     //spiTransmitData(u8dat, master_remain);
                     //setPinCsAll(1);
                     u32posi = u32posi + master_remain;  
@@ -470,10 +479,19 @@ void ePaperPort::EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData
                         EPD_Select_Slave();
                         if (u8flag_ == 0xAA)
                         {
-                            spiTransmitCommand(R10_DTM);
+                            esp_err_t command_ret = spiTransmitCommand(R10_DTM);
+                            if (command_ret != ESP_OK) {
+                                EpdType_ReportDisplayFailure(command_ret);
+                                return;
+                            }
                             u8flag_ = 0;
                         }                        
-                        spiTransmitData(imageData+u32posi, slave_part);
+                        esp_err_t tx_ret =
+                            spiTransmitData(imageData + u32posi, slave_part);
+                        if (tx_ret != ESP_OK) {
+                            EpdType_ReportDisplayFailure(tx_ret);
+                            return;
+                        }
                         //spiTransmitData(u8dat, slave_part);
                         u32posi = u32posi + slave_part;  
                         //setPinCs(TARGET_SLAVE, 1);
@@ -491,10 +509,18 @@ void ePaperPort::EpdType16001200_133_NT61522_DisplayNet(const uint8_t *imageData
             EPD_Select_Slave();
             if (u8flag_ == 0xAA)
             {
-             spiTransmitCommand(R10_DTM);
+             esp_err_t command_ret = spiTransmitCommand(R10_DTM);
+             if (command_ret != ESP_OK) {
+                 EpdType_ReportDisplayFailure(command_ret);
+                 return;
+             }
              u8flag_ = 0;
             }                        
-            spiTransmitData(imageData+u32posi, chunk);
+            esp_err_t tx_ret = spiTransmitData(imageData + u32posi, chunk);
+            if (tx_ret != ESP_OK) {
+                EpdType_ReportDisplayFailure(tx_ret);
+                return;
+            }
             //spiTransmitData(u8dat, chunk);
 
             u32posi = u32posi + chunk;  

@@ -12,9 +12,8 @@ namespace {
 constexpr const char *kTag = "epd_133_dke";
 constexpr size_t kDkeImageSize = 1600U * 1200U / 2U;
 constexpr size_t kDkeFrameSize = kDkeImageSize / 2U;
-// English: Use a small SPI chunk because PSRAM source data may need a temporary DMA TX buffer.
-// 中文：使用小 SPI 分包，因为 PSRAM 源数据可能需要临时 DMA TX buffer。
-constexpr size_t kDkeSpiChunkSize = 4092U;
+// Use the shared safe chunk so all panel paths have the same DMA allocation margin.
+constexpr size_t kDkeSpiChunkSize = USER_EPD_SPI_SAFE_DMA_TX_CHUNK;
 constexpr uint32_t kDkeResetBusyTimeoutMs = 2000U;
 constexpr uint32_t kDkePonBusyTimeoutMs = 10000U;
 constexpr uint32_t kDkeDrfBusyTimeoutMs = 60000U;

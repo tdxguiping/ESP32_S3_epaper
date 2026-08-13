@@ -801,9 +801,10 @@ unsigned char Temptr[2] = {0};
 
 
 
-void ePaperPort::EPD_Sendbuffera(uint8_t *Data, uint16_t len) {
+esp_err_t ePaperPort::EPD_Sendbuffera(uint8_t *Data, size_t len) {
     if (Data == nullptr || len <= 0) {
-        return;
+        EpdType_ReportDisplayFailure(ESP_ERR_INVALID_ARG);
+        return ESP_ERR_INVALID_ARG;
     }
 
     // PSRAM 源数据可能触发 SPI driver 临时申请 DMA TX buffer，这里按安全小包发送。
@@ -811,9 +812,9 @@ void ePaperPort::EPD_Sendbuffera(uint8_t *Data, uint16_t len) {
     Set_CSIOLevel(0);
 
     uint8_t *ptr = Data;
-    int remaining = len;
+    size_t remaining = len;
     while (remaining > 0) {
-        int chunk = remaining > (int)NT61522_SPI_SAFE_DMA_TX_CHUNK ? (int)NT61522_SPI_SAFE_DMA_TX_CHUNK : remaining;
+        size_t chunk = remaining > NT61522_SPI_SAFE_DMA_TX_CHUNK ? NT61522_SPI_SAFE_DMA_TX_CHUNK : remaining;
         spi_transaction_ext_t trans_ext;
         memset(&trans_ext, 0, sizeof(trans_ext));
         trans_ext.command_bits = 0;
@@ -824,20 +825,23 @@ void ePaperPort::EPD_Sendbuffera(uint8_t *Data, uint16_t len) {
 
         esp_err_t ret = spi_device_transmit(spi, &trans_ext.base);
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "EPD_Sendbuffera failed chunk=%d remaining=%d ret=%s dma_free=%u dma_largest=%u internal_free=%u",
-                     chunk,
-                     remaining,
+            ESP_LOGE(TAG, "EPD_Sendbuffera failed chunk=%u remaining=%u ret=%s dma_free=%u dma_largest=%u internal_free=%u",
+                     (unsigned int)chunk,
+                     (unsigned int)remaining,
                      esp_err_to_name(ret),
                      (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
                      (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
                      (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-            break;
+            EpdType_ReportDisplayFailure(ret);
+            Set_CSIOLevel(1);
+            return ret;
         }
         ptr += chunk;
         remaining -= chunk;
     }
 
     Set_CSIOLevel(1);
+    return ESP_OK;
 }
 
 void ePaperPort::EPD_WriteCMD_ToMaster(uint8_t command) {
@@ -1338,7 +1342,12 @@ esp_err_t ePaperPort::spiTransmitCommand(uint8_t commandBuf) {
     t.tx_buffer = &commandBuf;
     t.rxlength=0;
     ret = spi_device_polling_transmit(spi, &t);
-    assert(ret == ESP_OK);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "spiTransmitCommand failed command=0x%02X ret=%s",
+                 commandBuf,
+                 esp_err_to_name(ret));
+        EpdType_ReportDisplayFailure(ret);
+    }
     return ret;
     
 }

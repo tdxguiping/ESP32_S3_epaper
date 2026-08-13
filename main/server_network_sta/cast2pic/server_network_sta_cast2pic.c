@@ -25,6 +25,7 @@ typedef struct {
 } multipart_part_t;
 
 typedef struct {
+    // Multipart parser input remains large; validation rejects a base name over 16 bytes.
     char file_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX];
     size_t bin_size;
     size_t image_size;
@@ -177,7 +178,17 @@ static bool file_name_is_safe(const char *file_name)
     if (strstr(file_name, "..") != NULL || strchr(file_name, '/') != NULL || strchr(file_name, '\\') != NULL) {
         return false;
     }
-    return strlen(file_name) + 4 < SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX;
+    size_t len = strlen(file_name);
+    if (len > TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+        return false;
+    }
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char c = (unsigned char)file_name[i];
+        if (c < 0x20U || c > 0x7EU) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static esp_err_t send_cast2pic_result(httpd_req_t *req, const char *result)
@@ -290,7 +301,7 @@ static esp_err_t process_cast2pic_items(const char *base_path, const cast2pic_me
 
     for (size_t i = 0; i < count; i++) {
         const char *save_name = image_to_save_name(screen_number);
-        snprintf(items[i].save_name, sizeof(items[i].save_name), "%s", save_name);
+        strlcpy(items[i].save_name, save_name, sizeof(items[i].save_name));
         items[i].save = meta->save;
         items[i].show = meta->show;
         items[i].record_last_cast = false;

@@ -20,6 +20,27 @@ static bool has_jpg_extension(const char *name)
     return len > 4 && (strcmp(name + len - 4, ".jpg") == 0 || strcmp(name + len - 4, ".JPG") == 0);
 }
 
+static bool thumbnail_name_is_safe(const char *name)
+{
+    if (name == NULL || !has_jpg_extension(name) ||
+        strstr(name, "..") != NULL || strchr(name, '/') != NULL ||
+        strchr(name, '\\') != NULL || strchr(name, '"') != NULL) {
+        return false;
+    }
+    size_t name_len = strlen(name);
+    if (name_len <= 4U ||
+        (name_len - 4U) > TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+        return false;
+    }
+    for (size_t i = 0; i < name_len - 4U; ++i) {
+        unsigned char c = (unsigned char)name[i];
+        if (c < 0x20U || c > 0x7EU) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static esp_err_t send_thumb_file(const char *uri, usb_console_http_response_t *response)
 {
     char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX + 24];
@@ -28,7 +49,7 @@ static esp_err_t send_thumb_file(const char *uri, usb_console_http_response_t *r
     struct stat st = {0};
     const char *name = uri + strlen(SERVER_NETWORK_STA_THUMB_URI_PREFIX);
 
-    if (!UsbConsoleCommon_FileNameIsSafe(name) || !has_jpg_extension(name)) {
+    if (!thumbnail_name_is_safe(name)) {
         return UsbConsoleCommon_SetJsonf(response,
                                          400,
                                          "Bad Request",

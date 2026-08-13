@@ -146,7 +146,11 @@ void ePaperPort::EpdType800480_Display()
         return;
     }
     EPD_SendCommand(0x10);
-    EPD_Sendbuffera(DispBuffer, DisplayLen);
+    if (EPD_Sendbuffera(DispBuffer, DisplayLen) != ESP_OK) {
+        ReleaseRotationBuffer();
+        ReleaseDispBuffer();
+        return;
+    }
     EPD_TurnOnDisplay_480();
     ReleaseRotationBuffer();
     ReleaseDispBuffer();
@@ -175,5 +179,7 @@ void ePaperPort::EpdType800480_NT61522_DisplayNet(const uint8_t *imageData, size
         return;
     }
 
-    EPD_Sendbuffera(const_cast<uint8_t *>(imageData), (int)imageSize);
+    if (EPD_Sendbuffera(const_cast<uint8_t *>(imageData), imageSize) != ESP_OK) {
+        return;
+    }
 }

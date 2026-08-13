@@ -345,8 +345,16 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 | 重启恢复包含重复名称的列表 | 使用保存的 `order[position]` 索引恢复，不得只按文件名判断当前槽是否已显示 |
 | 150 个 16 位文件名且完整 JSON 不超过 4096 字节 | 网络端可接收 |
 | 完整 JSON 超过 4096 字节 | 在网络 small JSON 入口拒绝；数量未超过 150 也不能绕过 body 上限 |
+| 基础文件名为 1 字节或 16 个安全 ASCII 字节 | 接受并保持原名称，不截断 |
+| 任一基础文件名为 17 字节 | 返回 1502；不改 RTC、配置、control、NVS、模式和现有轮播任务 |
+| cast/cast2pic/upload 的业务 `fileName` 为 17 字节 | 返回该接口现有文件名非法结果；不显示、不保存 |
+| delete 任一名称为 17 字节 | 返回 1502；整批不删除任何文件 |
+| SD 中存在升级前的超长名称 | get_saved_images、snapshot和本地浏览跳过该项；不得截断成另一名称；恢复出厂仍应能清理旧文件 |
+| legacy multipart fallback 的 `filename` 基础名为 17 字节 | 保存前拒绝；不得在 bin_img/jpg_img 中生成文件 |
 
 运行中首次取得 SNTP 的防重复测试：使用 A、B、C 三个不同文件并设置 `interval=300`，启动时暂时阻止 SNTP、保留 CH583/RTC 可用，让 A 完成一次 EPD 显示，再于完成后 10～30 秒恢复 SNTP。预期切换日志包含 `current_consumed=1 action=wait_next`，A 不再次进入 EPD，B 等待下一个绝对播放点。反向测试应在 A 尚未显示前恢复 SNTP，预期日志包含 `current_consumed=0 action=display_current`，当前绝对槽仍正常显示。
+
+轮播 runtime 内存测试：16 字节基础名规则下，150 项名称数组应由 7200 字节降为 2550 字节，日志中的 runtime_size 预计由约 7.5 KB 降到约 2.9 KB；runtime 仍优先使用 PSRAM，12 KB 轮播任务栈保持使用任务创建所需内存。若 PSRAM分配失败，应打印一次回退警告并尝试内部 RAM；若最终runtime结构分配或任务创建仍失败，新命令返回现有 `1506`，并打印一条 `slideshow runtime alloc failed point=runtime_calloc/task_create` 内存诊断。新命令和开机自动恢复失败后都必须出现带 `reason=new_command/startup_restore/startup_delay_alloc/startup_task_create` 的回退日志，`show_control.sw=0`、`epd_mode=NORMAL`且没有轮播任务运行；新保存的轮播列表允许保留。
 
 当前实现：
 
@@ -639,7 +647,7 @@ KEY_EVENT测试：无论DEVICE_INFO是否完成，分别发送 `PB2,PRESS` 和 `
 
 循环测试：连续在每次EPD恢复IDLE后触发PB2，预期按稳定顺序显示A、B、C、A。每次成功显示后读取 `PhotoPainter:local_img_state`，确认transaction=IDLE、last/next和成功次数同步推进。
 
-缺失文件测试：让列表选中B后，在扫描与读取之间删除B，预期打印skip并在同一次请求中显示C；连续删除多个候选时继续跳过，最多尝试本次列表数量。全部候选消失时打印一次错误并结束，不死循环。内存不足、SPI错误、读取不完整或解压失败不得作为NOT_FOUND批量跳图。
+缺失文件测试：让扫描选中B后，在扫描与读取之间删除B，预期重新扫描、打印skip并在同一次请求中显示C；连续删除多个候选时继续跳过，最多尝试首次扫描的有效文件数量。全部候选消失时打印一次错误并结束，不死循环。内存不足、SPI错误、读取不完整或解压失败不得作为NOT_FOUND批量跳图。
 
 断电恢复测试：A成功后断电，重启确认模式3恢复但不自动刷新；下一次PB2显示B。制造PREPARED=B后在EPD完成前断电，重启后下一次PB2重试B。破坏state版本、长度或CRC，预期ESP_LOGE并从安全默认游标恢复。
 
@@ -647,6 +655,10 @@ KEY_EVENT测试：无论DEVICE_INFO是否完成，分别发送 `PB2,PRESS` 和 `
 
 独立重启兼容测试：本轮不发送DEVICE_INFO，分别发送 `PB2,PRESS` 和 `PB1,PRESS`，必须正常ACK并分别执行一次本地浏览和恢复出厂，不得返回 `DEVICE_INFO_REQUIRED`。再在DEVICE_INFO完成后重复两条新SEQ事件，确认处理规则一致；BLE_DATA、PING等既有专项测试保持各自规则。详细协议预期见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 
-目录扫描栈回归测试：在 `/data/bin_img` 放入接近150个合法文件后发送 `KEY_EVENT ARG=PB2,PRESS`，确认依次出现request accepted、BIN list refreshed、selected及显示结果日志，ESP32不得重启。正常情况下不得出现worker low stack watermark；若出现该警告，应记录余量并停止继续增加worker栈内局部变量。
+常量内存目录扫描测试：分别在 `/data/bin_img` 放入1个、150个以及超过150个合法文件后发送 `KEY_EVENT ARG=PB2,PRESS`，确认出现request accepted、BIN scan completed、selected及显示结果日志，顺序稳定并可从末项循环到首项。目录项数量增加不得重新引入名称数组、导致ESP32重启或出现worker low stack watermark；若出现栈警告，应记录余量并停止继续增加worker栈内局部变量。
 
 目录限制和Factory Reset测试：确认功能从不读取 `/data/cast_img`、`/data/jpg_img` 或子目录。执行Factory Reset后确认local_img_state清除、epd_mode恢复默认，重启不进入本地浏览。
+
+SPI DMA回归测试：分别用已支持的800x480、1024x600、1600x1200 7.9/13.3、1360x480及4色/DKE/mofang屏型显示PSRAM数据。确认大块发送使用3072 bytes，不再出现 `chunk=4092`；正常场景不得出现 `ESP_ERR_NO_MEM`。注入首个SPI发送失败时，必须出现包含错误码和DMA余量的关键日志，当前数据装载立即停止，EPD最终结果必须非ESP_OK，不得继续update/refresh。由本地图片浏览触发时不得出现display completed，NVS保持PREPARED且游标不前进，下次PB2重试同一文件。
+
+SPI命令错误测试：注入一次 `spiTransmitCommand()` 失败，确认只打印包含command和ret的关键ESP_LOGE，不触发assert、Guru Meditation或自动重启；EPD最终结果必须非ESP_OK，本地图片浏览不得推进游标。将 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK` 临时设为0时，构建必须被编译期检查拒绝；正式值保持3072。

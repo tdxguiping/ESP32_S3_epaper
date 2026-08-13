@@ -59,7 +59,7 @@ static void upload_async_process(void *arg)
         .bin_part = job->upload.bin_part,
         .image_part = job->upload.image_part,
     };
-    snprintf(item.save_name, sizeof(item.save_name), "%s", job->upload.file_name);
+    strlcpy(item.save_name, job->upload.file_name, sizeof(item.save_name));
     (void)TdxImageTransfer_ProcessItems(&item, 1, job->base_path, "network upload async", &result);
     ESP_LOGI(TAG, "upload async process done file=%s result=%d error=%s elapsed_ms=%lu",
              job->upload.file_name,
@@ -112,6 +112,7 @@ static esp_err_t start_upload_async(char *body,
 
 typedef struct {
     char func[16];
+    // Preserve the full multipart field until the common validator checks its length.
     char file_name[SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX];
     size_t bin_size;
     size_t image_size;
@@ -221,7 +222,7 @@ esp_err_t ServerNetworkStaUpload_Process(httpd_req_t *req,
         return ESP_ERR_NOT_SUPPORTED;
     }
     snprintf(meta.func, sizeof(meta.func), "upload");
-    snprintf(meta.file_name, sizeof(meta.file_name), "%s", upload.file_name);
+    strlcpy(meta.file_name, upload.file_name, sizeof(meta.file_name));
     meta.save = upload.save;
     meta.show = upload.show;
     meta.bin_size = upload.bin_size;
@@ -261,7 +262,7 @@ esp_err_t ServerNetworkStaUpload_Process(httpd_req_t *req,
             .bin_part = upload.bin_part,
             .image_part = upload.image_part,
         };
-        snprintf(item.save_name, sizeof(item.save_name), "%s", upload.file_name);
+        strlcpy(item.save_name, upload.file_name, sizeof(item.save_name));
         (void)TdxImageTransfer_ProcessItems(&item, 1, base_path, "network upload", &result);
         log_heap_watermark("save_done");
     }

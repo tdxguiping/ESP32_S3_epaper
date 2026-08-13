@@ -122,13 +122,29 @@ static usb_delete_parse_result_t parse_file_names(const char *body, usb_delete_r
         pos++;
         char file_name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
         size_t len = 0;
-        while (*pos != '\0' && *pos != '"' && len + 1 < sizeof(file_name)) {
-            file_name[len++] = *pos++;
+        bool name_too_long = false;
+        while (*pos != '\0' && *pos != '"') {
+            if (len < TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+                file_name[len] = *pos;
+            } else {
+                name_too_long = true;
+            }
+            len++;
+            pos++;
         }
         if (*pos != '"') {
             return USB_DELETE_PARSE_INVALID_FILE_NAME;
         }
         pos++;
+        if (name_too_long) {
+            ESP_LOGE(TAG,
+                     "delete rejected: fileName too long index=%u len=%u max=%u",
+                     (unsigned int)request->file_count,
+                     (unsigned int)len,
+                     (unsigned int)TDX_IMAGE_BASE_NAME_MAX_BYTES);
+            return USB_DELETE_PARSE_INVALID_FILE_NAME;
+        }
+        file_name[len] = '\0';
         if (!UsbConsoleCommon_FileNameIsSafe(file_name)) {
             return USB_DELETE_PARSE_INVALID_FILE_NAME;
         }

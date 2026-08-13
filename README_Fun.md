@@ -66,7 +66,7 @@
 | `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | 字段、文件名安全、实际传输长度等于声明长度、目录和剩余空间条件与cast类似；zlib模式不要求压缩BIN等于屏幕原始长度；主要用于保存，`show=true` 时也可显示 | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存；图片列表、轮播、快照从 jpg/bin 目录取数据 |
 | `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `TDX_DELETE_MAX_FILES=50` 限制；超过上限返回 `1514`，文件名非法返回 `1502`；网络与 USB 入口都先完整校验，校验失败不执行删除；只删除匹配的 bin/jpg；不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度 | 从 JSON `fileNames` 取删除列表；校验通过后按文件名拼路径并删除 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从轮播配置/control 文件读取轮播状态 |
-| `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 诊断/兼容进度 | 最终 `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=150` 限制，允许重复，且全部 bin 文件必须存在、是普通文件并且非空；APP 在 `random=true` 时负责将每个原始文件复制 3 次并打乱，设备按收到的最终顺序播放；列表校验失败不改动现有轮播状态；`startIndex` 必填且满足 `0 <= startIndex < file_count`；单个名称缓冲区受 `TDX_SLIDESHOW_FILE_NAME_MAX_LEN=48` 限制；`interval` 限制在 `60..604800` 秒；设备保存的 `random` 永久强制为 `false` | 不兼容缺少 `startIndex` 的旧轮播协议/配置；启动时已有 SNTP 或运行中首次取得 SNTP 后，按最终 `fileNames + startIndex + anchor_epoch + interval` 使用绝对时间槽 |
+| `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 诊断/兼容进度 | 最终 `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=150` 限制，允许重复，且全部 bin 文件必须存在、是普通文件并且非空；APP 在 `random=true` 时负责将每个原始文件复制 3 次并打乱，设备按收到的最终顺序播放；列表校验失败不改动现有轮播状态；`startIndex` 必填且满足 `0 <= startIndex < file_count`；业务基础文件名为 1..16 个安全 ASCII 字节、不带扩展名，内部缓冲区为 17 字节（含 `\0`）；`interval` 限制在 `60..604800` 秒；设备保存的 `random` 永久强制为 `false` | 不兼容缺少 `startIndex` 的旧轮播协议/配置；启动时已有 SNTP 或运行中首次取得 SNTP 后，按最终 `fileNames + startIndex + anchor_epoch + interval` 使用绝对时间槽 |
 | `wifi_work_time` | `work_state` namespace blob；`PhotoPainter:work_continue/wifi_standby` 字符串兼容键 | 网络 HTTP 与 USB JSON 只接受 `seconds=0..3600`，旧字段 `time` 返回参数非法；BLE/CH583 继续保持原有协议和 `60..3600` 范围；内部 `SetAndSave()` clamp 到 `0..3600`；保存 blob 后会读回验证 | 启动时读取 blob；blob size 不匹配则回退默认值；兼容读取字符串键并解析为 u32；超时后保留原 CH583 POWER_OFF 关机链路，本地 EPD/SD GPIO4 电源保持开启 |
 | OTA | OTA update partition；boot partition 选择 | 请求必须被识别为 `/ota` 或 `/ota_upload`；body 不超过 `SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE=6MB`；meta/firmware 字段可解析；固件 magic、app_desc、版本、长度和目标分区大小检查通过；写入成功后才设置 boot partition；成功响应固定以 `ota_result` 作为最后一条 JSON，HTTP handler 返回后由 OTA 专用任务延时自动复位 | 读取 meta JSON、firmware/bin 字段、running partition、next update partition、app desc 和 OTA 状态；OTA 接收与写入使用独立 power hold，任一阶段进行中都不发送 `POWER_OFF`；等待复位期间保留 OTA 成功状态 |
 | EPD 类型 | `PhotoPainter:epd_type` | 只允许保存 `EpdType_GetConfig(type)` 能找到的合法type；未变化时跳过写入；非法type返回 `ESP_ERR_INVALID_ARG` | 启动优先读取 `epd_type`；不存在或无效时回退 `USER_EPD_TYPE_DEFAULT`；DEVICE_INFO上报类型只保存供下次启动使用，不切换本次运行的显示驱动 |
@@ -1359,7 +1359,7 @@ V2 协议资料拆分：
 字段说明：
 
 ```text
-fileNames 必须是逗号分隔的合法 JSON 数组；表示 APP 最终生成的播放事件列表，最多 150 个并允许重复；列表中的每个 .bin 文件都必须存在于 /data/bin_img、是普通文件且非空；网络端完整 JSON 仍不得超过 4096 字节
+fileNames 必须是逗号分隔的合法 JSON 数组；表示 APP 最终生成的播放事件列表，最多 150 个并允许重复；每个基础文件名为 1..16 个安全 ASCII 字节且不带扩展名，超过 16 字节返回 1502，整条指令不执行；列表中的每个 .bin 文件都必须存在于 /data/bin_img、是普通文件且非空；网络端完整 JSON 仍不得超过 4096 字节
 interval 默认轮播间隔，单位秒，固件校验 60..604800
 random=true 时 APP 原始文件最多 50 个，将每个原始文件复制 3 次并对最终列表打乱；设备不再次随机，也不校验每个名称是否刚好出现 3 次，仍强制保存/返回 random=false，并按收到的最终 fileNames 顺序轮播
 timestamp 必填；秒级 Unix 时间戳，用作 `fileNames[startIndex]` 起始图片的目标播放时间，同时写入 show_control.timestamp 和 anchor_epoch
@@ -1374,6 +1374,7 @@ startIndex 必填；从 0 开始，必须小于 APP 最终发送的 fileNames �
 存：
 - start_slideshow 严格要求合法 startIndex，保存 slideshow_config 的 fileNames / interval / random / startIndex，保存 random 配置，并写入 `show_control.txt`：`{"func":"set_slideshow","sw":1,"interval":...,"random":...,"timestamp":...,"anchor_epoch":...}`。旧字段 `index` 不兼容；缺少 startIndex 时拒绝启动，不默认补 0。
 - APP / 网络端 start_slideshow 在任何写入或校时前完成整条指令校验：最终 fileNames 最多 150 个并允许重复，设备逐项检查全部 bin 文件。发现任一非法文件时只返回错误，不保存配置、不写 RTC / 系统时间、不改变显示模式，也不停止或重启现有轮播。
+- 网络和 USB 的 cast、cast2pic、upload、delete、start_slideshow 统一要求业务基础文件名最多 16 个安全 ASCII 字节且不带 `.bin/.jpg`；APP 新名称建议固定使用 16 位小写十六进制，设备继续兼容 `26422` 等较短名称。解析阶段先检查真实长度，超过上限直接返回现有文件名非法结果，不截断、不执行显示、保存、删除或状态修改。multipart 原始 `filename` 解析缓冲仍保留 96 字节；legacy multipart fallback 保存前按去掉匹配的 `.bin/.jpg` 后的基础名检查 16 字节上限。
 - fileNames 数组严格要求文件名之间使用单个逗号分隔，不接受缺少逗号、重复逗号或尾随逗号；文件检查阶段无法取得共享 SPI 锁时返回 1012，不误报为文件不存在。
 - set_slideshow 写入 sw / interval / timestamp / anchor_epoch，并同步写 PhotoPainter:epd_mode=1。
 - 设备端 `random` 永久禁用；协议仍兼容接收 `random:true/false`。`random=true` 时复制 3 次及打乱由 APP 在发送前完成，设备统一强制为 `random=false`，并在 `slideshow_config.txt`、`show_control.txt`、NVS `slide_random` 和 snapshot 中固定保存/返回 false。
@@ -1386,6 +1387,7 @@ startIndex 必填；从 0 开始，必须小于 APP 最终发送的 fileNames �
 - `ServerNetworkStaSlideshow_GetScheduleTiming()` 可读取 RTC 轮播的 now / next / remain；`ServerNetworkStaSlideshow_GetRuntimeTiming()` 只作为非 RTC 兼容状态读取。
 - slideshow_task() 在 EPD 显示成功且下一进度保存成功后，SNTP 模式按绝对槽计算下一目标；其他时间源继续使用原 RTC 进度逻辑。
 - slideshow_task() 在上一张 EPD 显示完成并保存下一进度后，会在剩余 interval 时间内用 PSRAM 预加载下一张 bin 并做 SHA-256 文件名校验；RTC 真实目标时间保持 `next_epoch` 不变，但设备内部会在 `next_epoch - lead_seconds` 时进入 EPD 显示流程，用于抵消 SD / 调度 / EPD 调用链路开销。`lead_seconds` 按当前 EPD type 选择：`EPD_TYPE_1600_1200_133_DKE` 为 1 秒，`EPD_TYPE_1600_1200_133` 为 3 秒，其它屏型使用默认 `TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS=2` 秒。若 PSRAM 预加载失败，已保存的下一进度不变，下一轮会重新读取该图片，不长时间占用内部 RAM，不影响停止和失败不推进的规则。
+- 业务基础文件名缓冲从 48 字节缩为 17 字节后，150 项轮播列表由 7200 字节降为 2550 字节，轮播 runtime 由约 7.5 KB 降为约 2.9 KB；runtime 仍优先从 PSRAM 分配，失败时兼容回退内部 RAM。12 KB `slideshow_task` 栈保持不变。任务成功创建后打印栈历史最低剩余量和估算峰值使用量：启动、最低余量继续下降至少 256 字节、退出时才打印，避免每轮刷日志；任务创建失败时没有实际运行水位可测。新轮播命令或开机自动恢复在延迟参数分配、延迟任务创建、runtime 分配或轮播任务创建失败时，会把 `show_control.txt` 写为 `sw=0`、把 `epd_mode` 切回 `NORMAL`，避免保存状态显示轮播开启但实际没有任务；新列表配置仍保留。内存失败日志只打印一次内部 RAM 总量、最大连续块、PSRAM、runtime 大小和任务栈大小。
 - RTC 轮播显示失败时不立即重试；当前失败图片视为跳过，先保存并切换到下一张 pending_file，再排到下一次 RTC 播放点，等待下一次轮播到来后显示下一张图片。若跳过进度保存失败，则不推进当前 progress，但仍排到下一次 RTC 播放点，避免立即重试。
 - `lead_seconds` 只用于提前进入 EPD 硬件刷新，目标图片仍按逻辑播放点的绝对槽选择，不使用提前后的时间改变图片索引。
 - 相同文件名出现在不同列表索引时，按不同播放事件处理；如果随机后的最终列表包含相邻相同名称，设备会在相邻两个 RTC 播放点分别调用 EPD 显示同一文件，这是当前产品策略的预期行为。
@@ -2618,13 +2620,15 @@ main/data_compression/
 
 `epd_mode=3(LOCAL_IMAGE_BROWSING)` 是独立持久模式。功能代码只位于 `main/local_image_browsing/`，专用宏统一定义在 `local_image_browsing.h`。启动读到模式3时恢复浏览游标，不启动 DAILY 或 SLIDESHOW，也不自动换图；首次 `DEVICE_INFO.wake_reason=KEY_PB2` 或合法的 `KEY_EVENT ARG=PB2,PRESS` 都可触发，KEY_EVENT不依赖DEVICE_INFO状态。UART早于本模块初始化收到的PB2事件进入长度为10的启动FIFO，初始化阶段按到达顺序逐个尝试；第一项预约EPD后，其余项仍按EPD BUSY规则拒绝，不合并也不丢失初始化交界点事件。帧格式及来源互斥规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 
-BIN目录扫描直接复用模块内的文件列表，不在8 KB worker栈中创建约7.2 KB的临时列表。每次请求完成后只在任务栈最低余量小于 `LOCAL_IMAGE_BROWSING_STACK_WARNING_BYTES` 时打印警告，避免正常运行产生重复调试日志。
+BIN目录扫描不建立RAM或SD索引文件，只保留本次候选、候选后继和循环首项等少量17字节名称缓冲。原来的150项RAM列表已删除，静态内部RAM减少2556字节；每次请求完成后只在任务栈最低余量小于 `LOCAL_IMAGE_BROWSING_STACK_WARNING_BYTES` 时打印警告，避免正常运行产生重复调试日志。
 
 每个新的、合法且 ACK 成功的 PB2 事件尝试一次换图；相同KEY_EVENT SEQ或重复DEVICE_INFO不重复执行业务。先通过 EPD 专用空闲预留原子判断 BUSY/IDLE：BUSY 时本次事件立即结束，不排队、不切模式、不推进游标；IDLE 时预留 EPD，停止并等待 DAILY/SLIDESHOW退出，保存模式3，再扫描 `/data/bin_img`。
 
-文件列表只包含普通、非空、精确小写 `.bin` 文件，不递归目录，不读取 cast_img、jpg_img、`.bin.zlib` 或其他扩展名。列表按不区分大小写的字典序排序，大小写相同时用区分大小写比较保证稳定。每次 PB2 请求重新扫描，最多保留150项。
+目录候选只包含普通、非空、精确小写 `.bin` 文件，不递归目录，不读取 cast_img、jpg_img、`.bin.zlib` 或其他扩展名。每次PB2按不区分大小写的字典序单遍扫描，大小写相同时用区分大小写比较保证稳定；扫描同时计算显示项和下一项，末尾自动循环到目录最小项。目录项不缓存，因此本地浏览不再受150项RAM列表上限限制。
 
-浏览状态保存在 `PhotoPainter:local_img_state`，包含版本、CRC32、事务状态、last/pending/next文件名和成功显示次数。显示前保存 `PREPARED`；显示成功后保存 `IDLE` 并推进 next。断电读到PREPARED时下次PB2重试同一张，避免跳图。目标文件不存在、已不是普通文件或为空时保存推进后的next并继续尝试下一项；单次最多尝试本次列表数量，全部无效时结束，禁止无限循环。内存、SPI、读取不完整、解压和EPD错误不按“文件不存在”跳过。
+浏览状态保存在 `PhotoPainter:local_img_state`，包含版本、CRC32、事务状态、last/pending/next文件名和成功显示次数。显示前保存 `PREPARED`；显示成功后保存 `IDLE` 并推进 next。断电读到PREPARED时下次PB2重试同一张，避免跳图。目标文件在扫描后不存在、已不是普通文件或为空时重新扫描后继项、保存next并继续；单次最多尝试首次扫描得到的有效文件数量，全部无效时结束，禁止无限循环。内存、SPI、读取不完整、解压和EPD错误不按“文件不存在”跳过。
+
+所有屏型的大块EPD SPI发送统一使用 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072`，该配置禁止设为0。SPI数据或命令发送失败时不使用断言重启；错误由屏型路径上报并停止当前帧，不继续刷新。本地图片浏览保留 `PREPARED` 和当前文件，下次PB2重试同一张，不错误推进游标。
 
 CH583 UART可能早于本模块初始化。启动早期首次DEVICE_INFO中收到并成功ACK的PB2进入现有启动FIFO，本模块初始化完成后提交；重复DEVICE_INFO不重复入队，正常运行阶段BUSY事件不缓存。PB1不进入浏览FIFO，只进入Factory Reset单请求RAM状态。Factory Reset清除local_img_state并把epd_mode恢复默认值。
 

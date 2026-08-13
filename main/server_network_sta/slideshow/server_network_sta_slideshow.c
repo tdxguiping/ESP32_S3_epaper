@@ -33,8 +33,9 @@
 static const char *TAG = "server_sta_slide";
 #define SLIDESHOW_TASK_STACK_SIZE (12 * 1024)
 #define SLIDESHOW_TASK_PRIORITY 4
+#define SLIDESHOW_STACK_WATERMARK_LOG_STEP_BYTES 256U
 #define SLIDESHOW_PROGRESS_MAGIC 0x534C4450UL
-#define SLIDESHOW_PROGRESS_VERSION 1U
+#define SLIDESHOW_PROGRESS_VERSION 2U
 #define SLIDESHOW_PROGRESS_SAVE_RETRIES 3
 
 typedef struct {
@@ -457,7 +458,17 @@ static bool file_name_is_safe(const char *file_name)
         strchr(file_name, '\\') != NULL || strchr(file_name, '"') != NULL) {
         return false;
     }
-    return strlen(file_name) < TDX_SLIDESHOW_FILE_NAME_MAX_LEN;
+    size_t len = strlen(file_name);
+    if (len > TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+        return false;
+    }
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char c = (unsigned char)file_name[i];
+        if (c < 0x20U || c > 0x7EU) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool slideshow_base_name_is_sha_tail(const char *file_name)
@@ -565,13 +576,28 @@ static slideshow_file_names_parse_result_t parse_file_names(const char *body,
 
         char file_name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
         size_t len = 0;
-        while (*pos != '\0' && *pos != '"' && len + 1 < sizeof(file_name)) {
-            file_name[len++] = *pos++;
+        bool name_too_long = false;
+        while (*pos != '\0' && *pos != '"') {
+            if (len < TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+                file_name[len] = *pos;
+            } else {
+                name_too_long = true;
+            }
+            len++;
+            pos++;
         }
         if (*pos != '"') {
             return SLIDESHOW_FILE_NAMES_PARSE_INVALID;
         }
         pos++;
+        if (name_too_long) {
+            ESP_LOGE(TAG,
+                     "start_slideshow rejected: fileName too long index=%u len=%u max=%u",
+                     (unsigned int)request->file_count,
+                     (unsigned int)len,
+                     (unsigned int)TDX_IMAGE_BASE_NAME_MAX_BYTES);
+            return SLIDESHOW_FILE_NAMES_PARSE_INVALID;
+        }
         file_name[len] = '\0';
 
         if (!file_name_is_safe(file_name)) {
@@ -736,6 +762,75 @@ static esp_err_t write_slideshow_rtc_control(const char *bin_dir, const slidesho
              (long long)request->anchor_epoch,
              json);
     return write_text_file(path, json);
+}
+
+static void slideshow_log_runtime_alloc_failure(const char *point)
+{
+    ESP_LOGE(TAG,
+             "slideshow runtime alloc failed point=%s internal_free=%u internal_largest=%u psram_free=%u runtime_size=%u task_stack=%u",
+             point != NULL ? point : "unknown",
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+             (unsigned int)sizeof(slideshow_runtime_t),
+             (unsigned int)SLIDESHOW_TASK_STACK_SIZE);
+}
+
+static void slideshow_log_stack_watermark(const char *point,
+                                          UBaseType_t *last_reported,
+                                          bool force)
+{
+    if (last_reported == NULL) {
+        return;
+    }
+
+    UBaseType_t remaining = uxTaskGetStackHighWaterMark(NULL);
+    bool first_report = *last_reported == UINT_MAX;
+    bool decreased_enough = !first_report &&
+                            *last_reported > remaining &&
+                            (*last_reported - remaining) >=
+                                SLIDESHOW_STACK_WATERMARK_LOG_STEP_BYTES;
+    if (!force && !first_report && !decreased_enough) {
+        return;
+    }
+
+    unsigned int peak_used = remaining < SLIDESHOW_TASK_STACK_SIZE ?
+                             (unsigned int)(SLIDESHOW_TASK_STACK_SIZE - remaining) :
+                             0U;
+    ESP_LOGI(TAG,
+             "slideshow stack watermark point=%s remaining=%u peak_used=%u configured=%u",
+             point != NULL ? point : "unknown",
+             (unsigned int)remaining,
+             peak_used,
+             (unsigned int)SLIDESHOW_TASK_STACK_SIZE);
+    *last_reported = remaining;
+}
+
+static void slideshow_rollback_runtime_start_failure(const char *base_path,
+                                                     const char *reason)
+{
+    char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
+    static const char disabled_control[] = "{\"func\":\"set_slideshow\",\"sw\":0}";
+
+    ServerNetworkStaSlideshow_Stop();
+    snprintf(control_path,
+             sizeof(control_path),
+             "%s/bin_img/%s",
+             base_path,
+             TDX_SLIDESHOW_CONTROL_FILE);
+    esp_err_t control_ret = write_text_file(control_path, disabled_control);
+    esp_err_t mode_ret = EpdDisplayMode_SetBySlideshowSwitch(false);
+    if (control_ret == ESP_OK && mode_ret == ESP_OK) {
+        ESP_LOGW(TAG,
+                 "slideshow runtime start failure rolled back reason=%s control_sw=0 mode=NORMAL",
+                 reason != NULL ? reason : "unknown");
+    } else {
+        ESP_LOGE(TAG,
+                 "slideshow runtime start rollback failed reason=%s control_ret=%s mode_ret=%s",
+                 reason != NULL ? reason : "unknown",
+                 esp_err_to_name(control_ret),
+                 esp_err_to_name(mode_ret));
+    }
 }
 
 static esp_err_t start_slideshow_apply_timestamp(slideshow_request_t *request)
@@ -1983,6 +2078,9 @@ static void slideshow_task(void *arg)
         return;
     }
 
+    UBaseType_t last_reported_stack_watermark = UINT_MAX;
+    slideshow_log_stack_watermark("start", &last_reported_stack_watermark, true);
+
     ESP_LOGI(TAG, "slideshow task start count=%u interval=%lu random=%d start_index=%u pending_index=%u",
              (unsigned int)runtime->request.file_count,
              (unsigned long)runtime->request.interval,
@@ -2223,12 +2321,17 @@ static void slideshow_task(void *arg)
             EpdSdPowerTest_SlideshowFollowupEnd();
         }
 
+        slideshow_log_stack_watermark("event_done",
+                                      &last_reported_stack_watermark,
+                                      false);
+
         if (!runtime->rtc_enabled) {
             (void)wait_slideshow_interval_from_start(display_start_tick,
                                                      runtime->request.interval);
         }
     }
 
+    slideshow_log_stack_watermark("stop", &last_reported_stack_watermark, true);
     ESP_LOGI(TAG, "slideshow task stop");
     portENTER_CRITICAL(&s_slideshow_timing_mux);
     s_slideshow_interval_active = false;
@@ -2294,8 +2397,16 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
         return ESP_ERR_TIMEOUT;
     }
 
-    slideshow_runtime_t *runtime = (slideshow_runtime_t *)calloc(1, sizeof(*runtime));
+    slideshow_runtime_t *runtime = (slideshow_runtime_t *)heap_caps_calloc(
+        1,
+        sizeof(*runtime),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (runtime == NULL) {
+        ESP_LOGW(TAG, "slideshow runtime PSRAM alloc failed, fallback internal");
+        runtime = (slideshow_runtime_t *)calloc(1, sizeof(*runtime));
+    }
+    if (runtime == NULL) {
+        slideshow_log_runtime_alloc_failure("runtime_calloc");
         return ESP_ERR_NO_MEM;
     }
 
@@ -2364,6 +2475,7 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
     if (task_ret != pdPASS) {
         free(runtime);
         s_slideshow_task = NULL;
+        slideshow_log_runtime_alloc_failure("task_create");
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
@@ -2531,7 +2643,11 @@ esp_err_t ServerNetworkStaSlideshow_StartSavedResetInterval(const char *base_pat
 
 esp_err_t ServerNetworkStaSlideshow_StartSavedForNewCommand(const char *base_path)
 {
-    return start_saved_slideshow_with_mode(base_path, true, false, true);
+    esp_err_t ret = start_saved_slideshow_with_mode(base_path, true, false, true);
+    if (ret != ESP_OK && base_path != NULL) {
+        slideshow_rollback_runtime_start_failure(base_path, "new_command");
+    }
+    return ret;
 }
 
 static void slideshow_startup_delay_task(void *arg)
@@ -2624,6 +2740,10 @@ static void slideshow_startup_delay_task(void *arg)
                                                         force_first_display,
                                                         false);
         ESP_LOGI(TAG, "slideshow startup delayed start ret=%s", esp_err_to_name(ret));
+        if (ret != ESP_OK) {
+            slideshow_rollback_runtime_start_failure(delay->base_path,
+                                                     "startup_restore");
+        }
         break;
     }
 
@@ -2644,6 +2764,8 @@ esp_err_t ServerNetworkStaSlideshow_StartSavedDelayed(const char *base_path)
 
     slideshow_startup_delay_t *delay = (slideshow_startup_delay_t *)calloc(1, sizeof(*delay));
     if (delay == NULL) {
+        slideshow_rollback_runtime_start_failure(base_path,
+                                                 "startup_delay_alloc");
         return ESP_ERR_NO_MEM;
     }
     strlcpy(delay->base_path, base_path, sizeof(delay->base_path));
@@ -2657,6 +2779,8 @@ esp_err_t ServerNetworkStaSlideshow_StartSavedDelayed(const char *base_path)
     if (task_ret != pdPASS) {
         free(delay);
         s_slideshow_startup_delay_task = NULL;
+        slideshow_rollback_runtime_start_failure(base_path,
+                                                 "startup_task_create");
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;

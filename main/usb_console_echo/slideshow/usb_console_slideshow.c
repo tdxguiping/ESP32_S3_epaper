@@ -174,11 +174,30 @@ static int validate_file_names(const char *body, size_t *file_count, bool check_
         }
         char name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
         size_t len = 0;
-        while (*pos != '\0' && *pos != '"' && len + 1 < sizeof(name)) {
-            name[len++] = *pos++;
+        bool name_too_long = false;
+        while (*pos != '\0' && *pos != '"') {
+            if (len < TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+                name[len] = *pos;
+            } else {
+                name_too_long = true;
+            }
+            len++;
+            pos++;
         }
-        if (*pos++ != '"' || !UsbConsoleCommon_FileNameIsSafe(name) ||
-            len >= TDX_SLIDESHOW_FILE_NAME_MAX_LEN) {
+        if (*pos != '"') {
+            return TDX_JSON_RESULT_JSON_INVALID;
+        }
+        pos++;
+        if (name_too_long) {
+            ESP_LOGE("usb_slideshow",
+                     "start_slideshow rejected: fileName too long index=%u len=%u max=%u",
+                     (unsigned int)count,
+                     (unsigned int)len,
+                     (unsigned int)TDX_IMAGE_BASE_NAME_MAX_BYTES);
+            return TDX_JSON_RESULT_FILE_NAME_INVALID;
+        }
+        name[len] = '\0';
+        if (!UsbConsoleCommon_FileNameIsSafe(name)) {
             return TDX_JSON_RESULT_FILE_NAME_INVALID;
         }
         count++;

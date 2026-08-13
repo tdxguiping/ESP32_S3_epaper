@@ -231,7 +231,8 @@ static int factory_reset_delete_files_with_ext(const char *dir_path,
             continue;
         }
 
-        char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + TDX_SLIDESHOW_FILE_NAME_MAX_LEN + 24];
+        // Factory reset must still remove legacy files whose names predate the 16-byte protocol limit.
+        char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + SERVER_NETWORK_STA_DATAUP_FILE_NAME_MAX + 24];
         int len = snprintf(path, sizeof(path), "%s/%s", dir_path, entry->d_name);
         if (len < 0 || (size_t)len >= sizeof(path)) {
             factory_reset_record_file_failure(result, dir_path, ENAMETOOLONG);
