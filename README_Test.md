@@ -202,7 +202,7 @@ curl.exe -X POST "$esp/ota_upload" `
 
 版本规则：当前代码不解析 `version` 的数字格式或范围。OTA meta 中 `version` 字段如果存在，只做字符串完全匹配，必须与固件 `app_desc.version` 完全一致，否则返回 `1711/version_mismatch` 并拒绝写入；不确定固件版本字符串时可以省略该字段。
 
-预期：固件大小不能超过 OTA 分区；版本校验和固件校验通过后写 OTA 分区并设置 boot partition。成功响应中 `ota_event/stage=rebooting` 位于 `ota_result/result=0` 之前，`ota_result` 必须是最后一条 JSON；chunked response 正常结束、HTTP handler 返回后，OTA 专用任务按 `SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS`（当前为 3000 ms）自动复位。`reboot` 缺失时默认按 `true`；即使请求传入 `reboot=false`，设备也会打印警告并忽略该值，成功 OTA 必须复位。
+预期：固件大小不能超过 OTA 分区；版本校验和固件校验通过后写 OTA 分区并设置 boot partition。成功响应中 `ota_event/stage=rebooting` 位于 `ota_result/result=0` 之前，`ota_result` 必须是最后一条 JSON；chunked response 正常结束、HTTP handler 返回后，OTA 专用任务按 `SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS`（当前为 500 ms）自动复位。`reboot` 缺失时默认按 `true`；即使请求传入 `reboot=false`，设备也会打印警告并忽略该值，成功 OTA 必须复位。
 
 关键日志应依次包含：
 
@@ -213,16 +213,16 @@ stage=rebooting
 func=ota_result result=0
 finish ota stream ret=ESP_OK
 ota final response complete result_last=1
-ota restart pending delay_ms=3000
+ota restart pending delay_ms=500
 HTTP data handler done
 ota restart now
 ```
 
 `ota restart pending` 由新任务打印，可能与外层的 `HTTP data handler done` 相邻交错，两者不要求固定先后；必须保证 `ota restart now` 位于它们之后。测试判定：`ASSOC_LEAVE` 出现在 `ota restart now` 之后属于设备主动复位，不作为 OTA 写入失败；若出现 `ota final response incomplete`，表示固件已完成写入和 boot partition 设置，但手机端可能没有收到完整的最终 HTTP 响应，应记录其中的 event/result/finish 返回值。
 
-重启等待窗口测试：在 `ota restart pending delay_ms=3000` 后立即再次发送 multipart 请求。`/ota` 或 `/ota_upload` 应返回现有 `1713/upload_busy` 且 message 为 `restart_pending`；`/dataUP` multipart 应返回现有 `1007` 且 message 为 `restart_pending`。GET `/ping` 不受该保护影响。
+重启等待窗口测试：在 `ota restart pending delay_ms=500` 后立即再次发送 multipart 请求。`/ota` 或 `/ota_upload` 应返回现有 `1713/upload_busy` 且 message 为 `restart_pending`；`/dataUP` multipart 应返回现有 `1007` 且 message 为 `restart_pending`。GET `/ping` 不受该保护影响。
 
-新固件启动确认测试：OTA 后第一次启动必须先出现一条 `net-ota-boot: pending verify`，其中包含 version、partition、addr、state 和 reset_reason；随后出现 `ota pending verify=1`。日志必须先出现 `HTTP POST ready /dataUP /ota /ota_upload`，再出现 `current image confirmed` 和 `ota pending verify=0`。若确认失败，必须出现 `ESP_LOGE`，同时 HTTP POST handler 和 pending hold 保持有效。
+新固件启动确认测试：OTA 后第一次启动必须先出现一条 `net-ota-boot: pending verify`，其中包含 version、partition、addr、state 和 reset_reason；随后出现 `ota pending verify=1`。CH583 UART 本地初始化完成后、500ms时间同步等待及 WiFi连接之前，必须出现 `local image confirmation begin`、`ota pending verify=0` 和 `current image confirmed ... phase=local_ready`。确认耗时目标小于 `USER_OTA_LOCAL_CONFIRM_WARNING_MS=6000ms`，并且从 APP 收到成功 `ota_result` 到确认完成必须小于 `USER_OTA_CH583_POWER_CUT_LIMIT_MS=10000ms`。分别关闭路由器、设置错误密码、延迟DHCP和移除SD卡，确认均不依赖这些模块。若本地确认失败，必须出现 `ESP_LOGE`、pending hold 保持有效，并在 HTTP POST接口注册完成后执行原确认入口重试。
 
 启动状态重试测试：模拟第一次 `esp_ota_get_state_partition()` 读取失败，work-time 初始化后必须在 GPIO test 前再读取一次；第二次读取成功时应正常打印 pending 诊断、设置 hold，并启用 OTA 首次启动容错。两次都失败时只保留两次模块级 `ESP_LOGE`，`main.c` 不重复打印同一错误。
 

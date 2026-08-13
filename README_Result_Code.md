@@ -976,7 +976,7 @@ OTA 返回顺序规则：失败响应以对应的非零 `ota_result` 结束；�
 
 非 OTA multipart 在 OTA restart-pending 窗口内继续使用通用 busy 返回码 `1007`，message/error 为 `restart_pending`，不新增正式返回码。
 
-OTA 首次启动检测使用 bootloader `otadata/ESP_OTA_IMG_PENDING_VERIFY`。启动诊断、pending-verify power hold、镜像确认和首次启动可选模块容错均为设备内部状态，不新增 NVS 标志、`ota_result` 字段或正式返回码。
+OTA 首次启动检测使用 bootloader `otadata/ESP_OTA_IMG_PENDING_VERIFY`。镜像在联网前完成本地关键初始化后确认，HTTP接口就绪后的原确认入口仅作失败重试。启动诊断、pending-verify power hold、镜像确认、500ms后台复位和首次启动可选模块容错均为设备内部状态，不新增 NVS 标志、`ota_result` 字段或正式返回码。
 
 启动阶段的 otadata 重试同样属于设备内部恢复逻辑；读取失败只记录设备日志，不映射新的网络 result code。
 

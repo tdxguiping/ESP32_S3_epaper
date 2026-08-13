@@ -23,6 +23,9 @@ void NetworkOtaBoot_EnablePendingProtection(void);
 // Confirm the current image and release pending-verification protection on success.
 esp_err_t NetworkOtaBoot_ConfirmCurrentImage(void);
 
+// Confirm a pending image after local critical initialization, without waiting for Wi-Fi.
+esp_err_t NetworkOtaBoot_ConfirmAfterLocalInit(void);
+
 #ifdef __cplusplus
 }
 #endif

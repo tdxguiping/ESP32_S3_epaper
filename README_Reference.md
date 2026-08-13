@@ -175,8 +175,14 @@ USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE=0
 SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE=0
 只保留 OTA 关键节点和错误日志。
 
-SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS=3000
+SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS=500
 OTA 成功响应结束且 HTTP handler 返回后，专用任务等待该时长再复位。
+
+USER_OTA_LOCAL_CONFIRM_WARNING_MS=6000
+本地关键初始化后的首次启动确认超过该时长时输出警告，不主动延迟确认。
+
+USER_OTA_CH583_POWER_CUT_LIMIT_MS=10000
+记录 APP 收到 ESP32-C5 OTA成功结果后，CH583允许的最大关电等待窗口，用于诊断和测试验收。
 
 SERVER_NETWORK_STA_OTA_RESTART_TASK_STACK_SIZE=3072
 SERVER_NETWORK_STA_OTA_RESTART_TASK_PRIORITY=5
@@ -2140,7 +2146,7 @@ network_ota_boot.c
 
 `network_ota_boot` 直接读取 bootloader `otadata`，仅把 `ESP_OTA_IMG_PENDING_VERIFY` 视为 OTA 首次启动标志，不增加应用 NVS key。该模块保存本次启动和当前待确认两个原子 RAM 状态，输出一次关键启动诊断，并通过 `USER_WORK_STATE_OTA_HOLD_PENDING_VERIFY_BIT` 阻止自动关机。启动最早阶段读取失败时，`main.c` 在 work-time 初始化后、GPIO test 前调用 `NetworkOtaBoot_Init()` 重试一次；调用方不重复打印模块已经报告的读取错误。
 
-`NetworkOtaBoot_ConfirmCurrentImage()` 在 `/dataUP`、`/ota`、`/ota_upload` 全部注册成功后执行，避免恢复接口尚未就绪时提前确认新镜像。确认成功清除 pending-verify hold；确认失败使用 `ESP_LOGE`，注册函数保留 HTTP handler 并返回成功，使设备仍可接受恢复请求。确认时会再次读取权威 otadata 状态，避免启动早期的瞬时读取错误漏掉确认。
+`NetworkOtaBoot_ConfirmAfterLocalInit()` 在网络管理对象及 CH583 UART 初始化成功后、现有500ms CH583时间同步等待之前执行。该位置不等待 WiFi、DHCP、SNTP、HTTP、SD或DAILY，目标是在外部10秒关电窗口内完成 `esp_ota_mark_app_valid_cancel_rollback()`。确认成功清除 pending-verify hold；确认失败使用 `ESP_LOGE`并继续安全启动。`NetworkOtaBoot_ConfirmCurrentImage()` 仍在 `/dataUP`、`/ota`、`/ota_upload` 全部注册成功后执行，作为本地确认失败时的容错重试。两个入口共用 OTA模块内部确认实现，并在每次确认前重新读取权威otadata状态。
 
 普通启动不启用上述保护。只有本次从 `PENDING_VERIFY` 启动时，`GpioTest_Init()` 和 `FactoryReset_Init()` 失败才降级为记录错误并继续；其他初始化规则不变。当前 `app_auto_light_sleep_init()` 固定配置 `light_sleep_enable=false`，pending 状态只增加一次明确提示。
 

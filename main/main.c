@@ -317,6 +317,15 @@ void app_main(void)
     // 先启动 CH583 串口再初始化 LED 状态，因为 C5 状态灯由 CH583 GPIO 控制。
     ESP_ERROR_CHECK(Ch583UartApp_Init());
 
+    if (NetworkOtaBoot_IsPendingVerify()) {
+        /*
+         * Confirm the new image after local critical services are ready. Wi-Fi,
+         * DHCP, HTTP, SD, and SNTP are intentionally excluded so a slow network
+         * cannot consume the CH583 external power-cut window.
+         */
+        /* The OTA module owns the single stage-specific error log on failure. */
+        (void)NetworkOtaBoot_ConfirmAfterLocalInit();
+    }
 
     vTaskDelay(pdMS_TO_TICKS(500)); // for CH583 ask delay 500ms
     (void)ServerNetworkStaTime_RequestCh583Backup();

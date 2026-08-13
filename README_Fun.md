@@ -1073,10 +1073,10 @@ V2_相框传图协议.html 中没有定义网络 OTA 请求字段。
 当前 OTA 请求仍先由 receive_data_redirect_handler() 完整接收 HTTP body，再交给 NetworkOtaUpload_ProcessReceivedBody() 解析 firmware part。
 OTA 写分区时会分块 esp_ota_write()，但 HTTP 接收阶段不是 streaming。
 成功响应先发送 `ota_event/rebooting`，再发送最终 `ota_result/result=0` 并结束 chunked response；`ota_result` 后不再发送其他 JSON。
-响应结束后由 OTA 模块的专用任务按 `SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS` 延时复位，使 HTTP handler 可以先释放 body、上传互斥锁和 socket。
+响应结束后由 OTA 模块的专用任务按 `SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS=500ms` 延时复位，使 HTTP handler 可以先释放 body、上传互斥锁和 socket，同时缩短 CH583 后续 OTA 前的等待时间。
 OTA restart-pending 期间拒绝新的 multipart 上传：OTA 返回现有 `1713/upload_busy`，其他 multipart 返回现有 `dataup_result/1007`；GET 和非 multipart 业务保持原处理方式。
 设备不新增应用 NVS OTA 标志，直接使用 bootloader `otadata` 中的 `ESP_OTA_IMG_PENDING_VERIFY` 作为 OTA 首次启动的权威标志。只有该状态会输出版本、运行分区、分区地址、OTA state 和 reset reason 的启动诊断，并设置 pending-verify power hold。启动最早阶段读取失败时，在 work-time 初始化后、GPIO test 前重试一次，使 OTA 首次启动容错和 power hold 能及时生效。
-新启动的 OTA 镜像只在 `/dataUP`、`/ota`、`/ota_upload` 全部注册成功后确认有效；确认成功清除 pending-verify hold，确认失败保留 hold 和已就绪的恢复接口。当前 PM 配置固定 `light_sleep_enable=false`，pending 状态会额外打印一次保护提示，不改变普通启动的 PM 配置。
+新启动的 OTA 镜像在 NVS、基础系统、work-time、EPD 模式、网络管理对象和 CH583 UART 等本地关键初始化完成后，通过 `NetworkOtaBoot_ConfirmAfterLocalInit()` 确认有效；该确认不等待 WiFi、DHCP、SNTP、HTTP、SD 或 DAILY。确认成功清除 pending-verify hold；确认失败保留 hold，并在 `/dataUP`、`/ota`、`/ota_upload` 全部注册成功后沿用 `NetworkOtaBoot_ConfirmCurrentImage()` 重试。当前 PM 配置固定 `light_sleep_enable=false`，pending 状态会额外打印一次保护提示，不改变普通启动的 PM 配置。
 OTA 首次启动时，独立的 GPIO test 和 factory-reset task 初始化失败只记录错误并继续恢复流程；普通启动仍保留原有 `ESP_ERROR_CHECK()` 行为。网络、UART、LED、EPD 等有业务依赖的初始化保持原规则。
 开发阶段保持当前实现便于调试；如果后续固件体积增大或 PSRAM 压力明显，建议单独为 /ota 做 streaming handler，一边 httpd_req_recv() 一边 esp_ota_write()。
 ```

@@ -306,12 +306,12 @@ OTA 成功响应规则：
 - `ota_event/stage=rebooting` 必须在最终结果之前发送。
 - `ota_result/result=0` 是成功响应的最后一条 JSON，之后只允许结束 chunked response，不允许再发送 OTA event。
 - 结束响应后 HTTP handler 必须正常返回，以释放 request body、上传互斥锁和 socket。
-- 设备复位由 OTA 目录内的专用任务执行，延时由 `SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS` 配置。
+- 设备复位由 OTA 目录内的专用任务执行，延时由 `SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS` 配置，当前为500ms；仍须等待HTTP handler返回和资源清理，不能在handler内直接复位。
 - restart-pending 期间保持 OTA 成功指示和 write power hold，避免外层清理误报失败或进入自动关机。
 - restart-pending 期间新的 OTA multipart 请求使用现有 `1713/upload_busy`，message 为 `restart_pending`；其他 multipart 上传使用现有 `dataup_result/1007`。GET 和非 multipart 请求不改变协议。
 - OTA 首次启动直接使用 bootloader `otadata` 的 `ESP_OTA_IMG_PENDING_VERIFY`，不新增 NVS key、手机字段或网络请求。
 - 启动最早阶段读取 otadata 失败时，设备会在 work-time 初始化后、可选首次启动模块运行前重试一次；该内部重试不改变网络协议。
-- `PENDING_VERIFY` 镜像在 `/dataUP`、`/ota`、`/ota_upload` 全部注册成功后调用 `esp_ota_mark_app_valid_cancel_rollback()`；确认成功解除 pending-verify power hold，确认失败保留 HTTP handler 和 hold，并用错误日志报告。
+- `PENDING_VERIFY` 镜像在 NVS、基础系统、work-time、EPD模式、网络管理对象和 CH583 UART 等本地关键初始化完成后调用 `esp_ota_mark_app_valid_cancel_rollback()`；确认不等待 WiFi连接、DHCP、SNTP、HTTP、SD或DAILY。确认成功解除 pending-verify power hold；本地确认失败保留hold，并在 `/dataUP`、`/ota`、`/ota_upload` 全部注册成功后重试，错误使用设备日志报告。
 - pending-verify、启动诊断和首次启动容错均为设备内部规则，不改变手机 APP 的 OTA 请求和返回格式。
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-06)
