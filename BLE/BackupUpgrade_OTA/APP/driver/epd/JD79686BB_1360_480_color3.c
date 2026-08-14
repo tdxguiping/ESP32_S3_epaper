@@ -14,7 +14,7 @@ UINT16  EPD_Check_Busy(void)
     c=0;
 	do
 	{  
-        WWDG_SetCounter(0);//Î¹ï¿½ï¿½ , ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï£¬ Ã»ï¿½ï¿½Ð§ï¿½ï¿½
+        WWDG_SetCounter(0);//Î¹¹· , ²»¿ÉÒÔÔÚÕâÀï£¬ Ã»ÓÐÐ§¹û
 		busy = is_Busy();
         if(busy==1)
             break;
@@ -23,7 +23,7 @@ UINT16  EPD_Check_Busy(void)
         
         c++;
     }
-    while(c<20);   //Êµï¿½ï¿½ 4
+    while(c<20);   //Êµ²â 4
 
     if(c>=20)
     {
@@ -155,9 +155,5 @@ UINT8 EPD_GetScreenType()
 #endif
 }
 
-UINT8 EPD_GetBoardInfo(void)
-{
-	return EPD_MAKE_BOARD_INFO(0, 0);
-}
-
 #endif
+

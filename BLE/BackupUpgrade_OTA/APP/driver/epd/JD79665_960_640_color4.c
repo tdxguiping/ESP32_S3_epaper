@@ -4,37 +4,26 @@
 #include "epd_driver.h"
 #include "commoninfo.h"
 #include "Display_EPD_W21_spi.h"
+#include "epd_busy.h"
 
 #ifdef ENABLE_INK_SCREEN_JD79665_960x640_COLOR_4
+UINT8 EPD_Driver_GetBusyConfig(EPD_BUSY_CONFIG *cfg)
+{
+    cfg->supported = Is_Yes;
+    cfg->active_level = EPD_BUSY_ACTIVE_LOW;
+    cfg->busy_a.port = EPD_BUSY_PORT_A;
+    cfg->busy_a.pin = epaper_BUSY;
+    cfg->busy_b.port = EPD_BUSY_PORT_B;
+    cfg->busy_b.pin = GPIO_Pin_16;
+    cfg->single_a_target = EPD_BUSY_SIDE_B;
+    cfg->single_b_target = EPD_BUSY_SIDE_A;
+
+    return Is_Yes;
+}
+
 UINT16  EPD_Check_Busy(void)
 {
-    unsigned int c;
-	unsigned char busy;
-
-    Print_I3("------JD79665 Busy--");
-    c=0;
-	do
-	{  
-        WWDG_SetCounter(0);//ι�� , ����������� û��Ч��
-		busy = is_Busy();
-        if(busy==0)
-            break;
-        else
-          	delay_xms(2);
-        c++;
-    }
-    while(c<60);  // ʵ���� 50
-
-    if(c>=60)
-    {
-        printf("er=%d\r\n",c);
-        return Is_Er;
-    }
-    else
-    {
-        printf("OK=%d",c);
-        return Is_OK;
-    }
+    return EPD_Busy_WaitCurrent(200, 10000);
 }
 
 void Init_EPD_Driver(void)
@@ -52,23 +41,13 @@ void Init_EPD_Driver(void)
 
 void Display_EPD_Driver(void)
 {
-    //Print_I3("111");
-	EPD_W21_WriteCMD(0x04);   //Power on
-	EPD_Check_Busy();	 //��busy�ź�
-	delay_ms(100) ;
+    EPD_W21_WriteCMD(0x04);
+    EPD_Check_Busy();
+    delay_ms(100);
 
-	EPD_W21_WriteCMD(0x12); //Update  
-	EPD_W21_WriteDATA(0x00);	  
-	EPD_Check_Busy();
-
-	EPD_W21_WriteCMD(0x02); //Power off
-	EPD_W21_WriteDATA(0x00);
-	EPD_Check_Busy();
-
-	EPD_W21_WriteCMD(0x07); //Power off
-	EPD_W21_WriteDATA(0xA5);
-	delay_ms(50);	
-
+    EPD_W21_WriteCMD(0x12);
+    EPD_W21_WriteDATA(0x00);
+    EPD_Busy_PrepareObserve();
 }
 
 void Init_display_Bw(void)
@@ -103,9 +82,5 @@ UINT8 EPD_GetScreenType()
 #endif
 }
 
-UINT8 EPD_GetBoardInfo(void)
-{
-	return EPD_MAKE_BOARD_INFO(0, 0);
-}
-
 #endif
+

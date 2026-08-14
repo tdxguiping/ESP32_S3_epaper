@@ -7,7 +7,7 @@ extern "C" {
 
 #include "CONFIG.h"
 
-//_EL073TF1_400X600_COLOR_6
+//_SPD1657_800X480_COLOR_6
 #define PSR         		0x00
 #define PWR         		0x01
 #define POF         		0x02
@@ -74,13 +74,6 @@ extern "C" {
 #define LCD_YSIZE_300  		300        /* Vertical Active Period             */
 #define IMAGE_SIZE_4Color_400x300 (LCD_XSIZE_400*LCD_YSIZE_300/4)  // 100 x 300 =30000
 
-#define EPD_BOARD_INFO_GROUP0_BASE 0x40
-#define EPD_BOARD_INFO_GROUP1_BASE 0x50
-#define EPD_BOARD_VENDOR_XT        0U
-#define EPD_BOARD_VENDOR_DKE       1U
-#define EPD_MAKE_BOARD_INFO(group, vendor_id) \
-	((UINT8)((((group) & 0x01) ? EPD_BOARD_INFO_GROUP1_BASE : EPD_BOARD_INFO_GROUP0_BASE) | ((vendor_id) & 0x0F)))
-
 // void define
 extern void Init_EPD_Driver();
 extern void Display_EPD_Driver();
@@ -89,7 +82,6 @@ extern void Init_display_Red();
 extern UINT32 EPD_Display_Time();
 extern UINT32 EPD_GetDisplayMaxBuf();
 extern UINT8 EPD_GetScreenType();
-extern UINT8 EPD_GetBoardInfo(void);
 
 #ifdef __cplusplus
 }

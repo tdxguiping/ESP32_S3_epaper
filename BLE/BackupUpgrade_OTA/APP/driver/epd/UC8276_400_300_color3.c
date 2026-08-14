@@ -7,11 +7,11 @@
 
 #ifdef ENABLE_INK_SCREEN_UC8276_400X300_COLOR_3
 #define Source_Pixel 400
-#define Source_Pixel_high Source_Pixel/256  // Sourceï¿½Ö±ï¿½ï¿½ÊµÄ¸ï¿½8Î»
-#define Source_Pixel_low  Source_Pixel%256  // Sourceï¿½Ö±ï¿½ï¿½ÊµÄµï¿½8Î»
+#define Source_Pixel_high Source_Pixel/256  // Source·Ö±æÂÊµÄ¸ß8Î»
+#define Source_Pixel_low  Source_Pixel%256  // Source·Ö±æÂÊµÄµÍ8Î»
 #define Gate_Pixel 300
-#define Gate_Pixel_high   Gate_Pixel/256    // Gateï¿½Ö±ï¿½ï¿½ÊµÄ¸ï¿½8Î»
-#define Gate_Pixel_low    Gate_Pixel%256    // Gateï¿½Ö±ï¿½ï¿½ÊµÄµï¿½8Î»
+#define Gate_Pixel_high   Gate_Pixel/256    // Gate·Ö±æÂÊµÄ¸ß8Î»
+#define Gate_Pixel_low    Gate_Pixel%256    // Gate·Ö±æÂÊµÄµÍ8Î»
 
 UINT16  EPD_Check_Busy(void)
 {
@@ -22,7 +22,7 @@ UINT16  EPD_Check_Busy(void)
     c=0;
 	do
 	{  
-        WWDG_SetCounter(0);//Î¹ï¿½ï¿½ , ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï£¬ Ã»ï¿½ï¿½Ð§ï¿½ï¿½
+        WWDG_SetCounter(0);//Î¹¹· , ²»¿ÉÒÔÔÚÕâÀï£¬ Ã»ÓÐÐ§¹û
 		busy = is_Busy();
         if(busy==1)
             break;
@@ -31,7 +31,7 @@ UINT16  EPD_Check_Busy(void)
         
         c++;
     }
-    while(c<20);   //Êµï¿½ï¿½ 4
+    while(c<20);   //Êµ²â 4
 
     if(c>=20)
     {
@@ -50,17 +50,17 @@ void Init_EPD_Driver(void)
 	Print_I3("1");	
 	EPD_W21_Reset();                     // reset
 	/*EPD_W21_WriteCMD(0x00);        // PANEL SETTING
-	EPD_W21_WriteDATA(0x37);     // [5]REG=1(LUT from register); [4]BWR=1 ï¿½Ú°ï¿½ï¿½ï¿½ï¿½Ð£ï¿½[3]UD=0 Gn-1->G0ï¿½ï¿½[2]SHL=1 S0->Sn-1ï¿½ï¿½[1]SHD_N=1 DC-DCï¿½ò¿ª£ï¿½RST_N=1 no reset
+	EPD_W21_WriteDATA(0x37);     // [5]REG=1(LUT from register); [4]BWR=1 ºÚ°×ÔËÐÐ£»[3]UD=0 Gn-1->G0£»[2]SHL=1 S0->Sn-1£»[1]SHD_N=1 DC-DC´ò¿ª£»RST_N=1 no reset
 	EPD_W21_WriteDATA(0x01);     // 
 
 	EPD_W21_WriteCMD(0x01);        // Power setting
-	EPD_W21_WriteDATA(0x03);     // [2]=0:VDHR disable  [1]VDS_EN: Source power selection =1: Internal DC/DC function for generating VDH/VDL     [0]VDG_EN: Gate power selection =1: Internal DC/DC function for generating VGH/VGL  ï¿½ï¿½ï¿½ï¿½Ê¹ï¿½ï¿½ï¿½Ú²ï¿½ï¿½ï¿½Ñ¹ 
+	EPD_W21_WriteDATA(0x03);     // [2]=0:VDHR disable  [1]VDS_EN: Source power selection =1: Internal DC/DC function for generating VDH/VDL     [0]VDG_EN: Gate power selection =1: Internal DC/DC function for generating VGH/VGL  ÉèÖÃÊ¹ÓÃÄÚ²¿ÉýÑ¹ 
 	EPD_W21_WriteDATA(0x10);     // VGH=20V, VGL= -20V
 	EPD_W21_WriteDATA(0x3f);     // +15V
 	EPD_W21_WriteDATA(0x3f);     // -15V
 	EPD_W21_WriteDATA(0x03);     //   3V
 
-	EPD_W21_WriteCMD(0x06);        // Booster Soft Startï¿½è¶¨
+	EPD_W21_WriteCMD(0x06);        // Booster Soft StartÉè¶¨
 	EPD_W21_WriteDATA(0xE7);     // 
 	EPD_W21_WriteDATA(0xE7);     // 
 	EPD_W21_WriteDATA(0x3D);     
@@ -68,17 +68,17 @@ void Init_EPD_Driver(void)
 	EPD_W21_WriteCMD(0X60);        // TCON SETTING  (TCON) 
 	EPD_W21_WriteDATA(0x22);     // 0010=12 (Default)  
 
-	EPD_W21_WriteCMD(0x82);        // vcomï¿½è¶¨
+	EPD_W21_WriteCMD(0x82);        // vcomÉè¶¨
 	EPD_W21_WriteDATA (0x0E);    // -1.5V
 
-	EPD_W21_WriteCMD(0x30);        // Ö¡Æµï¿½è¶¨
+	EPD_W21_WriteCMD(0x30);        // Ö¡ÆµÉè¶¨
 	EPD_W21_WriteDATA (0x09);    //   50HZ       
 
 	EPD_W21_WriteCMD(0X50);        // VCOM AND DATA INTERVAL SETTING   
-	//    EPD_W21_WriteDATA(0x09);     // border=KK D7=BDZ=1(Border output Hi-Z enabled) =0(Border output Hi-Z disabled)  D5:4=BDV[1:0]   D3=N2OCP=1(Copy NEW data to OLD data enabled)  D1:0=01(Default)  ×¢ï¿½â£ºï¿½ï¿½ï¿½Öµï¿½ï¿½Ïµï¿½ï¿½ï¿½ï¿½ï¿½Î±ï¿½
-	//    EPD_W21_WriteDATA(0x29);     // border=KW D7=BDZ=1(Border output Hi-Z enabled) =0(Border output Hi-Z disabled)  D5:4=BDV[1:0]   D3=N2OCP=1(Copy NEW data to OLD data enabled)  D1:0=01(Default)  ×¢ï¿½â£ºï¿½ï¿½ï¿½Öµï¿½ï¿½Ïµï¿½ï¿½ï¿½ï¿½ï¿½Î±ï¿½
-	//    EPD_W21_WriteDATA(0x39);     // border=LUTBD D7=BDZ=1(Border output Hi-Z enabled) =0(Border output Hi-Z disabled)  D5:4=BDV[1:0]   D3=N2OCP=1(Copy NEW data to OLD data enabled)  D1:0=01(Default)  ×¢ï¿½â£ºï¿½ï¿½ï¿½Öµï¿½ï¿½Ïµï¿½ï¿½ï¿½ï¿½ï¿½Î±ï¿½
-	EPD_W21_WriteDATA(0x17);     // CDI[3:0]:VCOM and data interval  =0111ï¿½ï¿½10 (Default) 
+	//    EPD_W21_WriteDATA(0x09);     // border=KK D7=BDZ=1(Border output Hi-Z enabled) =0(Border output Hi-Z disabled)  D5:4=BDV[1:0]   D3=N2OCP=1(Copy NEW data to OLD data enabled)  D1:0=01(Default)  ×¢Òâ£ºÕâ¸öÖµ¹ØÏµµ½²¨ÐÎ±í
+	//    EPD_W21_WriteDATA(0x29);     // border=KW D7=BDZ=1(Border output Hi-Z enabled) =0(Border output Hi-Z disabled)  D5:4=BDV[1:0]   D3=N2OCP=1(Copy NEW data to OLD data enabled)  D1:0=01(Default)  ×¢Òâ£ºÕâ¸öÖµ¹ØÏµµ½²¨ÐÎ±í
+	//    EPD_W21_WriteDATA(0x39);     // border=LUTBD D7=BDZ=1(Border output Hi-Z enabled) =0(Border output Hi-Z disabled)  D5:4=BDV[1:0]   D3=N2OCP=1(Copy NEW data to OLD data enabled)  D1:0=01(Default)  ×¢Òâ£ºÕâ¸öÖµ¹ØÏµµ½²¨ÐÎ±í
+	EPD_W21_WriteDATA(0x17);     // CDI[3:0]:VCOM and data interval  =0111£º10 (Default) 
 
 	EPD_W21_WriteCMD(0xE3);        // 
 	EPD_W21_WriteDATA (0x88);    //          
@@ -88,17 +88,17 @@ void Init_EPD_Driver(void)
 	EPD_W21_WriteDATA(Source_Pixel_low);   // Horizontal Display Resolution=800  Low  8bit  D0~D2Îª0
 	EPD_W21_WriteDATA(Gate_Pixel_high);    //   Vertical Display Resolution=480  High 8bit
 	EPD_W21_WriteDATA(Gate_Pixel_low);     //   Vertical Display Resolution=480  Low  8bit
-	UC8276_Check_Busy();*/					  // ï¿½Ð¶ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½ï¿½É¸ï¿½ï¿½ï¿½Í¼ï¿½ï¿½	
+	UC8276_Check_Busy();*/					  // ÅÐ¶ÏÆÁÊÇ·ñÍê³É¸üÐÂÍ¼Ïñ£¿	
 }
 
 void Display_EPD_Driver(void)
 {
     Print_I3("2");
     
-    EPD_W21_WriteCMD(0x17);        //  ï¿½Ô¶ï¿½   
+    EPD_W21_WriteCMD(0x17);        //  ×Ô¶¯   
 	EPD_W21_WriteDATA(0xA5);     // PON DRF POF     
-    EPD_Check_Busy();           //ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½×´Ì¬ 
-    //UC8276_sleep();     //   ï¿½Ú¸Õ¸Õ¿ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½
+    EPD_Check_Busy();           //¶ÁÈ¡¹¤×÷×´Ì¬ 
+    //UC8276_sleep();     //   ÔÚ¸Õ¸Õ¿ª»úÊ±´¦Àí
 }
 
 void Init_display_Bw(void)
@@ -136,9 +136,5 @@ UINT8 EPD_GetScreenType()
 #endif
 }
 
-UINT8 EPD_GetBoardInfo(void)
-{
-	return EPD_MAKE_BOARD_INFO(0, 0);
-}
-
 #endif
+

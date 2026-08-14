@@ -15,7 +15,7 @@ uint16  EPD_Check_Busy(void)
     c=0;
 	do
 	{  
-        WWDG_SetCounter(0);//Î¹ï¿½ï¿½ , ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï£¬ Ã»ï¿½ï¿½Ð§ï¿½ï¿½
+        WWDG_SetCounter(0);//Î¹¹· , ²»¿ÉÒÔÔÚÕâÀï£¬ Ã»ÓÐÐ§¹û
 		busy = is_Busy();
 
         if(busy==0)
@@ -24,7 +24,7 @@ uint16  EPD_Check_Busy(void)
           delay_xms(2);        
         c++;
     }
-    while(c<70); // Êµï¿½ï¿½ 60
+    while(c<70); // Êµ²â 60
 
     if(c>=70)
     {
@@ -47,7 +47,7 @@ void Init_EPD_Driver()
 	SPI4W_WRITECOM(0x00);     
    	SPI4W_WRITEDATA(0x2F);
    	SPI4W_WRITEDATA(0x29);
-    SPI4W_WRITECOM(0x50);  //   CDI Booder ï¿½ï¿½ï¿½ï¿½   
+    SPI4W_WRITECOM(0x50);  //   CDI Booder ÉèÖÃ   
     SPI4W_WRITEDATA(0x37); 
     SPI4W_WRITECOM(0xE9);
     SPI4W_WRITEDATA(0x01);
@@ -105,9 +105,5 @@ UINT8 EPD_GetScreenType()
 #endif
 }
 
-UINT8 EPD_GetBoardInfo(void)
-{
-	return EPD_MAKE_BOARD_INFO(0, 0);
-}
-
 #endif
+

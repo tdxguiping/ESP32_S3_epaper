@@ -43,15 +43,27 @@ void delay_xms(unsigned int xms)
 // 单字节发送
 void Spi_Write_1byte(UINT8 i)
 {
-  	SPI0_MasterSendByte(i);
+    R8_SPI0_CTRL_MOD &= ~RB_SPI_FIFO_DIR;
+    R8_SPI0_BUFFER = i;
+
+    uint32_t timeout = 0;
+    while(!(R8_SPI0_INT_FLAG & RB_SPI_FREE))
+    {
+        timeout++;
+        if(timeout > 10000)
+        {
+            break;
+        }
+    }
 }
 //├────────────────────────────────────────────────────────────────────────
 //├────────────────────────────────────────────────────────────────────────
 UINT8 Spi_Read_1byte(void)
 {
-    UINT8 i;
-    i = SPI0_MasterRecvByte();
-    return i;
+    R8_SPI0_CTRL_MOD &= ~RB_SPI_FIFO_DIR;
+    R8_SPI0_BUFFER = 0xFF;
+    while(!(R8_SPI0_INT_FLAG & RB_SPI_FREE));
+    return R8_SPI0_BUFFER;
 }
 
 //├────────────────────────────────────────────────────────────────────────
@@ -78,13 +90,24 @@ void Set_Spi0_Input_all_input(void)
     GPIOA_ModeCfg(GPIO_Pin_13 | GPIO_Pin_15, GPIO_ModeIN_Floating); 
 }
 
+void SPI0_MasterDefInit_output(void)
+{
+    R8_SPI0_CLOCK_DIV = 16;
+    R8_SPI0_CTRL_MOD = RB_SPI_ALL_CLEAR;
+    R8_SPI0_CTRL_MOD |= RB_SPI_2WIRE_MOD;
+    R8_SPI0_CTRL_MOD = RB_SPI_SCK_OE | RB_SPI_MISO_OE;
+    R8_SPI0_CTRL_CFG |= RB_SPI_AUTO_IF;
+    R8_SPI0_CTRL_CFG &= ~RB_SPI_DMA_ENABLE;
+}
+
 //Mode0_LowBitINFront = 0, // 模式0，低位在前
 //Mode0_HighBitINFront,    // 模式0，高位在前
 //Mode3_LowBitINFront,     // 模式3，低位在前
 //Mode3_HighBitINFront,    // 模式3，高位在前
 //RB_SPI_MST_SCK_MOD RW 主机模式时钟空闲方式选择： 1：模式 3（空闲时 SCK 为高电平）； 0：模式 0（空闲时 SCK 为低电平）。
 
-#if (defined(ENABLE_INK_SCREEN_JD79665_800X480_COLOR_4)) || (defined(ENABLE_INK_SCREEN_JD79665_960x640_COLOR_4))
+#if (defined(ENABLE_INK_SCREEN_JD79665_800X480_COLOR_4)) || (defined(ENABLE_INK_SCREEN_JD79665CA_800X480_COLOR_4)) || \
+    (defined(ENABLE_INK_SCREEN_JD79665_960x640_COLOR_4))
 #define EPD_IS_COLOR4_PANEL 1
 #else
 #define EPD_IS_COLOR4_PANEL 0

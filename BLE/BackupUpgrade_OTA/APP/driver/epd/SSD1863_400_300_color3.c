@@ -18,7 +18,7 @@ UINT16  EPD_Check_Busy(void)
     c=0;
 	do
 	{  
-        WWDG_SetCounter(0);//Î¹ï¿½ï¿½ , ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï£¬ Ã»ï¿½ï¿½Ð§ï¿½ï¿½
+        WWDG_SetCounter(0);//Î¹¹· , ²»¿ÉÒÔÔÚÕâÀï£¬ Ã»ÓÐÐ§¹û
 		busy = is_Busy();
         if(busy==1)
             break;
@@ -27,7 +27,7 @@ UINT16  EPD_Check_Busy(void)
         
         c++;
     }
-    while(c<20);   //Êµï¿½ï¿½ 4
+    while(c<20);   //Êµ²â 4
 
     if(c>=20)
     {
@@ -47,50 +47,50 @@ void Init_EPD_Driver(void)
 
 	Print_I3("1");
 	EPD_W21_Reset();					 // reset			
-	EPD_Check_Busy();					  // ï¿½Ð¶ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½ï¿½É¸ï¿½ï¿½ï¿½Í¼ï¿½ï¿½	 
+	EPD_Check_Busy();					  // ÅÐ¶ÏÆÁÊÇ·ñÍê³É¸üÐÂÍ¼Ïñ£¿	 
 	EPD_W21_WriteCMD(0x12);   
-	EPD_Check_Busy();					  // ï¿½Ð¶ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½ï¿½É¸ï¿½ï¿½ï¿½Í¼ï¿½ï¿½	 
+	EPD_Check_Busy();					  // ÅÐ¶ÏÆÁÊÇ·ñÍê³É¸üÐÂÍ¼Ïñ£¿	 
 
 	EPD_W21_WriteCMD(0x01); 		  //Driver output control
 	EPD_W21_WriteDATA((unsigned char)(LCD_YSIZE-1));		  //Gate setting_A[8:0]= 0x127 [POR], 296 MUX 208:
 	EPD_W21_WriteDATA((unsigned char)((LCD_YSIZE-1)>>8));		  //296:0127 208:00CF	152:0097 250:00F9	
 	EPD_W21_WriteDATA(0x00);		 //Gate scanning sequence and direction  00:[POR]
 			
-	EPD_W21_WriteCMD(0x11); 			//ï¿½ï¿½ï¿½Ý½ï¿½ï¿½ï¿½Ä£Ê½ï¿½ï¿½ï¿½ï¿½	
-	EPD_W21_WriteDATA(0x03);		 //ï¿½ï¿½ï¿½Ý¸ï¿½ï¿½Â·ï¿½ï¿½ï¿½ï¿½Ô¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý¼ï¿½(ï¿½ï¿½ï¿½ï¿½Ì¶ï¿½Ê¹ï¿½ï¿½01)					  
+	EPD_W21_WriteCMD(0x11); 			//Êý¾Ý½øÈëÄ£Ê½ÉèÖÃ	
+	EPD_W21_WriteDATA(0x03);		 //Êý¾Ý¸üÐÂ·½Ïò£¬ÒÔ¼°µÝÔöµÝ¼õ(½¨Òé¹Ì¶¨Ê¹ÓÃ01)					  
 			
-	EPD_W21_WriteCMD(0x44); 		 //ï¿½ï¿½ï¿½ï¿½Sourceï¿½ï¿½Î§--ï¿½ï¿½Ê¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½		
-	EPD_W21_WriteDATA(0x00);		 //Source ï¿½ï¿½ï¿½		
-	EPD_W21_WriteDATA(x_size);		   //128:0f Source ï¿½Õµã£¨ï¿½ï¿½Ê¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý½ï¿½ï¿½ï¿½Ä£Ê½Ñ¡ï¿½ï¿½
-										  // ï¿½ï¿½Öµ0x((Source/8)-1) 128:0f 122:0f   152ï¿½ï¿½12  160:13	176ï¿½ï¿½15  
-	EPD_W21_WriteCMD(0x45); 		 //ï¿½ï¿½ï¿½ï¿½Gateï¿½ï¿½Î§--ï¿½ï¿½Ê¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ 
+	EPD_W21_WriteCMD(0x44); 		 //ÉèÖÃSource·¶Î§--¿ªÊ¼¡¢½áÊø		
+	EPD_W21_WriteDATA(0x00);		 //Source Æðµã		
+	EPD_W21_WriteDATA(x_size);		   //128:0f Source ÖÕµã£¨ÆðÊ¼µã¸ù¾ÝÊý¾Ý½øÈëÄ£Ê½Ñ¡Ôñ£©
+										  // ÊýÖµ0x((Source/8)-1) 128:0f 122:0f   152£º12  160:13	176£º15  
+	EPD_W21_WriteCMD(0x45); 		 //ÉèÖÃGate·¶Î§--¿ªÊ¼¡¢½áÊø 
 	EPD_W21_WriteDATA(0x00);				
-	EPD_W21_WriteDATA(0x00);		 //Gate ï¿½Õµã£¨ï¿½ï¿½Ê¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý½ï¿½ï¿½ï¿½Ä£Ê½Ñ¡ï¿½ï¿½					  
-	EPD_W21_WriteDATA((unsigned char)(LCD_YSIZE-1));		//Gate ï¿½ï¿½ï¿½ ï¿½ï¿½Öµ0x(Gate-1)	//296:0127 152:0097  250:00F9
-	EPD_W21_WriteDATA((unsigned char)((LCD_YSIZE-1)>>8));		 //ï¿½ï¿½Öµ  0x(Gate-1) 
+	EPD_W21_WriteDATA(0x00);		 //Gate ÖÕµã£¨ÆðÊ¼µã¸ù¾ÝÊý¾Ý½øÈëÄ£Ê½Ñ¡Ôñ£©					  
+	EPD_W21_WriteDATA((unsigned char)(LCD_YSIZE-1));		//Gate Æðµã ÊýÖµ0x(Gate-1)	//296:0127 152:0097  250:00F9
+	EPD_W21_WriteDATA((unsigned char)((LCD_YSIZE-1)>>8));		 //ÊýÖµ  0x(Gate-1) 
 												
-	EPD_W21_WriteCMD(0x3C); 		 //ï¿½ß½ï¿½ï¿½ï¿½ï¿½ 	
+	EPD_W21_WriteCMD(0x3C); 		 //±ß½ç¿ØÖÆ 	
 	EPD_W21_WriteDATA(0x01);			
 	EPD_W21_WriteCMD(0x4E); //Set RAM X address counter
 	EPD_W21_WriteDATA(0x00);
 	EPD_W21_WriteCMD(0x4F); //Set RAM Y address counter
 	EPD_W21_WriteDATA(0x00);		 
 	EPD_W21_WriteDATA(0x00); 
-	EPD_Check_Busy();					  // ï¿½Ð¶ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½ï¿½É¸ï¿½ï¿½ï¿½Í¼ï¿½ï¿½	 
+	EPD_Check_Busy();					  // ÅÐ¶ÏÆÁÊÇ·ñÍê³É¸üÐÂÍ¼Ïñ£¿	 
 }
 
 void Display_EPD_Driver(void)
 {
     Print_I3("2");
     
-    EPD_W21_WriteCMD(0x18);         //ï¿½Â¶È´ï¿½ï¿½ï¿½ï¿½ï¿½Ñ¡ï¿½ï¿½
-    EPD_W21_WriteDATA(0X80);        //0x80:ï¿½Ú²ï¿½  0x48:ï¿½â²¿ 
+    EPD_W21_WriteCMD(0x18);         //ÎÂ¶È´«¸ÐÆ÷Ñ¡Ôñ
+    EPD_W21_WriteDATA(0X80);        //0x80:ÄÚ²¿  0x48:Íâ²¿ 
     EPD_W21_WriteCMD(0x22);
-    EPD_W21_WriteDATA(0XF7);        //ï¿½ï¿½Í¬ï¿½ï¿½Öµï¿½ï¿½Í¬ï¿½ï¿½ï¿½ï¿½Ö´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½    
-    EPD_W21_WriteCMD(0x20);         //ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+    EPD_W21_WriteDATA(0XF7);        //²»Í¬µÄÖµ²»Í¬²Ù×÷Ö´ÐÐÁ÷³Ì    
+    EPD_W21_WriteCMD(0x20);         //Ö÷¶¯¼¤»î
     //delay_ms(10);
-    EPD_Check_Busy();           //ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½×´Ì¬ 
-    //SSD1863_sleep();     //   ï¿½Ú¸Õ¸Õ¿ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½
+    EPD_Check_Busy();           //¶ÁÈ¡¹¤×÷×´Ì¬ 
+    //SSD1863_sleep();     //   ÔÚ¸Õ¸Õ¿ª»úÊ±´¦Àí
 }
 
 void Init_display_Bw(void)
@@ -128,9 +128,5 @@ UINT8 EPD_GetScreenType()
 #endif
 }
 
-UINT8 EPD_GetBoardInfo(void)
-{
-	return EPD_MAKE_BOARD_INFO(0, 0);
-}
-
 #endif
+

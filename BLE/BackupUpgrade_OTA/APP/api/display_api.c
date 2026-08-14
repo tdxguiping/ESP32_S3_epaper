@@ -9,10 +9,14 @@
 
 RleImgDataCallback_t dataimgCb = NULL;
 int callbackValue = 0;
-// �������壺��ȷ���壨�޴�����ѹ����־ʱ��Ĭ��ֵ��
+// ???????????????????????????????I?????
 #define PENDING_NONE 0xBB
-static UINT8 pendingCompressByte = PENDING_NONE;  // ��̬�����洢�����ѹ�����?
+static UINT8 pendingCompressByte = PENDING_NONE;  // ?????????????????????
 int ImgDataCallBack_flag=0;
+
+#ifdef ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4
+#define UC8579_CLEAN_POWER_PREPARE_MS    25
+#endif
 
 #if (defined(ENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6))
 static void PreparePowerBeforeDeviceInit(void)
@@ -21,52 +25,6 @@ static void PreparePowerBeforeDeviceInit(void)
 	DelayMs(200);
 }
 #endif
-
-UINT32 getBusyGpio(){
-#ifndef ENABLE_SCREEN_COLOR_6	
-	return GPIO_Pin_16;
-#else
-	return GPIO_Pin_9;
-#endif
-}
-
-/**
- * @brief ���īˮ��æ״�?
- * @return 0: æ, 1: ����
- */
-char  is_Busy(void)
-{
-    UINT32 key;
-    if(global_DEVICE_STATUS.fScreenType == SCREEN_TYPE_IMG_B)
-    {
-  		key = GPIOA_ReadPort();   
-#if (defined(ENABLE_INK_SCREEN_SSD2683ZA_272X792_COLOR_4))
-        if ((key & epaper_BUSY) == 0)//5.79寸busy脚反�?busy=0�?
-#else
-		if ((key & epaper_BUSY) == epaper_BUSY)
-#endif
-        {
-            return 0;
-        }            
-    }
-    else
-    {
-#ifndef ENABLE_SCREEN_COLOR_6	    
-		key = GPIOB_ReadPort();
-#else
-		key = GPIOA_ReadPort();
-#endif
-#if (defined(ENABLE_INK_SCREEN_SSD2683ZA_272X792_COLOR_4))
-        if ((key & getBusyGpio()) == 0)//5.79寸busy脚反�?busy=0�?
-#else
-		if ((key & getBusyGpio()) == getBusyGpio())
-#endif
-        {
-            return 0;
-        }            
-    }
-    return 1;
-}   
 
 void EPD_W21_Reset_Spi2_AB(){
 #ifdef ENABLE_SCREEN_COLOR_6
@@ -96,7 +54,7 @@ void EPD_W21_Reset_Spi2_A_or_B(){
 #ifdef ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6
 	if(global_DEVICE_STATUS.fScreenType == SCREEN_TYPE_IMG_A)
     	{	
-    		Print_I3("Display_Picture_To_Color EPD_W21_Reset_Spi2 M009FT SCREEN_TYPE_IMG_A");
+		Print_I3("RST2 M A");
         	SPI_NEW_RST_A_0;// Module reset
 			DelayMs(100);
 			SPI_NEW_RST_A_1;
@@ -104,7 +62,7 @@ void EPD_W21_Reset_Spi2_A_or_B(){
     	}
   	else if(global_DEVICE_STATUS.fScreenType == SCREEN_TYPE_IMG_B)
     	{
-    		Print_I3("Display_Picture_To_Color EPD_W21_Reset_Spi2 M009FT SCREEN_TYPE_IMG_B");
+		Print_I3("RST2 M B");
 			SPI_NEW_RST_B_0;// Module reset
 			DelayMs(100);
 			SPI_NEW_RST_B_1;
@@ -112,7 +70,7 @@ void EPD_W21_Reset_Spi2_A_or_B(){
     	}
 	else if(global_DEVICE_STATUS.fScreenType == SCREEN_TYPE_IMG_AB)
     	{
-    		Print_I3("Display_Picture_To_Color EPD_W21_Reset_Spi2 M009FT SCREEN_TYPE_IMG_AB");
+		Print_I3("RST2 M AB");
 			SPI_NEW_RST_A_0;// Module reset
 			SPI_NEW_RST_B_0;
 	        DelayMs(100);
@@ -123,21 +81,21 @@ void EPD_W21_Reset_Spi2_A_or_B(){
 #elif !defined(ENABLE_SCREEN_COLOR_6)
 	if(global_DEVICE_STATUS.fScreenType == SCREEN_TYPE_IMG_A)
     	{	
-    		Print_I3("Display_Picture_To_Color EPD_W21_Reset_Spi2 SCREEN_TYPE_IMG_A");
+		Print_I3("RST2 A");
         	SPI_RST_B_0;;// Module reset
 		DelayMs(1+1);//At least 10ms delay 
 		SPI_RST_B_1;
     	}
   	else if(global_DEVICE_STATUS.fScreenType == SCREEN_TYPE_IMG_B)
     	{
-    		Print_I3("Display_Picture_To_Color EPD_W21_Reset_Spi2 SCREEN_TYPE_IMG_B");
+		Print_I3("RST2 B");
 		SPI_RST_A_0;// Module reset
 		DelayMs(1+1);//At least 10ms delay 
 		SPI_RST_A_1;
     	}
 	else if(global_DEVICE_STATUS.fScreenType == SCREEN_TYPE_IMG_AB)
     	{
-    		Print_I3("Display_Picture_To_Color EPD_W21_Reset_Spi2 SCREEN_TYPE_IMG_AB");
+		Print_I3("RST2 AB");
 		SPI_RST_A_0;// Module reset
 		SPI_RST_B_0;
         DelayMs(1+1);//At least 10ms delay 
@@ -150,14 +108,14 @@ void EPD_W21_Reset_Spi2_A_or_B(){
 void EPD_Control_AB(){
 #if (defined(ENABLE_INK_SCREEN_JD79686AB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79686AC_1360X480_COLOR_3))
 	if(global_DEVICE_STATUS.fisHost == IS_HOST){
-		Print_I3("==============EPD_Control_AB HOST ===================");
+		Print_I3("CS AB H");
 		SPI_CS_A_0;
 		SPI_CS_A_SLAVE_1;
 		SPI_CS_B_0;
 		SPI_CS_B_SLAVE_1;
 	}
 	else{
-		Print_I3("==============EPD_Control_AB SLAVE ===================");
+		Print_I3("CS AB S");
 		SPI_CS_A_1;
 		SPI_CS_A_SLAVE_0;
 		SPI_CS_B_1;
@@ -167,7 +125,7 @@ void EPD_Control_AB(){
 	SPI_CS_B_0;
 	SPI_CS_A_0;
 #if (defined(ENABLE_INK_SCREEN_JD79686BB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || \
-	(defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4))
+	(defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4)) || (defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4))
 	SPI_CS_A_SLAVE_1;
 	SPI_CS_B_SLAVE_1;
 #endif
@@ -178,7 +136,7 @@ void EPD_Control_A_Or_B(){
 
 	if(global_DEVICE_STATUS.fScreenType == SCREEN_TYPE_IMG_A)
    	{	
-   		Print_I3("Display_Picture_To_6Color DevicePower SCREEN_TYPE_IMG_A");
+		Print_I3("PWR6 A");
        	SPI_CS_A_1;
        	SPI_CS_B_0;
 #ifdef ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6
@@ -188,7 +146,7 @@ void EPD_Control_A_Or_B(){
    	}
   	else if(global_DEVICE_STATUS.fScreenType == SCREEN_TYPE_IMG_B)
    	{
-   		Print_I3("Display_Picture_To_6Color DevicePower SCREEN_TYPE_IMG_B");
+		Print_I3("PWR6 B");
        	SPI_CS_B_1;
        	SPI_CS_A_0;
 #ifdef ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6
@@ -198,7 +156,7 @@ void EPD_Control_A_Or_B(){
    	} 
 	else if(global_DEVICE_STATUS.fScreenType == SCREEN_TYPE_IMG_AB)
    	{
-   		Print_I3("Display_Picture_To_6Color DevicePower SCREEN_TYPE_IMG_AB");
+		Print_I3("PWR6 AB");
        	SPI_CS_B_0;
        	SPI_CS_A_0;
 #ifdef ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6
@@ -211,7 +169,7 @@ void EPD_Control_A_Or_B(){
 }
 
 /**
- * @brief īˮ����λ����
+ * @brief i??????????
  */
 void EPD_W21_Reset_Spi2(){
 #ifdef ENABLE_SCREEN_COLOR_6
@@ -230,8 +188,8 @@ void EPD_W21_Reset(void)
 }
 
 /**
- * @brief īˮ��Ӳ����ʼ��
- * @return 0: �ɹ�, ��0: ʧ��
+ * @brief i????????'??
+ * @return 0: ???, ??0: ???
  */
 int DeviceInit(){
 	global_DEVICE_STATUS.fWorked=Is_Yes;
@@ -241,7 +199,7 @@ int DeviceInit(){
     // Force all CS lines high first so each chip starts from a known idle level.
     SPI_CS_A_1;
     SPI_CS_B_1;
-#ifdef ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6
+#if defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6) || defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4)
     SPI_CS_A_SLAVE_1;
     SPI_CS_B_SLAVE_1;
 #endif
@@ -252,21 +210,30 @@ void ControlEPDPower(UINT8 ison)
 {
 	UINT8 power_switch = Is_On;
 #ifdef HARDWAR_DRY_CELL
-	power_switch = Is_Off; //干电池方案，电源反置
+	power_switch = Is_Off; //?????,????
 #endif
 
 	GPIOA_ModeCfg(LCD_Power_A, GPIO_ModeOut_PP_5mA);
+#if defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4)
+	GPIOB_ModeCfg(LCD_Power_B, GPIO_ModeOut_PP_5mA);
+#endif
 	if(ison == power_switch)
 	{
 		R32_PA_OUT |= LCD_Power_A;
+#if defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4)
+		R32_PB_OUT |= LCD_Power_B;
+#endif
 	}else
 	{
 		R32_PA_CLR |= LCD_Power_A;
+#if defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4)
+		R32_PB_CLR |= LCD_Power_B;
+#endif
 	}
 }
 
 /**
- * @brief īˮ����Դ����
+ * @brief i??????????
  */
 int DevicePower(){
 	ControlEPDPower(Is_On);
@@ -274,7 +241,7 @@ int DevicePower(){
     // Force all CS lines high first, then switch to the target side.
     SPI_CS_A_1;
     SPI_CS_B_1;
-#ifdef ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6
+#if defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6) || defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4)
     SPI_CS_A_SLAVE_1;
     SPI_CS_B_SLAVE_1;
 #endif
@@ -293,19 +260,19 @@ int DevicePower(){
 }
 
 /**
- * @brief ��ʾEPD����
+ * @brief ???EPD????
  */
 void Display_EPD_AB()
 {    
-	Print_I3("Display_EPD_AB...... fisHost=%d\r\n", global_DEVICE_STATUS.fisHost);
+	Print_I3("EPD_AB h=%d\r\n", global_DEVICE_STATUS.fisHost);
 #if (defined(ENABLE_INK_SCREEN_JD79686BB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79686AB_1360X480_COLOR_3)) || \
 	(defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4)) || \
 	(defined(ENABLE_INK_SCREEN_JD79686AC_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_SSD2683ZA_272X792_COLOR_4)) || \
-	(defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2)) || (defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6))
+	(defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2)) || (defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6)) || (defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4))
 		// Split host/slave panels refresh only after the slave half is written.
 		if(global_DEVICE_STATUS.fisHost == IS_SLAVE)
 		{	
-			Print_I3("-----------Display_EPD_AB...... SLAVE ready, now refresh!\r\n");
+			Print_I3("AB S ref\r\n");
 #if (!defined(ENABLE_INK_SCREEN_JD79686BB_1360X480_COLOR_3)) && (!defined(ENABLE_INK_SCREEN_SSD2683ZA_272X792_COLOR_4)) && (!defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2))
 			SPI_CS_A_0;
 			SPI_CS_A_SLAVE_0;
@@ -316,12 +283,12 @@ void Display_EPD_AB()
 		}
 		else
 		{
-			Print_I3("-----------Display_EPD_AB...... HOST done, wait for SLAVE data\r\n");
+			Print_I3("AB H wait\r\n");
 			SPI_CS_A_1;
 			SPI_CS_B_1;
 #if (defined(ENABLE_INK_SCREEN_JD79686AB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79686BB_1360X480_COLOR_3)) || \
 	(defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4)) || \
-	(defined(ENABLE_INK_SCREEN_JD79686AC_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6))
+	(defined(ENABLE_INK_SCREEN_JD79686AC_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6)) || (defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4))
 			SPI_CS_A_SLAVE_1;
 			SPI_CS_B_SLAVE_1;
 #endif
@@ -335,7 +302,7 @@ void Display_EPD_AB()
 	SPI_CS_B_1;
 #if (defined(ENABLE_INK_SCREEN_JD79686AB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79686BB_1360X480_COLOR_3)) || \
 	(defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4)) || \
-	(defined(ENABLE_INK_SCREEN_JD79686AC_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6))
+	(defined(ENABLE_INK_SCREEN_JD79686AC_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6)) || (defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4))
 	SPI_CS_A_SLAVE_1;
 	SPI_CS_B_SLAVE_1;
 #endif
@@ -347,9 +314,9 @@ void Display_EPD_AB()
 }
 
 /**
- * @brief ��ɫ����ת��
- * @param colorData ԭʼ��ɫ����
- * @return ת�������ɫ����?
+ * @brief ??????????
+ * @param colorData ?'???????
+ * @return ??????????????
  */
 UINT8 CovertColorData(UINT8 color_data){
 
@@ -370,9 +337,9 @@ UINT8 CovertColorData(UINT8 color_data){
 }
 
 /**
- * @brief �ж��Ƿ���Ҫ��ѹ��
- * @param data ���жϵ�����
- * @return �Ƿ���Ҫ��ѹ��
+ * @brief ??????????????
+ * @param data ??????????
+ * @return ???????????
  */
 UINT8 isNeedDecompress(UINT8 by, UINT8 type)
 {
@@ -385,30 +352,30 @@ UINT8 isNeedDecompress(UINT8 by, UINT8 type)
 }
 
 /**
- * @brief ����ѹ��ͼ������
- * @param pData ���ݻ�����
- * @param length ���ݳ���
- * @param zip �Ƿ�ѹ��
- * @return 0: �ɹ�
+ * @brief ??????????????
+ * @param pData ?????????
+ * @param length ???????
+ * @param zip ??????
+ * @return 0: ???
  */
 UINT8 PIC_Display_Compress_Data(const unsigned char* pBW, UINT16 Length, unsigned char zip)
 {
 #if (defined(ENABLE_SCREEN_COLOR_3)) || (defined(ENABLE_SCREEN_COLOR_4)) || (defined(ENABLE_SCREEN_COLOR_2))
-    UINT8 currentByte;       // ��ǰ�������ֽ�
-    UINT16 i = 0;            // ��������
-    UINT16 len;              // ѹ�����ݳ���
-    UINT16 j;                // ѭ��������
+    UINT8 currentByte;       // ??j?????????
+    UINT16 i = 0;            // ????????
+    UINT16 len;              // ??????????
+    UINT16 j;                // ?????????
 
-    // 1. ���ȴ�����һ��������ѹ����־����������
+    // 1. ??????????????????????????????????
     if (pendingCompressByte != PENDING_NONE) {
         currentByte = pendingCompressByte;
-        pendingCompressByte = PENDING_NONE;  // ����������־
+        pendingCompressByte = PENDING_NONE;  // ???????????
 
-        // �������ݵĵ�һ���ֽڼ�Ϊ��һ��ѹ����־�ĳ���
+        // ????????j?????????????????????????
         len = pBW[i];
-        i++;  // ���������ֽ�
+        i++;  // ???????????
 
-        // ���� len+1 ��ѹ����־������len=0�������ͳһ������?
+        // ???? len+1 ??????????????len=0????????????????
         for (j = 0; j < len + 1; j++) {
             if (dataimgCb != NULL) {
                 callbackValue = dataimgCb(currentByte);
@@ -416,38 +383,38 @@ UINT8 PIC_Display_Compress_Data(const unsigned char* pBW, UINT16 Length, unsigne
         }
     }
 
-    // 2. ������ǰ����ʣ������
+    // 2. ??????j???????????
     while (i < Length) {
         currentByte = pBW[i];
 
-        // ����ǰ�ֽ���ѹ����־��0x00/0xFF��
+        // ????j?????????????0x00/0xFF??
         if (isNeedDecompress(currentByte, 0) == IS_NEED_DECMPRESS) {
-            // �����һ���ֽ��Ƿ���ڣ�����Խ�磩
+            // ?????????????????????????
             if (i + 1 >= Length) {
-                // �������ǰ�����һ���ֽڣ�����ѹ����־����һ�δ���
+                // ???????j????????????????????????????????
                 pendingCompressByte = currentByte;
-                break;  // �˳�ѭ�����ȴ���һ������
+                break;  // ????????????????????
             }
 
-            // �����������һ���ֽ�Ϊ����?
-            i++;  // �ƶ��������ֽ�
+            // ???????????????????????
+            i++;  // ?z??????????
             len = pBW[i];
 
-            // ���� len+1 ��ѹ����־��ͳһ����len=0��len>0��
+            // ???? len+1 ????????????????len=0??len>0??
             for (j = 0; j < len + 1; j++) {
                 if (dataimgCb != NULL) {
                     callbackValue = dataimgCb(currentByte);
                 }
             }
         }
-        // ��ѹ����־��ֱ�ӷ��͵�ǰ�ֽ�
+        // ?????????????????j???
         else {
             if (dataimgCb != NULL) {
                 callbackValue = dataimgCb(currentByte);
             }
         }
 
-        i++;  // ������һ���ֽ�
+        i++;  // ????????????
     }
 #else
 	UINT8  By;
@@ -502,13 +469,13 @@ void Display_Picture_To_Color(unsigned char data, int length){
 	}
 
 	if(global_DEVICE_STATUS.fInitDriver == Is_Yes){
-		Print_I3("Display_Picture_To_Color start length:%d",length);
+		Print_I3("PIC len:%d",length);
 		// Reset host/slave state at the start of every new image.
 		// Otherwise the second half of the previous refresh can leak into the next frame.
 #if (defined(ENABLE_INK_SCREEN_JD79686AB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || \
 	(defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4)) || (defined(ENABLE_INK_SCREEN_JD79686AC_1360X480_COLOR_3)) || \
 	(defined(ENABLE_INK_SCREEN_SSD2683ZA_272X792_COLOR_4)) || (defined(ENABLE_INK_SCREEN_SSD1683_272X792_COLOR_3)) || \
-	(defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2)) || (defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6))
+	(defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2)) || (defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6)) || (defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4))
 		global_DEVICE_STATUS.fisHost = IS_HOST;
 		ImgDataCallBack_flag = 0;
 #endif
@@ -522,14 +489,14 @@ void Display_Picture_To_Color(unsigned char data, int length){
 	}
 
 	if(length == SCREEN_DATA_START){ // Black and white color
-		Print_I3("Display_Picture_To_Color black data length:%d",length);
+		Print_I3("BW len:%d",length);
 #if defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6)
 		if(global_DEVICE_STATUS.fisHost == Is_HOST){
 			DevicePower();
 			DelayMs(20);
 		}
 		else{
-			Print_I3("Display_Picture_To_Color M009FT slave continue without repower");
+			Print_I3("M S cont");
 		}
 #else
 		DevicePower();
@@ -541,7 +508,7 @@ void Display_Picture_To_Color(unsigned char data, int length){
 		}
 #elif (defined(ENABLE_INK_SCREEN_JD79686AB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || \
 	(defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4)) || (defined(ENABLE_INK_SCREEN_JD79686AC_1360X480_COLOR_3)) || \
-	(defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6))
+	(defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6)) || (defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4))
 		if(global_DEVICE_STATUS.fisHost == Is_HOST){
 			SPI_CS_A_0;
 			SPI_CS_B_0;
@@ -552,7 +519,7 @@ void Display_Picture_To_Color(unsigned char data, int length){
 			Init_EPD_Driver();
 		}
 #if (defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4)) || \
-	(defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6))
+	(defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6)) || (defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4))
 		if(global_DEVICE_STATUS.fisHost == IS_SLAVE){
 			SPI_CS_A_SLAVE_0;
 			SPI_CS_B_SLAVE_0;
@@ -577,7 +544,7 @@ void Display_Picture_To_Color(unsigned char data, int length){
 
 #ifdef ENABLE_SCREEN_COLOR_3
 	if(length == SCREEN_BLACK_WHITE_COLOR_3_MAX){
-		Print_I3("Display_Picture_To_3Color red data length:%d",length);
+		Print_I3("R len:%d",length);
 		DevicePower();
 		Init_display_Red();
 	}
@@ -598,7 +565,7 @@ void Display_Picture_To_Color(unsigned char data, int length){
 
 #if defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2)
 	if (length == SCREEN_272X792_COLOR_2_HALF_MAX -1) {
-		Print_I3("Display_Picture_To_2Color @@@@ display global_DEVICE_STATUS.fImageDataLen:%d",length);
+		Print_I3("D2 len:%d",length);
 		Display_EPD_AB();
         // Clear per-image decode state after the last byte of the frame.
         pendingCompressByte = PENDING_NONE;
@@ -606,7 +573,7 @@ void Display_Picture_To_Color(unsigned char data, int length){
 	}
 #else
 	if (length == EPD_GetDisplayMaxBuf() -1) {
-		Print_I3("Display_Picture_To_6Color @@@@ display global_DEVICE_STATUS.fImageDataLen:%d",length);
+		Print_I3("D6 len:%d",length);
 		Display_EPD_AB();
         // Clear per-image decode state after the last byte of the frame.
         pendingCompressByte = PENDING_NONE;
@@ -644,12 +611,14 @@ int ImgDataCallBack(unsigned char data) {
 	(defined(ENABLE_INK_SCREEN_JD79686BB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || \
 	(defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4)) || (defined(ENABLE_INK_SCREEN_JD79686AC_1360X480_COLOR_3)) || \
 	(defined(ENABLE_INK_SCREEN_SSD2683ZA_272X792_COLOR_4)) || (defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2)) || \
-	(defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6))
+	(defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6)) || (defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4))
 
 #if (defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4))
 	screen_color_max = SCREEN_1360X480_COLOR_4_MAX;
 #elif (defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4))
 	screen_color_max = SCREEN_1280X600_COLOR_4_MAX;
+#elif (defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4))
+	screen_color_max = SCREEN_1360X480_COLOR_4_MAX;
 #elif (defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2))
 	screen_color_max = SCREEN_272X792_COLOR_2_HALF_MAX;
 #elif (defined(ENABLE_INK_SCREEN_SSD2683ZA_272X792_COLOR_4))
@@ -664,7 +633,7 @@ int ImgDataCallBack(unsigned char data) {
         {
             global_DEVICE_STATUS.fisHost = IS_SLAVE;
             global_DEVICE_STATUS.fImageDataLen = SCREEN_DATA_START;
-            Print_I3("ImgDataCallBack global_DEVICE_STATUS.fisHost:%d",global_DEVICE_STATUS.fisHost);
+            Print_I3("ImgCB h:%d",global_DEVICE_STATUS.fisHost);
             ImgDataCallBack_flag++;
         }
 	}
@@ -688,16 +657,22 @@ void cleanDisplayColor(int color, UINT8 isNeedStandy){
 	data[0] = color;
 	global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_AB;
 	global_DEVICE_STATUS.fIsNeedStandby = isNeedStandy;
+#ifdef ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4
+	ControlEPDPower(Is_On);
+	DelayMs(UC8579_CLEAN_POWER_PREPARE_MS);
+#endif
 #if (defined(ENABLE_INK_SCREEN_SSD1683_272X792_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79686AB_1360X480_COLOR_3)) || \
 	(defined(ENABLE_INK_SCREEN_JD79686BB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || \
 	(defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4)) || (defined(ENABLE_INK_SCREEN_JD79686AC_1360X480_COLOR_3)) || \
 	(defined(ENABLE_INK_SCREEN_SSD2683ZA_272X792_COLOR_4)) || (defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2)) || \
-	(defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6))
+	(defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6)) || (defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4))
 	
 #if (defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4))	
 	screen_color_max = SCREEN_1360X480_COLOR_4_MAX;
 #elif (defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4))
 	screen_color_max = SCREEN_1280X600_COLOR_4_MAX;
+#elif (defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4))
+	screen_color_max = SCREEN_1360X480_COLOR_4_MAX;
 #elif (defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2))
 	screen_color_max = SCREEN_272X792_COLOR_2_HALF_MAX;
 #elif (defined(ENABLE_INK_SCREEN_SSD2683ZA_272X792_COLOR_4))
@@ -709,7 +684,9 @@ void cleanDisplayColor(int color, UINT8 isNeedStandy){
 #endif
 
 	int dLen = EPD_GetDisplayMaxBuf()*4;
-#if defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2)
+#if defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4)
+	dLen = EPD_GetDisplayMaxBuf()*2;
+#elif defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2)
 	dLen = EPD_GetDisplayMaxBuf();
 #endif
 	for(i=0;i<dLen;i++)
@@ -718,7 +695,7 @@ void cleanDisplayColor(int color, UINT8 isNeedStandy){
 			if(ImgDataCallBack_flag<1)
 			{
 				global_DEVICE_STATUS.fisHost = IS_SLAVE;
-				Print_I3("ImgDataCallBack global_DEVICE_STATUS.fisHost:%d",global_DEVICE_STATUS.fisHost);
+				Print_I3("ImgCB h:%d",global_DEVICE_STATUS.fisHost);
 				ImgDataCallBack_flag++;
 			}
 		}

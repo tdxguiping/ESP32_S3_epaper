@@ -1,9 +1,9 @@
-/********************************** (C) COPYRIGHT *******************************
+﻿/********************************** (C) COPYRIGHT *******************************
  * File Name          : Peripheral.C
  * Author             : WCH
  * Version            : V1.0
  * Date               : 2018/12/10
- * Description        : ����ӻ�Ӧ�ó��򣬳�ʼ���㲥���Ӳ�����Ȼ��㲥��ֱ������������ͨ���Զ������������?
+ * Description        : ����ӻ�Ӧ�ó��򣬳�ʼ���㲥���Ӳ�����Ȼ��㲥��ֱ������������ͨ���Զ������������
  * Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
  * SPDX-License-Identifier: Apache-2.0
  *******************************************************************************/
@@ -20,7 +20,6 @@
 #include "OTAprofile.h"
 #include "app_cfg.h"
 #include "commoninfo.h"
-#include "uart1_wifi_passthrough.h"
 
 #include "rledecode.h"
 
@@ -34,34 +33,15 @@
 //DCDC_ENABLE=TRUE
 UINT8   Ble_CRC;
 #define EVT_PERIOD       Is_Off //   Is_On   Is_Off
-
-#ifdef ENABLE_UART1_OFFICIAL_EXAMPLE_TEST
-extern volatile uint8_t g_uart1_exam_disable_hal_sleep;
-
-static void UART1Exam_SetWifiWake(uint8_t on)
-{
-    if(on == Is_On)
-    {
-        g_uart1_exam_disable_hal_sleep = 1;
-        Print_I3("[UART1_EXAM] disable HAL sleep");
-    }
-    else
-    {
-        g_uart1_exam_disable_hal_sleep = 0;
-        Print_I3("[UART1_EXAM] enable HAL sleep");
-    }
-}
-#endif
-
 #if 1
 //1s 19uA
 // What is the advertising interval when device is discoverable (units of 625us, 80=50ms)
 //#define DEFAULT_ADVERTISING_INTERVAL         1600 //  ���� 1 ��
 //#define DEFAULT_ADVERTISING_INTERVAL         2096+10 // ���� 500ms ,��û��ʹ��
-//#define DEFAULT_ADVERTISING_INTERVAL         (2096+10+24+20)/2 //���� 500ms ,�����?
-//#define DEFAULT_ADVERTISING_INTERVAL         800-100  //���� 400ms ,�����?
-//  #define DEFAULT_ADVERTISING_INTERVAL         800-100  //���� 400ms ,�����?
-//  DCDC_ENABLE=TRUE    ���������?�ڿ��������мӼӺ�
+//#define DEFAULT_ADVERTISING_INTERVAL         (2096+10+24+20)/2 //���� 500ms ,�����
+//#define DEFAULT_ADVERTISING_INTERVAL         800-100  //���� 400ms ,�����
+//  #define DEFAULT_ADVERTISING_INTERVAL         800-100  //���� 400ms ,�����
+//  DCDC_ENABLE=TRUE    ��������� �ڿ��������мӼӺ�
 // Limited discoverable mode advertises for 30.72s, and then stops
 // General discoverable mode advertises indefinitely
 // Minimum connection interval (units of 1.25ms, 6=7.5ms)
@@ -226,9 +206,9 @@ uint8_t getCommonImageZip(uint8_t index)
 }
 
 /**
- * @brief  设置“首次开机初始化标志”字�?
- * @param  value 标志值（1字节�?
- *         建议�?x00 = 已完成初始化�?x01 = 需要初始化（也可按实际需求自定义�?
+ * @brief  设置“首次开机初始化标志”字节
+ * @param  value 标志值（1字节）
+ *         建议：0x00 = 已完成初始化，0x01 = 需要初始化（也可按实际需求自定义）
  */
 void setFirstBootFlag(uint8_t value)
 {
@@ -238,8 +218,8 @@ void setFirstBootFlag(uint8_t value)
 }
 
 /**
- * @brief  读取“首次开机初始化标志”字�?
- * @return 标志值（1字节），如果Flash为擦除�?0xFF)，直接返�?xFF
+ * @brief  读取“首次开机初始化标志”字节
+ * @return 标志值（1字节），如果Flash为擦除态(0xFF)，直接返回0xFF
  */
 uint8_t getFirstBootFlag(void)
 {
@@ -249,13 +229,13 @@ uint8_t getFirstBootFlag(void)
 }
 
 /**
- * @brief  设置User ID到flash�?字节�?
- * @param  user_id: User ID值（大端序，即高字节在前�?
+ * @brief  设置User ID到flash（4字节）
+ * @param  user_id: User ID值（大端序，即高字节在前）
  */
 void setUserId(uint32_t user_id)
 {
 	uint8_t id_bytes[USER_ID_LEN];
-	// 大端序存储：高字节在�?
+	// 大端序存储：高字节在前
 	id_bytes[0] = (user_id >> 24) & 0xFF;
 	id_bytes[1] = (user_id >> 16) & 0xFF;
 	id_bytes[2] = (user_id >> 8) & 0xFF;
@@ -264,14 +244,14 @@ void setUserId(uint32_t user_id)
 }
 
 /**
- * @brief  读取flash中的User ID�?字节�?
- * @return User ID值（大端序，即高字节在前�?
+ * @brief  读取flash中的User ID（4字节）
+ * @return User ID值（大端序，即高字节在前）
  */
 uint32_t getUserId(void)
 {
 	uint8_t id_bytes[USER_ID_LEN];
 	Get_EEPROM_Flag(id_bytes, USER_ID_POSITION, USER_ID_LEN);
-	// 大端序解析：高字节在�?
+	// 大端序解析：高字节在前
 	return ((uint32_t)id_bytes[0] << 24) | 
 	       ((uint32_t)id_bytes[1] << 16) | 
 	       ((uint32_t)id_bytes[2] << 8) | 
@@ -279,7 +259,7 @@ uint32_t getUserId(void)
 }
 
 /**
- * @brief  清除User ID（写�?�?
+ * @brief  清除User ID（写全0）
  */
 void clearUserId(void)
 {
@@ -287,67 +267,28 @@ void clearUserId(void)
 	Save_EEPROM_Flag(id_bytes, USER_ID_POSITION, USER_ID_LEN);
 }
 
-void setWifiProvisionStatus(uint8_t status)
-{
-	uint8_t value = (status == WIFI_PROVISIONED) ? WIFI_PROVISIONED : WIFI_UNPROVISIONED;
-	Save_EEPROM_Flag(&value, WIFI_PROVISION_POSITION, WIFI_PROVISION_LEN);
-}
-
-uint8_t getWifiProvisionStatus(void)
-{
-	uint8_t value = WIFI_UNPROVISIONED;
-
-	Get_EEPROM_Flag(&value, WIFI_PROVISION_POSITION, WIFI_PROVISION_LEN);
-	if(value != WIFI_PROVISIONED && value != WIFI_UNPROVISIONED)
-	{
-		return WIFI_UNPROVISIONED;
-	}
-
-	return value;
-}
-void setWifiCompositeVersion(uint8_t ble_ver, uint16_t wifi_ver)
-{
-	uint8_t version[WIFI_COMPOSITE_VERSION_LEN];
-
-	version[0] = ble_ver;
-	version[1] = (uint8_t)(wifi_ver >> 8);
-	version[2] = (uint8_t)(wifi_ver & 0xFF);
-	Save_EEPROM_Flag(version, WIFI_COMPOSITE_VERSION_POSITION, WIFI_COMPOSITE_VERSION_LEN);
-}
-
-void getWifiCompositeVersion(uint8_t version[WIFI_COMPOSITE_VERSION_LEN])
-{
-	Get_EEPROM_Flag(version, WIFI_COMPOSITE_VERSION_POSITION, WIFI_COMPOSITE_VERSION_LEN);
-	if(version[0] == 0xFF && version[1] == 0xFF && version[2] == 0xFF)
-	{
-		version[0] = 0;
-		version[1] = 0;
-		version[2] = 0;
-	}
-}
-
 /**
  * @brief 保存上次刷屏信息到flash（位压缩版本，支持“局部更新”）
- * @param type 刷屏类型：LAST_REFRESH_TYPE_COMMON(0x00)=普通刷�? LAST_REFRESH_TYPE_PRESAVE(0x01)=预存刷屏
- * @param group 预存刷屏的group编号（普通刷屏时可填0�?
- * @param room 预存刷屏的room编号（普通刷屏时可填0�?
+ * @param type 刷屏类型：LAST_REFRESH_TYPE_COMMON(0x00)=普通刷屏, LAST_REFRESH_TYPE_PRESAVE(0x01)=预存刷屏
+ * @param group 预存刷屏的group编号（普通刷屏时可填0）
+ * @param room 预存刷屏的room编号（普通刷屏时可填0）
  * @param screen_mode 屏幕模式：SCREEN_MODE_SINGLE_A/B/AB_SAME/AB_DIFF
- * @param zip 是否压缩�?/1
- * @param enabled 定时刷屏功能启用标志�?/1
+ * @param zip 是否压缩：0/1
+ * @param enabled 定时刷屏功能启用标志：0/1
  * @param hours 定时器小时数
  *
- * 约定�?
- * - 传入 SAVE_KEEP_U8 / SAVE_KEEP_U16 表示“保持flash里原值不变�?
- * - 刷图流程只更�?type/group/room/screen_mode/zip，enabled/hours 必须保持不变
- * - TIME 命令只更�?enabled/hours，其余字段保持不�?
+ * 约定：
+ * - 传入 SAVE_KEEP_U8 / SAVE_KEEP_U16 表示“保持flash里原值不变”
+ * - 刷图流程只更新 type/group/room/screen_mode/zip，enabled/hours 必须保持不变
+ * - TIME 命令只更新 enabled/hours，其余字段保持不变
  */
 void saveLastRefreshInfo(uint8_t type, uint8_t group, uint8_t room, uint8_t screen_mode, uint8_t zip, uint8_t enabled, uint8_t screen_cleared)
 {
-	// 先读出当前flash记录，避免刷图流程把 enabled 覆盖�?
+	// 先读出当前flash记录，避免刷图流程把 enabled 覆盖成0
 	uint8_t refresh_info[LAST_REFRESH_Len];
 	Get_EEPROM_Flag(refresh_info, LAST_REFRESH_Position, LAST_REFRESH_Len);
 
-	// 如果是全0xFF（擦除�?未初始化），给一套安全默认值，避免误把 enabled 当成1
+	// 如果是全0xFF（擦除态/未初始化），给一套安全默认值，避免误把 enabled 当成1
 	if(refresh_info[0] == 0xFF && refresh_info[1] == 0xFF && refresh_info[2] == 0xFF)
 	{
 		refresh_info[0] = 0; // flags
@@ -362,8 +303,8 @@ void saveLastRefreshInfo(uint8_t type, uint8_t group, uint8_t room, uint8_t scre
 	uint8_t old_zip = (old_flags >> FLAGS_BIT_ZIP) & 0x01;
 	uint8_t old_screen_cleared = (old_flags >> FLAGS_BIT_SCREEN_CLEARED) & 0x01;
 
-	// 应用"局部更�?
-	// 如果传入SAVE_KEEP_U8，使用全局变量global_screen_cleared_flag的�?
+	// 应用"局部更新"
+	// 如果传入SAVE_KEEP_U8，使用全局变量global_screen_cleared_flag的值
 	uint8_t new_enabled = (enabled == SAVE_KEEP_U8) ? old_enabled : (enabled & 0x01);
 	uint8_t new_type = (type == SAVE_KEEP_U8) ? old_type : (type & 0x03);
 	uint8_t new_screen_mode = (screen_mode == SAVE_KEEP_U8) ? old_screen_mode : (screen_mode & 0x03);
@@ -372,7 +313,7 @@ void saveLastRefreshInfo(uint8_t type, uint8_t group, uint8_t room, uint8_t scre
 	uint8_t new_group = (group == SAVE_KEEP_U8) ? refresh_info[1] : group;
 	uint8_t new_room = (room == SAVE_KEEP_U8) ? refresh_info[2] : room;
 
-	// 重新打包 flags（bit0=enabled, bit1-2=type, bit3-4=screen_mode, bit5=zip, bit6=screen_cleared�?
+	// 重新打包 flags（bit0=enabled, bit1-2=type, bit3-4=screen_mode, bit5=zip, bit6=screen_cleared）
 	uint8_t flags = 0;
 	flags |= (new_enabled & 0x01) << FLAGS_BIT_TIMER_ENABLED;
 	flags |= (new_type & 0x03) << FLAGS_BIT_TYPE_OFFSET;
@@ -391,9 +332,9 @@ void saveLastRefreshInfo(uint8_t type, uint8_t group, uint8_t room, uint8_t scre
 }
 
 /**
- * @brief 只读取定时刷屏功能开关状态和清屏标志（不修改任何全局变量�?
- * @param enabled 输出参数：定时刷屏功能启用标�?
-	 * @param screen_cleared 输出参数：清屏标志（SCREEN_NOT_CLEARED=0 �?SCREEN_ALREADY_CLEARED=1�?
+ * @brief 只读取定时刷屏功能开关状态和清屏标志（不修改任何全局变量）
+ * @param enabled 输出参数：定时刷屏功能启用标志
+	 * @param screen_cleared 输出参数：清屏标志（SCREEN_NOT_CLEARED=0 或 SCREEN_ALREADY_CLEARED=1）
 	 * 用途：开机时检查是否需要启动定时器，避免修改全局变量影响预存刷屏功能
 	 */
 	void getRefreshTimerStatus(uint8_t* enabled, uint8_t* screen_cleared)
@@ -402,11 +343,11 @@ void saveLastRefreshInfo(uint8_t type, uint8_t group, uint8_t room, uint8_t scre
 		uint8_t refresh_info[LAST_REFRESH_Len];
 		Get_EEPROM_Flag(refresh_info, LAST_REFRESH_Position, LAST_REFRESH_Len);
 
-		// �?xFF（擦除�?未初始化）时，返回默认�?
+		// 全0xFF（擦除态/未初始化）时，返回默认值
 		if(refresh_info[0] == 0xFF && refresh_info[1] == 0xFF && refresh_info[2] == 0xFF)
 		{
 			*enabled = REFRESH_TIMER_DISABLED;
-			*screen_cleared = SCREEN_NOT_CLEARED;  // 默认未清�?
+			*screen_cleared = SCREEN_NOT_CLEARED;  // 默认未清屏
 			return;
 		}
 
@@ -417,15 +358,15 @@ void saveLastRefreshInfo(uint8_t type, uint8_t group, uint8_t room, uint8_t scre
 }
 
 /**
- * @brief 从flash读取上次刷屏信息（位解压版本�?
- * @param type 输出参数：刷屏类�?
+ * @brief 从flash读取上次刷屏信息（位解压版本）
+ * @param type 输出参数：刷屏类型
  * @param group 输出参数：group编号
  * @param room 输出参数：room编号
- * @param enabled 输出参数：定时刷屏功能启用标�?
- * @param screen_mode 输出参数：屏幕模�?
+ * @param enabled 输出参数：定时刷屏功能启用标志
+ * @param screen_mode 输出参数：屏幕模式
  * 注意：小时数已写死在代码中（REFRESH_TIMER_FIXED_HOURS），不再从flash读取
  * 警告：此函数会修改全局变量（fZip, fImageIndex, fScreenType, fImageType），
- *       开机时请使�?getRefreshTimerEnabled() 只读取开关状�?
+ *       开机时请使用 getRefreshTimerEnabled() 只读取开关状态
  */
 void getLastRefreshInfo(uint8_t* type, uint8_t* group, uint8_t* room, uint8_t* enabled, uint8_t* screen_mode)
 {
@@ -434,7 +375,7 @@ void getLastRefreshInfo(uint8_t* type, uint8_t* group, uint8_t* room, uint8_t* e
 	uint8_t base_index;
 	Get_EEPROM_Flag(refresh_info, LAST_REFRESH_Position, LAST_REFRESH_Len);
 
-	// �?xFF（擦除�?未初始化）时，给安全默认值：不开启定时器
+	// 全0xFF（擦除态/未初始化）时，给安全默认值：不开启定时器
 	if(refresh_info[0] == 0xFF && refresh_info[1] == 0xFF && refresh_info[2] == 0xFF)
 	{
 		*enabled = 0;
@@ -457,7 +398,7 @@ void getLastRefreshInfo(uint8_t* type, uint8_t* group, uint8_t* room, uint8_t* e
 	*group = refresh_info[1];
 	*room = refresh_info[2];
 
-	// 回填到全局变量（供定时刷屏流程使用�?
+	// 回填到全局变量（供定时刷屏流程使用）
 	global_EXTERN_FLASH_INFO.fZip = zip;
 	
 	// 根据type和screen_mode恢复index和fScreenType
@@ -465,20 +406,20 @@ void getLastRefreshInfo(uint8_t* type, uint8_t* group, uint8_t* room, uint8_t* e
 			case SCREEN_MODE_SINGLE_A:
 				base_index = SCREEN_B_COMMON_INDEX; // 1
 				global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_A;
-				global_DEVICE_STATUS.fImageType = 0; // 普通模�?
+				global_DEVICE_STATUS.fImageType = 0; // 普通模式
 				break;
 			case SCREEN_MODE_SINGLE_B:
 				base_index = SCREEN_B_COMMON_INDEX; // 1
 				global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_B;
-				global_DEVICE_STATUS.fImageType = 0; // 普通模�?
+				global_DEVICE_STATUS.fImageType = 0; // 普通模式
 				break;
 			case SCREEN_MODE_AB_SAME:
 				base_index = SCREEN_B_COMMON_INDEX; // 1
 				global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_AB;
-				global_DEVICE_STATUS.fImageType = 0; // 普通模�?
+				global_DEVICE_STATUS.fImageType = 0; // 普通模式
 				break;
 			case SCREEN_MODE_AB_DIFF:
-				// 异显模式：需要刷两次（A�?B面）
+				// 异显模式：需要刷两次（A面+B面）
 				// 设置 fImageType=1，让 EVENT_Get_Battle_Charge 自动执行异显流程
 				base_index = SCREEN_B_COMMON_INDEX; // 1（EVENT_Get_Battle_Charge会重设）
 				global_DEVICE_STATUS.fImageType = 1; // 异显模式标志
@@ -494,12 +435,12 @@ void getLastRefreshInfo(uint8_t* type, uint8_t* group, uint8_t* room, uint8_t* e
 		// 普通刷屏：根据screen_mode判断基础index和fScreenType	
 		
 		
-		// 普通刷图：不管内置还是外置flash，都直接用base_index�?�?�?
-		// 因为正常刷图存储时就是用0�?，没有加偏移（只有预存刷图才加偏移）
+		// 普通刷图：不管内置还是外置flash，都直接用base_index（0或1）
+		// 因为正常刷图存储时就是用0或1，没有加偏移（只有预存刷图才加偏移）
 		global_EXTERN_FLASH_INFO.fImageIndex = base_index;
 		PRINT("Common refresh restore: base_index=%d, fImageIndex=%d\r\n", base_index, global_EXTERN_FLASH_INFO.fImageIndex);
 	} else if(*type == LAST_REFRESH_TYPE_PRESAVE){
-		// 预存刷屏：通过group/room查找index（由调用方在后续处理�?
+		// 预存刷屏：通过group/room查找index（由调用方在后续处理）
 		// 这里暂不处理，因为需要读取GROUPINFO_Len，调用getPicCurIndex()
 		global_EXTERN_FLASH_INFO.fImageIndex = 0; // 临时值，后续会被覆盖
 		//global_DEVICE_STATUS.fImageType = 0; // 预存模式
@@ -512,49 +453,30 @@ void getLastRefreshInfo(uint8_t* type, uint8_t* group, uint8_t* room, uint8_t* e
 }
 
 //risc5mcu:
-//GAP_UpdateAdvertisingData(�?�?0,FALSE�?�?,sizeof(�?�?scanRspData�?�?),scanRspData�?�?);�?�?�?�?//�?�?�?�?�?�?ɨ��Ӧ���?
+//GAP_UpdateAdvertisingData(�0�20,FALSE�0�2,sizeof(�0�2scanRspData�0�2),scanRspData�0�2);�0�2�0�2//�0�2�0�2�0�2ɨ��Ӧ���
 //risc5mcu:
 //�����������������������������㲥
-static uint8_t s_nfc_pause_advertising = Is_No;
-
 void  Stop_advertising(void)
-{
-    uint8_t advertising_enable = FALSE;
+{     
+    //�����㲥
+    //��Ӧ״̬�ϱ�:GAPROLE_ADVERTISING
+    uint8_t advertising_enable = TRUE;
+    //GAPRole_SetParameter( GAPROLE_ADVERT_ENABLED, sizeof( uint8_t ), &advertising_enable );
+     
+    //�رչ㲥
+    //  ��Ӧ��״̬�ϱ�:
+    // :GAPROLE_WAITING
+    // :pEvent->gap.opcode == GAP_END_DISCOVERABLE_DONE_EVENT
+    advertising_enable = FALSE;
     GAPRole_SetParameter( GAPROLE_ADVERT_ENABLED, sizeof( uint8_t ), &advertising_enable );
     //Print_I3("Stop_advertising");
 }
 
 void  Start_advertising(void)
-{
+{     
     uint8_t advertising_enable = TRUE;
-
-    if(s_nfc_pause_advertising == Is_Yes)
-    {
-        return;
-    }
-
     GAPRole_SetParameter( GAPROLE_ADVERT_ENABLED, sizeof( uint8_t ), &advertising_enable );
     //Print_I3("Start_advertising");
-}
-
-void Peripheral_NfcPauseAdvertising(void)
-{
-    s_nfc_pause_advertising = Is_Yes;
-    Stop_advertising();
-}
-
-void Peripheral_NfcResumeAdvertising(void)
-{
-    s_nfc_pause_advertising = Is_No;
-    if(global_DEVICE_STATUS.fisBleConnect != Is_Yes)
-    {
-        Start_advertising();
-    }
-}
-
-uint8_t Peripheral_IsBleConnected(void)
-{
-    return global_DEVICE_STATUS.fisBleConnect;
 }
 
 // GAP GATT Attributes
@@ -565,18 +487,18 @@ static uint8   attDeviceName[GAP_DEVICE_NAME_LEN] = "TDXeTable-card827";
 /* OTAͨѶ��֡ */
 OTA_IAP_CMD_t iap_rec_data;
 
-/* OTA�������?*/
+/* OTA������� */
 uint32_t OpParaDataLen = 0;
 uint32_t OpAdd = 0;
 
 /* Flash �������� */
 uint32_t EraseAdd = 0;      //������ַ
 uint32_t EraseBlockNum = 0; //��Ҫ�����Ŀ���
-uint32_t EraseBlockCnt = 0; //�����Ŀ����?
-uint32_t EraseTmpBlockCnt = 0; //�����Ŀ����?
+uint32_t EraseBlockCnt = 0; //�����Ŀ����
+uint32_t EraseTmpBlockCnt = 0; //�����Ŀ����
 
 #define ERASE_BLOCK_ONE		10  //ÿ�β���10��
-/* FLASH У�����?*/
+/* FLASH У����� */
 uint8_t VerifyStatus = 0;
 uint8_t ResultStatus = 0;
 
@@ -701,7 +623,7 @@ void Peripheral_Init()
     Peripheral_TaskID = TMOS_ProcessEventRegister(Peripheral_ProcessEvent);
 
 	intBoardCastData();
-    Print_I3("222@@@@@@@@@@@@@@@@@@@@@@@@@@Peripheral_Init mac=%x %x %x %x %x %x \n",Mac[0],Mac[1],Mac[2],Mac[3],Mac[4],Mac[5]);
+	Print_I3("222@@@@@@@@@@@@@@@@@@@@@@@@@@Peripheral_Init mac=%x %x %x %x %x %x \n",Mac[0],Mac[1],Mac[2],Mac[3],Mac[4],Mac[5]);
 
        // Set the GAP Characteristics
     GGS_SetParameter(GGS_DEVICE_NAME_ATT, GAP_DEVICE_NAME_LEN, attDeviceName);
@@ -772,6 +694,8 @@ void Peripheral_Init()
         SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR5, SIMPLEPROFILE_CHAR5_LEN, charValue5);
     }
 
+   
+
     // Register callback with SimpleGATTprofile
     SimpleProfile_RegisterAppCBs(&Peripheral_SimpleProfileCBs);
 
@@ -824,7 +748,6 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
         //Print_I3("SBP_PERIODIC_EVT 1");
         // Start the Device
         GAPRole_PeripheralStartDevice(Peripheral_TaskID, &Peripheral_BondMgrCBs, &Peripheral_PeripheralCBs);
-            Print_I3("Initialized..");
         // Set timer for first periodic event
 
         return (events ^ SBP_START_DEVICE_EVT);
@@ -919,10 +842,8 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
     switch(newState)
     {
         case GAPROLE_STARTED:
+            Print_I3("Initialized..");
 			global_DEVICE_STATUS.fisBleConnect = Is_No;
-#ifdef ENABLE_UART1_OFFICIAL_EXAMPLE_TEST
-            UART1Exam_SetWifiWake(Is_Off);
-#endif
             break;
         case GAPROLE_ADVERTISING:
             //Print_I3("Advertising..");
@@ -954,12 +875,6 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
 			//Power_CS_A_on;
 #endif
 			global_DEVICE_STATUS.fisBleConnect = Is_Yes;
-#ifdef ENABLE_UART1_OFFICIAL_EXAMPLE_TEST
-            UART1Exam_SetWifiWake(Is_On);
-#endif
-#ifdef ENABLE_WIFI_UART1_PASSTHROUGH
-			WifiPassthrough_OnBleConnected(event->connectionHandle);
-#endif
             if(conn_interval > DEFAULT_DESIRED_MAX_CONN_INTERVAL)
             {
                 Print_I3("Send Update %d %d",DEFAULT_DESIRED_MIN_CONN_INTERVAL_v2,DEFAULT_DESIRED_MAX_CONN_INTERVAL_v2);
@@ -978,14 +893,6 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
         case GAPROLE_WAITING:
         {
 			Print_I3("GAPROLE_WAITING..");
-			global_DEVICE_STATUS.fisBleConnect = Is_No;
-#ifdef ENABLE_UART1_OFFICIAL_EXAMPLE_TEST
-            UART1Exam_SetWifiWake(Is_Off);
-            tmos_start_task(main_task_ID, EVENT_Low_Power, 500);
-#endif
-#ifdef ENABLE_WIFI_UART1_PASSTHROUGH
-			WifiPassthrough_OnBleDisconnected();
-#endif
 			//global_DEVICE_STATUS.fisBleConnect = Is_No;
             //uint8_t initial_advertising_enable = TRUE;
             //global_DEVICE_STATUS.fBle_connect_or_no=Is_No;
@@ -1002,21 +909,15 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
                 GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advertising_enable);
                 Print_I3("Start .advertising.");
             }*/
-            if(s_nfc_pause_advertising != Is_Yes)
-            {
-                Start_advertising();
-        		Print_I3("Start .advertising.");
-            }
-            else
-            {
-                Print_I3("[NFC] BLE advertising paused");
-            }
+            uint8_t initial_advertising_enable = TRUE;
+            GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advertising_enable);
+     		Print_I3("Start .advertising.");
 			if(global_DEVICE_STATUS.fisOtaed == 1)
 			{
 				delay_ms(100);	
 				SYS_ResetExecute();
 			}
-			 //确保蓝牙异常断开后，能正常进入低功�?
+			 //确保蓝牙异常断开后，能正常进入低功耗
 			if(global_DEVICE_STATUS.fWorked == Is_No && global_DEVICE_STATUS.fDataSendSuccess == Is_No)
 			{
 				Print_I3("Start .advertising. Low_Power");
@@ -1025,28 +926,13 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
 					global_DEVICE_STATUS.fWorked = Is_No;
 				}
 				//tmos_start_task(main_task_ID,EVENT_Check_TimeOut,500);
-#ifdef ENABLE_WIFI_UART1_PASSTHROUGH
-				if(WifiPassthrough_IsWifiAwake() == Is_No &&
-				   WifiPassthrough_IsWakePending() != Is_Yes &&
-				   WifiPassthrough_IsUsbPowerPresent() != Is_Yes)
-				{
-#endif
 				tmos_start_task(main_task_ID,EVENT_Low_Power ,3*1600);
-#ifdef ENABLE_WIFI_UART1_PASSTHROUGH
-				}
-#endif
 			}
         }
         break;
 
         case GAPROLE_ERROR:
 			global_DEVICE_STATUS.fisBleConnect = Is_No;
-#ifdef ENABLE_UART1_OFFICIAL_EXAMPLE_TEST
-            UART1Exam_SetWifiWake(Is_Off);
-#endif
-#ifdef ENABLE_WIFI_UART1_PASSTHROUGH
-			WifiPassthrough_OnBleDisconnected();
-#endif
             Print_I3("Error..%x",newState);
             break;
 
@@ -1172,7 +1058,7 @@ void OTA_IAP_CMDErrDeal(void)
 //  ���ݷ��䣺
 //  1-  ��0���ֽ�  --����=1     ---- OTA��־
 //  2-  ��1���ֽ�  --����=4     ---- ���յ��ģ�����ͼƬ�Ĺ㲥���ݴ��������Է�һֱ����
-//  3-  ��7���ֽ�  --����=15    ---- ��10/����5��ͼƬ,һ���ֽڱ�ʾһ�������ͼƬ���?0XAA ��������?0x00 ��15��
+//  3-  ��7���ֽ�  --����=15    ---- ��10/����5��ͼƬ,һ���ֽڱ�ʾһ�������ͼƬ��Ч 0XAA �������Ч 0x00 ��15��
 //  4-  ��0���ֽ�  --����=1     ---- OTA��־
 
 void SwitchImageFlag(uint8_t new_flag)
@@ -1228,7 +1114,7 @@ void Rec_OTA_IAP_DataDeal(void)
     Debug_info_OTA++;
     switch(iap_rec_data.other.buf[0])
     {
-        /* ���?*/
+        /* ��� */
         case CMD_IAP_PROM:
         {
             uint32_t i;
@@ -1249,7 +1135,7 @@ void Rec_OTA_IAP_DataDeal(void)
 			//printf("program:%x:%d:%d\r\n", (int)OpAdd, (int)OpParaDataLen,Ble_Len);
 			//hex_dump(iap_rec_data.program.buf,OpParaDataLen);
 
-            /* ��ǰ��ImageA��ֱ�ӱ��?*/
+            /* ��ǰ��ImageA��ֱ�ӱ�� */
             status = FLASH_ROM_WRITE(OpAdd, iap_rec_data.program.buf, (uint16_t)OpParaDataLen);
             if(status)
             {
@@ -1264,7 +1150,6 @@ void Rec_OTA_IAP_DataDeal(void)
         {
             uint32_t newEraseAdd;
             uint32_t newEraseBlockNum;
-            uint32_t newEraseEndAdd;
             
             Disable_GPIO_IRQ();        
             //Print_I3("erase 000000000000000000000000000");
@@ -1277,7 +1162,6 @@ void Rec_OTA_IAP_DataDeal(void)
             newEraseBlockNum = (uint32_t)(iap_rec_data.erase.block_num[0]);
             newEraseBlockNum |= ((uint32_t)(iap_rec_data.erase.block_num[1]) << 8);
             newEraseAdd = OpAdd;
-            newEraseEndAdd = newEraseAdd + ((newEraseBlockNum + 1) * FLASH_BLOCK_SIZE);
             
             // ???????????:??????????????
             if(newEraseAdd != EraseAdd || newEraseBlockNum != EraseBlockNum)
@@ -1296,7 +1180,7 @@ void Rec_OTA_IAP_DataDeal(void)
                 EraseTmpBlockCnt = 0;  // ?????????,?????10?
             }
 
-            /* ����ͷ��ڲ�������? */
+            /* ����ͷ��ڲ�������0 */
             VerifyStatus = 0;
 			ResultStatus = 0;
             if(Debug_info_OTA<=Is_Five)
@@ -1304,12 +1188,12 @@ void Rec_OTA_IAP_DataDeal(void)
               	printf("erase %x:%d:%d:%d\r\n",(int)OpAdd, (int)EraseBlockNum,Ble_Len,EraseBlockCnt);
             }
 
-            if(EraseAdd < IMAGE_B_START_ADD || newEraseEndAdd <= EraseAdd || newEraseEndAdd > IMAGE_IAP_START_ADD)
+            if(EraseAdd < IMAGE_B_START_ADD || (EraseAdd + (EraseBlockNum - 1) * FLASH_BLOCK_SIZE) > IMAGE_IAP_START_ADD)
             {                
                 OTA_IAP_SendCMDDealSta(0xFF);
                 Print_I3("erase -- er ");
                 printf("EraseAdd=%x  %x\r\n",EraseAdd,IMAGE_B_START_ADD);
-                printf("EraseEnd=%x  %x\r\n",newEraseEndAdd,IMAGE_IAP_START_ADD);
+                printf("EraseAdd=%x  %x\r\n",(EraseAdd + (EraseBlockNum - 1) * FLASH_BLOCK_SIZE),IMAGE_IAP_START_ADD);
             }
             else
             {
@@ -1352,7 +1236,7 @@ void Rec_OTA_IAP_DataDeal(void)
             OTA_IAP_SendCMDDealSta(VerifyStatus);
             break;
         }
-        /* ��̽���?*/
+        /* ��̽��� */
         case CMD_IAP_END:
         {
             Print_I3("iap end:%d\r\n",Ble_Len);
@@ -1367,7 +1251,7 @@ void Rec_OTA_IAP_DataDeal(void)
             SwitchImageFlag(IMAGE_IAP_FLAG);
 			initPicSave(SCREEN_CLEAN_ALL,0xff,0xff);
 
-            /* �ȴ���ӡ���?����λ*/
+            /* �ȴ���ӡ��� ����λ*/
             mDelaymS(10);
             SYS_ResetExecute();
             break;
@@ -1392,7 +1276,7 @@ void Rec_OTA_IAP_DataDeal(void)
             send_buf[6] = (uint8_t)((FLASH_BLOCK_SIZE >> 8) & 0xff);
 
             send_buf[7] = CHIP_ID&0xFF;
-            send_buf[8] = (CHIP_ID >> 8) & 0xFF;
+            send_buf[8] = (CHIP_ID<<8)&0xFF;
             /* ����Ҫ������ */
 
             /* ������Ϣ */
@@ -1405,7 +1289,7 @@ void Rec_OTA_IAP_DataDeal(void)
             Print_I3("CMD_IAP_PROM_END CMD_IAP_VERIFY_END 00000000000000 ResultStatus:%d",ResultStatus);
             if(ResultStatus == 1){
 				global_DEVICE_STATUS.fOtaStatus = RTN_OTA_FAILURE;
-				/* �ȴ���ӡ���?����λ*/
+				/* �ȴ���ӡ��� ����λ*/
 	            mDelaymS(10);
 	            SYS_ResetExecute();
             }else{
@@ -1425,9 +1309,9 @@ void Rec_OTA_IAP_DataDeal(void)
 /*********************************************************************
  * @fn      OTA_IAPReadDataComplete
  *
- * @brief   OTA ���ݶ�ȡ��ɴ���?
+ * @brief   OTA ���ݶ�ȡ��ɴ���
  *
- * @param   index   - OTA ͨ�����?
+ * @param   index   - OTA ͨ�����
  *
  * @return  none
  */
@@ -1440,11 +1324,11 @@ void OTA_IAPReadDataComplete(unsigned char index)
 /*********************************************************************
  * @fn      OTA_IAPWriteData
  *
- * @brief   OTA ͨ�����ݽ�����ɴ���?
+ * @brief   OTA ͨ�����ݽ�����ɴ���
  *
- * @param   index   - OTA ͨ�����?
- * @param   p_data  - д�������?
- * @param   w_len   - д��ĳ���?
+ * @param   index   - OTA ͨ�����
+ * @param   p_data  - д�������
+ * @param   w_len   - д��ĳ���
  *
  * @return  none
  */
@@ -1454,9 +1338,9 @@ void OTA_IAPReadDataComplete(unsigned char index)
 //0x84 0x12 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 
 //[:845] ������Ϣ       ����Ҫ������        CMD_IAP_INFO
 //IAP_INFO 
-//OTA ���ݶ�ȡ��ɴ���?OTA Send Comp index=0
+//OTA ���ݶ�ȡ��ɴ��� OTA Send Comp index=0
 
-//#define CMD_IAP_PROM           0x80               // IAP�������?
+//#define CMD_IAP_PROM           0x80               // IAP�������
 
 //#define CMD_IAP_ERASE          0x81               // IAP��������
 //#define CMD_IAP_VERIFY         0x82               // IAPУ������
@@ -1471,7 +1355,7 @@ void OTA_IAPReadDataComplete(unsigned char index)
 //0x84,0x12,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
 //[:888] ������Ϣ       ����Ҫ������        CMD_IAP_INFO
 //IAP_INFO 
-//OTA ���ݶ�ȡ��ɴ���?OTA Send Comp index?[0m[OTA_IAPWriteData:996] I=0x0,L=20 T=1
+//OTA ���ݶ�ȡ��ɴ��� OTA Send Comp index?[0m[OTA_IAPWriteData:996] I=0x0,L=20 T=1
 //0x81,0x00,0x00,0x01,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
 //[:821] ERASE start:00037000 num:41
 //[:834] ��������

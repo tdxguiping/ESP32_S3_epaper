@@ -282,7 +282,11 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
 
             data_len = refreshScreenColor(PicData, buffer_size, global_EXTERN_FLASH_INFO.fZip);
 #if 1//#ifdef ENABLE_SCREEN_COLOR_3
-#if defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6)
+#if (defined(ENABLE_INK_SCREEN_JD79686BB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79686AB_1360X480_COLOR_3)) || \
+    (defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4)) || \
+    (defined(ENABLE_INK_SCREEN_JD79686AC_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_SSD2683ZA_272X792_COLOR_4)) || \
+    (defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2)) || (defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6)) || \
+    (defined(ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4))
             if ((data_len >= EPD_GetDisplayMaxBuf()) &&
                 (global_DEVICE_STATUS.fisHost != IS_HOST))
 #else

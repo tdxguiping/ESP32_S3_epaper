@@ -7,6 +7,7 @@ extern "C" {
 
 #include "CONFIG.h"
 #include "app_cfg.h"
+#include "epd_busy.h"
 
 // internel flash
 #ifdef ENABLE_BOARD_ENCRYPT
@@ -43,19 +44,19 @@ extern "C" {
 #define ADC_Len       				1
 
 #define BOARDCAST_Position  		ADC_Position+ADC_Len
-#define BOARDCAST_Len       		13  // 13字节以支持新的广播格式（如G@!#11C%2^`e{�?
+#define BOARDCAST_Len       		13  // 13字节以支持新的广播格式（如G@!#11C%2^`e{）
 
 #define BOARDLEN_Position  			BOARDCAST_Position+BOARDCAST_Len
 #define BOARDLEN_Len       			1
 // 上次刷屏信息（用于定时刷屏恢复）
 #define LAST_REFRESH_Position  		BOARDLEN_Position+BOARDLEN_Len
-#define LAST_REFRESH_Len       		3  // 1字节flags(压缩) + 1字节group + 1字节room（小时数写死在代码中�?
+#define LAST_REFRESH_Len       		3  // 1字节flags(压缩) + 1字节group + 1字节room（小时数写死在代码中）
 
-// 首次开机初始化标志�?字节�?
+// 首次开机初始化标志（1字节）
 #define FIRST_BOOT_FLAG_POSITION  	LAST_REFRESH_Position+LAST_REFRESH_Len
 #define FIRST_BOOT_FLAG_LEN       	1
 
-// User ID�?字节�?
+// User ID（4字节）
 #define USER_ID_POSITION  			FIRST_BOOT_FLAG_POSITION+FIRST_BOOT_FLAG_LEN
 #define USER_ID_LEN       			4
 
@@ -63,38 +64,17 @@ extern "C" {
 #define COMMON_IMG_ZIP_INFO_POSITION	USER_ID_POSITION+USER_ID_LEN
 #define COMMON_IMG_ZIP_INFO_LEN       	2
 
-#define WIFI_USB_WAKE_LOCK_POSITION		COMMON_IMG_ZIP_INFO_POSITION+COMMON_IMG_ZIP_INFO_LEN
-#define WIFI_USB_WAKE_LOCK_LEN			1
-#define WIFI_USB_WAKE_LOCK_VALUE		0xA5
-#define WIFI_USB_WAKE_UNLOCK_VALUE		0x00
-
-#define WIFI_TIMED_WAKE_POSITION		WIFI_USB_WAKE_LOCK_POSITION+WIFI_USB_WAKE_LOCK_LEN
-#define WIFI_TIMED_WAKE_LEN				16
-
-#define WIFI_PROVISION_POSITION			WIFI_TIMED_WAKE_POSITION+WIFI_TIMED_WAKE_LEN
-#define WIFI_PROVISION_LEN				1
-#define WIFI_UNPROVISIONED				0
-#define WIFI_PROVISIONED				1
-#define WIFI_UNPROVISIONED_NIBBLE		0x04
-#define WIFI_PROVISIONED_NIBBLE			0x05
-
-#define WIFI_TIME_POSITION				WIFI_PROVISION_POSITION+WIFI_PROVISION_LEN
-#define WIFI_TIME_LEN					32
-
-#define WIFI_COMPOSITE_VERSION_POSITION	WIFI_TIME_POSITION+WIFI_TIME_LEN
-#define WIFI_COMPOSITE_VERSION_LEN		3
-
-#define Max_RW_Flash  				(OTA_Len+MAC_Len+PHONEID_Len+BONDED_Len+GROUPINFO_Len+VERINFO_Len+WORKMODE_Len+ADC_Len+BOARDCAST_Len+BOARDLEN_Len+LAST_REFRESH_Len+FIRST_BOOT_FLAG_LEN+USER_ID_LEN+COMMON_IMG_ZIP_INFO_LEN+WIFI_USB_WAKE_LOCK_LEN+WIFI_TIMED_WAKE_LEN+WIFI_PROVISION_LEN+WIFI_TIME_LEN+WIFI_COMPOSITE_VERSION_LEN)
+#define Max_RW_Flash  				(OTA_Len+MAC_Len+PHONEID_Len+BONDED_Len+GROUPINFO_Len+VERINFO_Len+WORKMODE_Len+ADC_Len+BOARDCAST_Len+BOARDLEN_Len+LAST_REFRESH_Len+FIRST_BOOT_FLAG_LEN+USER_ID_LEN+COMMON_IMG_ZIP_INFO_LEN)
 //internel flash end
 
-// 首次开机特征值（例如�?x66�?
+// 首次开机特征值（例如：0x66）
 #define FIRST_BOOT_FLAG_VALUE		0x66
 
-// 定时刷屏固定小时数（写死在代码中，不再通过蓝牙命令配置�?
+// 定时刷屏固定小时数（写死在代码中，不再通过蓝牙命令配置）
 #if (defined(ENABLE_SCREEN_COLOR_2))
-#define REFRESH_TIMER_FIXED_HOURS	24*5  // 两色固定�?�?
+#define REFRESH_TIMER_FIXED_HOURS	24*5  // 两色固定为5天
 #else
-#define REFRESH_TIMER_FIXED_HOURS	24*15  // 其他固定�?5�?
+#define REFRESH_TIMER_FIXED_HOURS	24*15  // 其他固定为15天
 #endif
 
 
@@ -104,31 +84,25 @@ extern "C" {
 #define DEVICE_MODE_HIGH  			1
 #define DEVICE_MODE_LOW       		0
 
-#define FRAME_WORK_MODE_NORMAL		0
-#define FRAME_WORK_MODE_SLIDESHOW	1
-#define FRAME_WORK_MODE_DAILY_UPDATE	2
-#define FRAME_WORK_MODE_MAX			FRAME_WORK_MODE_DAILY_UPDATE
-#define WIFI_COMPOSITE_WORK_MODE_MAX	0x0F
-
 #define DEVICE_OP_COMMON  			0
 #define DEVICE_OP_COMMON_PRESAVE  	1
 #define DEVICE_OP_PRESAVE    		2
 
-// 上次刷屏类型标志（用于flash存储�?
-#define LAST_REFRESH_TYPE_COMMON	0x00  // 普通刷�?
+// 上次刷屏类型标志（用于flash存储）
+#define LAST_REFRESH_TYPE_COMMON	0x00  // 普通刷屏
 #define LAST_REFRESH_TYPE_PRESAVE	0x01  // 预存刷屏
 #define LAST_REFRESH_TYPE_NONE		0xFF  // 未初始化
 
-// 定时刷屏功能启用标志（用于flash存储�?
+// 定时刷屏功能启用标志（用于flash存储）
 #define REFRESH_TIMER_DISABLED		0x00  // 功能关闭
-#define REFRESH_TIMER_ENABLED		0x01  // 功能开�?
+#define REFRESH_TIMER_ENABLED		0x01  // 功能开启
 
 // flags字节的位定义（用于压缩存储）
-#define FLAGS_BIT_TIMER_ENABLED		0     // bit 0: 定时器启用标�?
-#define FLAGS_BIT_TYPE_OFFSET		1     // bit 1-2: 刷屏类型(�?�?
-#define FLAGS_BIT_SCREEN_MODE_OFFSET 3    // bit 3-4: 屏幕模式(�?�?
+#define FLAGS_BIT_TIMER_ENABLED		0     // bit 0: 定时器启用标志
+#define FLAGS_BIT_TYPE_OFFSET		1     // bit 1-2: 刷屏类型(占2位)
+#define FLAGS_BIT_SCREEN_MODE_OFFSET 3    // bit 3-4: 屏幕模式(占2位)
 #define FLAGS_BIT_ZIP				5     // bit 5: 是否压缩
-#define FLAGS_BIT_SCREEN_CLEARED	6     // bit 6: 是否已清屏标志（0=需要清�?默认�?=已清屏）
+#define FLAGS_BIT_SCREEN_CLEARED	6     // bit 6: 是否已清屏标志（0=需要清屏/默认，1=已清屏）
 
 #define FLAGS_MASK_TIMER_ENABLED	(1 << FLAGS_BIT_TIMER_ENABLED)           // 0x01
 #define FLAGS_MASK_TYPE				(0x03 << FLAGS_BIT_TYPE_OFFSET)          // 0x06
@@ -136,17 +110,17 @@ extern "C" {
 #define FLAGS_MASK_ZIP				(1 << FLAGS_BIT_ZIP)                     // 0x20
 #define FLAGS_MASK_SCREEN_CLEARED	(1 << FLAGS_BIT_SCREEN_CLEARED)          // 0x40
 
-// 清屏状态定�?
+// 清屏状态定义
 #define SCREEN_NOT_CLEARED			0x00  // 未清屏（默认值，复位后）
-#define SCREEN_ALREADY_CLEARED		0x01  // 已清�?
+#define SCREEN_ALREADY_CLEARED		0x01  // 已清屏
 
-// 屏幕显示模式�?位，用于flash存储和恢复）
-#define SCREEN_MODE_SINGLE_A		0  // 单刷A�?
-#define SCREEN_MODE_SINGLE_B		1  // 单刷B�?
+// 屏幕显示模式（2位，用于flash存储和恢复）
+#define SCREEN_MODE_SINGLE_A		0  // 单刷A面
+#define SCREEN_MODE_SINGLE_B		1  // 单刷B面
 #define SCREEN_MODE_AB_SAME			2  // AB同显（相同内容）
 #define SCREEN_MODE_AB_DIFF			3  // AB异显（不同内容）
 
-// saveLastRefreshInfo �?保持原�?标志
+// saveLastRefreshInfo 的"保持原值"标志
 #define SAVE_KEEP_U8				0xFF
 #define SAVE_KEEP_U16				0xFFFF  // 保留定义，但不再使用（小时数已写死）
 
@@ -217,7 +191,7 @@ extern "C" {
 #define SCREEN_272X792_COLOR_4_MAX			13600*2
 #define SCREEN_960X640_COLOR_3_MAX			153600*2
 #define SCREEN_1360X480_COLOR_3_MAX			40800*2
-#define SCREEN_1360X480_COLOR_4_MAX			163200/2   //4色主副屏需要分主副�?
+#define SCREEN_1360X480_COLOR_4_MAX			163200/2   //4色主副屏需要分主副屏
 #define SCREEN_1280X600_COLOR_4_MAX			192000/2
 #define SCREEN_1024X600_COLOR_6_MAX			153600
 
@@ -306,7 +280,7 @@ extern struct _BOE_DEVICE_STATUS global_DEVICE_STATUS;
 extern struct _BOE_EXTERN_FLASH_INFO global_EXTERN_FLASH_INFO;
 
 // 定时刷屏相关变量
-extern uint32_t global_refresh_timer_interval; // 定时刷屏的时间间�?系统tick�?tick=625us)
+extern uint32_t global_refresh_timer_interval; // 定时刷屏的时间间隔(系统tick，1tick=625us)
 
 /*
  * BoeInfo_AddService- Initializes the Device Information service by registering
@@ -320,21 +294,17 @@ extern void Save_EEPROM_Flag(uint8_t* new_flag,UINT16 pos,UINT16 Len);
 extern void Get_EEPROM_Flag(uint8_t* new_flag,UINT16 pos,UINT16 Len);
 extern void saveCommonImageZip(uint8_t index, uint8_t zip);
 extern uint8_t getCommonImageZip(uint8_t index);
-// 首次开机初始化标志的读写接�?
+// 首次开机初始化标志的读写接口
 extern void setFirstBootFlag(uint8_t value);
 extern uint8_t getFirstBootFlag(void);
-// User ID的读写接�?
+// User ID的读写接口
 extern void setUserId(uint32_t user_id);
 extern uint32_t getUserId(void);
-extern void clearUserId(void);  // 清除user_id（写�?�?
-extern void setWifiProvisionStatus(uint8_t status);
-extern uint8_t getWifiProvisionStatus(void);
-extern void setWifiCompositeVersion(uint8_t ble_ver, uint16_t wifi_ver);
-extern void getWifiCompositeVersion(uint8_t version[WIFI_COMPOSITE_VERSION_LEN]);
-// 说明�?
-// - 普通刷�?预存刷图结束时：只更�?type/group/room/screen_mode/zip，enabled/screen_cleared 使用 SAVE_KEEP_U8 保持不变
-// - TIME 命令：只更新 enabled，其余字段使�?SAVE_KEEP_U8 保持不变
-// 注意：小时数已写死在代码中（REFRESH_TIMER_FIXED_HOURS），不再通过参数传�?
+extern void clearUserId(void);  // 清除user_id（写全0）
+// 说明：
+// - 普通刷图/预存刷图结束时：只更新 type/group/room/screen_mode/zip，enabled/screen_cleared 使用 SAVE_KEEP_U8 保持不变
+// - TIME 命令：只更新 enabled，其余字段使用 SAVE_KEEP_U8 保持不变
+// 注意：小时数已写死在代码中（REFRESH_TIMER_FIXED_HOURS），不再通过参数传递
 extern void saveLastRefreshInfo(uint8_t type, uint8_t group, uint8_t room, uint8_t screen_mode, uint8_t zip, uint8_t enabled, uint8_t screen_cleared);
 extern void getRefreshTimerStatus(uint8_t* enabled, uint8_t* screen_cleared);  // 只读取开关状态和清屏标志，不修改全局变量（用于开机检查）
 extern void getLastRefreshInfo(uint8_t* type, uint8_t* group, uint8_t* room, uint8_t* enabled, uint8_t* screen_mode);
@@ -345,9 +315,6 @@ extern void P_scanModeRspData(UINT8 work_status);
 extern void P_scanAdcRspData(UINT8 work_status);
 extern void P_scanPreNumRspData(UINT8 pre_num);
 extern void P_scanIsChargeRspData();
-extern void P_scanWifiProvisionRspData(uint8_t status);
-extern void P_scanWifiCompositeRspData(uint8_t status, uint8_t mode);
-extern void P_scanWifiVersionRspData(uint8_t version[WIFI_COMPOSITE_VERSION_LEN]);
 extern int getPicSaveIndex(unsigned char *groupinfo, int group, int room);
 extern int getPicCurIndex(unsigned char *groupinfo, int group, int room);
 extern int getPicSaveNum();
@@ -358,13 +325,9 @@ extern int refreshScreenColor(unsigned char *data, unsigned int len, unsigned ch
 extern void Rec_OTA_Data(uint8 *pValue, uint16 len);
 extern void cleanDisplayColor(int color, UINT8 isNeedStandy);
 extern UINT32 getRefreshScreenTime();
-extern char is_Busy(void);
 extern void  Start_advertising(void);
 //extern void  Ble_CRC_Error(UINT8 chR);
 extern void  Stop_advertising(void);
-extern void  Peripheral_NfcPauseAdvertising(void);
-extern void  Peripheral_NfcResumeAdvertising(void);
-extern uint8_t Peripheral_IsBleConnected(void);
 extern void  Stop_Central_Scan(void);
 extern void  Start_Central_Scan(void);
 extern UINT8 ADC(void);

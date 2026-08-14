@@ -73,19 +73,19 @@ uint8_t write_key_to_epprom(uint8_t *data, uint8_t isForceWrite)
 	//Print_I3("write_key_to_epprom data :\n");
 	//hex_dump(data, KEY_Len);
 	if(isForceWrite == Is_Yes){
-		Print_I3("force need write key!\n");
+		Print_I3("key force\n");
 		Save_Key_EEPROM_Flag(data,KEY_Position,KEY_Len);
 		Save_Key_EEPROM_Flag(key_burn,KEY_BURN_Position,KEY_BURN_Len);
 
 		return Is_Yes;
 	}else{
 		if(global_DEVICE_STATUS.fisBurnId != Is_Yes){
-			Print_I3("need write key!\n");
+			Print_I3("key wr\n");
 			Save_Key_EEPROM_Flag(data,KEY_Position,KEY_Len);
 			Save_Key_EEPROM_Flag(key_burn,KEY_BURN_Position,KEY_BURN_Len);
 			return Is_Yes;
 		}else{
-			Print_I3("no need write key!\n");
+			Print_I3("key no\n");
 			return Is_No;
 		}
 	}
@@ -105,10 +105,10 @@ uint8_t is_illegal_device(unsigned char *mac, int len)
     unsigned int ciphertext_len;
     unsigned char *ciphertext = encrypt_ecb(mac, len, &ciphertext_len, key_bak);
     if (!ciphertext) {
-        Print_I3("encrypt_ecb failure\n");
+        Print_I3("enc er\n");
         return -1;
     }
-	Print_I3("encrypt_ecb: ciphertext_len:%d",ciphertext_len);
+	Print_I3("enc len:%d",ciphertext_len);
     hex_dump(ciphertext, ciphertext_len);
 
 	if(is_need_write_key() == Is_Yes){
@@ -133,11 +133,11 @@ uint8_t is_illegal_device(unsigned char *mac, int len)
 	
     unsigned char *decrypted = decrypt_ecb(key_read, KEY_Len, &decrypted_len, key_bak);
     if (!decrypted) {
-        Print_I3("decrypt_ecb failure\n");
+        Print_I3("dec er\n");
        	free(decrypted);
        	return Is_No;
     }
-	//Print_I3("decrypt_ecb: decrypted_len:%d",decrypted_len);
+	//Print_I3("dec len:%d",decrypted_len);
     //hex_dump(decrypted, decrypted_len);
 
 	unsigned char mac_temp[MAC_Len];
@@ -147,12 +147,12 @@ uint8_t is_illegal_device(unsigned char *mac, int len)
 	//hex_dump(mac, 6);
  	// 检查解密结果是否与明文一致
     if (memcmp(mac_temp, decrypted, MAC_Len) == 0) {
-        Print_I3("check key success\n");
+        Print_I3("key ok\n");
 		global_DEVICE_STATUS.fisVaildDevice =Is_Yes;
 		free(decrypted);
 		return Is_Yes;
     } else {
-        Print_I3("check key failure\n");
+        Print_I3("key er\n");
 #ifdef EPD_DISPLAY_TEST_ENABLE
 		global_DEVICE_STATUS.fisVaildDevice =Is_Yes;
 		free(decrypted);
@@ -170,9 +170,9 @@ uint8_t is_illegal_device(unsigned char *mac, int len)
 
 	Get_Key_EEPROM_Flag(key_bak,KEY_Position,KEY_Len);
 	Get_Key_EEPROM_Flag(key_burn,KEY_BURN_Position,KEY_BURN_Len);
-	Print_I3("printf key :\n");
+	Print_I3("key:\n");
 	hex_dump(key_bak, KEY_Len);
-	Print_I3("printf key burn:\n");
+	Print_I3("burn:\n");
 	hex_dump(key_burn, KEY_BURN_Len);
 	/*unsigned char key_bak1[KEY_Len]={0x06,0x06,0x06,0x06,0x06,0x06,0x06,0x06,0x06,0x06,0x06,0x06,0x06,0x06,0x06,0x06};
 	unsigned char key_burn1[KEY_BURN_Len]={0x06};
@@ -180,19 +180,19 @@ uint8_t is_illegal_device(unsigned char *mac, int len)
 	Save_Key_EEPROM_Flag(key_burn1,KEY_BURN_Position,KEY_BURN_Len);
 	Get_Key_EEPROM_Flag(key_bak,KEY_Position,KEY_Len);
 	Get_Key_EEPROM_Flag(key_burn,KEY_BURN_Position,KEY_BURN_Len);
-	Print_I3("printf key11 :\n");
+	Print_I3("key1:\n");
 	hex_dump(key_bak, KEY_Len);
-	Print_I3("printf key burn11:\n");
+	Print_I3("burn1:\n");
 	hex_dump(key_burn, KEY_BURN_Len);*/
 	
 	unsigned char mac_bak[MAC_Len];
 	Get_EEPROM_Flag(mac_bak,MAC_Position,MAC_Len);
-	Print_I3("printf mac_bak11 :\n");
+	Print_I3("mac1:\n");
 	hex_dump(mac_bak, MAC_Len);
 	/*unsigned char mac_bak1[MAC_Len]={0xaa,0xbb,0xcc,0x11,0x22,0x33};
 	Save_EEPROM_Flag(mac_bak1,MAC_Position,MAC_Len);
 	Get_EEPROM_Flag(mac_bak,MAC_Position,MAC_Len);
-	Print_I3("printf mac_bak22 :\n");
+	Print_I3("mac2:\n");
 	hex_dump(mac_bak, MAC_Len);*/
 #endif
 }
@@ -219,21 +219,21 @@ void testAesKey()
 	unsigned int ciphertext_len;
     unsigned char *ciphertext = encrypt_ecb(data, 14, &ciphertext_len, aes_key);
     if (!ciphertext) {
-        Print_I3("encrypt_ecb failure\n");
+        Print_I3("enc er\n");
 		free(ciphertext);
         return;
     }
-	Print_I3("encrypt_ecb: ciphertext_len:%d",ciphertext_len);
+	Print_I3("enc len:%d",ciphertext_len);
     hex_dump(ciphertext, ciphertext_len);
 
 	//unsigned char *decrypted = decrypt_ecb(encry_data, 16, &decrypted_len, aes_key);
 	unsigned char *decrypted = decrypt_ecb(ciphertext, ciphertext_len, &decrypted_len, aes_key);
     if (!decrypted) {
-        Print_I3("decrypt_ecb failure\n");
+        Print_I3("dec er\n");
 		free(decrypted);
        	return;
     }
-	Print_I3("decrypt_ecb: decrypted_len:%d",decrypted_len);
+	Print_I3("dec len:%d",decrypted_len);
     hex_dump(decrypted, decrypted_len);	
 	free(ciphertext);
 	free(decrypted);

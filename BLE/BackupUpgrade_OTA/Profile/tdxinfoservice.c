@@ -14,8 +14,6 @@
 #include "util.h"
 #include "epd_driver.h"
 #include "ch583_secure.h"
-#include "ota.h"
-#include "uart1_wifi_passthrough.h"
 
 /*********************************************************************
  * MACROS
@@ -26,13 +24,15 @@
  */
 
 /**
- * �?5 �?ASCII(49�?26) 字符压缩�?4 字节�?uint32_t
+ * 将 5 个 ASCII(49–126) 字符压缩为 4 字节的 uint32_t
  *
- * 原理�? * - 每个字符映射�?0�?7
- * - �?5 �?78 进制�?合成为一�?32 位无符号整数
+ * 原理：
+ * - 每个字符映射到 0–77
+ * - 把 5 个"78 进制位"合成为一个 32 位无符号整数
  *
- * @param str        输入字符串，必须至少�?5 个字�? * @param out_value  输出uint32_t值的指针
- * @return 0 成功�?1 表示错误（非法字符）
+ * @param str        输入字符串，必须至少有 5 个字符
+ * @param out_value  输出uint32_t值的指针
+ * @return 0 成功，-1 表示错误（非法字符）
  */
 static int encode5To4Bytes(const char str[5], uint32_t *out_value) {
     uint32_t value = 0;
@@ -44,7 +44,8 @@ static int encode5To4Bytes(const char str[5], uint32_t *out_value) {
             return -1; // 非法字符
         }
 
-        // 相当�?78 进制左移一�?        value = value * 78 + (uint32_t)(c - 49);
+        // 相当于 78 进制左移一位
+        value = value * 78 + (uint32_t)(c - 49);
     }
 
     // 输出最终的32位值（大端序）
@@ -61,225 +62,173 @@ static int encode5To4Bytes(const char str[5], uint32_t *out_value) {
  * @return 0 验证通过或跳过验证，-1 验证失败
  */
 static int verifyUserId(uint32_t received_user_id) {
-#ifdef DISABLE_USER_LOCK_FEATURE
-    (void)received_user_id;
-    return 0;
-#else
+    // 检查flash中是否有user_id（非全0/全F则有）
     uint32_t stored_user_id = getUserId();
     if(stored_user_id == 0x00000000 || stored_user_id == 0xFFFFFFFF){
+        // flash中无user_id，跳过验证
         return 0;
     }
-
+    
+    // flash中有user_id，需要验证
     if(received_user_id != stored_user_id){
         PRINT("User_id mismatch! (Recv:0x%08X != Stored:0x%08X)\n", received_user_id, stored_user_id);
         return -1;
     }
-
+    
     return 0;
-#endif
 }
 
-static int isOtaIapFrame(uint8_t *data, uint16_t len)
-{
-	if(data == NULL || len == 0)
-	{
-		return 0;
-	}
-
-	switch(data[0])
-	{
-		case CMD_IAP_PROM:
-		case CMD_IAP_VERIFY:
-			return (len >= 4 && data[1] > 0 && data[1] <= (len - 4) && data[1] <= (IAP_LEN - 4)) ? 1 : 0;
-		case CMD_IAP_ERASE:
-			return (len >= 6 && data[1] == 4) ? 1 : 0;
-		case CMD_IAP_END:
-			return (len >= 4 && data[1] <= (len - 2)) ? 1 : 0;
-		case CMD_IAP_INFO:
-			return (len >= 2 && data[1] <= (len - 2)) ? 1 : 0;
-		case CMD_IAP_PROM_END:
-		case CMD_IAP_VERIFY_END:
-			return (len <= 20) ? 1 : 0;
-		default:
-			return 0;
-	}
-}
-
-static uint8_t s_tdx_ota_guarded = 0;
-static uint16_t s_tdx_ota_program_log_count = 0;
-static uint16_t s_tdx_ota_verify_log_count = 0;
-
-static void TdxInfo_PrepareOtaWrite(uint8_t *data, uint16_t len, const char *source)
-{
-	uint8_t cmd;
-	uint8_t force_guard;
-
-	if(data == NULL || len == 0)
-	{
-		return;
-	}
-
-	cmd = data[0];
-	force_guard = (cmd == CMD_IAP_INFO || cmd == CMD_IAP_ERASE) ? 1 : 0;
-	global_DEVICE_STATUS.fisOtaed = 1;
-
-#ifdef ENABLE_WIFI_UART1_PASSTHROUGH
-	if(force_guard || s_tdx_ota_guarded != 1 ||
-	   WifiPassthrough_IsWifiAwake() == Is_Yes ||
-	   WifiPassthrough_IsWakePending() == Is_Yes)
-	{
-		WifiPassthrough_EnterOtaGuard();
-		s_tdx_ota_guarded = 1;
-	}
-#else
-	if(force_guard || s_tdx_ota_guarded != 1)
-	{
-		s_tdx_ota_guarded = 1;
-	}
-#endif
-
-	switch(cmd)
-	{
-		case CMD_IAP_INFO:
-		case CMD_IAP_ERASE:
-			s_tdx_ota_program_log_count = 0;
-			s_tdx_ota_verify_log_count = 0;
-			PRINT("[OTA] %s len=%d cmd=0x%02x\r\n", source, len, cmd);
-			break;
-		case CMD_IAP_PROM:
-			if(s_tdx_ota_program_log_count < 3)
-			{
-				PRINT("[OTA] %s program len=%d\r\n", source, len);
-			}
-			s_tdx_ota_program_log_count++;
-			break;
-		case CMD_IAP_VERIFY:
-			if(s_tdx_ota_verify_log_count < 3)
-			{
-				PRINT("[OTA] %s verify len=%d\r\n", source, len);
-			}
-			s_tdx_ota_verify_log_count++;
-			break;
-		case CMD_IAP_END:
-		case CMD_IAP_PROM_END:
-		case CMD_IAP_VERIFY_END:
-			PRINT("[OTA] %s len=%d cmd=0x%02x\r\n", source, len, cmd);
-			break;
-		default:
-			break;
-	}
-}
-
+/**
+ * 验证数据中的user_id是否与flash中存储的匹配
+ * 用于广播场景，user_id在%后面的5个ASCII字符
+ * 兼容旧广播指令：如果没有%，默认user_id为0
+ *
+ * @param data              数据缓冲区
+ * @param dataLen           数据长度
+ * @param search_start_pos  开始搜索%的位置（通常是前缀长度）
+ * @return 0 验证通过或跳过验证，-1 验证失败
+ */
 static int verifyUserIdInData(UINT8 *data, UINT32 dataLen, int search_start_pos) {
+    // 查找 '%' 的位置
     int percent_pos = -1;
-    uint32_t received_user_id = 0x00000000;
-
     for(int i = search_start_pos; i < dataLen; i++){
         if(data[i] == '%'){
             percent_pos = i;
             break;
         }
     }
-
+    
+    uint32_t received_user_id = 0x00000000;  // 默认为0（兼容旧指令）
+    
+    // 如果找到%，提取并编码user_id
     if(percent_pos >= 0){
+        // 验证%后面至少有5个字符
         if((dataLen - percent_pos - 1) < 5){
             PRINT("Broadcast format error: insufficient user_id length\n");
             return -1;
         }
-
+        
+        // 提取并编码user_id（%后面的5个字符）
         char user_id_str[5];
         memcpy(user_id_str, &data[percent_pos + 1], 5);
+        
+        // 编码并转换为uint32_t
         if(encode5To4Bytes(user_id_str, &received_user_id) != 0){
             PRINT("Broadcast format error: invalid user_id characters\n");
             return -1;
         }
     }
-
+    
+    // 调用核心验证函数
     return verifyUserId(received_user_id);
 }
+
 /**
  * 处理user_id验证和lock标志
  *
  * @param received_user_id  从蓝牙接收到的user_id
- * @param lock              lock标志�?=锁定�?=不锁定）
- * @return 0 成功继续�?1 拒绝操作
+ * @param lock              lock标志（1=锁定，0=不锁定）
+ * @return 0 成功继续，-1 拒绝操作
  */
 static int processUserIdAndLock(uint32_t received_user_id, uint8_t lock) {
-#ifdef DISABLE_USER_LOCK_FEATURE
-    (void)received_user_id;
-    (void)lock;
-    return 0;
-#else
+    // 从flash读取当前存储的user_id
     uint32_t stored_user_id = getUserId();
-
+    
+    // 判断flash中的user_id是否为全0或全F（未初始化状态）
     if(stored_user_id == 0x00000000 || stored_user_id == 0xFFFFFFFF){
+        // 情况1：flash中user_id未初始化（全0或全F）
         if(lock == 1){
+            // lock=1：将接收到的user_id存入flash
             setUserId(received_user_id);
             PRINT("User ID saved: 0x%08X\r\n", received_user_id);
         }
-        return 0;
+        return 0;  // 继续刷图流程
     }
-
+    
+    // 情况2：flash中user_id已有值（非全0，非全F）
+    // 先比对user_id是否一致
     if(received_user_id != stored_user_id){
-        PRINT("User ID mismatch! (Recv:0x%08X != Stored:0x%08X) Rejected.\r\n", received_user_id, stored_user_id);
+        // user_id不一致，拒绝操作
+        PRINT("User ID mismatch! (Recv:0x%08X != Stored:0x%08X) Rejected.\r\n", 
+              received_user_id, stored_user_id);
         return -1;
     }
-
+    
+    // user_id一致，继续判断lock
     if(lock == 0){
+        // lock=0：擦除flash中的user_id（写全0）
         clearUserId();
         PRINT("User ID cleared\r\n");
     }
-
-    return 0;
-#endif
+    
+    return 0;  // 继续刷图流程
 }
 
-static int verifyBroadcastAndParseParams(UINT8 *adData, UINT32 dataLen,
-                                         uint8_t *out_room, uint8_t *out_group,
+/**
+ * 验证广播消息的user_id并解析参数
+ *
+ * @param adData             广播数据
+ * @param dataLen            广播数据长度
+ * @param out_room           输出room编号
+ * @param out_group          输出group编号
+ * @param out_screen_mode    输出屏幕模式字符（仅用于G命令）
+ * @param out_param_count    输出参数个数（0/1/2/3）
+ * @return 0 成功，-1 失败（格式错误或user_id不匹配）
+ */
+static int verifyBroadcastAndParseParams(UINT8 *adData, UINT32 dataLen, 
+                                         uint8_t *out_room, uint8_t *out_group, 
                                          uint8_t *out_screen_mode, int *out_param_count) {
-    int percent_pos = -1;
-
-    if(verifyUserIdInData(adData, dataLen, 4) != 0){
-        return -1;
-    }
-
-    for(int i = 4; i < dataLen; i++){
-        if(adData[i] == '%'){
-            percent_pos = i;
-            break;
-        }
-    }
-    if(percent_pos == -1){
-        percent_pos = dataLen;
-    }
-
-    int param_count = percent_pos - 4;
-    *out_param_count = param_count;
-    *out_room = 0;
-    *out_group = 0;
-    *out_screen_mode = 0;
-
-    if(param_count == 0){
-        PRINT("No room/group specified\n");
-    }else if(param_count == 1){
-        *out_room = adData[4] - 33;
-        PRINT("Room only: %d\n", *out_room);
-    }else if(param_count == 2){
-        *out_room = adData[4] - 33;
-        *out_group = adData[5] - 33;
-        PRINT("Room: %d, Group: %d\n", *out_room, *out_group);
-    }else if(param_count == 3){
-        *out_room = adData[4] - 33;
-        *out_group = adData[5] - 33;
-        *out_screen_mode = adData[6];
-        PRINT("Room: %d, Group: %d, Screen mode: %c\n", *out_room, *out_group, *out_screen_mode);
-    }else{
-        PRINT("Invalid param format (too many chars: %d)\n", param_count);
-        return -1;
-    }
-
-    return 0;
+	// 验证user_id（广播格式：前4字节是命令前缀，从第4字节开始搜索%）
+	if(verifyUserIdInData(adData, dataLen, 4) != 0){
+		return -1;
+	}
+	
+	// 查找 '%' 的位置（用于分隔room/group和user_id）
+	int percent_pos = -1;
+	for(int i = 4; i < dataLen; i++){
+		if(adData[i] == '%'){
+			percent_pos = i;
+			break;
+		}
+	}
+	if(percent_pos == -1)
+	{
+		percent_pos = dataLen;
+	}
+	// 解析room、group和屏幕模式（#和%之间的字符）
+	int param_count = percent_pos - 4;  // #后面到%之前的字符数
+	*out_param_count = param_count;
+	*out_room = 0;
+	*out_group = 0;
+	*out_screen_mode = 0;
+	
+	if(param_count == 0){
+		// 没有room/group参数（格式：D@!#%xxxxx）
+		PRINT("No room/group specified\n");
+	}else if(param_count == 1){
+		// 只有room（1位数字，格式：D@!#1%xxxxx）
+		*out_room = adData[4] - 33;
+		PRINT("Room only: %d\n", *out_room);
+	}else if(param_count == 2){
+		// room + group（2位数字，格式：D@!#12%xxxxx）
+		*out_room = adData[4] - 33;
+		*out_group = adData[5] - 33;
+		PRINT("Room: %d, Group: %d\n", *out_room, *out_group);
+	}else if(param_count == 3){
+		// room + group + 屏幕模式（3位，格式：G@!#11C%xxxxx，用于G命令）
+		//兼容旧协议的C指令，C@!#111清除第一会议室
+		*out_room = adData[4] - 33;
+		*out_group = adData[5] - 33;
+		*out_screen_mode = adData[6];  // 第三位是屏幕模式字符（'a', 'b', 'C'等）
+		PRINT("Room: %d, Group: %d, Screen mode: %c\n", *out_room, *out_group, *out_screen_mode);
+	}else{
+		PRINT("Invalid param format (too many chars: %d)\n", param_count);
+		return -1;
+	}
+	
+	return 0;
 }
+
 /*********************************************************************
  * CONSTANTS
  */
@@ -369,8 +318,6 @@ int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen);
 void notitySendEnd(uint16 connHandle, uint8 status, uint8 type, uint8_t *out_buf, uint16_t *out_len);
 void notitySendFunc(uint16 connHandle, uint8_t *out_buf, uint16_t *out_len);
 void notifyDeviceBound(uint16 connHandle);
-#endif
-
 void TdxInfo_ClearDisplayBusyProtect(void);
 
 /*********************************************************************
@@ -428,11 +375,10 @@ static uint8_t tdxInfoSendPreSaveProps = GATT_PROP_NOTIFY | GATT_PROP_WRITE | GA
 //13 clean 
 static uint8_t tdxInfoSendCleanProps = GATT_PROP_WRITE;
 
-//14 switch
-static uint8_t tdxInfoSwitchModeProps = GATT_PROP_NOTIFY | GATT_PROP_READ | GATT_PROP_WRITE | GATT_PROP_WRITE_NO_RSP;
+//14 switch 
+static uint8_t tdxInfoSwitchModeProps = GATT_PROP_READ | GATT_PROP_WRITE | GATT_PROP_WRITE_NO_RSP;
 
 static gattCharCfg_t tdxInfoPreSave_cccd[4];
-static gattCharCfg_t tdxInfoSwitchMode_cccd[4];
 
 /*********************************************************************
  * Profile Attributes - Table
@@ -754,12 +700,6 @@ static gattAttribute_t tdxInfoAttrTbl[] = {
 		0,
 		NULL
 	},
-	{ //index33
-		{ ATT_BT_UUID_SIZE, clientCharCfgUUID },
-		GATT_PERMIT_READ|GATT_PERMIT_WRITE,
-		0,
-		(uint8*)tdxInfoSwitchMode_cccd
-	},
 #endif
 };
 
@@ -806,7 +746,6 @@ static void TdxInfo_HandleConnStatusCB ( uint16 connHandle, uint8 changeType )
             GATTServApp_InitCharCfg( INVALID_CONNHANDLE, tdxInfoBindIv_cccd );
 			GATTServApp_InitCharCfg( INVALID_CONNHANDLE, tdxInfoPreSave_cccd );
 			GATTServApp_InitCharCfg( INVALID_CONNHANDLE, tdxInfoGet_cccd );
-			GATTServApp_InitCharCfg( INVALID_CONNHANDLE, tdxInfoSwitchMode_cccd );
         }
     }
 }
@@ -827,7 +766,6 @@ bStatus_t CustomerInfo_AddService(void)
     GATTServApp_InitCharCfg( INVALID_CONNHANDLE, tdxInfoBindIv_cccd );
 	GATTServApp_InitCharCfg( INVALID_CONNHANDLE, tdxInfoPreSave_cccd );
 	GATTServApp_InitCharCfg( INVALID_CONNHANDLE, tdxInfoGet_cccd );
-	GATTServApp_InitCharCfg( INVALID_CONNHANDLE, tdxInfoSwitchMode_cccd );
 
     // Register with Link DB to receive link status change callback
     linkDB_Register( TdxInfo_HandleConnStatusCB  );
@@ -867,7 +805,7 @@ static bStatus_t tdxInfo_ReadAttrCB(uint16_t connHandle, gattAttribute_t *pAttr,
 			//PRINT("ReadAttrCB TDXINFO_NOTITY_SEND_END 0000000000000000000\r\n");
 			uint8_t send_status = (global_DEVICE_STATUS.fDataSendSuccess == Is_Yes) ? 0x01 : 0x00;
 
-			uint8_t notify_buf[6];  // ���������㹻�������ַ�֧����󳤶�?��
+			uint8_t notify_buf[6];  // ���������㹻�������ַ�֧����󳤶�6��
     		uint16_t notify_len = 0;  // ��ʼ�����ȱ���
 			notitySendEnd(connHandle, send_status, global_TDX_AES_DATA_INFO.fScreenType, notify_buf, &notify_len);
 
@@ -950,9 +888,10 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 
 	global_DEVICE_STATUS.fisHaveData= Is_Yes;
     uint16_t gatt_handle = pAttr->handle - tdxInfoAttrTbl[0].handle;
+    //PRINT("write gatt handle:%08x\r\n",gatt_handle);
 	if(global_DEVICE_STATUS.fisVaildDevice == Is_No){
 		if((gatt_handle == TDXINFO_SEND_PHONE_ID) || (gatt_handle == TDXINFO_SEND_AES_IV)
-			||((gatt_handle == TDXINFO_SEND_DATA) && !isOtaIapFrame(pValue, len)) || (gatt_handle == TDXINFO_NOTITY_SEND_END)
+			||(gatt_handle == TDXINFO_SEND_DATA) || (gatt_handle == TDXINFO_NOTITY_SEND_END) || (gatt_handle == TDXINFO_OTA_INFO)
 			|| (gatt_handle == TDXINFO_SEND_PRE_SAVE) || (gatt_handle == TDXINFO_SEND_CLEAN)){
 			//PRINT("invaild device cannot use handle:%08x\r\n",gatt_handle);
 			return ( ATT_ERR_INSUFFICIENT_AUTHOR );
@@ -962,7 +901,6 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 		case TDXINFO_GET_DATA:
         case TDXINFO_NOTITY_SEND_RESULT_INFO:
 		case TDXINFO_NOTITY_SAVE_STATUS:
-		case TDXINFO_SWITCH_MODE + 1:
         case 14: {//19
 				//PRINT("WriteAttrCB TDXINFO_GET_DATA TDXINFO_NOTITY_ERROR_INFO TDXINFO_NOTITY_SEND_RESULT_INFO TDXINFO_NOTITY_SAVE_STATUS connHandle=%x\r\n",connHandle);	
 				//hex_dump(pValue, len);
@@ -984,16 +922,6 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 			break;
 		case TDXINFO_SEND_DATA:
 			{
-				if(isOtaIapFrame(pValue, len))
-				{
-					TdxInfo_PrepareOtaWrite(pValue, len, "TDXINFO_SEND_DATA");
-					Rec_OTA_Data(pValue, len);
-					return SUCCESS;
-				}
-#ifdef ENABLE_WIFI_UART1_PASSTHROUGH
-				WifiPassthrough_BleWrite(pValue, len);
-				return SUCCESS;
-#endif
 				//Print_I3("decrypt_ecb data:\n");
 	   			//hex_dump(pValue, len);
 
@@ -1062,15 +990,17 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 						global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_AB;
 					global_TDX_AES_DATA_INFO.fPackageNum = (decrypted[2] << 24) | (decrypted[3] << 16) | (decrypted[4] << 8) | decrypted[5];
 					
+					// 处理user_id和lock标志（decrypted[6-9]=user_id, decrypted[14]=lock）
 					uint32_t received_user_id = (decrypted[6] << 24) | (decrypted[7] << 16) | (decrypted[8] << 8) | decrypted[9];
 					uint8_t user_id_lock = decrypted[14];
 					global_TDX_AES_DATA_INFO.fUserId = received_user_id;
 					
 					if(processUserIdAndLock(received_user_id, user_id_lock) != 0){
 						// user_id验证失败，设备已被其他用户绑定，通知前端
-						u8IsFirstPackage = TDX_DATA_FIRST_COLOR;//第二个包就不进来�?						notifyDeviceBound(connHandle);
+						u8IsFirstPackage = TDX_DATA_FIRST_COLOR;//第二个包就不进来了
+						notifyDeviceBound(connHandle);
 						free(decrypted);
-						return ( SUCCESS );  // 返回成功，避免前端重试，通过notify告知真实状�?					}
+						return ( SUCCESS );  // 返回成功，避免前端重试，通过notify告知真实状态
 					}
 					
 					global_TDX_AES_DATA_INFO.fIsSecret = decrypted[10];
@@ -1099,14 +1029,12 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 			//tmos_set_event(main_task_ID,EVENT_Low_Power);
 			break;
 		case TDXINFO_OTA_INFO:
-			TdxInfo_PrepareOtaWrite(pValue, len, "TDXINFO_OTA_INFO");
+			global_DEVICE_STATUS.fisOtaed = 1;
+			//PRINT("WriteAttrCB TDXINFO_OTA_INFO\r\n");
 			//hex_dump(pValue, len);
 			Rec_OTA_Data(pValue,len);
 			break;
 		case TDXINFO_SEND_PRE_SAVE:
-#ifdef ENABLE_WIFI_UART1_PASSTHROUGH
-			return SUCCESS;
-#endif
 			global_DEVICE_STATUS.fInitDriver = Is_Yes;
 			global_TDX_AES_DATA_INFO.fOpType = OP_TYPE_SAVE_IMG_A;
 			global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR;
@@ -1137,7 +1065,8 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 					tmos_start_task(main_task_ID,EVENT_Low_Power ,500);
 				}
 				else{
-					// 预存刷屏成功，标记成功（在EVENT_Low_Power统一保存�?					global_DEVICE_STATUS.fDataSendSuccess = Is_Yes;
+					// 预存刷屏成功，标记成功（在EVENT_Low_Power统一保存）
+					global_DEVICE_STATUS.fDataSendSuccess = Is_Yes;
 				}
 				mDelayuS(50);
 				DeInitFlashDriver();
@@ -1146,9 +1075,7 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 				if(len == 1){
 					PRINT("send pre clean all\r\n");
 					//global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_AB;
-			#ifndef DISABLE_EPD_IMAGE_FEATURES
-		initPicSave(SCREEN_CLEAN_ALL,0xff,0xff);
-#endif
+					initPicSave(SCREEN_CLEAN_ALL,0xff,0xff);
 				}
 				else if(len == 2){
 					PRINT("send pre clean all room:%d\r\n",pValue[1]);
@@ -1162,9 +1089,6 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 			}
 			break;
 		case TDXINFO_SEND_CLEAN:
-#ifdef ENABLE_WIFI_UART1_PASSTHROUGH
-			return SUCCESS;
-#endif
 			PRINT("send pre clean\r\n");	
 			hex_dump(pValue, len);
 			global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_AB;
@@ -1175,12 +1099,6 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 			break;
 
 		case TDXINFO_SWITCH_MODE:
-#ifdef ENABLE_WIFI_UART1_PASSTHROUGH
-			PRINT("TDXINFO_SWITCH_MODE passthrough len=%d\r\n", len);
-			hex_dump(pValue, len);
-			WifiPassthrough_BleWrite(pValue, len);
-			return SUCCESS;
-#endif
 			PRINT("WriteAttrCB TDXINFO_SWITCH_MODE len:%d pValue=%d\r\n",len,pValue[0]);
 			uint8_t modePrefix[4] = {'M', 'O', 'D', 'E'};    
 			uint8_t epdaPrefix[4] = {'E', 'P', 'D', 'A'};
@@ -1189,18 +1107,21 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 			uint8_t timePrefix[4] = {'T', 'I', 'M', 'E'};
 
 			if (memcmp(pValue, modePrefix, 4) == 0) {
-				uint32_t received_user_id = 0x00000000;
+				// 默认user_id为0（兼容旧指令）
+				uint32_t received_user_id = 0x00000000;	
 				unsigned char workmode[WORKMODE_Len] = {0x01};
 			
-				// 如果数据长度包含user_id�?=9字节），提取user_id
+				// 如果数据长度包含user_id（>=9字节），提取user_id
 				if(len >= 9){
+					// 提取user_id（pValue[5-8]，4字节，大端序）
 					received_user_id = (pValue[5] << 24) | (pValue[6] << 16) | (pValue[7] << 8) | pValue[8];
 				}
 				
 				// 验证user_id（新旧指令都需要验证）
 				if(verifyUserId(received_user_id) != 0){
 					PRINT("MODE command rejected: user_id verification failed\r\n");
-					workmode[0] = 2;
+					workmode[0] = 2; //2为设备已被绑定
+					//return ( SUCCESS );  // 返回成功，避免前端重试，通过notify告知真实状态
 				}
 				else
 				{
@@ -1209,10 +1130,6 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 					if(pValue[4] == DEVICE_MODE_LOW){
 						workmode[0] = DEVICE_MODE_LOW;
 						P_scanModeRspData(DEVICE_MODE_LOW);
-					}
-					else if(pValue[4] == FRAME_WORK_MODE_DAILY_UPDATE){
-						workmode[0] = FRAME_WORK_MODE_DAILY_UPDATE;
-						P_scanModeRspData(FRAME_WORK_MODE_DAILY_UPDATE);
 					}
 					else{
 						workmode[0] = DEVICE_MODE_HIGH;
@@ -1233,8 +1150,9 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 				uint8_t finish_data[14] = {0};
 				uint32_t received_user_id = 0x00000000;	
 				//hex_dump(pValue, len);
-				// 如果数据长度包含user_id�?=8字节），提取user_id
+				// 如果数据长度包含user_id（>=8字节），提取user_id
 				if(len >= 8){
+					// 提取user_id（pValue[5-8]，4字节，大端序）
 					received_user_id = (pValue[4] << 24) | (pValue[5] << 16) | (pValue[6] << 8) | pValue[7];
 				}
 				
@@ -1246,8 +1164,8 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 					finish_data[2] = 'D';
 					finish_data[3] = 'A';
 					finish_data[13] = 2;
+					//return ( SUCCESS );  // 返回成功，避免前端重试，通过notify告知真实状态
 				}
-					//return ( SUCCESS );  // 返回成功，避免前端重试，通过notify告知真实状�?				}
 				else
 				{
 					uint8_t mode[] = {0};
@@ -1265,16 +1183,12 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 					finish_data[9] = INK_SCREEN_CUSTOMER;
 					finish_data[10] = INK_SCREEN_CHIP;
 					finish_data[11] = INK_DEVICE_CHIP;
-#ifdef DISABLE_USER_LOCK_FEATURE
-					finish_data[12] = 0;
-#else
-					uint32_t stored_user_id = getUserId();//whether locked
+					uint32_t stored_user_id = getUserId();//是否有锁 1为上锁
 					if(stored_user_id == 0x00000000 || stored_user_id == 0xFFFFFFFF){
 						finish_data[12] = 0;
 					}else{
 						finish_data[12] = 1;
 					}
-#endif
 					finish_data[13] = 0;
 				}
 				ble_send_tdxInfo(connHandle,finish_data,14,TDXINFO_GET_DATA-1, tdxInfoGet_cccd) ;
@@ -1307,12 +1221,16 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 				//hex_dump(data_aes_key, len-3);
 			}
 		else if (memcmp(pValue, timePrefix, 4) == 0){
-			// TIME指令格式：T, I, M, E, 开关（�?个字节）
-			// �?个字�?pValue[4])：开关标志，0x00=关闭�?x01=开�?			// 注意：小时数已写死在代码中（REFRESH_TIMER_FIXED_HOURS），不再通过命令传�?			hex_dump(pValue, len);
+			// TIME指令格式：T, I, M, E, 开关（共5个字节）
+			// 第5个字节(pValue[4])：开关标志，0x00=关闭，0x01=开启
+			// 注意：小时数已写死在代码中（REFRESH_TIMER_FIXED_HOURS），不再通过命令传递
+			hex_dump(pValue, len);
 			if(len >= 5){
-				uint8_t new_enable = pValue[4]; // 获取开关标�?
+				uint8_t new_enable = pValue[4]; // 获取开关标志
+
 				PRINT("Received TIME command: enable=%d (fixed hours=%d)\r\n", new_enable, REFRESH_TIMER_FIXED_HOURS);
 
+				// 只允许 TIME 命令修改 enabled，其余字段保持flash里原值
 				if(new_enable == 0x00 || new_enable == 0x01){
 					saveLastRefreshInfo(
 						SAVE_KEEP_U8,  // type keep
@@ -1377,11 +1295,6 @@ bStatus_t ble_send_tdxInfo( uint16_t connHandle, uint8_t *data, uint16_t length,
         return result;
     }
     return bleNoResources;
-}
-
-bStatus_t TdxInfo_SendWifiDataToFrontend(uint16_t connHandle, uint8_t *data, uint16_t length)
-{
-    return ble_send_tdxInfo(connHandle, data, length, TDXINFO_SWITCH_MODE, tdxInfoSwitchMode_cccd);
 }
 
 #ifdef OLD_ADVERTDATA
@@ -1451,64 +1364,8 @@ static uint8_t advertData[] = {
     // in this peripheral
     17,                  // length of this data
     GAP_ADTYPE_128BIT_MORE, // some of the UUID's, but not all
-    0x41,0x59,0x8b,0x7b,0x99,0x74,0x07,0xa3,0xc1,0x49,0x13,0x44,0x00,0xff,0x12,0x6b,
-
-    0x06,
-    GAP_ADTYPE_MANUFACTURER_SPECIFIC,
-    0xFF,0xFF,
-    0x00,0x00,0x00
+    0x41,0x59,0x8b,0x7b,0x99,0x74,0x07,0xa3,0xc1,0x49,0x13,0x44,0x00,0xff,0x12,0x6b
 };
-#endif
-
-static uint8_t P_normalizeFrameWorkMode(uint8_t mode)
-{
-	if(mode > WIFI_COMPOSITE_WORK_MODE_MAX)
-	{
-		return FRAME_WORK_MODE_NORMAL;
-	}
-
-	return mode;
-}
-
-static uint8_t P_getValidFrameWorkMode(void)
-{
-	uint8_t mode = FRAME_WORK_MODE_NORMAL;
-
-	Get_EEPROM_Flag(&mode, WORKMODE_Position, WORKMODE_Len);
-	return P_normalizeFrameWorkMode(mode);
-}
-
-static uint8_t P_getWifiProvisionNameNibble(void)
-{
-	return (getWifiProvisionStatus() == WIFI_PROVISIONED) ? WIFI_PROVISIONED_NIBBLE : WIFI_UNPROVISIONED_NIBBLE;
-}
-
-static uint8_t P_getWifiProvisionNameNibbleByStatus(uint8_t status)
-{
-	return (status == WIFI_PROVISIONED) ? WIFI_PROVISIONED_NIBBLE : WIFI_UNPROVISIONED_NIBBLE;
-}
-
-static uint8_t P_getTdxCompositeStatusByteByMode(uint8_t mode)
-{
-	return (uint8_t)(((P_getWifiProvisionNameNibble() & 0x0F) << 4) | (P_normalizeFrameWorkMode(mode) & 0x0F));
-}
-
-static uint8_t P_getTdxCompositeStatusByteByStatus(uint8_t status, uint8_t mode)
-{
-	return (uint8_t)(((P_getWifiProvisionNameNibbleByStatus(status) & 0x0F) << 4) | (P_normalizeFrameWorkMode(mode) & 0x0F));
-}
-
-static uint8_t P_getTdxCompositeStatusByte(void)
-{
-	return P_getTdxCompositeStatusByteByMode(P_getValidFrameWorkMode());
-}
-
-#ifndef OLD_ADVERTDATA
-#define TDX_WIFI_VERSION_ADV_OFFSET    (sizeof(advertData) - WIFI_COMPOSITE_VERSION_LEN)
-static void P_setWifiVersionAdvertData(uint8_t version[WIFI_COMPOSITE_VERSION_LEN])
-{
-	memcpy(&advertData[TDX_WIFI_VERSION_ADV_OFFSET], version, WIFI_COMPOSITE_VERSION_LEN);
-}
 #endif
 
 void intBoardCastData()
@@ -1517,9 +1374,6 @@ void intBoardCastData()
 	char char1;
     char char2;
 	unsigned char bond1[2];
-#ifndef OLD_ADVERTDATA
-	uint8_t wifi_version[WIFI_COMPOSITE_VERSION_LEN];
-#endif
 	Get_EEPROM_Flag(bond1,WORKMODE_Position,WORKMODE_Len);
 	
 	//Print_I3("@@intBoardCastData mac=%x %x %x %x %x %x \n",Mac[0],Mac[1],Mac[2],Mac[3],Mac[4],Mac[5]);
@@ -1558,7 +1412,10 @@ void intBoardCastData()
 	Print_I3("Peripheral_Init %d -> '%c', '%c'\n", VER, char1, char2);
 	scanRspData[17] = char1;
 	scanRspData[18] = char2;
-	scanRspData[19] = EPD_GetBoardInfo();
+
+	scanRspData[19] = (0x20) |									// ǰ3λ�̶�010�������ƣ�����Ӧ0x20
+		((INK_DEVICE_CHIP & 0x01) << 4) |						// bit4��INK_DEVICE_CHIP��0��1����4λ��
+		(INK_SCREEN_CHIP & 0x0F);								// ��4λ��INK_SCREEN_CHIP��0~3��ȷ��������4λ��
 
 	scanRspData[20] = getAdcAndWorkMode(Is_No, bond1[0]);
 	if(global_DEVICE_STATUS.fisVaildDevice == Is_Yes){
@@ -1566,34 +1423,25 @@ void intBoardCastData()
 	}else{
 		scanRspData[21] = 'B';
 	}
-	scanRspData[22] = P_getTdxCompositeStatusByte();
-	getWifiCompositeVersion(wifi_version);
-	wifi_version[0] = (uint8_t)VER;
-	P_setWifiVersionAdvertData(wifi_version);
-#ifdef DISABLE_USER_LOCK_FEATURE
-	scanRspData[23] = '0';
-#else
-	uint32_t stored_user_id = getUserId();//whether locked
+	scanRspData[22] = 'E';
+	uint32_t stored_user_id = getUserId();//是否有锁
 	if(stored_user_id == 0x00000000 || stored_user_id == 0xFFFFFFFF){
 		scanRspData[23] = '0';
 	}else{
 		scanRspData[23] = '1';
 	}
 #endif
-#endif
 
 	gVerM = scanRspData[17];
 	gVerS = scanRspData[18];
-	gScreenType = scanRspData[3];
+	gScreenType = scanRspData[2];
 
 	Get_EEPROM_Flag(szVerInfo,VERINFO_Position,VERINFO_Len);
 	//hex_dump(szVerInfo, VERINFO_Len);
 	if((szVerInfo[0] != char1) || (szVerInfo[1] != char2)){
 		Print_I3("@@@@@@@@@@@@@@@@@ diff ver need  factory \n");
 		extern void initPicSave(int type, int room, int group);
-#ifndef DISABLE_EPD_IMAGE_FEATURES
 		initPicSave(SCREEN_CLEAN_ALL,0xff,0xff);
-#endif
 		szVerInfo[0] = char1;
 		szVerInfo[1] = char2;
 		Save_EEPROM_Flag(szVerInfo,VERINFO_Position,VERINFO_Len);	
@@ -1602,7 +1450,8 @@ void intBoardCastData()
 	// Setup the GAP Peripheral Role Profile
     {
         uint8_t  initial_advertising_enable = TRUE;                                                 //�����㲥ʹ��
-        // Set the GAP Role Parameters                                                              //����GAP�����?        GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advertising_enable);
+        // Set the GAP Role Parameters                                                              //����GAP�����
+        GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advertising_enable);
         GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);
         GAPRole_SetParameter(GAPROLE_ADVERT_DATA, sizeof(advertData), advertData);
     }
@@ -1617,7 +1466,7 @@ void  P_scanBondRspData(UINT8 bond_status)
 	else
 		scanRspData[3] = ')';
 	
-    GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);// �������?
+    GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);// �������
 #endif
 }
 
@@ -1630,8 +1479,7 @@ void  P_scanModeRspData(UINT8 work_status)
 	else
 		scanRspData[20] = '@';
 	scanRspData[20] = getAdcAndWorkMode(global_DEVICE_STATUS.fIsCharg,work_status);
-	scanRspData[22] = P_getTdxCompositeStatusByteByMode(work_status);
-    GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);// �������?}
+    GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);// �������
 }
 
 void  P_scanAdcRspData(UINT8 work_status)
@@ -1639,7 +1487,7 @@ void  P_scanAdcRspData(UINT8 work_status)
 	//printf("P_scanRspData 111 fAdcValue :%d\r\n",global_DEVICE_STATUS.fAdcValue);
 	scanRspData[16] = 33 + (global_DEVICE_STATUS.fAdcValue / 2);//pre num  start '!'
 	
-    GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);// �������?}
+    GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);// �������
 }
 
 void  P_scanPreNumRspData(UINT8 pre_num)
@@ -1648,7 +1496,7 @@ void  P_scanPreNumRspData(UINT8 pre_num)
 	printf("P_scanPreNumRspData 111 pre_num :%d\r\n",pre_num);
 	scanRspData[21] = '!' + pre_num;   //pre num  start '!'
 	
-    GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);// �������?
+    GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);// �������
 #endif
 }
 
@@ -1662,47 +1510,11 @@ void  P_scanIsChargeRspData()
     GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);
 }
 
-void P_scanWifiProvisionRspData(uint8_t status)
-{
-#ifndef OLD_ADVERTDATA
-	(void)status;
-	scanRspData[22] = P_getTdxCompositeStatusByte();
-    GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);
-#else
-	(void)status;
-#endif
-}
-
-void P_scanWifiCompositeRspData(uint8_t status, uint8_t mode)
-{
-#ifndef OLD_ADVERTDATA
-	scanRspData[22] = P_getTdxCompositeStatusByteByStatus(status, mode);
-    GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);
-#else
-	(void)status;
-	(void)mode;
-#endif
-}
-
-void P_scanWifiVersionRspData(uint8_t version[WIFI_COMPOSITE_VERSION_LEN])
-{
-#ifndef OLD_ADVERTDATA
-	P_setWifiVersionAdvertData(version);
-	GAPRole_SetParameter(GAPROLE_ADVERT_DATA, sizeof(advertData), advertData);
-#else
-	(void)version;
-#endif
-}
 static uint8_t firstAdvertisementData[BOARDCAST_Len];  // �洢�״ι㲥���ݵĻ�����
 static uint8_t firstAdvertisementLen[BOARDLEN_Len];
 
 void receiveGapBroadcastAdData(UINT8 *adData, UINT32 dataLen)
 {
-#ifdef DISABLE_EPD_IMAGE_FEATURES
-    (void)adData;
-    (void)dataLen;
-    return;
-#else
 	if((adData[0] == BROADCAST_COMMAND_PRESAVE && adData[1] == BROADCAST_PREFIX_CHAR2 && adData[2] == BROADCAST_PREFIX_CHAR3 && adData[3] == BROADCAST_PREFIX_CHAR4) || 
 		(adData[0] == BROADCAST_COMMAND_CLEAN_SCREEN && adData[1] == BROADCAST_PREFIX_CHAR2 && adData[2] == BROADCAST_PREFIX_CHAR3 && adData[3] == BROADCAST_PREFIX_CHAR4) ||
 		(adData[0] == BROADCAST_COMMAND_CLEAN_PRESAVE && adData[1] == BROADCAST_PREFIX_CHAR2 && adData[2] == BROADCAST_PREFIX_CHAR3 && adData[3] == BROADCAST_PREFIX_CHAR4)){
@@ -1730,7 +1542,8 @@ void receiveGapBroadcastAdData(UINT8 *adData, UINT32 dataLen)
 					uint8_t screen_mode_char = 0;
 					int param_count = 0;
 					
-					// 验证user_id并解析广播参�?					if(verifyBroadcastAndParseParams(adData, dataLen, &room_num, &group_num, &screen_mode_char, &param_count) != 0){
+					// 验证user_id并解析广播参数
+					if(verifyBroadcastAndParseParams(adData, dataLen, &room_num, &group_num, &screen_mode_char, &param_count) != 0){
 						// 验证失败或解析失败，直接返回
 						return;
 					}
@@ -1746,7 +1559,8 @@ void receiveGapBroadcastAdData(UINT8 *adData, UINT32 dataLen)
 							return;
 						}
 						global_DEVICE_STATUS.fBoardCastType = SCREEN_PRESAVE_OP;
-						// 解析屏幕模式（第三位字符�?						if(screen_mode_char == 'a'){
+						// 解析屏幕模式（第三位字符）
+						if(screen_mode_char == 'a'){
 							global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_A;
 						}else if(screen_mode_char == 'b'){
 							global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_B;
@@ -1761,12 +1575,15 @@ void receiveGapBroadcastAdData(UINT8 *adData, UINT32 dataLen)
 					}else if(adData[0] == BROADCAST_COMMAND_CLEAN_SCREEN){
 						// C命令：清屏（支持0/1/2位参数）
 						if(param_count == 0){
-							// 没有room/group参数，清空所有（格式：C@!#%xxxxx�?							global_DEVICE_STATUS.fBoardCastType = SCREEN_CLEAN_SCRREN_ALL;
+							// 没有room/group参数，清空所有（格式：C@!#%xxxxx）
+							global_DEVICE_STATUS.fBoardCastType = SCREEN_CLEAN_SCRREN_ALL;
 						}else if(param_count == 1){
-							// 只有room参数（格式：C@!#1%xxxxx�?							global_DEVICE_STATUS.fBoardCastType = SCREEN_CLEAN_SCRREN_ROOM;
+							// 只有room参数（格式：C@!#1%xxxxx）
+							global_DEVICE_STATUS.fBoardCastType = SCREEN_CLEAN_SCRREN_ROOM;
 							global_DEVICE_STATUS.fBoardCastRoom = room_num;
 						}else if(param_count == 2 || param_count == 3){//3是兼容旧协议
-							// 有room和group参数（格式：C@!#12%xxxxx�?							global_DEVICE_STATUS.fBoardCastType = SCREEN_CLEAN_SCRREN_ROOM;
+							// 有room和group参数（格式：C@!#12%xxxxx）
+							global_DEVICE_STATUS.fBoardCastType = SCREEN_CLEAN_SCRREN_ROOM;
 							global_DEVICE_STATUS.fBoardCastRoom = room_num;
 							global_DEVICE_STATUS.fBoardCastGroup = group_num;
 						}else{
@@ -1774,14 +1591,17 @@ void receiveGapBroadcastAdData(UINT8 *adData, UINT32 dataLen)
 							return;
 						}
 					}else if(adData[0] == BROADCAST_COMMAND_CLEAN_PRESAVE){
-						// D命令：清预存（支�?/1/2位参数）
+						// D命令：清预存（支持0/1/2位参数）
 						if(param_count == 0){
-							// 没有room/group参数，清空所有（格式：D@!#%xxxxx�?							global_DEVICE_STATUS.fBoardCastType = SCREEN_CLEAN_ALL;
+							// 没有room/group参数，清空所有（格式：D@!#%xxxxx）
+							global_DEVICE_STATUS.fBoardCastType = SCREEN_CLEAN_ALL;
 						}else if(param_count == 1){
-							// 只有room参数（格式：D@!#1%xxxxx�?							global_DEVICE_STATUS.fBoardCastType = SCREEN_CLEAN_ROOM;
+							// 只有room参数（格式：D@!#1%xxxxx）
+							global_DEVICE_STATUS.fBoardCastType = SCREEN_CLEAN_ROOM;
 							global_DEVICE_STATUS.fBoardCastRoom = room_num;
 						}else if(param_count == 2){
-							// 有room和group参数（格式：D@!#12%xxxxx�?							global_DEVICE_STATUS.fBoardCastType = SCREEN_CLEAN_ROOM_AND_GROUP;
+							// 有room和group参数（格式：D@!#12%xxxxx）
+							global_DEVICE_STATUS.fBoardCastType = SCREEN_CLEAN_ROOM_AND_GROUP;
 							global_DEVICE_STATUS.fBoardCastRoom = room_num;
 							global_DEVICE_STATUS.fBoardCastGroup = group_num;
 						}else{
@@ -1799,13 +1619,9 @@ void receiveGapBroadcastAdData(UINT8 *adData, UINT32 dataLen)
 			}
 		}
 	}
-#endif
 }
 
 void processGapBroadcastAdData(){
-#ifdef DISABLE_EPD_IMAGE_FEATURES
-    return;
-#else
 	//PRINT("boardcast info type:%d room:%d group:%d ab:%d\r\n",global_DEVICE_STATUS.fBoardCastType,global_DEVICE_STATUS.fBoardCastRoom,
 	//	global_DEVICE_STATUS.fBoardCastGroup,global_DEVICE_STATUS.fScreenType);
 
@@ -1823,8 +1639,10 @@ void processGapBroadcastAdData(){
 			global_DEVICE_STATUS.fWorked =Is_No;
 		}
 		else{
-			// 蓝牙广播切换预存刷屏成功，标记成功（在EVENT_Low_Power统一保存�?			int Room, Group;
-			Group = global_DEVICE_STATUS.fBoardCastRoom; //预存切换协议里的group和room是反着的，所以要反过来保�?			Room = global_DEVICE_STATUS.fBoardCastGroup;
+			// 蓝牙广播切换预存刷屏成功，标记成功（在EVENT_Low_Power统一保存）
+			int Room, Group;
+			Group = global_DEVICE_STATUS.fBoardCastRoom; //预存切换协议里的group和room是反着的，所以要反过来保存
+			Room = global_DEVICE_STATUS.fBoardCastGroup;
 			global_DEVICE_STATUS.fBoardCastRoom = Room;
 			global_DEVICE_STATUS.fBoardCastGroup = Group;
 			global_DEVICE_STATUS.fDataSendSuccess = Is_Yes;
@@ -1834,9 +1652,7 @@ void processGapBroadcastAdData(){
 	}
 
 	if(global_DEVICE_STATUS.fBoardCastType == SCREEN_CLEAN_ALL){
-#ifndef DISABLE_EPD_IMAGE_FEATURES
 		initPicSave(SCREEN_CLEAN_ALL,0xff,0xff);
-#endif
 		global_DEVICE_STATUS.fWorked =Is_No;
 	}
 
@@ -1859,7 +1675,6 @@ void processGapBroadcastAdData(){
 	}
 
 	tmos_start_task(main_task_ID,EVENT_Low_Power ,500);
-#endif
 }
 
 void TdxInfo_ClearDisplayBusyProtect(void)
@@ -2031,15 +1846,15 @@ void notitySendFunc(uint16 connHandle, uint8_t *out_buf, uint16_t *out_len)
 		send_ret = ble_send_tdxInfo(connHandle, out_buf, *out_len, TDXINFO_NOTITY_SEND_RESULT_INFO-1, tdxInfoBind_cccd);
 		if (send_ret == SUCCESS) {
 			PRINT("Notify send success on attempt %d\r\n", send_retry + 1);
-			break;  // 发送成功，退出重�?		}
+			break;  // 发送成功，退出重试
 		}
 		else if (send_ret == blePending || send_ret == bleNoResources || send_ret == bleTimeout) {
 			PRINT("Notify pending/busy (0x%02x), retry %d/%d\r\n", send_ret, send_retry + 1, SEND_MAX_RETRY);
-			mDelayuS(5000);  // 延时5ms等待BLE栈处�?		}
+			mDelayuS(5000);  // 延时5ms等待BLE栈处理
 		}
 		else if (send_ret == bleNotConnected) {
 			PRINT("BLE not connected, stop retry\r\n");
-			break;  // 连接断开，停止重�?		}
+			break;  // 连接断开，停止重试
 		}
 		else {
 			PRINT("Notify failed with error 0x%02x\r\n", send_ret);
@@ -2055,7 +1870,8 @@ void notitySendFunc(uint16 connHandle, uint8_t *out_buf, uint16_t *out_len)
 /*********************************************************************
  * @fn      notifyDeviceBound
  *
- * @brief   通知前端设备已被其他用户绑定（状态码0x02�? *
+ * @brief   通知前端设备已被其他用户绑定（状态码0x02）
+ *
  * @param   connHandle - 连接句柄
  *
  * @return  none
@@ -2068,7 +1884,7 @@ void notifyDeviceBound(uint16 connHandle)
 	
 	PRINT("Notify device bound to another user (status=0x02)\r\n");
 	
-	// 使用0x02状态码表示设备已被绑定�?x01=成功, 0x02=已绑定）
+	// 使用0x02状态码表示设备已被绑定（0x01=成功, 0x02=已绑定）
 	notitySendEnd(connHandle, 0x02, global_TDX_AES_DATA_INFO.fScreenType, notify_buf, &notify_len);
 	
 	for(notify_retry = 0; notify_retry < 3; notify_retry++){
@@ -2079,5 +1895,6 @@ void notifyDeviceBound(uint16 connHandle)
 		}
 	}
 }
+#endif
 /*********************************************************************
 *********************************************************************/

@@ -141,9 +141,4 @@ UINT8 EPD_GetScreenType(void)
     return 'C';
 }
 
-UINT8 EPD_GetBoardInfo(void)
-{
-	return EPD_MAKE_BOARD_INFO(0, 0);
-}
-
 #endif

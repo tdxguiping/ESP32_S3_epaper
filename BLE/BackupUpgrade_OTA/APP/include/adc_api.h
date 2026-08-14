@@ -13,8 +13,6 @@ extern unsigned char GetCurrentChargeStatus();
 extern int GetNeedTimeToFull();
 extern void AdcInit();
 extern void AdcTask();
-extern void AdcUpdateLedStatus();
-extern void AdcRefreshBatteryForWifiDone();
 
 #ifdef __cplusplus
 }

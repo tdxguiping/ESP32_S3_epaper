@@ -15,7 +15,7 @@ UINT16  EPD_Check_Busy(void)
     c=0;
 	do
 	{  
-        WWDG_SetCounter(0);//Î¹ï¿½ï¿½ , ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï£¬ Ã»ï¿½ï¿½Ð§ï¿½ï¿½
+        WWDG_SetCounter(0);//Î¹¹· , ²»¿ÉÒÔÔÚÕâÀï£¬ Ã»ÓÐÐ§¹û
 		busy = is_Busy();
         if(busy==0)
             break;
@@ -23,7 +23,7 @@ UINT16  EPD_Check_Busy(void)
           	delay_xms(2);
         c++;
     }
-    while(c<60);  // Êµï¿½ï¿½ï¿½ï¿½ 50
+    while(c<60);  // Êµ²âÊÇ 50
 
     if(c>=60)
     {
@@ -58,7 +58,7 @@ void Init_EPD_Driver(void)
 	EPD_W21_WriteDATA(0x00);
 
 	EPD_W21_WriteCMD(0xF7);			//Booster Soft Start	Setting			
-	EPD_W21_WriteDATA(0x02);                            //47uhï¿½ï¿½ï¿½Ê¹ï¿½ï¿½
+	EPD_W21_WriteDATA(0x02);                            //47uhµç¸ÐÊ¹ÓÃ
 
 	EPD_W21_WriteCMD(0x57);				
 	EPD_W21_WriteDATA(0x87);
@@ -111,9 +111,5 @@ UINT8 EPD_GetScreenType()
 #endif
 }
 
-UINT8 EPD_GetBoardInfo(void)
-{
-	return EPD_MAKE_BOARD_INFO(0, 0);
-}
-
 #endif
+

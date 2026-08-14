@@ -139,7 +139,6 @@ bStatus_t TdxInfo_SetParameter(uint8_t param, uint8_t len, void *value);
 extern bStatus_t TdxInfo_GetParameter(uint8_t param, void *value);
 
 extern void TdxInfo_ClearDisplayBusyProtect(void);
-extern bStatus_t TdxInfo_SendWifiDataToFrontend(uint16_t connHandle, uint8_t *data, uint16_t length);
 
 /*********************************************************************
 *********************************************************************/

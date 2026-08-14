@@ -15,7 +15,7 @@ uint16  EPD_Check_Busy(void)
     c=0;
 	do
 	{  
-        WWDG_SetCounter(0);//Î¹ï¿½ï¿½ , ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï£¬ Ã»ï¿½ï¿½Ð§ï¿½ï¿½
+        WWDG_SetCounter(0);//Î¹¹· , ²»¿ÉÒÔÔÚÕâÀï£¬ Ã»ÓÐÐ§¹û
 		busy = is_Busy();
 
         if(busy==0)
@@ -24,7 +24,7 @@ uint16  EPD_Check_Busy(void)
           delay_xms(2);        
         c++;
     }
-    while(c<70); // Êµï¿½ï¿½ 60
+    while(c<70); // Êµ²â 60
 
     if(c>=70)
     {
@@ -47,15 +47,15 @@ uint16  EPD_Check_Busy(void)
 void Display_EPD_Driver(void)
 {
     Print_I3("--");
-    EPD_W21_WriteCMD(0x17);        //  ï¿½Ô¶ï¿½   
+    EPD_W21_WriteCMD(0x17);        //  ×Ô¶¯   
 	EPD_W21_WriteDATA(0xA5);     // PON DRF POF    
 }*/
 
 void Display_EPD_Driver(void)
 {
-    EPD_W21_WriteCMD(0x17);         // ï¿½Ô¶ï¿½ï¿½ï¿½ï¿½ï¿½Ö¸ï¿½ï¿½   
-    EPD_W21_WriteDATA(0xA5);        // PON DRF POF DSLP ï¿½ï¿½ï¿½Ô¶ï¿½ï¿½ï¿½ï¿½Âºï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ë¯ï¿½ï¿½    
-    EPD_Check_Busy();                     // ï¿½Ð¶ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½ï¿½É¸ï¿½ï¿½ï¿½Í¼ï¿½ï¿½    
+    EPD_W21_WriteCMD(0x17);         // ×Ô¶¯¸üÐÂÖ¸Áî   
+    EPD_W21_WriteDATA(0xA5);        // PON DRF POF DSLP ÆÁ×Ô¶¯¸üÐÂºó½øÈëÉî¶ÈË¯Ãß    
+    EPD_Check_Busy();                     // ÅÐ¶ÏÆÁÊÇ·ñÍê³É¸üÐÂÍ¼Ïñ£¿    
 }
 
 void Init_EPD_Driver(void)
@@ -63,7 +63,7 @@ void Init_EPD_Driver(void)
 #if 0
     EPD_W21_Reset();                     // reset
     //EPD_W21_WriteCMD(0x00);        // PANEL SETTING  0
-    //EPD_W21_WriteDATA(0x07);    //if cf from OTP   if ef from regitser ï¿½Ó¼Ä´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ [7:6]RES=11b:160x296ï¿½ï¿½[5]REG_EN: LUT selection=1(LUT from register); [4]BWR=1 ï¿½Ú°ï¿½ï¿½ï¿½ï¿½Ð£ï¿½[3]UD=0 Gn-1->G0ï¿½ï¿½[2]SHL=1 S0->Sn-1ï¿½ï¿½[1]SHD_N=1 DC-DCï¿½ò¿ª£ï¿½RST_N=1 no reset
+    //EPD_W21_WriteDATA(0x07);    //if cf from OTP   if ef from regitser ´Ó¼Ä´æÆ÷¶Á²¨ÐÎ [7:6]RES=11b:160x296£»[5]REG_EN: LUT selection=1(LUT from register); [4]BWR=1 ºÚ°×ÔËÐÐ£»[3]UD=0 Gn-1->G0£»[2]SHL=1 S0->Sn-1£»[1]SHD_N=1 DC-DC´ò¿ª£»RST_N=1 no reset
     Print_I3("  \r\n");    
 //    EPD_W21_Reset();        //  RESET        
 //    Print_I3("---");    
@@ -71,7 +71,7 @@ void Init_EPD_Driver(void)
 //    //EPD_W21_WriteDATA(0x0F); // 0x0f by otp,0x2F from register lut by mcu 
 //    EPD_W21_WriteDATA(0x07);
 
-//    // ï¿½ï¿½Ò»ï¿½ï¿½ï¿½ï¿½ï¿½Ò£ï¿½ ï¿½ï¿½É«ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+//    // ÁíÒ»¸ö³§¼Ò£¬ ÑÕÉ«·´¹ýÀ´µÄÆÁ
 //    EPD_W21_WriteCMD(0x50);
 //    EPD_W21_WriteDATA(0x11);
 //    EPD_W21_WriteDATA(0x07);
@@ -113,7 +113,7 @@ void Init_EPD_Driver(void)
 }
 
 
-void ENTER_DEEP_SLEEP()       // ×¢ï¿½â£ºï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ë¯ï¿½ï¿½Ä£Ê½ï¿½ó£¬²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½î£¬Ö»ï¿½ï¿½ï¿½ï¿½Ó²ï¿½ï¿½RESETï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Â²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½RESETÒ²ï¿½ï¿½ï¿½Ð¡ï¿½È»ï¿½ï¿½ï¿½ï¿½Òªï¿½ï¿½ï¿½Â³ï¿½Ê¼ï¿½ï¿½ï¿½ï¿½ï¿½Ã¡ï¿½
+void ENTER_DEEP_SLEEP()       // ×¢Òâ£º½øÈëÉî¶ÈË¯ÃßÄ£Ê½ºó£¬²»½ÓÊÜÃüÁî£¬Ö»ÄÜÓÃÓ²¼þRESET²ÅÄÜÖØÐÂ²Ù×÷£¬Èí¼þRESETÒ²²»ÐÐ¡£È»ºóÐèÒªÖØÐÂ³õÊ¼»¯ÅäÖÃ¡£
 {
 	EPD_W21_WriteCMD(0x07);
 	EPD_W21_WriteDATA(0xA5);
@@ -151,9 +151,5 @@ UINT8 EPD_GetScreenType()
 #endif
 }
 
-UINT8 EPD_GetBoardInfo(void)
-{
-	return EPD_MAKE_BOARD_INFO(0, 0);
-}
-
 #endif
+

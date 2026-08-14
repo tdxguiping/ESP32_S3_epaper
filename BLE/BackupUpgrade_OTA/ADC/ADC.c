@@ -12,213 +12,132 @@
 #include "CH58x_common.h"
 #include "app_cfg.h"
 #include "commoninfo.h"
+#include <math.h>
 #include "util.h"
 
 //PA8：通用双向数字 I/0 引脚。
 //RXD1：UART1 串行数据输入。
 //AIN12：ADC 模拟信号输入通道 12。
 
-#define  ADC_VBAT_DETECT_CTRL_PIN      GPIO_Pin_3
-#define  ADC_VBAT_DETECT_STABLE_MS     5
+// 3844 = 4.13   -  
 
-#define  ADC_RAW_SAMPLE_COUNT          32
-#define  ADC_TRIM_DROP_COUNT            2
-#define  ADC_TRIMMED_SAMPLE_COUNT      (ADC_RAW_SAMPLE_COUNT - (ADC_TRIM_DROP_COUNT * 2))
-#define  ADC_VOLTAGE_CALIB_OFFSET_MV  (-100)
-#define  Temp_number                   ADC_RAW_SAMPLE_COUNT
+// 3600 4024   (424)
+//  0% 600，100% 850
+#define  Max_ADC       1964//2020  // 4.2v =100%
+#define  Min_ADC       1664//1634  // 3.4v = 0%
 
+
+#define  Temp_number   (16)
 uint32_t average_adc_value;
-UINT16 gAdcLastVoltageMv = 0;
-UINT8 gAdcLastStaticCurvePercent = 0;
-UINT8 gAdcLastChargeCurvePercent = 0;
+float battle_adv[101]={
+	4.14, 4.121, 4.101, 4.095, 4.084, 4.08, 4.077, 4.068, 4.06, 4.051,
+	4.045, 4.041, 4.035, 4.033, 4.031, 4.0293, 4.028, 4.024, 4.021, 4.019,
+	4.016, 4.013, 4.01, 4.008, 4.004, 4, 3.998, 3.995, 3.992, 3.988,
+	3.985, 3.9798, 3.9737, 3.9676, 3.9615, 3.9554, 3.9493, 3.9432, 3.9371, 3.931,
+	3.9249, 3.9188, 3.9127, 3.9066, 3.9005, 3.8944, 3.8883, 3.8822, 3.8761, 3.87,
+	3.8667, 3.8634, 3.8601, 3.8568, 3.8535, 3.8502, 3.8469, 3.8436, 3.8403, 3.837,
+	3.8309, 3.8248, 3.8187, 3.8126, 3.8065, 3.8004, 3.7943, 3.7882, 3.7821, 3.776,
+	3.765, 3.754, 3.743, 3.732, 3.721, 3.71, 3.699, 3.688, 3.677, 3.666, 3.6544,
+	3.6428, 3.6312, 3.6196, 3.608, 3.5964, 3.5848, 3.5732, 3.5616, 3.55, 3.5381,
+	3.5262, 3.5143, 3.5024, 3.4905, 3.4786, 3.4667, 3.4548, 3.4429, 3.431, 3.428};
 
-/* index 0 = 100%, index 100 = 0%, unit = mV. */
-static const uint16_t s_charge_battery_curve_mv[101] = {
-    4400, 4365, 4330, 4295, 4260, 4225, 4190, 4180, 4180, 4170,
-    4170, 4170, 4160, 4160, 4160, 4150, 4150, 4150, 4150, 4140,
-    4140, 4140, 4130, 4120, 4120, 4110, 4100, 4100, 4100, 4090,
-    4080, 4080, 4080, 4080, 4070, 4070, 4070, 4070, 4070, 4070,
-    4060, 4050, 4040, 4030, 4020, 4000, 3990, 3980, 3970, 3950,
-    3940, 3930, 3920, 3920, 3910, 3900, 3890, 3890, 3880, 3870,
-    3870, 3860, 3860, 3850, 3850, 3840, 3830, 3830, 3820, 3810,
-    3810, 3810, 3800, 3790, 3780, 3770, 3770, 3760, 3750, 3740,
-    3730, 3720, 3720, 3710, 3700, 3690, 3680, 3670, 3670, 3660,
-    3660, 3650, 3640, 3630, 3600, 3560, 3520, 3470, 3390, 3330,
-    2720
-};
-
-static const uint16_t s_discharge_battery_curve_mv[101] = {
-    4400, 4362, 4323, 4285, 4247, 4208, 4170, 4160, 4150, 4140,
-    4140, 4130, 4120, 4110, 4110, 4100, 4100, 4090, 4090, 4080,
-    4080, 4070, 4060, 4050, 4030, 4020, 4010, 3990, 3980, 3970,
-    3960, 3950, 3940, 3930, 3920, 3910, 3900, 3890, 3890, 3870,
-    3860, 3850, 3840, 3820, 3810, 3790, 3780, 3770, 3760, 3750,
-    3740, 3730, 3720, 3710, 3700, 3700, 3690, 3680, 3680, 3670,
-    3660, 3660, 3650, 3650, 3640, 3640, 3640, 3630, 3630, 3620,
-    3610, 3610, 3600, 3590, 3590, 3580, 3570, 3560, 3550, 3540,
-    3530, 3520, 3510, 3500, 3490, 3480, 3480, 3470, 3460, 3450,
-    3440, 3430, 3420, 3410, 3380, 3340, 3290, 3240, 3160, 3090,
-    2680
-};
-static void AdcVbatDetectPowerOn(void)
-{
-    GPIOB_ModeCfg(ADC_VBAT_DETECT_CTRL_PIN, GPIO_ModeOut_PP_5mA);
-    GPIOB_SetBits(ADC_VBAT_DETECT_CTRL_PIN);
-    DelayMs(ADC_VBAT_DETECT_STABLE_MS);
-}
-
-static void AdcVbatDetectPowerOff(void)
-{
-    GPIOB_ResetBits(ADC_VBAT_DETECT_CTRL_PIN);
-}
-
-
-static uint16_t AdcReadTrimmedAverage(signed short roughCalibValue)
-{
-    UINT8 i;
-    uint32_t sum = 0;
-    uint16_t min1 = 0xffff;
-    uint16_t min2 = 0xffff;
-    uint16_t max1 = 0;
-    uint16_t max2 = 0;
-
-    for(i = 0; i < ADC_RAW_SAMPLE_COUNT; i++)
-    {
-        int32_t sample = (int32_t)ADC_ExcutSingleConver() + roughCalibValue;
-        uint16_t value;
-
-        if(sample < 0)
-        {
-            sample = 0;
-        }
-
-        value = (sample > 0xffff) ? 0xffff : (uint16_t)sample;
-        sum += value;
-
-        if(value <= min1)
-        {
-            min2 = min1;
-            min1 = value;
-        }
-        else if(value < min2)
-        {
-            min2 = value;
-        }
-
-        if(value >= max1)
-        {
-            max2 = max1;
-            max1 = value;
-        }
-        else if(value > max2)
-        {
-            max2 = value;
-        }
-    }
-
-    sum -= min1;
-    sum -= min2;
-    sum -= max1;
-    sum -= max2;
-
-    return (uint16_t)((sum + (ADC_TRIMMED_SAMPLE_COUNT / 2)) / ADC_TRIMMED_SAMPLE_COUNT);
-}
-
-static uint16_t AdcApplyVoltageCalibration(uint16_t voltageMv)
-{
-    int32_t calibratedMv = (int32_t)voltageMv + ADC_VOLTAGE_CALIB_OFFSET_MV;
-
-    if(calibratedMv < 0)
-    {
-        calibratedMv = 0;
-    }
-    else if(calibratedMv > 0xffff)
-    {
-        calibratedMv = 0xffff;
-    }
-
-    return (uint16_t)calibratedMv;
-}
-static UINT8 BatteryVoltageToPercent(uint16_t voltageMv, const uint16_t *curveMv)
-{
-    UINT8 index;
-
-    if(voltageMv >= curveMv[0])
-    {
-        return 100;
-    }
-
-    if(voltageMv <= curveMv[100])
-    {
-        return 0;
-    }
-
-    for(index = 0; index < 100; index++)
-    {
-        uint16_t highMv = curveMv[index];
-        uint16_t lowMv = curveMv[index + 1];
-
-        if(highMv == lowMv)
-        {
-            if(voltageMv == highMv)
-            {
-                return (UINT8)(100 - index);
-            }
-            continue;
-        }
-
-        if((voltageMv <= highMv) && (voltageMv >= lowMv))
-        {
-            UINT8 lowPercent = (UINT8)(99 - index);
-            uint16_t spanMv = (uint16_t)(highMv - lowMv);
-            uint16_t offsetMv = (uint16_t)(voltageMv - lowMv);
-
-            return (UINT8)(lowPercent + (((uint32_t)offsetMv * 2U >= spanMv) ? 1U : 0U));
-        }
-    }
-
-    return 0;
-}
+/*float charg_battle_adv[100]={
+	4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008,
+	4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008,
+	4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008,
+	4.0008, 4.0008, 4.0008, 4.0008, 4.0008,
+	3.9942, 3.9856, 3.9760, 3.9670, 3.9574, 3.9487, 3.9394, 3.9307, 3.9223, 3.9133, 
+	3.9056, 3.8981, 3.8901, 3.8833, 3.8761, 3.8693, 3.8628, 3.8569, 3.8510, 3.8451, 
+	3.8399, 3.8346, 3.8293, 3.8247, 3.8197, 3.8151, 3.8107, 3.8058, 3.8014, 3.7971, 
+	3.7927, 3.7884, 3.7841, 3.7800, 3.7757, 3.7717, 3.7676, 3.7633, 3.7596, 3.7596, 
+	3.7552, 3.7512, 3.7472, 3.7428, 3.7385, 3.7338, 3.7289, 3.7236, 3.7174, 3.7115, 
+	3.7044, 3.6969, 3.6889, 3.6811, 3.6721, 3.6641, 3.6557, 3.6467, 3.6383, 3.6294, 
+	3.6197, 3.6098, 3.5990, 3.5856, 3.5593
+};*/
 
 UINT8  ADC(void)
 {
-    UINT8 i;
-    UINT32 u32Dat;
-    signed short RoughCalib_Value = 0;
-    uint16_t voltageMv;
-    UINT8 staticPercent;
-    UINT8 chargePercent;
+    UINT16 Max_average_adc_value;
+    UINT16 Min_average_adc_value;
+    UINT8      i;
+    UINT32  u32Dat;
+    signed short RoughCalib_Value = 0; // ADC粗调偏差值
+    float voltage;
+	float min_diff = 1000;
+	UINT8 closest_index = 0; 
 
-    AdcVbatDetectPowerOn();
-
+    /* 温度采样并输出 */
     ADC_InterTSSampInit();
-    average_adc_value = 0;
+    average_adc_value=0;
     for(i = 0; i < Temp_number; i++)
     {
-       average_adc_value += ADC_ExcutSingleConver();
+       average_adc_value += ADC_ExcutSingleConver(); // 连续采样20次
     }
-    average_adc_value = average_adc_value / Temp_number;
+    average_adc_value = (average_adc_value>>4); // 2 2 2 2 =16
+    //2820 = 20 度 = 141
     u32Dat = average_adc_value / 141;
-    (void)u32Dat;
+   
+    /* 单通道采样：选择adc通道0做采样，对应 PA4引脚， 带数据校准功能 */
+    GPIOA_ModeCfg(GPIO_Pin_7, GPIO_ModeIN_Floating);  // GPIO_ModeIN_PU   GPIO_ModeIN_Floating
+    ADC_ExtSingleChSampInit(SampleFreq_5_33_or_2_67, ADC_PGA_0);
 
-    GPIOA_ModeCfg(GPIO_Pin_7, GPIO_ModeIN_Floating);
-    ADC_ExtSingleChSampInit(SampleFreq_8_or_4, ADC_PGA_0);
-    RoughCalib_Value = ADC_DataCalib_Rough();
+    RoughCalib_Value = ADC_DataCalib_Rough(); // 用于计算ADC内部偏差，记录到全局变量 RoughCalib_Value中
+
     ADC_ChannelCfg(11);
+    average_adc_value=0;
+    for(i = 0; i < Temp_number; i++)
+    {
+        average_adc_value += ADC_ExcutSingleConver() + RoughCalib_Value; // 连续采样20次
+    }
+	//printf("00000 average_adc_value = %d \r\n",average_adc_value); 
+	int quotient = average_adc_value / 100;
 
-    average_adc_value = AdcReadTrimmedAverage(RoughCalib_Value);
-    voltageMv = (uint16_t)(((uint32_t)3480 * average_adc_value + 816U) / 1633U);
-    voltageMv = AdcApplyVoltageCalibration(voltageMv);
-    gAdcLastVoltageMv = voltageMv;
-    staticPercent = BatteryVoltageToPercent(voltageMv, s_discharge_battery_curve_mv);
-    chargePercent = BatteryVoltageToPercent(voltageMv, s_charge_battery_curve_mv);
-    gAdcLastStaticCurvePercent = staticPercent;
-    gAdcLastChargeCurvePercent = chargePercent;
-    i = staticPercent;
+	average_adc_value = quotient * 100;
+    average_adc_value = (average_adc_value>>4); // 2 2 2 2 =16
 
-    AdcVbatDetectPowerOff();
-    return i;
+    Max_average_adc_value=Max_ADC;
+    Min_average_adc_value=Min_ADC;    
+    
+    u32Dat = (348 * average_adc_value)/1633;
+
+	voltage = (float)u32Dat / 100.0;
+	
+	float voltage_tmp = (float)(voltage * 10) / 10.0;	// 结果为3.6
+
+	for (i = 0; i <= 100; i++) {
+		float diff;
+		/*if(global_DEVICE_STATUS.fIsCharg == Is_Yes){
+			diff = fabs(voltage_tmp - battle_adv[i]);
+		}else{
+			diff = fabs(voltage_tmp - battle_adv[i]);
+		}*/
+		diff = fabs(voltage_tmp - battle_adv[i]);
+		
+		if (diff < min_diff) {
+			min_diff = diff;
+			closest_index = i;
+		}
+	}
+
+	i = 100 - closest_index;
+
+	uint16_t voltage_int = (uint16_t)(voltage_tmp * 100);  // 转为整数（保留2位小数）
+	uint16_t ref_voltage_int = (uint16_t)(battle_adv[closest_index] * 10000);  // 保留4位小数
+
+	/*Print_I3("ADC=%d, voltage=%d.%02dV, battle_adv=%d.%04dV, precent=%d%%\r\n", 
+       average_adc_value, 
+       voltage_int / 100, voltage_int % 100,  // 整数部分和小数部分
+       ref_voltage_int / 10000, ref_voltage_int % 10000, 
+       i);*/
+
+    ADC_DisableTSPower();
+    R8_ADC_CONVERT = 0;
+    R8_ADC_CFG = 0;
+    GPIOA_ModeCfg(GPIO_Pin_7, GPIO_ModeIN_PU);
+
+	return i;
 }
+
 #if 0
 UINT8  ADC(void)
 {
@@ -245,7 +164,7 @@ UINT8  ADC(void)
    
     /* 单通道采样：选择adc通道0做采样，对应 PA4引脚， 带数据校准功能 */
     GPIOA_ModeCfg(GPIO_Pin_7, GPIO_ModeIN_Floating);  // GPIO_ModeIN_PU   GPIO_ModeIN_Floating
-    ADC_ExtSingleChSampInit(SampleFreq_8_or_4, ADC_PGA_0);
+    ADC_ExtSingleChSampInit(SampleFreq_5_33_or_2_67, ADC_PGA_0);
 
     RoughCalib_Value = ADC_DataCalib_Rough(); // 用于计算ADC内部偏差，记录到全局变量 RoughCalib_Value中
     //PRINT("RoughCalib_Value =%d \r\n", RoughCalib_Value);
@@ -345,7 +264,7 @@ UINT8  check_Old_New_PCB_type(void)
 
     /* 单通道采样：选择adc通道0做采样，对应 PA4引脚， 带数据校准功能 */
     GPIOA_ModeCfg(GPIO_Pin_7, GPIO_ModeIN_Floating);  // GPIO_ModeIN_PU   GPIO_ModeIN_Floating
-    ADC_ExtSingleChSampInit(SampleFreq_8_or_4, ADC_PGA_0);
+    ADC_ExtSingleChSampInit(SampleFreq_5_33_or_2_67, ADC_PGA_0);
 
     RoughCalib_Value = ADC_DataCalib_Rough(); // 用于计算ADC内部偏差，记录到全局变量 RoughCalib_Value中
     //PRINT("RoughCalib_Value =%d \r\n", RoughCalib_Value);

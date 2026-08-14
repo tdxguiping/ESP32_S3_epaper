@@ -4,52 +4,36 @@
 #include "epd_driver.h"
 #include "commoninfo.h"
 #include "Display_EPD_W21_spi.h"
+#include "epd_busy.h"
 
 #ifdef ENABLE_INK_SCREEN_UC8279_800X480_COLOR_3
 #define   LCD_XSIZE                    800    /* Horizontal Active Period           */
 #define   LCD_YSIZE                    480       /* Vertical Active Period             */
 
+UINT8 EPD_Driver_GetBusyConfig(EPD_BUSY_CONFIG *cfg)
+{
+    cfg->supported = Is_Yes;
+    cfg->active_level = EPD_BUSY_ACTIVE_LOW;
+    cfg->busy_a.port = EPD_BUSY_PORT_A;
+    cfg->busy_a.pin = epaper_BUSY;
+    cfg->busy_b.port = EPD_BUSY_PORT_B;
+    cfg->busy_b.pin = GPIO_Pin_16;
+    cfg->single_a_target = EPD_BUSY_SIDE_B;
+    cfg->single_b_target = EPD_BUSY_SIDE_A;
+
+    return Is_Yes;
+}
+
 UINT16  EPD_Check_Busy(void)
 {
-    unsigned int c;
-	unsigned char busy;
-
-    Print_I3("------UC8279 Busy--");
-    c=0;
-	do
-	{  
-        WWDG_SetCounter(0);//ι�� , ����������� û��Ч��
-		busy = is_Busy();
-        if(busy==0)
-            break;
-        else
-          	delay_xms(2);
-        c++;
-    }
-    while(c<60);  // ʵ���� 50
-
-    if(c>=60)
-    {
-        printf("er=%d\r\n",c);
-        return Is_Er;
-    }
-    else
-    {
-        printf("OK=%d",c);
-        return Is_OK;
-    }
+    return EPD_Busy_WaitCurrent(200, 10000);
 }
 
 void Display_EPD_Driver(void)
 {
-    EPD_W21_WriteCMD(0x12);			//DISPLAY REFRESH 	
-	delay_ms(100);	        //!!!The delay here is necessary, 200uS at least!!!     
-	EPD_Check_Busy();        //waiting for the electronic paper IC to release the idle signal	
-  	EPD_W21_WriteCMD(0X02);    	 //power off
- 	delay_ms(100);
-	EPD_Check_Busy();        //waiting for the electronic paper IC to release the idle signal
-	EPD_W21_WriteCMD(0X07);  	   //deep sleep
-	EPD_W21_WriteDATA(0xA5);
+    EPD_W21_WriteCMD(0x12);
+    delay_ms(100);
+    EPD_Busy_PrepareObserve();
 }
 
 void Init_EPD_Driver(void)
@@ -70,7 +54,7 @@ void Init_EPD_Driver(void)
 	EPD_W21_WriteCMD(0x06);	 // Booster
 	EPD_W21_WriteDATA(0x27);	 
 	EPD_W21_WriteDATA(0x27);	 
-	EPD_W21_WriteDATA(0x37);	 
+	EPD_W21_WriteDATA(0x36);	 
 	EPD_W21_WriteDATA(0x17);	 
 	EPD_W21_WriteCMD(0x50); 	 //VCOM and DATA interval setting Register
 	EPD_W21_WriteDATA(0x11);
@@ -127,9 +111,5 @@ UINT8 EPD_GetScreenType()
 #endif
 }
 
-UINT8 EPD_GetBoardInfo(void)
-{
-	return EPD_MAKE_BOARD_INFO(0, 0);
-}
-
 #endif
+

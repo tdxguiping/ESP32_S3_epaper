@@ -78,7 +78,7 @@ int EraseSaveBlock(uint16 connHandle, unsigned char groupNum, unsigned char room
 	
 	if(status != SUCCESS)
 	{
-		printf("ERASE Err\r\n");
+		printf("E er\r\n");
 		return -1;
 	}
 #ifdef ENABLE_SOFTWARE_TO_BOE

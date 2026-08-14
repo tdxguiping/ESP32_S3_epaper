@@ -3,38 +3,35 @@
 #include "epd_driver.h"
 #include "commoninfo.h"
 #include "Display_EPD_W21_spi.h"
+#include "epd_busy.h"
 
 #ifdef ENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6
+UINT8 EPD_Driver_GetBusyConfig(EPD_BUSY_CONFIG *cfg)
+{
+    if(cfg == NULL)
+    {
+        return Is_No;
+    }
+
+    cfg->supported = Is_Yes;
+    cfg->active_level = EPD_BUSY_ACTIVE_LOW;
+    cfg->busy_a.port = EPD_BUSY_PORT_A;
+    cfg->busy_a.pin = epaper_BUSY;
+    cfg->busy_b.port = EPD_BUSY_PORT_A;
+    cfg->busy_b.pin = GPIO_Pin_9;
+    cfg->single_a_target = EPD_BUSY_SIDE_B;
+    cfg->single_b_target = EPD_BUSY_SIDE_A;
+    cfg->ab_target = EPD_BUSY_SIDE_AB;
+    cfg->diff_target = EPD_BUSY_SIDE_AB;
+    cfg->debug_enabled = Is_Yes;
+
+    return Is_Yes;
+}
+
 uint16  EPD_Check_Busy(void)
 {
-    unsigned int c;
-	unsigned char busy;
-    
-    Print_I3("---EL073TF1 Busy--");
-    c=0;
-	do
-	{  
-        //WWDG_SetCounter(0);//ι�� , ����������� û��Ч��
-		busy = is_Busy();
-
-        if(busy==0)
-            break;
-        else
-          delay_xms(2);        
-        c++;
-    }
-    while(c<60); // ʵ�� 60
-
-    if(c>=60)
-    {
-        printf("er=%d\r\n",c);
-        return Is_Er;
-    }
-    else
-    {
-        printf("OK=%d\r\n",c);
-        return Is_OK;
-    }          
+    Print_I3("---SPD1657 Busy--");
+    return EPD_Busy_WaitCurrent(200, 10000);
 }
 
 void Init_EPD_Driver()
@@ -110,7 +107,7 @@ void Init_EPD_Driver()
 
 void Display_EPD_Driver(void)
 {
-    Print_I3("Display_update_EL073TF1_6Color_400_600 --");
+    Print_I3("Display_update_SPD1657_6Color_400_600 --");
 	/*EPD_W21_WriteCMD(PON);
 	EPD_Check_Busy();
 
@@ -134,7 +131,7 @@ void Display_EPD_Driver(void)
 
 	EPD_W21_WriteCMD(0x12);   //DISPLAY REFRESH   
     EPD_W21_WriteDATA(0x00);   
-	EPD_Check_Busy();
+	EPD_Busy_PrepareObserve();
 
 }
 
@@ -165,19 +162,9 @@ UINT8 EPD_GetScreenType()
 #ifdef EPD_SCREEN_TYPE_A
 	return '{'; 
 #else
-	//return 'a';//7.5寸 HD 6色
-	//return 'b';//7.5寸 6色
-	return 'd';//13.3寸 HD 6色
-	//return 'e';//7.09寸 HD 6色
-	//return 'f';//10.85 4色
-	//return 'g';//7.5寸 4色
-	//return '@'; 
+	return '@'; 
 #endif
 }
 
-UINT8 EPD_GetBoardInfo(void)
-{
-	return EPD_MAKE_BOARD_INFO(0, EPD_BOARD_VENDOR_DKE);
-}
-
 #endif
+
