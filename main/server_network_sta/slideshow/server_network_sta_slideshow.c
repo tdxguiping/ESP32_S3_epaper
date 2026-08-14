@@ -31,7 +31,9 @@
 #include "tdx_shared_spi.h"
 
 static const char *TAG = "server_sta_slide";
-#define SLIDESHOW_TASK_STACK_SIZE (12 * 1024)
+#define SLIDESHOW_TASK_STACK_BYTES (6U * 1024U)
+#define SLIDESHOW_TASK_STACK_DEPTH (SLIDESHOW_TASK_STACK_BYTES / sizeof(StackType_t))
+#define SLIDESHOW_STARTUP_DELAY_TASK_STACK_BYTES (6U * 1024U)
 #define SLIDESHOW_TASK_PRIORITY 4
 #define SLIDESHOW_STACK_WATERMARK_LOG_STEP_BYTES 256U
 #define SLIDESHOW_PROGRESS_MAGIC 0x534C4450UL
@@ -108,9 +110,15 @@ typedef struct {
     char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
 } slideshow_startup_delay_t;
 
-static TaskHandle_t s_slideshow_task = NULL;
+static StaticTask_t s_slideshow_worker_tcb;
+static StackType_t s_slideshow_worker_stack[SLIDESHOW_TASK_STACK_DEPTH];
+static TaskHandle_t s_slideshow_worker_task = NULL;
+static bool s_slideshow_worker_creating = false;
+static slideshow_runtime_t *s_slideshow_pending_runtime = NULL;
+static volatile bool s_slideshow_runtime_active = false;
 static TaskHandle_t s_slideshow_startup_delay_task = NULL;
 static volatile bool s_slideshow_stop = false;
+static portMUX_TYPE s_slideshow_worker_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_slideshow_timing_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_slideshow_interval_active = false;
 static uint32_t s_slideshow_runtime_interval = 0;
@@ -773,7 +781,7 @@ static void slideshow_log_runtime_alloc_failure(const char *point)
              (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
              (unsigned int)sizeof(slideshow_runtime_t),
-             (unsigned int)SLIDESHOW_TASK_STACK_SIZE);
+             (unsigned int)SLIDESHOW_TASK_STACK_BYTES);
 }
 
 static void slideshow_log_stack_watermark(const char *point,
@@ -794,15 +802,15 @@ static void slideshow_log_stack_watermark(const char *point,
         return;
     }
 
-    unsigned int peak_used = remaining < SLIDESHOW_TASK_STACK_SIZE ?
-                             (unsigned int)(SLIDESHOW_TASK_STACK_SIZE - remaining) :
+    unsigned int peak_used = remaining < SLIDESHOW_TASK_STACK_BYTES ?
+                             (unsigned int)(SLIDESHOW_TASK_STACK_BYTES - remaining) :
                              0U;
     ESP_LOGI(TAG,
              "slideshow stack watermark point=%s remaining=%u peak_used=%u configured=%u",
              point != NULL ? point : "unknown",
              (unsigned int)remaining,
              peak_used,
-             (unsigned int)SLIDESHOW_TASK_STACK_SIZE);
+             (unsigned int)SLIDESHOW_TASK_STACK_BYTES);
     *last_reported = remaining;
 }
 
@@ -2069,12 +2077,9 @@ static uint32_t slideshow_get_initial_delay_seconds(uint32_t interval)
     return interval - elapsed;
 }
 
-static void slideshow_task(void *arg)
+static void slideshow_run_runtime(slideshow_runtime_t *runtime)
 {
-    slideshow_runtime_t *runtime = (slideshow_runtime_t *)arg;
     if (runtime == NULL) {
-        s_slideshow_task = NULL;
-        vTaskDelete(NULL);
         return;
     }
 
@@ -2332,7 +2337,7 @@ static void slideshow_task(void *arg)
     }
 
     slideshow_log_stack_watermark("stop", &last_reported_stack_watermark, true);
-    ESP_LOGI(TAG, "slideshow task stop");
+    ESP_LOGI(TAG, "slideshow run stop, worker returns idle");
     portENTER_CRITICAL(&s_slideshow_timing_mux);
     s_slideshow_interval_active = false;
     s_slideshow_runtime_interval = 0;
@@ -2341,8 +2346,83 @@ static void slideshow_task(void *arg)
     portEXIT_CRITICAL(&s_slideshow_timing_mux);
     slideshow_loaded_file_free(&loaded);
     free(runtime);
-    s_slideshow_task = NULL;
-    vTaskDelete(NULL);
+}
+
+static bool slideshow_runtime_is_active(void)
+{
+    bool active;
+    portENTER_CRITICAL(&s_slideshow_worker_mux);
+    active = s_slideshow_runtime_active;
+    portEXIT_CRITICAL(&s_slideshow_worker_mux);
+    return active;
+}
+
+static void slideshow_worker_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG,
+             "slideshow static worker started stack=%u",
+             (unsigned int)SLIDESHOW_TASK_STACK_BYTES);
+
+    for (;;) {
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        slideshow_runtime_t *runtime = NULL;
+        portENTER_CRITICAL(&s_slideshow_worker_mux);
+        runtime = s_slideshow_pending_runtime;
+        s_slideshow_pending_runtime = NULL;
+        portEXIT_CRITICAL(&s_slideshow_worker_mux);
+
+        if (runtime == NULL) {
+            ESP_LOGW(TAG, "slideshow worker notified without runtime");
+            continue;
+        }
+
+        slideshow_run_runtime(runtime);
+
+        portENTER_CRITICAL(&s_slideshow_worker_mux);
+        s_slideshow_runtime_active = false;
+        portEXIT_CRITICAL(&s_slideshow_worker_mux);
+    }
+}
+
+static esp_err_t slideshow_ensure_static_worker(void)
+{
+    for (;;) {
+        bool create_worker = false;
+        portENTER_CRITICAL(&s_slideshow_worker_mux);
+        if (s_slideshow_worker_task != NULL) {
+            portEXIT_CRITICAL(&s_slideshow_worker_mux);
+            return ESP_OK;
+        }
+        if (!s_slideshow_worker_creating) {
+            s_slideshow_worker_creating = true;
+            create_worker = true;
+        }
+        portEXIT_CRITICAL(&s_slideshow_worker_mux);
+
+        if (create_worker) {
+            break;
+        }
+        vTaskDelay(1);
+    }
+
+    TaskHandle_t worker = xTaskCreateStatic(slideshow_worker_task,
+                                            "slideshow",
+                                            SLIDESHOW_TASK_STACK_DEPTH,
+                                            NULL,
+                                            SLIDESHOW_TASK_PRIORITY,
+                                            s_slideshow_worker_stack,
+                                            &s_slideshow_worker_tcb);
+    portENTER_CRITICAL(&s_slideshow_worker_mux);
+    s_slideshow_worker_task = worker;
+    s_slideshow_worker_creating = false;
+    portEXIT_CRITICAL(&s_slideshow_worker_mux);
+    if (worker == NULL) {
+        slideshow_log_runtime_alloc_failure("static_worker_create");
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
 }
 
 void ServerNetworkStaSlideshow_Stop(void)
@@ -2352,15 +2432,15 @@ void ServerNetworkStaSlideshow_Stop(void)
 
 esp_err_t ServerNetworkStaSlideshow_StopAndWait(void)
 {
-    bool was_running = s_slideshow_task != NULL;
+    bool was_running = slideshow_runtime_is_active();
     ServerNetworkStaSlideshow_Stop();
     TickType_t start_tick = xTaskGetTickCount();
     TickType_t timeout_ticks = pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS + 5000U);
-    while (s_slideshow_task != NULL &&
+    while (slideshow_runtime_is_active() &&
            (xTaskGetTickCount() - start_tick) < timeout_ticks) {
         vTaskDelay(pdMS_TO_TICKS(50U));
     }
-    if (s_slideshow_task != NULL) {
+    if (slideshow_runtime_is_active()) {
         ESP_LOGE(TAG, "slideshow task stop timeout");
         return ESP_ERR_TIMEOUT;
     }
@@ -2384,17 +2464,22 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
         return ESP_ERR_INVALID_ARG;
     }
 
-    bool was_running = s_slideshow_task != NULL;
+    bool was_running = slideshow_runtime_is_active();
     ServerNetworkStaSlideshow_Stop();
     TickType_t stop_start = xTaskGetTickCount();
     TickType_t stop_timeout = pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS + 5000U);
-    while (s_slideshow_task != NULL &&
+    while (slideshow_runtime_is_active() &&
            (xTaskGetTickCount() - stop_start) < stop_timeout) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-    if (s_slideshow_task != NULL) {
+    if (slideshow_runtime_is_active()) {
         ESP_LOGE(TAG, "previous slideshow task did not stop");
         return ESP_ERR_TIMEOUT;
+    }
+
+    esp_err_t worker_ret = slideshow_ensure_static_worker();
+    if (worker_ret != ESP_OK) {
+        return worker_ret;
     }
 
     slideshow_runtime_t *runtime = (slideshow_runtime_t *)heap_caps_calloc(
@@ -2464,20 +2549,19 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
     } else {
         runtime->initial_delay_seconds = slideshow_get_initial_delay_seconds(request->interval);
     }
-    s_slideshow_stop = false;
-
-    BaseType_t task_ret = xTaskCreate(slideshow_task,
-                                      "slideshow",
-                                      SLIDESHOW_TASK_STACK_SIZE,
-                                      runtime,
-                                      SLIDESHOW_TASK_PRIORITY,
-                                      &s_slideshow_task);
-    if (task_ret != pdPASS) {
+    portENTER_CRITICAL(&s_slideshow_worker_mux);
+    if (s_slideshow_runtime_active || s_slideshow_pending_runtime != NULL) {
+        portEXIT_CRITICAL(&s_slideshow_worker_mux);
         free(runtime);
-        s_slideshow_task = NULL;
-        slideshow_log_runtime_alloc_failure("task_create");
-        return ESP_ERR_NO_MEM;
+        ESP_LOGE(TAG, "slideshow worker is not idle");
+        return ESP_ERR_INVALID_STATE;
     }
+    s_slideshow_stop = false;
+    s_slideshow_pending_runtime = runtime;
+    s_slideshow_runtime_active = true;
+    portEXIT_CRITICAL(&s_slideshow_worker_mux);
+
+    xTaskNotifyGive(s_slideshow_worker_task);
     return ESP_OK;
 }
 
@@ -2679,7 +2763,7 @@ static void slideshow_startup_delay_task(void *arg)
             ESP_LOGI(TAG, "slideshow startup skipped because control sw=0");
             break;
         }
-        if (s_slideshow_task != NULL) {
+        if (slideshow_runtime_is_active()) {
             ESP_LOGI(TAG, "slideshow startup skipped because slideshow already running");
             break;
         }
@@ -2741,8 +2825,9 @@ static void slideshow_startup_delay_task(void *arg)
                                                         false);
         ESP_LOGI(TAG, "slideshow startup delayed start ret=%s", esp_err_to_name(ret));
         if (ret != ESP_OK) {
-            slideshow_rollback_runtime_start_failure(delay->base_path,
-                                                     "startup_restore");
+            ESP_LOGW(TAG,
+                     "slideshow startup restore deferred ret=%s, keep saved control and mode for next wake",
+                     esp_err_to_name(ret));
         }
         break;
     }
@@ -2762,25 +2847,31 @@ esp_err_t ServerNetworkStaSlideshow_StartSavedDelayed(const char *base_path)
         return ESP_OK;
     }
 
+    esp_err_t worker_ret = slideshow_ensure_static_worker();
+    if (worker_ret != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "slideshow startup static worker unavailable ret=%s, keep saved state",
+                 esp_err_to_name(worker_ret));
+        return worker_ret;
+    }
+
     slideshow_startup_delay_t *delay = (slideshow_startup_delay_t *)calloc(1, sizeof(*delay));
     if (delay == NULL) {
-        slideshow_rollback_runtime_start_failure(base_path,
-                                                 "startup_delay_alloc");
+        ESP_LOGE(TAG, "slideshow startup delay alloc failed, keep saved state");
         return ESP_ERR_NO_MEM;
     }
     strlcpy(delay->base_path, base_path, sizeof(delay->base_path));
 
     BaseType_t task_ret = xTaskCreate(slideshow_startup_delay_task,
                                       "slide_start_delay",
-                                      SLIDESHOW_TASK_STACK_SIZE / 2,
+                                      SLIDESHOW_STARTUP_DELAY_TASK_STACK_BYTES,
                                       delay,
                                       SLIDESHOW_TASK_PRIORITY,
                                       &s_slideshow_startup_delay_task);
     if (task_ret != pdPASS) {
         free(delay);
         s_slideshow_startup_delay_task = NULL;
-        slideshow_rollback_runtime_start_failure(base_path,
-                                                 "startup_task_create");
+        ESP_LOGE(TAG, "slideshow startup delay task create failed, keep saved state");
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;

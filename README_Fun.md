@@ -1340,7 +1340,7 @@ main/main.c
       ├─ read_slideshow_config_file()
       ├─ read_slideshow_control_on()
       ├─ 读取并校验 NVS slide_progress
-      └─ xTaskCreate(slideshow_task)
+      └─ 通知常驻 slideshow_worker_task 执行 slideshow_run_runtime()
 ```
 
 V2 协议资料拆分：
@@ -1383,11 +1383,11 @@ startIndex 必填；从 0 开始，必须小于 APP 最终发送的 fileNames �
 - 当 `fileNames` 只有一张时，合法值只能是 `startIndex=0`；每个绝对时间槽都映射到同一张图片，因此设备仍会按 interval 到点重复刷新该图片。其他 startIndex 返回 1516。
 - SNTP 已同步且 `now_epoch>=anchor_epoch` 时，当前绝对时间槽始终是选图依据。开机恢复使用 NVS `order[position]` 的列表索引确认是否正好指向当前槽的下一项，并同时核对 `pending_file`；允许重复文件名后不能只凭文件名判断。确认当前槽已显示时等待下一绝对播放点，否则立即显示当前槽图片。`now_epoch<anchor_epoch` 时，以 `anchor_epoch - lead_seconds` 作为进入 EPD 刷新流程的时间点。NVS 只辅助判断当前槽图片是否已在屏幕上，不能改变绝对时间槽选图结果。
 - SNTP 时间下允许 timestamp 与当前时间相差不超过 5 秒。若 timestamp 在未来，设备接受指令，但仍遵守 RTC 播放点：只有当前时间到达 `timestamp - lead_seconds` 才进入起始图片的 EPD 刷新流程；若该提前点已经到达则立即进入。比如 timestamp 领先 5 秒、lead=3 秒时等待约 2 秒；timestamp 领先 2 秒、lead=3 秒时立即进入。这样不会因强制提前显示而破坏 APP 与 ESP32 共用的绝对时间基准，也不会因少量传输或校时误差拒绝正常指令。
-- slideshow_task() 在 SNTP 模式下每次显示前重新核对绝对时间槽；若断电、阻塞或 SNTP 向前/向后校时跨槽，直接切换到当前应显示的图片，不逐张补播。
+- slideshow_run_runtime() 在 SNTP 模式下每次显示前重新核对绝对时间槽；若断电、阻塞或 SNTP 向前/向后校时跨槽，直接切换到当前应显示的图片，不逐张补播。
 - `ServerNetworkStaSlideshow_GetScheduleTiming()` 可读取 RTC 轮播的 now / next / remain；`ServerNetworkStaSlideshow_GetRuntimeTiming()` 只作为非 RTC 兼容状态读取。
-- slideshow_task() 在 EPD 显示成功且下一进度保存成功后，SNTP 模式按绝对槽计算下一目标；其他时间源继续使用原 RTC 进度逻辑。
-- slideshow_task() 在上一张 EPD 显示完成并保存下一进度后，会在剩余 interval 时间内用 PSRAM 预加载下一张 bin 并做 SHA-256 文件名校验；RTC 真实目标时间保持 `next_epoch` 不变，但设备内部会在 `next_epoch - lead_seconds` 时进入 EPD 显示流程，用于抵消 SD / 调度 / EPD 调用链路开销。`lead_seconds` 按当前 EPD type 选择：`EPD_TYPE_1600_1200_133_DKE` 为 1 秒，`EPD_TYPE_1600_1200_133` 为 3 秒，其它屏型使用默认 `TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS=2` 秒。若 PSRAM 预加载失败，已保存的下一进度不变，下一轮会重新读取该图片，不长时间占用内部 RAM，不影响停止和失败不推进的规则。
-- 业务基础文件名缓冲从 48 字节缩为 17 字节后，150 项轮播列表由 7200 字节降为 2550 字节，轮播 runtime 由约 7.5 KB 降为约 2.9 KB；runtime 仍优先从 PSRAM 分配，失败时兼容回退内部 RAM。12 KB `slideshow_task` 栈保持不变。任务成功创建后打印栈历史最低剩余量和估算峰值使用量：启动、最低余量继续下降至少 256 字节、退出时才打印，避免每轮刷日志；任务创建失败时没有实际运行水位可测。新轮播命令或开机自动恢复在延迟参数分配、延迟任务创建、runtime 分配或轮播任务创建失败时，会把 `show_control.txt` 写为 `sw=0`、把 `epd_mode` 切回 `NORMAL`，避免保存状态显示轮播开启但实际没有任务；新列表配置仍保留。内存失败日志只打印一次内部 RAM 总量、最大连续块、PSRAM、runtime 大小和任务栈大小。
+- slideshow_run_runtime() 在 EPD 显示成功且下一进度保存成功后，SNTP 模式按绝对槽计算下一目标；其他时间源继续使用原 RTC 进度逻辑。
+- slideshow_run_runtime() 在上一张 EPD 显示完成并保存下一进度后，会在剩余 interval 时间内用 PSRAM 预加载下一张 bin 并做 SHA-256 文件名校验；RTC 真实目标时间保持 `next_epoch` 不变，但设备内部会在 `next_epoch - lead_seconds` 时进入 EPD 显示流程，用于抵消 SD / 调度 / EPD 调用链路开销。`lead_seconds` 按当前 EPD type 选择：`EPD_TYPE_1600_1200_133_DKE` 为 1 秒，`EPD_TYPE_1600_1200_133` 为 3 秒，其它屏型使用默认 `TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS=2` 秒。若 PSRAM 预加载失败，已保存的下一进度不变，下一轮会重新读取该图片，不长时间占用内部 RAM，不影响停止和失败不推进的规则。
+- 业务基础文件名缓冲从 48 字节缩为 17 字节后，150 项轮播列表由 7200 字节降为 2550 字节，轮播 runtime 由约 7.5 KB 降为约 2.9 KB；runtime 仍优先从 PSRAM 分配，失败时兼容回退内部 RAM。轮播主任务改为固定 6 KB 的静态内部 RAM 栈和静态 TCB：静态内存从开机起固定保留；`slideshow_worker_task` 在开机恢复轮播或第一次收到轮播启动请求时创建，创建后常驻等待通知。每次启动只提交 runtime，运行结束释放 runtime 并回到空闲，不再反复动态申请/释放任务栈，因此不受内部堆最大连续块和碎片影响。栈水位在启动、最低余量继续下降至少 256 字节、运行退出时打印；实测完整路径峰值约 2920 字节，6 KB 仍保留约 3.2 KB 余量。新命令的 runtime 启动失败仍执行原回退并返回 1506；开机自动恢复的临时资源失败只打印关键告警并保留 `show_control.sw=1`、`epd_mode=SLIDESHOW` 和进度，等待下次唤醒恢复，避免一次内存失败永久关闭轮播。开机延迟辅助任务仍独立使用 6 KB 动态栈，结束后释放。
 - RTC 轮播显示失败时不立即重试；当前失败图片视为跳过，先保存并切换到下一张 pending_file，再排到下一次 RTC 播放点，等待下一次轮播到来后显示下一张图片。若跳过进度保存失败，则不推进当前 progress，但仍排到下一次 RTC 播放点，避免立即重试。
 - `lead_seconds` 只用于提前进入 EPD 硬件刷新，目标图片仍按逻辑播放点的绝对槽选择，不使用提前后的时间改变图片索引。
 - 相同文件名出现在不同列表索引时，按不同播放事件处理；如果随机后的最终列表包含相邻相同名称，设备会在相邻两个 RTC 播放点分别调用 EPD 显示同一文件，这是当前产品策略的预期行为。
@@ -1398,8 +1398,8 @@ startIndex 必填；从 0 开始，必须小于 APP 最终发送的 fileNames �
 - 读取 SD 卡中的 control 时严格校验：`sw=1` 必须包含合法 `interval`、`timestamp` 和 `anchor_epoch`；旧格式如 `{"sw":1,"interval":90,"random":false,"run_mode":0}` 视为非法，打印 `legacy control rejected`，不启动轮播，也不回退到 task tick 计时。
 - ServerNetworkStaSlideshow_StartSaved() 仍用于立即启动已保存轮播，不带开机 10 秒延迟。
 - startIndex 会加入配置 hash；进度版本、配置 hash、随机模式、排列或文件名不匹配时，从 `fileNames[startIndex]` 重建进度。
-- slideshow_task() 读取 `/data/bin_img/*.bin`，等待 EPD 真正完成后再提交下一进度；如果读文件前、读文件后或送 EPD 前收到停止请求，则放弃本张显示并退出。
-- slideshow_task() 从 SD 读出 bin 后、送 EPD 前，会计算文件内容 SHA-256 的十六进制后 16 位并与 fileName 比对，只打印 `sha256 ok` / `sha256 mismatch` / `sha256 failed` / `skip invalid basename` 诊断日志，不阻止显示、不修改进度；匹配成功用 `ESP_LOGI`，无效 basename 跳过用 `ESP_LOGW`，计算失败或 mismatch 用 `ESP_LOGE`。
+- slideshow_run_runtime() 读取 `/data/bin_img/*.bin`，等待 EPD 真正完成后再提交下一进度；如果读文件前、读文件后或送 EPD 前收到停止请求，则放弃本张显示并退出。
+- slideshow_run_runtime() 从 SD 读出 bin 后、送 EPD 前，会计算文件内容 SHA-256 的十六进制后 16 位并与 fileName 比对，只打印 `sha256 ok` / `sha256 mismatch` / `sha256 failed` / `skip invalid basename` 诊断日志，不阻止显示、不修改进度；匹配成功用 `ESP_LOGI`，无效 basename 跳过用 `ESP_LOGW`，计算失败或 mismatch 用 `ESP_LOGE`。
 - 轮播日志中 `slideshow rtc ...` / `slide_timer rtc ...` 表示真实 RTC 时间控制；`slideshow rtc wait target=... display_target=... lead=...` 中 `target` 是真实播放点，`display_target` 是提前进入显示流程的时间点，`lead` 是当前 EPD type 实际提前秒数；`slideshow rtc display start file=... position=x/y interval=...` 表示本轮第 x/y 个播放点已进入 EPD 显示；`legacy_tick` 只表示非 RTC 兼容路径或旧状态统计，不能作为新协议轮播判断依据。RTC 模式以真实系统时间计算 remain，不依赖 task tick 延时。
 - `set_slideshow sw=1` 会按新的 timestamp / interval 重算 RTC 播放点；`start_slideshow` 也会用自身 timestamp 写 RTC control 并启动轮播。
 - SNTP 模式下即使旧 `slide_progress` 与当前时间不一致，也会以绝对时间槽结果为准；只有开机恢复时有效 `order[position]` 索引等于当前槽下一项且 `pending_file` 同时匹配，才用于避免重复刷新墨水屏已经保留的当前图片。未取得 SNTP 时始终沿用原进度恢复行为，已经切换到 SNTP 模式后即使 WiFi 临时断开也不回退。

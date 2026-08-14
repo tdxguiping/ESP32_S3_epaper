@@ -354,7 +354,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 运行中首次取得 SNTP 的防重复测试：使用 A、B、C 三个不同文件并设置 `interval=300`，启动时暂时阻止 SNTP、保留 CH583/RTC 可用，让 A 完成一次 EPD 显示，再于完成后 10～30 秒恢复 SNTP。预期切换日志包含 `current_consumed=1 action=wait_next`，A 不再次进入 EPD，B 等待下一个绝对播放点。反向测试应在 A 尚未显示前恢复 SNTP，预期日志包含 `current_consumed=0 action=display_current`，当前绝对槽仍正常显示。
 
-轮播 runtime 内存测试：16 字节基础名规则下，150 项名称数组应由 7200 字节降为 2550 字节，日志中的 runtime_size 预计由约 7.5 KB 降到约 2.9 KB；runtime 仍优先使用 PSRAM，12 KB 轮播任务栈保持使用任务创建所需内存。若 PSRAM分配失败，应打印一次回退警告并尝试内部 RAM；若最终runtime结构分配或任务创建仍失败，新命令返回现有 `1506`，并打印一条 `slideshow runtime alloc failed point=runtime_calloc/task_create` 内存诊断。新命令和开机自动恢复失败后都必须出现带 `reason=new_command/startup_restore/startup_delay_alloc/startup_task_create` 的回退日志，`show_control.sw=0`、`epd_mode=NORMAL`且没有轮播任务运行；新保存的轮播列表允许保留。
+轮播 runtime 内存测试：16 字节基础名规则下，150 项名称数组应由 7200 字节降为 2550 字节，日志中的 runtime_size 预计由约 7.5 KB 降到约 2.9 KB；runtime 仍优先使用 PSRAM，失败时打印一次回退警告并尝试内部 RAM。轮播主任务应只在首次初始化时打印一次 `slideshow static worker started stack=6144`，以后反复启动/停止只复用固定 6 KB 静态内部 RAM 栈和静态 TCB，不再出现主轮播 `task_create` 动态栈失败；完整显示、预加载和进度保存路径的栈峰值应维持约 2920 字节，最低剩余量应约 3.2 KB，若测试版本明显更低需停止增加局部大数组并重新评估。连续启动/停止至少 100 次，确认 worker 始终能再次启动、没有堆持续下降且没有 `ESP_ERR_NO_MEM`。若 runtime 最终分配失败，新命令返回现有 `1506` 并执行原回退；开机自动恢复的 runtime、延迟参数或延迟辅助任务临时失败时，应保留 `show_control.sw=1`、`epd_mode=SLIDESHOW` 和原进度，不运行残缺轮播，并在下一次唤醒重新恢复。开机延迟辅助任务仍使用独立 6 KB 动态栈，任务退出后该内存应释放。
 
 当前实现：
 

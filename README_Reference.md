@@ -2244,8 +2244,11 @@ server_network_sta_slideshow.c
 ├─ ServerNetworkStaSlideshow_StartSavedDelayed()
 ├─ ServerNetworkStaSlideshow_GetRuntimeTiming()
 ├─ ServerNetworkStaSlideshow_Stop()
-└─ slideshow_task()
+├─ slideshow_worker_task()（固定 6 KB 静态栈，常驻等待通知）
+└─ slideshow_run_runtime()（单次轮播运行，结束后释放 runtime）
 ```
+
+轮播 worker 的 TCB 和 6 KB 栈从开机起固定保留在静态内部 RAM，不从 heap 动态申请任务栈；worker 在开机恢复轮播或第一次收到轮播启动请求时创建，创建后常驻复用。每次启动仍优先从 PSRAM 分配约 2.9 KB runtime，失败时回退内部 RAM。运行结束后 worker 保留、runtime 释放。开机自动恢复遇到临时资源失败时保留已保存的轮播控制、模式和进度，供下次唤醒继续恢复；新命令启动失败仍按原规则回退并返回 1506。
 
 ---
 
