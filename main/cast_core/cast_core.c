@@ -11,6 +11,7 @@
 #include "epd_display_app.h"
 #include "epd_sd_power_test.h"
 #include "epd_display_mode.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "file_serving_example_common.h"
@@ -43,6 +44,22 @@ typedef struct {
 static const char *TAG = "cast_core";
 static QueueHandle_t s_cast_save_queue;
 static TaskHandle_t s_cast_save_task;
+
+static void log_file_write_memory(const char *point)
+{
+#if USER_FILE_SAVE_MEMORY_LOG_ENABLE
+    ESP_LOGI(TAG,
+             "file memory point=%s internal_free=%u internal_largest=%u psram_free=%u psram_largest=%u",
+             point != NULL ? point : "unknown",
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+    (void)point;
+#endif
+}
+
 static const char *CAST_IMAGE_DIR_NAME = "cast_img";
 
 static esp_err_t stop_slideshow_for_cast(const char *base_path);
@@ -107,22 +124,57 @@ static esp_err_t ensure_dir(const char *path)
 
 static esp_err_t write_file_exact(const char *path, const char *data, size_t len)
 {
+    int64_t start_us = esp_timer_get_time();
     FILE *fp = fopen(path, "wb");
     if (fp == NULL) {
         ESP_LOGE(TAG, "open failed path=%s errno=%d", path, errno);
         return ESP_FAIL;
     }
+    log_file_write_memory("before_write");
+    ESP_LOGI(TAG,
+             "file write start path=%s data_size=%u io_buffer=%u",
+             path,
+             (unsigned int)len,
+             (unsigned int)USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
     void *io_buf = NULL;
 #if USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE > 0
     io_buf = malloc(USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
     if (io_buf != NULL) {
-        (void)setvbuf(fp, io_buf, _IOFBF, USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
+        if (setvbuf(fp, io_buf, _IOFBF, USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE) != 0) {
+            ESP_LOGW(TAG,
+                     "setvbuf failed path=%s size=%u",
+                     path,
+                     (unsigned int)USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
+        }
+    } else {
+        ESP_LOGW(TAG,
+                 "file io buffer unavailable path=%s requested=%u, continue with default stdio buffering",
+                 path,
+                 (unsigned int)USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
     }
 #endif
     size_t written = fwrite(data, 1, len, fp);
-    fclose(fp);
+    int write_errno = written == len ? 0 : errno;
+    int close_ret = fclose(fp);
+    int close_errno = close_ret == 0 ? 0 : errno;
     free(io_buf);
-    return written == len ? ESP_OK : ESP_FAIL;
+    log_file_write_memory("after_write");
+    if (written != len || close_ret != 0) {
+        ESP_LOGE(TAG,
+                 "file write failed path=%s written=%u expected=%u close_ret=%d errno=%d",
+                 path,
+                 (unsigned int)written,
+                 (unsigned int)len,
+                 close_ret,
+                 close_ret != 0 ? close_errno : write_errno);
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG,
+             "file write done path=%s size=%u elapsed_ms=%llu",
+             path,
+             (unsigned int)len,
+             (unsigned long long)((esp_timer_get_time() - start_us) / 1000));
+    return ESP_OK;
 }
 
 static esp_err_t check_save_space(const char *base_path, size_t bin_len, size_t image_len)

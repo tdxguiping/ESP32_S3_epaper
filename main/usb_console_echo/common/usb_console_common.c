@@ -10,6 +10,7 @@
 #include <sys/unistd.h>
 
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "epd_display_app.h"
@@ -23,6 +24,21 @@ static const char *TAG = "usb_console_common";
 static uint32_t elapsed_ms_since(int64_t start_us)
 {
     return (uint32_t)((esp_timer_get_time() - start_us) / 1000);
+}
+
+static void log_file_write_memory(const char *point)
+{
+#if USER_FILE_SAVE_MEMORY_LOG_ENABLE
+    ESP_LOGI(TAG,
+             "file memory point=%s internal_free=%u internal_largest=%u psram_free=%u psram_largest=%u",
+             point != NULL ? point : "unknown",
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+    (void)point;
+#endif
 }
 
 static const char *find_bytes(const char *haystack, size_t haystack_len, const char *needle, size_t needle_len)
@@ -654,21 +670,46 @@ esp_err_t UsbConsoleCommon_SavePartFile(const char *dir,
         TdxSharedSpi_Unlock();
         return ESP_FAIL;
     }
+    log_file_write_memory("before_write");
+    ESP_LOGI(TAG,
+             "file write start path=%s data_size=%u io_buffer=%u",
+             tmp_path,
+             (unsigned int)part->len,
+             (unsigned int)USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
     void *io_buf = NULL;
 #if USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE > 0
     // Use an explicit stdio buffer so SD/FATFS writes can batch internal file operations.
-    // 使用显式 stdio 缓冲，让 SD/FATFS 写入尽量合并内部文件操作。
     io_buf = malloc(USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
     if (io_buf != NULL) {
-        (void)setvbuf(fp, io_buf, _IOFBF, USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
+        if (setvbuf(fp, io_buf, _IOFBF, USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE) != 0) {
+            ESP_LOGW(TAG,
+                     "setvbuf failed path=%s size=%u",
+                     tmp_path,
+                     (unsigned int)USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
+        }
+    } else {
+        ESP_LOGW(TAG,
+                 "file io buffer unavailable path=%s requested=%u, continue with default stdio buffering",
+                 tmp_path,
+                 (unsigned int)USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
     }
 #endif
     size_t written = fwrite(part->data, 1, part->len, fp);
-    fclose(fp);
+    int write_errno = written == part->len ? 0 : errno;
+    int close_ret = fclose(fp);
+    int close_errno = close_ret == 0 ? 0 : errno;
     free(io_buf);
-    if (written != part->len) {
+    log_file_write_memory("after_write");
+    if (written != part->len || close_ret != 0) {
         unlink(tmp_path);
         TdxSharedSpi_Unlock();
+        ESP_LOGE(TAG,
+                 "file write failed path=%s written=%u expected=%u close_ret=%d errno=%d",
+                 tmp_path,
+                 (unsigned int)written,
+                 (unsigned int)part->len,
+                 close_ret,
+                 close_ret != 0 ? close_errno : write_errno);
         return ESP_FAIL;
     }
     unlink(path);

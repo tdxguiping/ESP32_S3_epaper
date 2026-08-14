@@ -458,6 +458,35 @@ curl.exe -X POST "$esp/dataUP" `
 
 预期：设备返回上传成功结果；`show=false` 时只保存，不进入 EPD 显示队列。
 
+文件保存 16 KiB stdio 缓冲回归测试：
+
+```powershell
+# 连续上传 20 次，文件名保持在 16 字节业务上限内。
+1..20 | ForEach-Object {
+  $name = "memtest{0:d4}" -f $_
+  curl.exe -X POST "$esp/dataUP" `
+    -F "func=upload" `
+    -F "fileName=$name" `
+    -F "bin_size=$binSize" `
+    -F "image_size=$jpgSize" `
+    -F "save=true" `
+    -F "show=false" `
+    -F "bin=@$bin;type=application/octet-stream" `
+    -F "image=@$jpg;type=image/jpeg"
+  Start-Sleep -Seconds 1
+}
+```
+
+同步验证网络 `cast` 的 `show=true/save=true`、USB multipart upload 和 USB raw upload。每条路径分别使用小文件、实际屏 BIN/zlib 和接近业务上限的文件，并检查：
+
+```text
+- 每次保存前后都有 file memory 日志，io_buffer=16384。
+- 正常路径没有 setvbuf failed、file io buffer unavailable 或 file write failed。
+- 文件大小和原文件一致，可继续显示或轮播，不遗留 .tmp 文件。
+- 连续 20 次后 internal/PSRAM free 和 largest block 不持续下降。
+- 模拟存储不可写或写入中断时，fwrite/fclose 失败必须返回原有保存失败，临时文件得到清理。
+```
+
 ---
 
 ### 2.13 wifi_work_time：WiFi 省电管理 <span id="sec-02-13"></span>

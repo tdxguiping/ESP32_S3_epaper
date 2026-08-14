@@ -169,6 +169,12 @@ USER_HTTP_FILE_LIST_LOG_ENABLE=0
 USER_HTTP_MULTIPART_DETAIL_LOG_ENABLE=0
 默认关闭 legacy multipart fallback 的 field、boundary、slot 等细节日志；关键保存和错误日志保留。
 
+USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE=16384
+`cast_core.c`、`usb_console_common.c` 和 `usb_console_upload.c` 使用同一个 16 KiB stdio 文件缓冲。比原 64 KiB 配置每个正在保存的文件减少 49152 字节瞬时内存。缓冲申请或 `setvbuf()` 失败时打印 `ESP_LOGW` 并继续使用 stdio 默认缓冲，不改变原有保存接口。
+
+USER_FILE_SAVE_MEMORY_LOG_ENABLE=1
+开发阶段在上述三条文件保存路径的写入前后打印 internal RAM / PSRAM 的 free 和 largest block。正常开始、完成使用 `ESP_LOGI`，缓冲退化使用 `ESP_LOGW`，`fwrite()` 长度不符或 `fclose()` flush 失败使用 `ESP_LOGE`。
+
 USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE=0
 默认关闭 ANSI 颜色测试。
 

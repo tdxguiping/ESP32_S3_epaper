@@ -482,8 +482,14 @@ extern "C" {
 // Log USB receive progress every fixed byte step so serial upload bottlenecks can be located.
 #define USB_CONSOLE_RX_PROGRESS_STEP_BYTES (20 * 1024)
 
-// Keep file save stdio buffering configurable without touching USB feature code.
-#define USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE (64 * 1024)
+// Use a conservative stdio buffer to reduce transient file-save memory while keeping SD/FATFS writes batched.
+#define USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE (16 * 1024)
+
+// Log internal RAM and PSRAM around file-save operations during development.
+#define USER_FILE_SAVE_MEMORY_LOG_ENABLE 1
+#if USER_FILE_SAVE_MEMORY_LOG_ENABLE != 0 && USER_FILE_SAVE_MEMORY_LOG_ENABLE != 1
+#error "USER_FILE_SAVE_MEMORY_LOG_ENABLE must be 0 or 1"
+#endif
 
 // Feature switch for USER USB CONSOLE ANSI COLOR TEST ENABLE; set to 1 to enable and 0 to disable.
 #define USER_USB_CONSOLE_ANSI_COLOR_TEST_ENABLE 0
