@@ -4,6 +4,8 @@
 
 本文按实际代码记录当前已实现协议。`V2_相框传图协议.html` 用于识别 APP 约定和预留接口；与代码不同的内容必须明确标为“预留/未实现”，不能写成当前功能。
 
+轮播配置、轮播控制和最后投图固定保存在默认 NVS 分区的 `image_state` namespace，不建立或读取 SD 文本文件。该内部存储规则不改变任何网络 HTTP、USB HTTP-like 或 CH583/BLE 报文：`start_slideshow`、`set_slideshow`、`snapshot`、`cast`、`cast2pic`、`upload` 的请求字段、响应 JSON、异步处理方式和正式 result code 全部保持原定义。`slide_cfg`、`slide_ctl`、`last_cast`、version、CRC 和 generation 都是设备内部状态，不作为协议字段发送；USB复用网络主业务规则。
+
 ## 目录 <span id="toc"></span>
 
 - [6. 网络 HTTP 数据入口](#sec-06)
@@ -135,7 +137,7 @@ read_request_body_to_buffer() 会把完整 body 读入内存后再分发，不�
 ```text
 存：
 - net_data 入口本身只在 RAM/PSRAM 中申请 request body 缓冲区，处理完成后释放。
-- 真正持久化由下游模块完成：cast/upload/cast2pic 写 SD，ota 写 OTA 分区，slideshow 写配置文件，wifi_work_time 写 NVS。
+- 真正持久化由下游模块完成：cast/upload/cast2pic 图片写 SD，ota 写 OTA 分区，slideshow 状态写默认 NVS `image_state`，wifi_work_time 写 NVS。
 
 取：
 - 从 HTTP request 读取 header、body、multipart boundary、JSON func。
@@ -397,7 +399,7 @@ GET `/time` 在同一个 `download_get_handler()` 中紧接 `/ping` 检查，由
 ```text
 存：
 - small JSON 入口不直接存储。
-- set_slideshow / start_slideshow / set_wifi_work_time 等由对应模块保存到文件或 NVS。
+- set_slideshow / start_slideshow 将状态保存到默认 NVS `image_state`；set_wifi_work_time 由对应模块保存到 NVS。
 
 取：
 - 读取 JSON func 字段。
@@ -544,7 +546,7 @@ Connection: keep-alive
 - USB cast/cast2pic 写 /data/cast_img；USB upload 写 /data/bin_img 与 /data/jpg_img。
 - USB wifi 写 NVS wifi 与 nvs.net80211。
 - USB epd_type 写 PhotoPainter EPD type key。
-- USB slideshow/slideshow_control 写轮播配置文件。
+- USB slideshow/slideshow_control 复用网络主业务规则，写默认 NVS `image_state` 的 `slide_cfg` / `slide_ctl`。
 - USB wifi_work_time 写工作时间 NVS。
 
 取：

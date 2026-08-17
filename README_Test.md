@@ -2,6 +2,8 @@
 
 本文件集中保存开发阶段的测试方法和命令。测试前先确认设备已联网，并把示例 IP、文件路径改为实际值。接口协议见 [README_Protocol.md](README_Protocol.md)，预期业务行为见 [README_Fun.md](README_Fun.md)，结果码见 [README_Result_Code.md](README_Result_Code.md)。
 
+持久状态专项检查：启动日志应出现 `persistent image-state ready partition=default namespace=image_state`。完整烧录和应用程序 OTA 前后都必须读取同一默认 NVS 分区；SD 中不得建立或读取轮播配置、轮播控制和 last-cast `.txt`。测试 `start_slideshow` 后重启应恢复同一列表、startIndex 和 RTC anchor；`set_slideshow sw=0/1`、daily、本地浏览以及 show=true cast/upload 应只更新 NVS control；cast 成功应打印 `last cast saved`，cast2pic 清理时应打印 `last cast state cleared`。启动时 CH583 UART 必须先于轮播模式协调和 USB 入口就绪；control/config generation 不一致或 control 无效必须禁用轮播并把 SLIDESHOW mode 协调为 NORMAL；DAILY 和 LOCAL_IMAGE_BROWSING mode 优先，不能被旧轮播 control 覆盖。独立的 `slide_random` key 不应再读写。NVS 写入、读回、CRC、generation 或容量异常使用 `ESP_LOGE`，状态协调使用必要的 `ESP_LOGW/ESP_LOGI`，不得为正常读取或未变化 control 逐条刷日志。
+
 ## 目录 <span id="toc"></span>
 
 - [1. 测试约定](#sec-01)
@@ -328,7 +330,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
   -Body $body
 ```
 
-预期：设备保存 APP 最终发送的轮播列表、interval、强制为 false 的 random 和 startIndex，从 `fileNames[startIndex]` 建立第 0 个绝对时间槽，重写 `show_control.txt` 为标准 RTC control，并按 `timestamp` 启动 RTC 轮播。最终列表允许重复且最多 150 项；超过 150 项返回 1514，缺少 startIndex 返回 1515，`startIndex >= 最终 fileNames 数量` 返回 1516，任一文件不存在、不是普通文件或为空返回 1508。以上非法指令均不改动 RTC / 系统时间、轮播配置、control、NVS、显示模式和现有轮播任务。
+预期：设备把 APP 最终发送的轮播列表、interval、强制为 false 的 random 和 startIndex 保存到 NVS `slide_cfg`，把标准 RTC control 保存到 NVS `slide_ctl`，两个记录 generation 相同，并按 `timestamp` 从 `fileNames[startIndex]` 建立第 0 个绝对时间槽。最终列表允许重复且最多 150 项；超过 150 项返回 1514，缺少 startIndex 返回 1515，`startIndex >= 最终 fileNames 数量` 返回 1516，任一文件不存在、不是普通文件或为空返回 1508。以上非法指令均不改动 RTC / 系统时间、持久配置、control、显示模式和现有轮播任务。
 
 `random=true` 的 APP 侧测试：APP 将每个原始文件名复制 3 次，对扩展后的最终列表打乱，再把该最终列表发送给设备。设备允许重复、不再次随机，并按最终列表顺序播放；设备保存和 snapshot 返回的 random 仍为 false。
 
@@ -354,12 +356,16 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 运行中首次取得 SNTP 的防重复测试：使用 A、B、C 三个不同文件并设置 `interval=300`，启动时暂时阻止 SNTP、保留 CH583/RTC 可用，让 A 完成一次 EPD 显示，再于完成后 10～30 秒恢复 SNTP。预期切换日志包含 `current_consumed=1 action=wait_next`，A 不再次进入 EPD，B 等待下一个绝对播放点。反向测试应在 A 尚未显示前恢复 SNTP，预期日志包含 `current_consumed=0 action=display_current`，当前绝对槽仍正常显示。
 
-轮播 runtime 内存测试：16 字节基础名规则下，150 项名称数组应由 7200 字节降为 2550 字节，日志中的 runtime_size 预计由约 7.5 KB 降到约 2.9 KB；runtime 仍优先使用 PSRAM，失败时打印一次回退警告并尝试内部 RAM。轮播主任务应只在首次初始化时打印一次 `slideshow static worker started stack=6144`，以后反复启动/停止只复用固定 6 KB 静态内部 RAM 栈和静态 TCB，不再出现主轮播 `task_create` 动态栈失败；完整显示、预加载和进度保存路径的栈峰值应维持约 2920 字节，最低剩余量应约 3.2 KB，若测试版本明显更低需停止增加局部大数组并重新评估。连续启动/停止至少 100 次，确认 worker 始终能再次启动、没有堆持续下降且没有 `ESP_ERR_NO_MEM`。若 runtime 最终分配失败，新命令返回现有 `1506` 并执行原回退；开机自动恢复的 runtime、延迟参数或延迟辅助任务临时失败时，应保留 `show_control.sw=1`、`epd_mode=SLIDESHOW` 和原进度，不运行残缺轮播，并在下一次唤醒重新恢复。开机延迟辅助任务仍使用独立 6 KB 动态栈，任务退出后该内存应释放。
+轮播 runtime 内存测试：16 字节基础名规则下，150 项名称数组应为2550字节，runtime约2.9KB并优先使用PSRAM。启动早期只应打印一次 `image_worker: static resources ... stack=9216` 和 `image_worker: started stack=9216`；不得再出现 `slideshow static worker started`、独立daily worker或 `slide_start_delay` 任务创建日志。轮播、每日一图和轮播启动延迟分别执行后，应出现对应 `image_worker: job done owner=SLIDESHOW/DAILY ... min_free=... peak_used=... configured=9216`。连续启动/停止至少100次，确认统一worker始终常驻、没有堆持续下降、没有queue永久BUSY和重复释放runtime。新命令runtime失败仍返回1506并回滚控制及模式；开机恢复临时失败仍保留 `slide_ctl.enabled=true`、`epd_mode=SLIDESHOW` 和原进度。
+
+统一worker启动延迟抢占测试：保存SLIDESHOW模式后重启，在 `slideshow startup delay 10000 ms` 出现后的10秒内下发合法daily命令。预期旧轮播generation立即失效，延迟等待被唤醒并打印取消，daily命令随后由同一 `image_worker` 执行；10秒到点后不得再启动旧轮播runtime。反向从运行中的daily切换轮播时，应先看到daily停止完成，再看到 `owner=SLIDESHOW`，任何时刻不得同时存在两个active owner。
+
+轮播停止与预加载竞争测试：在 `slideshow preload start` 后立即发送 `set_slideshow sw=0`。允许出现 `preload skipped ... because stop requested` 的普通信息，但不得再出现 `slideshow preload initial/next failed ... ESP_ERR_INVALID_STATE` 警告；真实预加载失败仍必须保留警告。
 
 当前实现：
 
 ```text
-start_slideshow 是正式轮播列表配置接口；会重写 `show_control.txt` 为标准 RTC control，不再写缺少 timestamp/anchor_epoch 的旧 control。
+start_slideshow 是正式轮播列表配置接口；会先完整校验，再依次写入版本化 NVS `slide_cfg` 和标准 RTC `slide_ctl`。两个记录用 generation 防止掉电后混用新旧状态；SD 中不生成任何 control 文件。
 网络 JSON 的 `func` 判断支持空格、CRLF 和 PowerShell `ConvertTo-Json` 输出格式。
 ```
 
@@ -400,15 +406,15 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
   -Body $body
 ```
 
-预期：`sw=1` 开启，`sw=0` 关闭；配置写入 slideshow control 文件。
+预期：`sw=1` 开启，`sw=0` 关闭；配置写入默认 NVS `image_state:slide_ctl`。
 
 当前实现：
 
 ```text
-set_slideshow 的 sw=1 会更新控制文件、同步写 `epd_mode=1(SLIDESHOW)`，并尝试启动轮播。
+set_slideshow 的 sw=1 会更新 NVS `slide_ctl`、同步写 `epd_mode=1(SLIDESHOW)`，并尝试启动轮播。
 若旧轮播正在运行，`set_slideshow sw=1` 写入新的 interval / timestamp 后会按 RTC 计算出的 next_epoch 重新同步；如果 EPD 正在显示，不打断本次显示，显示完成后继续按 RTC 下一个播放点等待，等待期间会预加载下一张。
 `ServerNetworkStaSlideshow_GetScheduleTiming()` 可读取当前 RTC 轮播的 now_epoch / next_epoch / remain，snapshot 和关机前 WAKE_TIMER 计算优先使用这组值。
-存储未就绪、未保存轮播列表、参数非法、interval 非法、控制文件/NVS 保存失败、轮播 runtime 启动失败、timestamp 非法、timestamp 写 RTC 失败、SNTP 时间差过大已分别返回 1012、1501、1004、1507、1509、1506、1510、1512、1513。
+存储未就绪、未保存轮播列表、参数非法、interval 非法、NVS control 保存失败、轮播 runtime 启动失败、timestamp 非法、timestamp 写 RTC 失败、SNTP 时间差过大已分别返回 1012、1501、1004、1507、1509、1506、1510、1512、1513。control 保存后若模式保存失败或 runtime 启动失败，必须停止轮播并尝试回滚为 `slide_ctl.enabled=false`、`epd_mode=NORMAL`；回滚异常打印一条 `ESP_LOGE`。
 网络 JSON 的 `func` 判断支持空格、CRLF 和 PowerShell `ConvertTo-Json` 输出格式。
 ```
 
@@ -579,6 +585,8 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 边界测试：将 `$future` 改为当前时间加100秒。预期首次仍立即执行；该timestamp对应的正式时间槽因距离首次EPD调用不足300秒，被推迟到首次EPD调用满300秒后执行。失败后的重试时间仍为1小时。
 
+内存诊断：启动早期应打印一次 `image_worker: static resources`，确认 `stack=9216`，并列出统一TCB、单pending命令槽、状态mutex和内部RAM；随后打印 `image_worker: started stack=9216` 和 `daily_image: base initialized ... shared_worker=resident`。完整daily周期后检查 `image_worker: job done owner=DAILY` 的 `min_free/peak_used`：`min_free>=2048` 可保留9KB，`1024..2047` 建议增加到10KB，`min_free<1024` 或出现Canary/重启时至少增加2KB。
+
 关闭请求：
 
 ```powershell
@@ -589,7 +597,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
   -Body $body
 ```
 
-关闭成功后 `epd_mode=0(NORMAL)`，旧 `daily_cfg` 保留，但 daily worker 已取消。
+关闭成功后 `epd_mode=0(NORMAL)`，旧 `daily_cfg` 保留，daily命令被取消；9KB统一静态worker永久常驻并重新进入空闲等待。
 
 ---
 

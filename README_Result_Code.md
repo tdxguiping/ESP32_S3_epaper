@@ -2,7 +2,7 @@
 
 本文定义当前工程接口返回 JSON 的 `result` 编码规则。
 
-内部保存用 JSON 不属于接口返回，例如 `slideshow_config.txt`、`show_control.txt`、`last_cast.txt`，不需要加入 `result`。
+默认 NVS 分区 `image_state` namespace 中的 `slide_cfg`、`slide_ctl`、`last_cast` 不属于接口返回，不需要加入 `result`。内部存储调整不新增 result code。
 
 ---
 
@@ -121,14 +121,14 @@
 
 [⬆ 返回目录](#toc)
 
-### 1.3 内部保存 JSON 不加 result <span id="sec-01-3"></span>
+### 1.3 内部持久状态不加 result <span id="sec-01-3"></span>
 
-以下 JSON 是设备本地保存状态，不是接口返回，不需要加入 `result`：
+以下 Blob 是设备本地保存状态，不是接口返回，不需要加入 `result`：
 
 ```text
-/data/bin_img/slideshow_config.txt
-/data/bin_img/show_control.txt
-/data/cast_img/last_cast.txt
+default NVS partition / image_state namespace / slide_cfg
+default NVS partition / image_state namespace / slide_ctl
+default NVS partition / image_state namespace / last_cast
 ```
 
 `PhotoPainter:epd_mode` 是 u8 内部状态，不属于接口返回 JSON：
@@ -140,7 +140,7 @@
 3 LOCAL_IMAGE_BROWSING  本地图片浏览模式
 ```
 
-规则：凡是 `show_control.txt` 的 `sw` 写入成功，`epd_mode` 必须同步写入。`sw=1` 写 `epd_mode=1`，`sw=0` 写 `epd_mode=0`。
+规则：凡是 NVS `slide_ctl.enabled` 写入成功，`epd_mode` 必须同步写入。`enabled=true` 写 `epd_mode=1`，`enabled=false` 写 `epd_mode=0`。NVS 写入、读回校验、CRC、generation 或容量失败继续映射原有 slideshow config/control、last-cast save、storage/no-memory/internal result code，不新增编码。
 
 `daily_download_file sw=1` 保存成功后写 `epd_mode=2`，`sw=0` 停止daily和轮播后写 `epd_mode=0`；合法 cast/cast2pic 成功接收后写 `epd_mode=0`；`start_slideshow` 或 `set_slideshow sw=1` 成功后写 `epd_mode=1`。所有模式写入必须通过统一模式接口持久化到 NVS。
 
@@ -321,6 +321,8 @@ start_slideshow_result
 
 APP / 网络端 `start_slideshow` 在校时、保存配置、写 control、写 NVS、切换显示模式或启停轮播任务前完成上述列表校验。任一项非法时只返回错误，不改动设备业务状态。
 
+配置/control 已保存后若显示模式保存失败，或新命令 runtime 启动失败，设备停止轮播并尽力回滚为 `slide_ctl.enabled=false`、`epd_mode=NORMAL`；仍返回现有 `1504`/`1509` 或 `1506`，不新增 result code。
+
 [⬆ 返回目录](#toc)
 
 ### 2.8 slideshow_control：轮播开关控制 <span id="sec-02-8"></span>
@@ -344,8 +346,10 @@ set_slideshow_result
 | `1511` | `TDX_JSON_RESULT_SLIDESHOW_TIMEZONE_DEPRECATED` | 旧协议 `timezone` 已废弃；新协议不再接收 `datetime/timezone` |
 | `1512` | `TDX_JSON_RESULT_SLIDESHOW_TIME_SET_FAILED` | SNTP 未同步时，使用 APP / PC 发来的 `timestamp` 写入 RTC / 系统时间失败 |
 | `1513` | `TDX_JSON_RESULT_SLIDESHOW_TIME_DIFF_TOO_LARGE` | SNTP 已同步时，APP / PC 发来的 `timestamp` 与设备当前 SNTP 时间差值超过 5 秒；设备不执行本次轮播指令 |
-| `1515` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING` | `sw=1` 时已保存的 `slideshow_config.txt` 缺少 `startIndex` |
-| `1516` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID` | `sw=1` 时已保存的 `slideshow_config.txt` 包含非法 `startIndex` |
+| `1515` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING` | `start_slideshow` 请求缺少必填的 `startIndex` |
+| `1516` | `TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID` | `start_slideshow` 请求的 `startIndex` 不满足 `0 <= startIndex < file_count` |
+
+`set_slideshow` 的 control 已保存后若显示模式保存失败或 runtime 启动失败，也执行上述禁用回滚；正式返回码仍分别使用 `1509`、`1506`。
 
 [⬆ 返回目录](#toc)
 
@@ -791,14 +795,14 @@ CH583 上报 BLE MAC 后，网络和 USB 的 `ping_result` 携带：
 
 [⬆ 返回目录](#toc)
 
-### 5.3 本地配置 JSON 文件 <span id="sec-05-3"></span>
+### 5.3 本地 NVS 持久状态 <span id="sec-05-3"></span>
 
-以下文件不是接口返回，不需要 `result`：
+以下 NVS key 不是接口返回，不需要 `result`：
 
 ```text
-slideshow_config.txt
-show_control.txt
-last_cast.txt
+image_state:slide_cfg
+image_state:slide_ctl
+image_state:last_cast
 ```
 
 NVS 内部状态：

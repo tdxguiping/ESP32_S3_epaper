@@ -22,20 +22,18 @@
 #include "file_serving_example_common.h"
 #include "epd_display_app.h"
 #include "epd_display_mode.h"
+#include "app_persistent_state.h"
 #include "server_network_sta.h"
+#include "server_network_sta_daily_image.h"
 #include "server_network_sta_time.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
+#include "image_business_worker.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 
 static const char *TAG = "server_sta_slide";
-#define SLIDESHOW_TASK_STACK_BYTES (6U * 1024U)
-#define SLIDESHOW_TASK_STACK_DEPTH (SLIDESHOW_TASK_STACK_BYTES / sizeof(StackType_t))
-#define SLIDESHOW_STARTUP_DELAY_TASK_STACK_BYTES (6U * 1024U)
-#define SLIDESHOW_TASK_PRIORITY 4
-#define SLIDESHOW_STACK_WATERMARK_LOG_STEP_BYTES 256U
 #define SLIDESHOW_PROGRESS_MAGIC 0x534C4450UL
 #define SLIDESHOW_PROGRESS_VERSION 2U
 #define SLIDESHOW_PROGRESS_SAVE_RETRIES 3
@@ -108,17 +106,27 @@ typedef struct {
 
 typedef struct {
     char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
+    uint32_t generation;
 } slideshow_startup_delay_t;
 
-static StaticTask_t s_slideshow_worker_tcb;
-static StackType_t s_slideshow_worker_stack[SLIDESHOW_TASK_STACK_DEPTH];
-static TaskHandle_t s_slideshow_worker_task = NULL;
-static bool s_slideshow_worker_creating = false;
-static slideshow_runtime_t *s_slideshow_pending_runtime = NULL;
+typedef struct {
+    slideshow_runtime_t *runtime;
+    uint32_t generation;
+} slideshow_worker_payload_t;
+
+_Static_assert(sizeof(slideshow_startup_delay_t) <=
+                   USER_IMAGE_BUSINESS_WORKER_PAYLOAD_SIZE,
+               "slideshow startup payload exceeds shared worker payload");
+_Static_assert(sizeof(slideshow_worker_payload_t) <=
+                   USER_IMAGE_BUSINESS_WORKER_PAYLOAD_SIZE,
+               "slideshow runtime payload exceeds shared worker payload");
+
 static volatile bool s_slideshow_runtime_active = false;
-static TaskHandle_t s_slideshow_startup_delay_task = NULL;
+static volatile bool s_slideshow_startup_delay_active = false;
 static volatile bool s_slideshow_stop = false;
-static portMUX_TYPE s_slideshow_worker_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint32_t s_slideshow_generation = 0;
+static volatile uint32_t s_slideshow_startup_generation = 0;
+static portMUX_TYPE s_slideshow_runtime_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_slideshow_timing_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_slideshow_interval_active = false;
 static uint32_t s_slideshow_runtime_interval = 0;
@@ -196,36 +204,6 @@ static const char *find_json_key(const char *body, const char *key)
     return strstr(body, pattern);
 }
 
-static bool parse_json_int(const char *body, const char *key, int *out)
-{
-    const char *pos = find_json_key(body, key);
-    char *end_ptr = NULL;
-    long value = 0;
-    if (pos == NULL || out == NULL) {
-        return false;
-    }
-
-    pos += strlen(key) + 2;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != ':') {
-        return false;
-    }
-    pos++;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-
-    errno = 0;
-    value = strtol(pos, &end_ptr, 10);
-    if (errno != 0 || end_ptr == pos) {
-        return false;
-    }
-    *out = (int)value;
-    return true;
-}
-
 static bool parse_json_u32(const char *body, const char *key, uint32_t *out)
 {
     const char *pos = find_json_key(body, key);
@@ -291,40 +269,6 @@ static bool parse_json_bool_default(const char *body, const char *key, bool defa
         return false;
     }
     return default_value;
-}
-
-static bool parse_json_string(const char *body, const char *key, char *out, size_t out_size)
-{
-    const char *pos = find_json_key(body, key);
-    if (pos == NULL || out == NULL || out_size == 0) {
-        return false;
-    }
-
-    pos += strlen(key) + 2;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != ':') {
-        return false;
-    }
-    pos++;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != '"') {
-        return false;
-    }
-    pos++;
-
-    size_t len = 0;
-    while (*pos != '\0' && *pos != '"' && len + 1 < out_size) {
-        out[len++] = *pos++;
-    }
-    if (*pos != '"') {
-        return false;
-    }
-    out[len] = '\0';
-    return true;
 }
 
 static bool parse_json_i64(const char *body, const char *key, int64_t *out)
@@ -723,118 +667,84 @@ static esp_err_t check_slideshow_files_exist(const char *bin_dir, const slidesho
     return ESP_OK;
 }
 
-static esp_err_t write_text_file(const char *path, const char *data)
+static void slideshow_request_to_persistent(
+    const slideshow_request_t *request,
+    app_persistent_slideshow_config_t *config,
+    app_persistent_slideshow_control_t *control)
 {
-    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
-    if (lock_ret != ESP_OK) {
-        return lock_ret;
+    memset(config, 0, sizeof(*config));
+    memset(control, 0, sizeof(*control));
+    config->file_count = request->file_count;
+    config->start_index = request->start_index;
+    config->interval = request->interval;
+    config->random = false;
+    for (size_t i = 0; i < request->file_count; ++i) {
+        strlcpy(config->file_names[i],
+                request->file_names[i],
+                sizeof(config->file_names[i]));
     }
-    FILE *fp = fopen(path, "wb");
-    if (fp == NULL) {
-        TdxSharedSpi_Unlock();
-        ESP_LOGE(TAG, "slideshow open failed path=%s errno=%d", path, errno);
-        return ESP_FAIL;
-    }
-
-    size_t len = strlen(data);
-    size_t written = fwrite(data, 1, len, fp);
-    fclose(fp);
-    TdxSharedSpi_Unlock();
-    ESP_LOGI(TAG, "slideshow write path=%s len=%u written=%u",
-             path, (unsigned int)len, (unsigned int)written);
-    return written == len ? ESP_OK : ESP_FAIL;
+    control->enabled = true;
+    control->interval = request->interval;
+    control->random = false;
+    control->timestamp = request->timestamp;
+    control->anchor_epoch = request->anchor_epoch;
 }
 
-static esp_err_t write_slideshow_rtc_control(const char *bin_dir, const slideshow_request_t *request)
+static esp_err_t save_slideshow_persistent_state(const slideshow_request_t *request,
+                                                 bool *control_stage_reached)
 {
-    char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char json[256];
-
-    if (bin_dir == NULL || request == NULL) {
+    if (request == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    snprintf(path, sizeof(path), "%s/%s", bin_dir, TDX_SLIDESHOW_CONTROL_FILE);
-    snprintf(json, sizeof(json),
-             "{\"func\":\"set_slideshow\",\"sw\":1,\"interval\":%lu,\"random\":%s,"
-             "\"timestamp\":%lld,\"anchor_epoch\":%lld}",
-             (unsigned long)request->interval,
-             request->random ? "true" : "false",
-             (long long)request->timestamp,
-             (long long)request->anchor_epoch);
-
-    ESP_LOGI(TAG,
-             "start_slideshow write rtc control sw=1 interval=%lu random=%d timestamp=%lld anchor=%lld json=%s",
-             (unsigned long)request->interval,
-             request->random ? 1 : 0,
-             (long long)request->timestamp,
-             (long long)request->anchor_epoch,
-             json);
-    return write_text_file(path, json);
+    app_persistent_slideshow_config_t *config =
+        (app_persistent_slideshow_config_t *)calloc(1, sizeof(*config));
+    if (config == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    app_persistent_slideshow_control_t control = {0};
+    slideshow_request_to_persistent(request, config, &control);
+    esp_err_t ret = AppPersistentState_SaveSlideshowState(config,
+                                                          &control,
+                                                          control_stage_reached);
+    free(config);
+    return ret;
 }
 
 static void slideshow_log_runtime_alloc_failure(const char *point)
 {
     ESP_LOGE(TAG,
-             "slideshow runtime alloc failed point=%s internal_free=%u internal_largest=%u psram_free=%u runtime_size=%u task_stack=%u",
+             "slideshow runtime alloc failed point=%s internal_free=%u internal_largest=%u psram_free=%u runtime_size=%u shared_stack=%u",
              point != NULL ? point : "unknown",
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
              (unsigned int)sizeof(slideshow_runtime_t),
-             (unsigned int)SLIDESHOW_TASK_STACK_BYTES);
+             (unsigned int)USER_IMAGE_BUSINESS_WORKER_STACK_SIZE);
 }
 
-static void slideshow_log_stack_watermark(const char *point,
-                                          UBaseType_t *last_reported,
-                                          bool force)
+static void slideshow_rollback_start_failure(const char *reason)
 {
-    if (last_reported == NULL) {
-        return;
-    }
-
-    UBaseType_t remaining = uxTaskGetStackHighWaterMark(NULL);
-    bool first_report = *last_reported == UINT_MAX;
-    bool decreased_enough = !first_report &&
-                            *last_reported > remaining &&
-                            (*last_reported - remaining) >=
-                                SLIDESHOW_STACK_WATERMARK_LOG_STEP_BYTES;
-    if (!force && !first_report && !decreased_enough) {
-        return;
-    }
-
-    unsigned int peak_used = remaining < SLIDESHOW_TASK_STACK_BYTES ?
-                             (unsigned int)(SLIDESHOW_TASK_STACK_BYTES - remaining) :
-                             0U;
-    ESP_LOGI(TAG,
-             "slideshow stack watermark point=%s remaining=%u peak_used=%u configured=%u",
-             point != NULL ? point : "unknown",
-             (unsigned int)remaining,
-             peak_used,
-             (unsigned int)SLIDESHOW_TASK_STACK_BYTES);
-    *last_reported = remaining;
-}
-
-static void slideshow_rollback_runtime_start_failure(const char *base_path,
-                                                     const char *reason)
-{
-    char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    static const char disabled_control[] = "{\"func\":\"set_slideshow\",\"sw\":0}";
-
     ServerNetworkStaSlideshow_Stop();
-    snprintf(control_path,
-             sizeof(control_path),
-             "%s/bin_img/%s",
-             base_path,
-             TDX_SLIDESHOW_CONTROL_FILE);
-    esp_err_t control_ret = write_text_file(control_path, disabled_control);
+    app_persistent_slideshow_control_t control = {
+        .enabled = false,
+        .interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS,
+        .random = false,
+    };
+    app_persistent_slideshow_control_t saved_control = {0};
+    if (AppPersistentState_LoadSlideshowControl(&saved_control, NULL) == ESP_OK) {
+        control.interval = saved_control.interval;
+        control.timestamp = saved_control.timestamp;
+        control.anchor_epoch = saved_control.anchor_epoch;
+    }
+    esp_err_t control_ret = AppPersistentState_SaveSlideshowControl(&control);
     esp_err_t mode_ret = EpdDisplayMode_SetBySlideshowSwitch(false);
     if (control_ret == ESP_OK && mode_ret == ESP_OK) {
         ESP_LOGW(TAG,
-                 "slideshow runtime start failure rolled back reason=%s control_sw=0 mode=NORMAL",
+                 "slideshow start failure rolled back reason=%s control_sw=0 mode=NORMAL",
                  reason != NULL ? reason : "unknown");
     } else {
         ESP_LOGE(TAG,
-                 "slideshow runtime start rollback failed reason=%s control_ret=%s mode_ret=%s",
+                 "slideshow start rollback failed reason=%s control_ret=%s mode_ret=%s",
                  reason != NULL ? reason : "unknown",
                  esp_err_to_name(control_ret),
                  esp_err_to_name(mode_ret));
@@ -1771,82 +1681,43 @@ static slideshow_rtc_wait_result_t wait_slideshow_rtc_epoch(int64_t target_epoch
     return SLIDESHOW_RTC_WAIT_TARGET_REACHED;
 }
 
-static esp_err_t read_slideshow_config_file(const char *base_path, slideshow_request_t *request)
+static esp_err_t read_slideshow_config_state(const char *base_path, slideshow_request_t *request)
 {
-    char config_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    struct stat st = {0};
-
+    (void)base_path;
     if (base_path == NULL || request == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     memset(request, 0, sizeof(*request));
-
-    snprintf(config_path, sizeof(config_path), "%s/bin_img/%s", base_path, TDX_SLIDESHOW_CONFIG_FILE);
-    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
-    if (lock_ret != ESP_OK) {
-        return lock_ret;
-    }
-    if (stat(config_path, &st) != 0 || st.st_size <= 0) {
-        TdxSharedSpi_Unlock();
-        ESP_LOGI(TAG, "slideshow config missing path=%s", config_path);
-        return ESP_ERR_NOT_FOUND;
-    }
-    TdxSharedSpi_Unlock();
-
-    char *json = (char *)malloc((size_t)st.st_size + 1);
-    if (json == NULL) {
-        ESP_LOGE(TAG, "slideshow config alloc failed size=%u", (unsigned int)st.st_size);
+    app_persistent_slideshow_config_t *config =
+        (app_persistent_slideshow_config_t *)calloc(1, sizeof(*config));
+    if (config == NULL) {
         return ESP_ERR_NO_MEM;
     }
-
-    lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
-    if (lock_ret != ESP_OK) {
-        free(json);
-        return lock_ret;
+    uint32_t generation = 0;
+    esp_err_t ret = AppPersistentState_LoadSlideshowConfig(config, &generation);
+    if (ret != ESP_OK) {
+        free(config);
+        if (ret == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGI(TAG, "slideshow config NVS not found");
+        }
+        return ret;
     }
-    FILE *fp = fopen(config_path, "rb");
-    if (fp == NULL) {
-        TdxSharedSpi_Unlock();
-        free(json);
-        ESP_LOGE(TAG, "slideshow config open failed path=%s errno=%d", config_path, errno);
-        return ESP_FAIL;
+    request->file_count = config->file_count;
+    request->start_index = config->start_index;
+    request->interval = config->interval;
+    request->random = false;
+    for (size_t i = 0; i < config->file_count; ++i) {
+        strlcpy(request->file_names[i],
+                config->file_names[i],
+                sizeof(request->file_names[i]));
     }
-
-    size_t read_len = fread(json, 1, (size_t)st.st_size, fp);
-    fclose(fp);
-    TdxSharedSpi_Unlock();
-    json[read_len] = '\0';
-    if (read_len != (size_t)st.st_size ||
-        parse_file_names(json, request) != SLIDESHOW_FILE_NAMES_PARSE_OK) {
-        free(json);
-        ESP_LOGE(TAG, "slideshow config parse failed path=%s", config_path);
-        return ESP_FAIL;
-    }
-    parse_json_u32(json, "interval", &request->interval);
-    if (request->interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS ||
-        request->interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS) {
-        request->interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
-    }
-    request->random = slideshow_force_random_config("saved slideshow_config",
-                                                    parse_json_bool_default(json, "random", false));
-    uint32_t parsed_start_index = 0;
-    if (find_json_key(json, "startIndex") == NULL) {
-        ESP_LOGE(TAG, "slideshow config invalid: startIndex missing path=%s", config_path);
-        free(json);
-        return TDX_JSON_RESULT_SLIDESHOW_START_INDEX_MISSING;
-    }
-    if (!parse_json_u32(json, "startIndex", &parsed_start_index) ||
-        parsed_start_index >= request->file_count) {
-        ESP_LOGE(TAG,
-                 "slideshow config invalid: startIndex=%lu count=%u path=%s",
-                 (unsigned long)parsed_start_index,
-                 (unsigned int)request->file_count,
-                 config_path);
-        free(json);
-        return TDX_JSON_RESULT_SLIDESHOW_START_INDEX_INVALID;
-    }
-    request->start_index = (size_t)parsed_start_index;
-    free(json);
+    ESP_LOGI(TAG,
+             "slideshow config NVS loaded generation=%lu count=%u start=%u interval=%lu",
+             (unsigned long)generation,
+             (unsigned int)request->file_count,
+             (unsigned int)request->start_index,
+             (unsigned long)request->interval);
+    free(config);
     return ESP_OK;
 }
 
@@ -1856,86 +1727,57 @@ static bool read_slideshow_control_schedule(const char *base_path,
                                             int64_t *timestamp,
                                             int64_t *anchor_epoch)
 {
-    char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char buf[512] = {0};
-    int sw = 0;
-    uint32_t parsed_interval = 0;
-    int64_t parsed_timestamp = 0;
-    int64_t parsed_anchor = 0;
-    bool timestamp_present = false;
-    bool anchor_present = false;
-
     if (base_path == NULL) {
         return false;
     }
-
-    snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", base_path, TDX_SLIDESHOW_CONTROL_FILE);
-    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
+    app_persistent_slideshow_control_t control = {0};
+    uint32_t control_generation = 0;
+    esp_err_t ret = AppPersistentState_LoadSlideshowControl(&control,
+                                                            &control_generation);
+    if (ret != ESP_OK) {
+        if (ret == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGI(TAG, "slideshow control NVS not found");
+        }
         return false;
     }
-    FILE *fp = fopen(control_path, "rb");
-    if (fp == NULL) {
-        TdxSharedSpi_Unlock();
-        ESP_LOGI(TAG, "slideshow control missing path=%s", control_path);
-        return false;
-    }
-
-    size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
-    fclose(fp);
-    TdxSharedSpi_Unlock();
-    buf[len] = '\0';
-
-    if (!parse_json_int(buf, "sw", &sw)) {
-        ESP_LOGI(TAG, "slideshow control has no sw path=%s json=%s", control_path, buf);
-        return false;
-    }
-    (void)parse_json_u32(buf, "interval", &parsed_interval);
-    if (random != NULL) {
-        *random = slideshow_force_random_config("saved show_control",
-                                                parse_json_bool_default(buf, "random", *random));
-    }
-    timestamp_present = parse_json_i64(buf, "timestamp", &parsed_timestamp);
-    anchor_present = parse_json_i64(buf, "anchor_epoch", &parsed_anchor);
-
-    if (sw == 1) {
-        if (parsed_interval < TDX_SLIDESHOW_INTERVAL_MIN_SECONDS ||
-            parsed_interval > TDX_SLIDESHOW_INTERVAL_MAX_SECONDS ||
-            !timestamp_present ||
-            !anchor_present ||
-            parsed_timestamp <= 0 ||
-            parsed_anchor <= 0) {
+    if (control.enabled) {
+        app_persistent_slideshow_config_t *config =
+            (app_persistent_slideshow_config_t *)calloc(1, sizeof(*config));
+        uint32_t config_generation = 0;
+        if (config == NULL) {
+            return false;
+        }
+        ret = AppPersistentState_LoadSlideshowConfig(config, &config_generation);
+        free(config);
+        if (ret != ESP_OK || config_generation != control_generation) {
             ESP_LOGE(TAG,
-                     "slideshow control invalid: sw=1 requires interval=%u..%u and timestamp/anchor_epoch, legacy control rejected path=%s interval=%lu timestamp_present=%d timestamp=%lld anchor_present=%d anchor=%lld json=%s",
-                     (unsigned int)TDX_SLIDESHOW_INTERVAL_MIN_SECONDS,
-                     (unsigned int)TDX_SLIDESHOW_INTERVAL_MAX_SECONDS,
-                     control_path,
-                     (unsigned long)parsed_interval,
-                     timestamp_present ? 1 : 0,
-                     (long long)parsed_timestamp,
-                     anchor_present ? 1 : 0,
-                     (long long)parsed_anchor,
-                     buf);
+                     "slideshow NVS generation mismatch config=%lu control=%lu ret=%s",
+                     (unsigned long)config_generation,
+                     (unsigned long)control_generation,
+                     esp_err_to_name(ret));
             return false;
         }
     }
-
     if (interval != NULL) {
-        *interval = parsed_interval;
+        *interval = control.interval;
+    }
+    if (random != NULL) {
+        *random = false;
     }
     if (timestamp != NULL) {
-        *timestamp = parsed_timestamp;
+        *timestamp = control.timestamp;
     }
     if (anchor_epoch != NULL) {
-        *anchor_epoch = parsed_anchor;
+        *anchor_epoch = control.anchor_epoch;
     }
-    ESP_LOGI(TAG, "slideshow control read sw=%d interval=%lu random=%d timestamp=%lld anchor=%lld json=%s",
-             sw,
-             (unsigned long)parsed_interval,
-             random != NULL && *random ? 1 : 0,
-             (long long)parsed_timestamp,
-             (long long)parsed_anchor,
-             buf);
-    return sw == 1;
+    ESP_LOGI(TAG,
+             "slideshow control NVS loaded enabled=%d generation=%lu interval=%lu timestamp=%lld anchor=%lld",
+             control.enabled ? 1 : 0,
+             (unsigned long)control_generation,
+             (unsigned long)control.interval,
+             (long long)control.timestamp,
+             (long long)control.anchor_epoch);
+    return control.enabled;
 }
 
 static bool read_slideshow_control_on(const char *base_path, uint32_t *interval, bool *random)
@@ -2083,8 +1925,6 @@ static void slideshow_run_runtime(slideshow_runtime_t *runtime)
         return;
     }
 
-    UBaseType_t last_reported_stack_watermark = UINT_MAX;
-    slideshow_log_stack_watermark("start", &last_reported_stack_watermark, true);
 
     ESP_LOGI(TAG, "slideshow task start count=%u interval=%lu random=%d start_index=%u pending_index=%u",
              (unsigned int)runtime->request.file_count,
@@ -2104,7 +1944,8 @@ static void slideshow_run_runtime(slideshow_runtime_t *runtime)
                                                        runtime->progress.pending_file,
                                                        &loaded,
                                                        false);
-            if (preload_ret != ESP_OK) {
+            if (preload_ret != ESP_OK &&
+                !(s_slideshow_stop && preload_ret == ESP_ERR_INVALID_STATE)) {
                 ESP_LOGW(TAG, "slideshow preload initial failed file=%s ret=%s",
                          runtime->progress.pending_file,
                          esp_err_to_name(preload_ret));
@@ -2312,7 +2153,8 @@ static void slideshow_run_runtime(slideshow_runtime_t *runtime)
                                                        runtime->progress.pending_file,
                                                        &loaded,
                                                        false);
-            if (preload_ret != ESP_OK) {
+            if (preload_ret != ESP_OK &&
+                !(s_slideshow_stop && preload_ret == ESP_ERR_INVALID_STATE)) {
                 ESP_LOGW(TAG, "slideshow preload next failed file=%s ret=%s",
                          runtime->progress.pending_file,
                          esp_err_to_name(preload_ret));
@@ -2326,17 +2168,12 @@ static void slideshow_run_runtime(slideshow_runtime_t *runtime)
             EpdSdPowerTest_SlideshowFollowupEnd();
         }
 
-        slideshow_log_stack_watermark("event_done",
-                                      &last_reported_stack_watermark,
-                                      false);
-
         if (!runtime->rtc_enabled) {
             (void)wait_slideshow_interval_from_start(display_start_tick,
                                                      runtime->request.interval);
         }
     }
 
-    slideshow_log_stack_watermark("stop", &last_reported_stack_watermark, true);
     ESP_LOGI(TAG, "slideshow run stop, worker returns idle");
     portENTER_CRITICAL(&s_slideshow_timing_mux);
     s_slideshow_interval_active = false;
@@ -2351,96 +2188,83 @@ static void slideshow_run_runtime(slideshow_runtime_t *runtime)
 static bool slideshow_runtime_is_active(void)
 {
     bool active;
-    portENTER_CRITICAL(&s_slideshow_worker_mux);
+    portENTER_CRITICAL(&s_slideshow_runtime_mux);
     active = s_slideshow_runtime_active;
-    portEXIT_CRITICAL(&s_slideshow_worker_mux);
+    portEXIT_CRITICAL(&s_slideshow_runtime_mux);
     return active;
 }
 
-static void slideshow_worker_task(void *arg)
+static esp_err_t slideshow_run_command(const void *payload, size_t payload_size)
 {
-    (void)arg;
-    ESP_LOGI(TAG,
-             "slideshow static worker started stack=%u",
-             (unsigned int)SLIDESHOW_TASK_STACK_BYTES);
-
-    for (;;) {
-        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-        slideshow_runtime_t *runtime = NULL;
-        portENTER_CRITICAL(&s_slideshow_worker_mux);
-        runtime = s_slideshow_pending_runtime;
-        s_slideshow_pending_runtime = NULL;
-        portEXIT_CRITICAL(&s_slideshow_worker_mux);
-
-        if (runtime == NULL) {
-            ESP_LOGW(TAG, "slideshow worker notified without runtime");
-            continue;
-        }
-
-        slideshow_run_runtime(runtime);
-
-        portENTER_CRITICAL(&s_slideshow_worker_mux);
-        s_slideshow_runtime_active = false;
-        portEXIT_CRITICAL(&s_slideshow_worker_mux);
+    if (payload == NULL || payload_size != sizeof(slideshow_worker_payload_t)) {
+        return ESP_ERR_INVALID_ARG;
     }
+    slideshow_worker_payload_t worker_payload = {0};
+    memcpy(&worker_payload, payload, sizeof(worker_payload));
+    slideshow_runtime_t *runtime = worker_payload.runtime;
+    if (runtime == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint32_t current_generation =
+        __atomic_load_n(&s_slideshow_generation, __ATOMIC_ACQUIRE);
+    if (worker_payload.generation != current_generation ||
+        EpdDisplayMode_Get() != USER_EPD_DISPLAY_MODE_SLIDESHOW) {
+        ESP_LOGW(TAG,
+                 "stale slideshow command canceled generation=%lu current=%lu mode=%u",
+                 (unsigned long)worker_payload.generation,
+                 (unsigned long)current_generation,
+                 (unsigned int)EpdDisplayMode_Get());
+        free(runtime);
+        portENTER_CRITICAL(&s_slideshow_runtime_mux);
+        s_slideshow_runtime_active = false;
+        portEXIT_CRITICAL(&s_slideshow_runtime_mux);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    slideshow_run_runtime(runtime);
+    portENTER_CRITICAL(&s_slideshow_runtime_mux);
+    s_slideshow_runtime_active = false;
+    portEXIT_CRITICAL(&s_slideshow_runtime_mux);
+    return ESP_OK;
 }
 
-static esp_err_t slideshow_ensure_static_worker(void)
+static void slideshow_cancel_pending_runtime(const void *payload,
+                                             size_t payload_size)
 {
-    for (;;) {
-        bool create_worker = false;
-        portENTER_CRITICAL(&s_slideshow_worker_mux);
-        if (s_slideshow_worker_task != NULL) {
-            portEXIT_CRITICAL(&s_slideshow_worker_mux);
-            return ESP_OK;
-        }
-        if (!s_slideshow_worker_creating) {
-            s_slideshow_worker_creating = true;
-            create_worker = true;
-        }
-        portEXIT_CRITICAL(&s_slideshow_worker_mux);
-
-        if (create_worker) {
-            break;
-        }
-        vTaskDelay(1);
+    slideshow_worker_payload_t worker_payload = {0};
+    if (payload != NULL && payload_size == sizeof(worker_payload)) {
+        memcpy(&worker_payload, payload, sizeof(worker_payload));
     }
-
-    TaskHandle_t worker = xTaskCreateStatic(slideshow_worker_task,
-                                            "slideshow",
-                                            SLIDESHOW_TASK_STACK_DEPTH,
-                                            NULL,
-                                            SLIDESHOW_TASK_PRIORITY,
-                                            s_slideshow_worker_stack,
-                                            &s_slideshow_worker_tcb);
-    portENTER_CRITICAL(&s_slideshow_worker_mux);
-    s_slideshow_worker_task = worker;
-    s_slideshow_worker_creating = false;
-    portEXIT_CRITICAL(&s_slideshow_worker_mux);
-    if (worker == NULL) {
-        slideshow_log_runtime_alloc_failure("static_worker_create");
-        return ESP_ERR_NO_MEM;
-    }
-    return ESP_OK;
+    free(worker_payload.runtime);
+    portENTER_CRITICAL(&s_slideshow_runtime_mux);
+    s_slideshow_runtime_active = false;
+    portEXIT_CRITICAL(&s_slideshow_runtime_mux);
 }
 
 void ServerNetworkStaSlideshow_Stop(void)
 {
+    (void)__atomic_add_fetch(&s_slideshow_generation, 1U, __ATOMIC_ACQ_REL);
     s_slideshow_stop = true;
+    (void)ImageBusinessWorker_CancelPending(
+        IMAGE_BUSINESS_OWNER_SLIDESHOW);
+    ImageBusinessWorker_Wake();
 }
 
 esp_err_t ServerNetworkStaSlideshow_StopAndWait(void)
 {
-    bool was_running = slideshow_runtime_is_active();
+    bool was_running = slideshow_runtime_is_active() ||
+                       s_slideshow_startup_delay_active ||
+                       ImageBusinessWorker_IsOwnerBusy(
+                           IMAGE_BUSINESS_OWNER_SLIDESHOW);
     ServerNetworkStaSlideshow_Stop();
-    TickType_t start_tick = xTaskGetTickCount();
-    TickType_t timeout_ticks = pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS + 5000U);
-    while (slideshow_runtime_is_active() &&
-           (xTaskGetTickCount() - start_tick) < timeout_ticks) {
-        vTaskDelay(pdMS_TO_TICKS(50U));
+    if (ImageBusinessWorker_IsCurrentTask()) {
+        return ESP_OK;
     }
-    if (slideshow_runtime_is_active()) {
+    TickType_t timeout_ticks = pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS + 5000U);
+    esp_err_t wait_ret = ImageBusinessWorker_WaitOwnerIdle(
+        IMAGE_BUSINESS_OWNER_SLIDESHOW, timeout_ticks);
+    if (wait_ret != ESP_OK || slideshow_runtime_is_active()) {
         ESP_LOGE(TAG, "slideshow task stop timeout");
         return ESP_ERR_TIMEOUT;
     }
@@ -2465,19 +2289,24 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
     }
 
     bool was_running = slideshow_runtime_is_active();
-    ServerNetworkStaSlideshow_Stop();
-    TickType_t stop_start = xTaskGetTickCount();
-    TickType_t stop_timeout = pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS + 5000U);
-    while (slideshow_runtime_is_active() &&
-           (xTaskGetTickCount() - stop_start) < stop_timeout) {
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    if (slideshow_runtime_is_active()) {
-        ESP_LOGE(TAG, "previous slideshow task did not stop");
-        return ESP_ERR_TIMEOUT;
+    bool called_from_shared_worker = ImageBusinessWorker_IsCurrentTask();
+    if (!called_from_shared_worker) {
+        esp_err_t daily_stop_ret = ServerNetworkStaDailyImage_StopAndWait();
+        if (daily_stop_ret != ESP_OK) {
+            ESP_LOGE(TAG, "daily image did not stop before slideshow ret=%s",
+                     esp_err_to_name(daily_stop_ret));
+            return daily_stop_ret;
+        }
+        esp_err_t stop_ret = ServerNetworkStaSlideshow_StopAndWait();
+        if (stop_ret != ESP_OK) {
+            return stop_ret;
+        }
+    } else if (slideshow_runtime_is_active()) {
+        ESP_LOGE(TAG, "shared worker cannot replace active slideshow runtime");
+        return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t worker_ret = slideshow_ensure_static_worker();
+    esp_err_t worker_ret = ImageBusinessWorker_Init();
     if (worker_ret != ESP_OK) {
         return worker_ret;
     }
@@ -2549,20 +2378,81 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
     } else {
         runtime->initial_delay_seconds = slideshow_get_initial_delay_seconds(request->interval);
     }
-    portENTER_CRITICAL(&s_slideshow_worker_mux);
-    if (s_slideshow_runtime_active || s_slideshow_pending_runtime != NULL) {
-        portEXIT_CRITICAL(&s_slideshow_worker_mux);
+    if (EpdDisplayMode_Get() != USER_EPD_DISPLAY_MODE_SLIDESHOW) {
+        free(runtime);
+        ESP_LOGW(TAG, "slideshow runtime submit canceled mode=%u",
+                 (unsigned int)EpdDisplayMode_Get());
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint32_t generation = 0;
+    if (called_from_shared_worker && s_slideshow_startup_delay_active) {
+        uint32_t expected = __atomic_load_n(&s_slideshow_startup_generation,
+                                            __ATOMIC_ACQUIRE);
+        uint32_t desired = expected + 1U;
+        if (!__atomic_compare_exchange_n(&s_slideshow_generation,
+                                         &expected,
+                                         desired,
+                                         false,
+                                         __ATOMIC_ACQ_REL,
+                                         __ATOMIC_ACQUIRE)) {
+            free(runtime);
+            ESP_LOGW(TAG,
+                     "slideshow startup became stale expected=%lu current=%lu",
+                     (unsigned long)__atomic_load_n(
+                         &s_slideshow_startup_generation,
+                         __ATOMIC_ACQUIRE),
+                     (unsigned long)expected);
+            return ESP_ERR_INVALID_STATE;
+        }
+        generation = desired;
+    } else {
+        generation =
+            __atomic_add_fetch(&s_slideshow_generation,
+                               1U,
+                               __ATOMIC_ACQ_REL);
+    }
+    if (EpdDisplayMode_Get() != USER_EPD_DISPLAY_MODE_SLIDESHOW ||
+        generation != __atomic_load_n(&s_slideshow_generation,
+                                      __ATOMIC_ACQUIRE)) {
+        free(runtime);
+        ESP_LOGW(TAG,
+                 "slideshow runtime became stale before submit generation=%lu current=%lu mode=%u",
+                 (unsigned long)generation,
+                 (unsigned long)__atomic_load_n(&s_slideshow_generation,
+                                                __ATOMIC_ACQUIRE),
+                 (unsigned int)EpdDisplayMode_Get());
+        return ESP_ERR_INVALID_STATE;
+    }
+    portENTER_CRITICAL(&s_slideshow_runtime_mux);
+    if (s_slideshow_runtime_active) {
+        portEXIT_CRITICAL(&s_slideshow_runtime_mux);
         free(runtime);
         ESP_LOGE(TAG, "slideshow worker is not idle");
         return ESP_ERR_INVALID_STATE;
     }
     s_slideshow_stop = false;
-    s_slideshow_pending_runtime = runtime;
     s_slideshow_runtime_active = true;
-    portEXIT_CRITICAL(&s_slideshow_worker_mux);
+    portEXIT_CRITICAL(&s_slideshow_runtime_mux);
 
-    xTaskNotifyGive(s_slideshow_worker_task);
-    return ESP_OK;
+    slideshow_worker_payload_t worker_payload = {
+        .runtime = runtime,
+        .generation = generation,
+    };
+    esp_err_t submit_ret = ImageBusinessWorker_Submit(
+        IMAGE_BUSINESS_OWNER_SLIDESHOW,
+        slideshow_run_command,
+        slideshow_cancel_pending_runtime,
+        &worker_payload,
+        sizeof(worker_payload),
+        generation);
+    if (submit_ret != ESP_OK) {
+        slideshow_cancel_pending_runtime(&worker_payload,
+                                         sizeof(worker_payload));
+        ESP_LOGE(TAG, "slideshow shared worker submit failed ret=%s",
+                 esp_err_to_name(submit_ret));
+    }
+    return submit_ret;
 }
 
 esp_err_t ServerNetworkStaSlideshow_ShowFirst(const char *base_path)
@@ -2572,7 +2462,7 @@ esp_err_t ServerNetworkStaSlideshow_ShowFirst(const char *base_path)
         return ESP_ERR_NO_MEM;
     }
 
-    esp_err_t ret = read_slideshow_config_file(base_path, request);
+    esp_err_t ret = read_slideshow_config_state(base_path, request);
     if (ret != ESP_OK) {
         free(request);
         return ret;
@@ -2595,7 +2485,7 @@ static esp_err_t start_saved_slideshow_with_mode(const char *base_path,
         return ESP_ERR_NO_MEM;
     }
 
-    esp_err_t ret = read_slideshow_config_file(base_path, request);
+    esp_err_t ret = read_slideshow_config_state(base_path, request);
     if (ret != ESP_OK) {
         free(request);
         return ret;
@@ -2729,32 +2619,58 @@ esp_err_t ServerNetworkStaSlideshow_StartSavedForNewCommand(const char *base_pat
 {
     esp_err_t ret = start_saved_slideshow_with_mode(base_path, true, false, true);
     if (ret != ESP_OK && base_path != NULL) {
-        slideshow_rollback_runtime_start_failure(base_path, "new_command");
+        slideshow_rollback_start_failure("new_command");
     }
     return ret;
 }
 
-static void slideshow_startup_delay_task(void *arg)
+static bool slideshow_startup_wait_ms(uint32_t wait_ms, uint32_t generation)
 {
-    slideshow_startup_delay_t *delay = (slideshow_startup_delay_t *)arg;
+    TickType_t wait_ticks = pdMS_TO_TICKS(wait_ms);
+    TickType_t start_tick = xTaskGetTickCount();
+    while ((xTaskGetTickCount() - start_tick) < wait_ticks) {
+        TickType_t elapsed = xTaskGetTickCount() - start_tick;
+        TickType_t remaining = wait_ticks - elapsed;
+        (void)ImageBusinessWorker_WaitInterruptible(remaining);
+        if (s_slideshow_stop ||
+            generation != __atomic_load_n(&s_slideshow_generation,
+                                           __ATOMIC_ACQUIRE) ||
+            EpdDisplayMode_Get() != USER_EPD_DISPLAY_MODE_SLIDESHOW) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static esp_err_t slideshow_startup_delay_run(const void *payload,
+                                             size_t payload_size)
+{
+    if (payload == NULL || payload_size != sizeof(slideshow_startup_delay_t)) {
+        s_slideshow_startup_delay_active = false;
+        return ESP_ERR_INVALID_ARG;
+    }
+    slideshow_startup_delay_t delay = {0};
+    memcpy(&delay, payload, sizeof(delay));
     uint32_t time_wait_seconds = 0;
     bool time_get_requested = false;
-    if (delay == NULL) {
-        s_slideshow_startup_delay_task = NULL;
-        vTaskDelete(NULL);
-        return;
-    }
+    esp_err_t command_ret = ESP_OK;
 
     ESP_LOGI(TAG, "slideshow startup delay %u ms",
              (unsigned int)TDX_SLIDESHOW_STARTUP_DELAY_MS);
-    vTaskDelay(pdMS_TO_TICKS(TDX_SLIDESHOW_STARTUP_DELAY_MS));
+    if (!slideshow_startup_wait_ms(TDX_SLIDESHOW_STARTUP_DELAY_MS,
+                                   delay.generation)) {
+        ESP_LOGI(TAG, "slideshow startup delay canceled mode=%u",
+                 (unsigned int)EpdDisplayMode_Get());
+        s_slideshow_startup_delay_active = false;
+        return ESP_ERR_INVALID_STATE;
+    }
 
     while (true) {
         uint32_t interval = 0;
         bool random = false;
         int64_t timestamp = 0;
         int64_t anchor_epoch = 0;
-        bool enabled = read_slideshow_control_schedule(delay->base_path,
+        bool enabled = read_slideshow_control_schedule(delay.base_path,
                                                        &interval,
                                                        &random,
                                                        &timestamp,
@@ -2769,7 +2685,10 @@ static void slideshow_startup_delay_task(void *arg)
         }
         if (ServerNetworkStaEpdDisplay_IsBusy()) {
             ESP_LOGI(TAG, "slideshow startup postponed because EPD busy");
-            vTaskDelay(pdMS_TO_TICKS(500));
+            if (!slideshow_startup_wait_ms(500U, delay.generation)) {
+                command_ret = ESP_ERR_INVALID_STATE;
+                break;
+            }
             continue;
         }
         if (!ServerNetworkStaTime_IsUsableForSlideshowRestore()) {
@@ -2789,7 +2708,11 @@ static void slideshow_startup_delay_task(void *arg)
                              "slideshow startup anchor fallback failed anchor=%lld ret=%s",
                              (long long)anchor_epoch,
                              esp_err_to_name(time_ret));
-                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    if (!slideshow_startup_wait_ms(1000U,
+                                                   delay.generation)) {
+                        command_ret = ESP_ERR_INVALID_STATE;
+                        break;
+                    }
                     time_wait_seconds++;
                     continue;
                 }
@@ -2803,7 +2726,10 @@ static void slideshow_startup_delay_task(void *arg)
                              (unsigned int)TDX_SLIDESHOW_STARTUP_TIME_FALLBACK_WAIT_SECONDS);
                 }
                 time_wait_seconds++;
-                vTaskDelay(pdMS_TO_TICKS(1000));
+                if (!slideshow_startup_wait_ms(1000U, delay.generation)) {
+                    command_ret = ESP_ERR_INVALID_STATE;
+                    break;
+                }
                 continue;
             }
         }
@@ -2819,7 +2745,7 @@ static void slideshow_startup_delay_task(void *arg)
                  force_first_display ? 1 : 0,
                  wifi_has_ip ? 1 : 0,
                  sntp_synced ? 1 : 0);
-        esp_err_t ret = start_saved_slideshow_with_mode(delay->base_path,
+        esp_err_t ret = start_saved_slideshow_with_mode(delay.base_path,
                                                         false,
                                                         force_first_display,
                                                         false);
@@ -2829,12 +2755,20 @@ static void slideshow_startup_delay_task(void *arg)
                      "slideshow startup restore deferred ret=%s, keep saved control and mode for next wake",
                      esp_err_to_name(ret));
         }
+        command_ret = ret;
         break;
     }
 
-    free(delay);
-    s_slideshow_startup_delay_task = NULL;
-    vTaskDelete(NULL);
+    s_slideshow_startup_delay_active = false;
+    return command_ret;
+}
+
+static void slideshow_startup_delay_cancel(const void *payload,
+                                           size_t payload_size)
+{
+    (void)payload;
+    (void)payload_size;
+    s_slideshow_startup_delay_active = false;
 }
 
 esp_err_t ServerNetworkStaSlideshow_StartSavedDelayed(const char *base_path)
@@ -2842,12 +2776,12 @@ esp_err_t ServerNetworkStaSlideshow_StartSavedDelayed(const char *base_path)
     if (base_path == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (s_slideshow_startup_delay_task != NULL) {
+    if (s_slideshow_startup_delay_active) {
         ESP_LOGW(TAG, "slideshow startup delay already scheduled");
         return ESP_OK;
     }
 
-    esp_err_t worker_ret = slideshow_ensure_static_worker();
+    esp_err_t worker_ret = ImageBusinessWorker_Init();
     if (worker_ret != ESP_OK) {
         ESP_LOGE(TAG,
                  "slideshow startup static worker unavailable ret=%s, keep saved state",
@@ -2855,69 +2789,30 @@ esp_err_t ServerNetworkStaSlideshow_StartSavedDelayed(const char *base_path)
         return worker_ret;
     }
 
-    slideshow_startup_delay_t *delay = (slideshow_startup_delay_t *)calloc(1, sizeof(*delay));
-    if (delay == NULL) {
-        ESP_LOGE(TAG, "slideshow startup delay alloc failed, keep saved state");
-        return ESP_ERR_NO_MEM;
-    }
-    strlcpy(delay->base_path, base_path, sizeof(delay->base_path));
-
-    BaseType_t task_ret = xTaskCreate(slideshow_startup_delay_task,
-                                      "slide_start_delay",
-                                      SLIDESHOW_STARTUP_DELAY_TASK_STACK_BYTES,
-                                      delay,
-                                      SLIDESHOW_TASK_PRIORITY,
-                                      &s_slideshow_startup_delay_task);
-    if (task_ret != pdPASS) {
-        free(delay);
-        s_slideshow_startup_delay_task = NULL;
-        ESP_LOGE(TAG, "slideshow startup delay task create failed, keep saved state");
-        return ESP_ERR_NO_MEM;
+    slideshow_startup_delay_t delay = {0};
+    strlcpy(delay.base_path, base_path, sizeof(delay.base_path));
+    delay.generation =
+        __atomic_add_fetch(&s_slideshow_generation, 1U, __ATOMIC_ACQ_REL);
+    __atomic_store_n(&s_slideshow_startup_generation,
+                     delay.generation,
+                     __ATOMIC_RELEASE);
+    s_slideshow_stop = false;
+    s_slideshow_startup_delay_active = true;
+    esp_err_t submit_ret = ImageBusinessWorker_Submit(
+        IMAGE_BUSINESS_OWNER_SLIDESHOW,
+        slideshow_startup_delay_run,
+        slideshow_startup_delay_cancel,
+        &delay,
+        sizeof(delay),
+        delay.generation);
+    if (submit_ret != ESP_OK) {
+        s_slideshow_startup_delay_active = false;
+        ESP_LOGE(TAG,
+                 "slideshow startup shared worker submit failed ret=%s, keep saved state",
+                 esp_err_to_name(submit_ret));
+        return submit_ret;
     }
     return ESP_OK;
-}
-
-static esp_err_t save_slideshow_config(const char *bin_dir, const slideshow_request_t *request)
-{
-    char path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char *json = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
-    size_t used = 0;
-    if (json == NULL) {
-        ESP_LOGE(TAG, "slideshow config json alloc failed");
-        return ESP_ERR_NO_MEM;
-    }
-
-    snprintf(path, sizeof(path), "%s/%s", bin_dir, TDX_SLIDESHOW_CONFIG_FILE);
-    int written = snprintf(json, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX, "{\"fileNames\":[");
-    if (written < 0 || (size_t)written >= SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX) {
-        free(json);
-        return ESP_FAIL;
-    }
-    used = (size_t)written;
-
-    for (size_t i = 0; i < request->file_count; i++) {
-        written = snprintf(json + used, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX - used, "%s\"%s\"",
-                           i > 0 ? "," : "", request->file_names[i]);
-        if (written < 0 || used + (size_t)written >= SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX) {
-            free(json);
-            return ESP_FAIL;
-        }
-        used += (size_t)written;
-    }
-
-    written = snprintf(json + used, SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX - used,
-                       "],\"interval\":%lu,\"random\":%s,\"startIndex\":%u}",
-                       (unsigned long)request->interval,
-                       request->random ? "true" : "false",
-                       (unsigned int)request->start_index);
-    if (written < 0 || used + (size_t)written >= SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX) {
-        free(json);
-        return ESP_FAIL;
-    }
-
-    esp_err_t ret = write_text_file(path, json);
-    free(json);
-    return ret;
 }
 
 static esp_err_t parse_start_slideshow_request(const char *body, slideshow_request_t *request)
@@ -3034,36 +2929,28 @@ esp_err_t ServerNetworkStaSlideshow_ProcessJson(httpd_req_t *req,
         return send_start_slideshow_result(req, TDX_JSON_RESULT_JSON_INVALID, "start slideshow failed");
     }
 
-    if (save_slideshow_config(bin_dir, &request) != ESP_OK) {
-        return send_start_slideshow_result(req, TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED, "save config failed");
-    }
-    if (write_slideshow_rtc_control(bin_dir, &request) != ESP_OK) {
-        return send_start_slideshow_result(req,
-                                           TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED,
-                                           "save slideshow control failed");
+    bool control_stage_reached = false;
+    if (save_slideshow_persistent_state(&request, &control_stage_reached) != ESP_OK) {
+        return send_start_slideshow_result(
+            req,
+            control_stage_reached ? TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED :
+                                    TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED,
+            control_stage_reached ? "save slideshow control failed" : "save config failed");
     }
 
-    esp_err_t random_save_ret = app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
-                                                  request.random ? "true" : "false");
-    g_slideshow_random_enable = request.random ? 1 : 0;
     ESP_LOGI(TAG,
-             "start_slideshow saved list count=%u start_index=%u first_file=%s rtc_interval=%lu random=%d rtc_timestamp=%lld rtc_anchor=%lld random_save_ret=%s",
+             "start_slideshow saved list count=%u start_index=%u first_file=%s rtc_interval=%lu random=%d rtc_timestamp=%lld rtc_anchor=%lld",
              (unsigned int)request.file_count,
              (unsigned int)request.start_index,
              request.file_names[request.start_index],
              (unsigned long)request.interval,
              request.random ? 1 : 0,
              (long long)request.timestamp,
-             (long long)request.anchor_epoch,
-             esp_err_to_name(random_save_ret));
-    if (random_save_ret != ESP_OK) {
-        return send_start_slideshow_result(req,
-                                           TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED,
-                                           "save random config failed");
-    }
+             (long long)request.anchor_epoch);
 
     esp_err_t mode_ret = EpdDisplayMode_SetBySlideshowSwitch(true);
     if (mode_ret != ESP_OK) {
+        slideshow_rollback_start_failure("display_mode");
         return send_start_slideshow_result(req,
                                            TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED,
                                            "save display mode failed");

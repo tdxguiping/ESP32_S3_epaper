@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "epd_display_app.h"
+#include "app_persistent_state.h"
 #include "file_serving_example_common.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
@@ -325,105 +326,68 @@ esp_err_t UsbConsoleCommon_ListSavedImages(char *json, size_t json_size, size_t 
 
 esp_err_t UsbConsoleCommon_AppendSnapshot(char *json, size_t json_size, size_t *used)
 {
-    char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char config_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char control[256] = {0};
-    char config[SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX] = {0};
-    FILE *fp = NULL;
     int sw = 0;
     uint32_t interval = 0;
     bool random = false;
     int start_index = -1;
+    app_persistent_slideshow_config_t *config =
+        (app_persistent_slideshow_config_t *)calloc(1, sizeof(*config));
+    if (config == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    uint32_t config_generation = 0;
+    esp_err_t config_ret =
+        AppPersistentState_LoadSlideshowConfig(config, &config_generation);
+    app_persistent_slideshow_control_t control = {0};
+    uint32_t control_generation = 0;
+    esp_err_t control_ret =
+        AppPersistentState_LoadSlideshowControl(&control, &control_generation);
+    if (control_ret == ESP_OK) {
+        interval = control.interval;
+        sw = control.enabled && config_ret == ESP_OK &&
+             config_generation == control_generation ? 1 : 0;
+    }
 
-    snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, TDX_SLIDESHOW_CONTROL_FILE);
-    snprintf(config_path, sizeof(config_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, TDX_SLIDESHOW_CONFIG_FILE);
-
-    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
-        return ESP_ERR_TIMEOUT;
+    esp_err_t header_ret = append_format(json,
+                                         json_size,
+                                         used,
+                                         ",\"slideshow\":{\"sw\":%d,\"fileNames\":[",
+                                         sw);
+    if (header_ret != ESP_OK) {
+        free(config);
+        ESP_LOGE(TAG, "append snapshot slideshow failed ret=%s",
+                 esp_err_to_name(header_ret));
+        return header_ret;
     }
-    fp = fopen(control_path, "rb");
-    if (fp != NULL) {
-        size_t len = fread(control, 1, sizeof(control) - 1, fp);
-        fclose(fp);
-        control[len] = '\0';
-        (void)UsbConsoleCommon_JsonInt(control, "sw", &sw);
-        (void)UsbConsoleCommon_JsonU32(control, "interval", &interval);
-        (void)UsbConsoleCommon_JsonBool(control, "random", &random);
-    }
-    TdxSharedSpi_Unlock();
-
-    ESP_RETURN_ON_ERROR(append_format(json,
-                                      json_size,
-                                      used,
-                                      ",\"slideshow\":{\"sw\":%d,\"fileNames\":[",
-                                      sw),
-                        TAG, "append snapshot slideshow failed");
-    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
-        return ESP_ERR_TIMEOUT;
-    }
-    fp = fopen(config_path, "rb");
-    if (fp != NULL) {
-        size_t len = fread(config, 1, sizeof(config) - 1, fp);
-        fclose(fp);
-        config[len] = '\0';
-    }
-    TdxSharedSpi_Unlock();
     int file_count = 0;
-    const char *array = find_json_key(config, "fileNames");
-    if (array != NULL && (array = strchr(array, '[')) != NULL) {
-        array++;
-        while (*array != '\0' && *array != ']') {
-            while (*array == ' ' || *array == '\t' || *array == '\r' || *array == '\n' || *array == ',') {
-                array++;
+    if (config_ret == ESP_OK) {
+        for (size_t i = 0; i < config->file_count; ++i) {
+            esp_err_t append_ret = append_format(json,
+                                                 json_size,
+                                                 used,
+                                                 "%s\"%s\"",
+                                                 file_count > 0 ? "," : "",
+                                                 config->file_names[i]);
+            if (append_ret != ESP_OK) {
+                free(config);
+                return append_ret;
             }
-            if (*array != '"') {
-                break;
-            }
-            array++;
-            char file_name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
-            size_t name_len = 0;
-            bool name_too_long = false;
-            while (*array != '\0' && *array != '"') {
-                if (name_len < TDX_IMAGE_BASE_NAME_MAX_BYTES) {
-                    file_name[name_len] = *array;
-                } else {
-                    name_too_long = true;
-                }
-                name_len++;
-                array++;
-            }
-            if (*array != '"') {
-                break;
-            }
-            array++;
-            if (!name_too_long && UsbConsoleCommon_FileNameIsSafe(file_name)) {
-                ESP_RETURN_ON_ERROR(append_format(json,
-                                                  json_size,
-                                                  used,
-                                                  "%s\"%s\"",
-                                                  file_count > 0 ? "," : "",
-                                                  file_name),
-                                    TAG, "append snapshot file failed");
-                file_count++;
-            }
+            file_count++;
         }
+        if (interval == 0) {
+            interval = config->interval;
+        }
+        start_index = (int)config->start_index;
     }
-    if (interval == 0) {
-        (void)UsbConsoleCommon_JsonU32(config, "interval", &interval);
-    }
-    (void)UsbConsoleCommon_JsonBool(config, "random", &random);
-    int parsed_start_index = -1;
-    if (UsbConsoleCommon_JsonInt(config, "startIndex", &parsed_start_index) &&
-        parsed_start_index >= 0 && parsed_start_index < file_count) {
-        start_index = parsed_start_index;
-    }
-    return append_format(json,
-                         json_size,
-                         used,
-                         "],\"interval\":%lu,\"random\":%s,\"startIndex\":%d}}",
-                         (unsigned long)interval,
-                         random ? "true" : "false",
-                         start_index);
+    esp_err_t ret = append_format(json,
+                                  json_size,
+                                  used,
+                                  "],\"interval\":%lu,\"random\":%s,\"startIndex\":%d}}",
+                                  (unsigned long)interval,
+                                  random ? "true" : "false",
+                                  start_index);
+    free(config);
+    return ret;
 }
 
 bool UsbConsoleCommon_ExtractBoundary(const char *content_type, char *boundary, size_t boundary_size)
@@ -729,31 +693,14 @@ esp_err_t UsbConsoleCommon_SavePartFile(const char *dir,
 esp_err_t UsbConsoleCommon_RecordLastCast(const char *file_name)
 {
     int64_t start_us = esp_timer_get_time();
-    char record_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char json[256];
     if (!UsbConsoleCommon_FileNameIsSafe(file_name)) {
         return ESP_ERR_INVALID_ARG;
     }
-    snprintf(record_path, sizeof(record_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, SERVER_NETWORK_STA_LAST_CAST_FILE);
-    int len = snprintf(json, sizeof(json),
-                       "{\"fileName\":\"%s\",\"bin\":\"%s/bin_img/%s.bin\",\"image\":\"%s/jpg_img/%s.jpg\"}",
-                       file_name, USB_CONSOLE_BASE_PATH, file_name, USB_CONSOLE_BASE_PATH, file_name);
-    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
-    if (lock_ret != ESP_OK) {
-        return lock_ret;
-    }
-    FILE *fp = fopen(record_path, "wb");
-    if (fp == NULL) {
-        TdxSharedSpi_Unlock();
-        return ESP_FAIL;
-    }
-    size_t written = fwrite(json, 1, (size_t)len, fp);
-    fclose(fp);
-    TdxSharedSpi_Unlock();
+    esp_err_t ret = AppPersistentState_SaveLastCast(file_name);
     ESP_LOGI(TAG, "record last cast file=%s elapsed_ms=%lu",
              file_name,
              (unsigned long)elapsed_ms_since(start_us));
-    return written == (size_t)len ? ESP_OK : ESP_FAIL;
+    return ret;
 }
 
 esp_err_t UsbConsoleCommon_HandleImageTransfer(const usb_console_http_request_t *request,

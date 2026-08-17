@@ -392,6 +392,23 @@ extern "C" {
 // Print successful app_nvs read/write logs only when debugging NVS value flow.
 #define USER_NVS_VERBOSE_LOG_ENABLE 0
 
+// Keep image-state records in one stable default-NVS namespace across application-only OTA updates.
+#define APP_STATE_NVS_NAMESPACE "image_state"
+// NVS keys are limited to 15 characters excluding the trailing NUL.
+#define APP_STATE_NVS_SLIDESHOW_CONFIG_KEY "slide_cfg"
+#define APP_STATE_NVS_SLIDESHOW_CONTROL_KEY "slide_ctl"
+#define APP_STATE_NVS_LAST_CAST_KEY "last_cast"
+// Persisted records use independent magic values so a key/type mismatch is rejected safely.
+#define APP_STATE_SLIDESHOW_CONFIG_MAGIC 0x53434647UL
+#define APP_STATE_SLIDESHOW_CONTROL_MAGIC 0x5343544CUL
+#define APP_STATE_LAST_CAST_MAGIC 0x4C434153UL
+// Increment a record version only when its serialized layout or validation contract changes.
+#define APP_STATE_SLIDESHOW_CONFIG_VERSION 1U
+#define APP_STATE_SLIDESHOW_CONTROL_VERSION 1U
+#define APP_STATE_LAST_CAST_VERSION 1U
+// Bound variable-size NVS allocation before reading untrusted or damaged stored length metadata.
+#define APP_STATE_SLIDESHOW_CONFIG_BLOB_MAX_SIZE 3072U
+
 // Print multipart fallback parser details only when debugging legacy /dataUP uploads.
 #define USER_HTTP_MULTIPART_DETAIL_LOG_ENABLE 0
 
@@ -528,9 +545,6 @@ extern "C" {
 /* 09. Saved Images / Cast / Snapshot / Delete                                 */
 /* -------------------------------------------------------------------------- */
 
-// Keep the last-cast record name here so reboot recovery and cast saving use the same file.
-#define SERVER_NETWORK_STA_LAST_CAST_FILE "last_cast.txt"
-
 // Keep saved-image listing limits here so JSON response size can be tuned without touching scan logic.
 #define SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX 8192
 // HTTP/USB route string for SERVER NETWORK STA THUMB URI PREFIX; update registered handlers if it changes.
@@ -572,13 +586,9 @@ extern "C" {
 #define CH583_WAKE_TIMER_MIN_SECONDS 1
 // Timing value for CH583 WAKE TIMER MAX SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define CH583_WAKE_TIMER_MAX_SECONDS TDX_SLIDESHOW_INTERVAL_MAX_SECONDS
-// Configuration value for TDX SLIDESHOW CONFIG FILE; update local references before changing it.
-#define TDX_SLIDESHOW_CONFIG_FILE "slideshow_config.txt"
-// Configuration value for TDX SLIDESHOW CONTROL FILE; update local references before changing it.
-#define TDX_SLIDESHOW_CONTROL_FILE "show_control.txt"
 // Timing value for TDX SLIDESHOW STARTUP DELAY MS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_STARTUP_DELAY_MS 10000
-// Seconds to wait for CH583 time after startup delay before using show_control anchor_epoch as RTC fallback.
+// Seconds to wait for CH583 time after startup delay before using the saved slideshow anchor as RTC fallback.
 #define TDX_SLIDESHOW_STARTUP_TIME_FALLBACK_WAIT_SECONDS 3
 // Log throttle for startup time-source waiting messages.
 #define TDX_SLIDESHOW_STARTUP_TIME_WAIT_LOG_SECONDS 10
@@ -596,8 +606,6 @@ extern "C" {
 #define TDX_SLIDESHOW_NVS_LAST_FILE_KEY "slide_last"
 // NVS key used by TDX SLIDESHOW NVS PROGRESS KEY; keep storage compatibility before changing it.
 #define TDX_SLIDESHOW_NVS_PROGRESS_KEY "slide_progress"
-// NVS key used by TDX SLIDESHOW RANDOM NVS KEY; keep storage compatibility before changing it.
-#define TDX_SLIDESHOW_RANDOM_NVS_KEY "slide_random"
 /* -------------------------------------------------------------------------- */
 /* 10.1 Factory Reset Button                                                  */
 /* -------------------------------------------------------------------------- */
@@ -1019,12 +1027,12 @@ extern "C" {
 #define USER_DAILY_IMAGE_QUERY_RESPONSE_SIZE 4096U
 // Bound connect and socket operations for both HTTPS requests.
 #define USER_DAILY_IMAGE_HTTP_TIMEOUT_MS 15000U
-// Use one dedicated worker queue entry so repeated APP requests cannot create parallel downloads.
-#define USER_DAILY_IMAGE_QUEUE_LENGTH 1U
-// Size the worker for TLS, JSON parsing, scheduling, and display orchestration.
-#define USER_DAILY_IMAGE_TASK_STACK_SIZE (12 * 1024)
-// Keep daily network work below the EPD display task priority.
-#define USER_DAILY_IMAGE_TASK_PRIORITY 4
+// One permanent worker serializes DAILY, SLIDESHOW, and slideshow startup-delay work.
+#define USER_IMAGE_BUSINESS_WORKER_STACK_SIZE (9U * 1024U)
+// DAILY currently needs 616 bytes; keep a small bounded inline copy for one pending command.
+#define USER_IMAGE_BUSINESS_WORKER_PAYLOAD_SIZE 640U
+// Keep image business work below the EPD display task priority.
+#define USER_IMAGE_BUSINESS_WORKER_PRIORITY 4U
 // Poll target time and mode changes without a busy loop.
 #define USER_DAILY_IMAGE_READY_POLL_MS 1000U
 // Space WiFi and SNTP readiness checks without holding the CPU in a tight loop.
@@ -1265,8 +1273,6 @@ extern uint32_t working_time;
 extern uint32_t server_required_continue_work_time;
 extern uint32_t wifi_standby_time_s;
 extern int g_app_reset_reason;
-extern uint8_t g_slideshow_random_enable;
-
 void print_base_info(void);
 
 esp_err_t app_nvs_read_u8(const char *key, uint8_t *value, uint8_t default_value);

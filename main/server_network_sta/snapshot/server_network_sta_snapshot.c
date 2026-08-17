@@ -1,4 +1,5 @@
 #include "server_network_sta_snapshot.h"
+#include "app_persistent_state.h"
 
 #include <dirent.h>
 #include <stdbool.h>
@@ -70,27 +71,6 @@ static bool has_jpg_extension(const char *name)
     return strcmp(name + len - 4, ".jpg") == 0 || strcmp(name + len - 4, ".JPG") == 0;
 }
 
-static bool file_name_is_safe(const char *name)
-{
-    if (name == NULL || name[0] == '\0') {
-        return false;
-    }
-    if (strstr(name, "..") != NULL || strchr(name, '/') != NULL || strchr(name, '\\') != NULL || strchr(name, '"') != NULL) {
-        return false;
-    }
-    size_t len = strlen(name);
-    if (len > TDX_IMAGE_BASE_NAME_MAX_BYTES) {
-        return false;
-    }
-    for (size_t i = 0; i < len; ++i) {
-        unsigned char c = (unsigned char)name[i];
-        if (c < 0x20U || c > 0x7EU) {
-            return false;
-        }
-    }
-    return true;
-}
-
 static bool jpg_name_is_safe(const char *name)
 {
     if (name == NULL || !has_jpg_extension(name) ||
@@ -124,298 +104,35 @@ static const char *snapshot_image_entry_name(const char *entry_name)
     return strncmp(entry_name, prefix, strlen(prefix)) == 0 ? entry_name + strlen(prefix) : NULL;
 }
 
-static const char *find_json_key(const char *body, const char *key)
-{
-    char pattern[64];
-    const char *pos = body;
-    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    while ((pos = strstr(pos, pattern)) != NULL) {
-        const char *after = pos + strlen(pattern);
-        while (*after == ' ' || *after == '\t' || *after == '\r' || *after == '\n') {
-            after++;
-        }
-        if (*after == ':') {
-            return pos;
-        }
-        pos += strlen(pattern);
-    }
-    return NULL;
-}
-
-static bool parse_json_int(const char *body, const char *key, int *out)
-{
-    const char *pos = find_json_key(body, key);
-    char *end_ptr = NULL;
-    long value = 0;
-    if (pos == NULL || out == NULL) {
-        return false;
-    }
-
-    pos += strlen(key) + 2;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != ':') {
-        return false;
-    }
-    pos++;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-
-    value = strtol(pos, &end_ptr, 10);
-    if (end_ptr == pos) {
-        return false;
-    }
-    *out = (int)value;
-    return true;
-}
-
-static bool parse_json_u32(const char *body, const char *key, uint32_t *out)
-{
-    const char *pos = find_json_key(body, key);
-    char *end_ptr = NULL;
-    unsigned long value = 0;
-    if (pos == NULL || out == NULL) {
-        return false;
-    }
-
-    pos += strlen(key) + 2;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != ':') {
-        return false;
-    }
-    pos++;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos == '-') {
-        return false;
-    }
-
-    value = strtoul(pos, &end_ptr, 10);
-    if (end_ptr == pos || value > UINT32_MAX) {
-        return false;
-    }
-    *out = (uint32_t)value;
-    return true;
-}
-
-static bool parse_json_i64(const char *body, const char *key, int64_t *out)
-{
-    const char *pos = find_json_key(body, key);
-    char *end_ptr = NULL;
-    long long value = 0;
-    if (pos == NULL || out == NULL) {
-        return false;
-    }
-
-    pos += strlen(key) + 2;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != ':') {
-        return false;
-    }
-    pos++;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-
-    value = strtoll(pos, &end_ptr, 10);
-    if (end_ptr == pos) {
-        return false;
-    }
-    *out = (int64_t)value;
-    return true;
-}
-
-static bool parse_json_string(const char *body, const char *key, char *out, size_t out_size)
-{
-    const char *pos = find_json_key(body, key);
-    if (pos == NULL || out == NULL || out_size == 0) {
-        return false;
-    }
-
-    pos += strlen(key) + 2;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != ':') {
-        return false;
-    }
-    pos++;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != '"') {
-        return false;
-    }
-    pos++;
-
-    size_t len = 0;
-    while (*pos != '\0' && *pos != '"' && len + 1 < out_size) {
-        out[len++] = *pos++;
-    }
-    if (*pos != '"') {
-        return false;
-    }
-    out[len] = '\0';
-    return true;
-}
-
-static bool parse_json_bool(const char *body, const char *key, bool *out)
-{
-    const char *pos = find_json_key(body, key);
-    if (pos == NULL || out == NULL) {
-        return false;
-    }
-
-    pos += strlen(key) + 2;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != ':') {
-        return false;
-    }
-    pos++;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-
-    if (strncmp(pos, "true", 4) == 0 || *pos == '1') {
-        *out = true;
-        return true;
-    }
-    if (strncmp(pos, "false", 5) == 0 || *pos == '0') {
-        *out = false;
-        return true;
-    }
-    return false;
-}
-
-static bool read_text_file(const char *path, char *buf, size_t buf_size)
-{
-    if (path == NULL || buf == NULL || buf_size == 0) {
-        return false;
-    }
-    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
-        return false;
-    }
-    FILE *fp = fopen(path, "rb");
-    if (fp == NULL) {
-        TdxSharedSpi_Unlock();
-        return false;
-    }
-
-    size_t len = fread(buf, 1, buf_size - 1, fp);
-    fclose(fp);
-    TdxSharedSpi_Unlock();
-    buf[len] = '\0';
-    return true;
-}
-
-static void parse_slideshow_file_names(const char *json, snapshot_slideshow_t *slideshow)
-{
-    const char *pos = find_json_key(json, "fileNames");
-    if (pos == NULL || slideshow == NULL) {
-        return;
-    }
-
-    pos = strchr(pos, '[');
-    if (pos == NULL) {
-        return;
-    }
-    pos++;
-
-    while (*pos != '\0' && *pos != ']' && slideshow->file_count < TDX_SLIDESHOW_MAX_FILES) {
-        while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n' || *pos == ',') {
-            pos++;
-        }
-        if (*pos == ']') {
-            break;
-        }
-        if (*pos != '"') {
-            return;
-        }
-        pos++;
-
-        char file_name[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
-        size_t len = 0;
-        bool name_too_long = false;
-        while (*pos != '\0' && *pos != '"') {
-            if (len < TDX_IMAGE_BASE_NAME_MAX_BYTES) {
-                file_name[len] = *pos;
-            } else {
-                name_too_long = true;
-            }
-            len++;
-            pos++;
-        }
-        if (*pos != '"') {
-            slideshow->file_count = 0;
-            return;
-        }
-        pos++;
-        if (name_too_long) {
-            slideshow->file_count = 0;
-            return;
-        }
-        file_name[len] = '\0';
-
-        if (file_name_is_safe(file_name)) {
-            strlcpy(slideshow->file_names[slideshow->file_count],
-                    file_name,
-                    sizeof(slideshow->file_names[slideshow->file_count]));
-            slideshow->file_count++;
-        }
-    }
-}
-
 static void read_slideshow_state(const char *base_path, snapshot_slideshow_t *slideshow)
 {
-    char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
-    char config_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char config_buf[SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX];
-    char control_buf[512];
-
+    (void)base_path;
     memset(slideshow, 0, sizeof(*slideshow));
     slideshow->start_index = -1;
-    snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", base_path);
-    snprintf(config_path, sizeof(config_path), "%s/%s", bin_dir, TDX_SLIDESHOW_CONFIG_FILE);
-    snprintf(control_path, sizeof(control_path), "%s/%s", bin_dir, TDX_SLIDESHOW_CONTROL_FILE);
-
-    if (read_text_file(config_path, config_buf, sizeof(config_buf))) {
-        parse_slideshow_file_names(config_buf, slideshow);
-        parse_json_u32(config_buf, "interval", &slideshow->interval);
-        parse_json_bool(config_buf, "random", &slideshow->random);
-        int parsed_start_index = -1;
-        if (parse_json_int(config_buf, "startIndex", &parsed_start_index) &&
-            parsed_start_index >= 0 &&
-            (size_t)parsed_start_index < slideshow->file_count) {
-            slideshow->start_index = parsed_start_index;
+    app_persistent_slideshow_config_t *config =
+        (app_persistent_slideshow_config_t *)calloc(1, sizeof(*config));
+    uint32_t config_generation = 0;
+    if (config != NULL &&
+        AppPersistentState_LoadSlideshowConfig(config, &config_generation) == ESP_OK) {
+        slideshow->file_count = config->file_count;
+        slideshow->interval = config->interval;
+        slideshow->start_index = (int)config->start_index;
+        for (size_t i = 0; i < config->file_count; ++i) {
+            strlcpy(slideshow->file_names[i],
+                    config->file_names[i],
+                    sizeof(slideshow->file_names[i]));
         }
     }
-
-    if (read_text_file(control_path, control_buf, sizeof(control_buf))) {
-        int sw = 0;
-        bool enable = false;
-        if (parse_json_int(control_buf, "sw", &sw)) {
-            slideshow->sw = (sw != 0) ? 1 : 0;
-        } else if (parse_json_bool(control_buf, "enable", &enable)) {
-            slideshow->sw = enable ? 1 : 0;
-        }
-        parse_json_u32(control_buf, "interval", &slideshow->interval);
-        parse_json_bool(control_buf, "random", &slideshow->random);
-        parse_json_i64(control_buf, "timestamp", &slideshow->timestamp);
-        parse_json_i64(control_buf, "anchor_epoch", &slideshow->anchor_epoch);
-        if (slideshow->anchor_epoch <= 0 && slideshow->timestamp > 0) {
-            slideshow->anchor_epoch = slideshow->timestamp;
-        }
+    app_persistent_slideshow_control_t control = {0};
+    uint32_t control_generation = 0;
+    if (AppPersistentState_LoadSlideshowControl(&control, &control_generation) == ESP_OK) {
+        slideshow->sw = control.enabled && config != NULL &&
+                        config_generation == control_generation ? 1 : 0;
+        slideshow->interval = control.interval;
+        slideshow->timestamp = control.timestamp;
+        slideshow->anchor_epoch = control.anchor_epoch;
     }
+    free(config);
 
     slideshow->random = false;
 

@@ -14,6 +14,7 @@
 #include "esp_system.h"
 #include "epd_display_app.h"
 #include "epd_display_mode.h"
+#include "app_persistent_state.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "led_status.h"
@@ -360,11 +361,10 @@ static void factory_reset_clear_persistent_state(factory_reset_result_t *result)
     if (one_ret != ESP_OK && ret == ESP_OK) {
         ret = one_ret;
     }
-    one_ret = app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY, "false");
+    one_ret = AppPersistentState_EraseImageState();
     if (one_ret != ESP_OK && ret == ESP_OK) {
         ret = one_ret;
     }
-    g_slideshow_random_enable = 0;
     one_ret = LocalImageBrowsing_ResetState();
     if (one_ret != ESP_OK && ret == ESP_OK) {
         ret = one_ret;
@@ -405,9 +405,6 @@ static esp_err_t factory_reset_execute(const char *base_path,
     char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
     char jpg_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
     char cast_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
-    char slideshow_config[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char slideshow_control[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char last_cast[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
     struct stat st = {0};
 
     if (base_path == NULL || result == NULL) {
@@ -421,9 +418,6 @@ static esp_err_t factory_reset_execute(const char *base_path,
     snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", base_path);
     snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", base_path);
     snprintf(cast_dir, sizeof(cast_dir), "%s/cast_img", base_path);
-    snprintf(slideshow_config, sizeof(slideshow_config), "%s/%s", bin_dir, TDX_SLIDESHOW_CONFIG_FILE);
-    snprintf(slideshow_control, sizeof(slideshow_control), "%s/%s", bin_dir, TDX_SLIDESHOW_CONTROL_FILE);
-    snprintf(last_cast, sizeof(last_cast), "%s/last_cast.txt", cast_dir);
 
     if (stat(base_path, &st) != 0) {
         ESP_LOGW(TAG, "factory reset skipped storage not ready base=%s", base_path);
@@ -472,15 +466,6 @@ static esp_err_t factory_reset_execute(const char *base_path,
         factory_reset_delete_files_with_ext(cast_dir, ".bin", result);
     result->cast_jpg_deleted =
         factory_reset_delete_files_with_ext(cast_dir, ".jpg", result);
-    if (factory_reset_delete_path_if_exists(slideshow_config, result)) {
-        result->config_deleted++;
-    }
-    if (factory_reset_delete_path_if_exists(slideshow_control, result)) {
-        result->config_deleted++;
-    }
-    if (factory_reset_delete_path_if_exists(last_cast, result)) {
-        result->config_deleted++;
-    }
 
     TdxSharedSpi_Unlock();
 

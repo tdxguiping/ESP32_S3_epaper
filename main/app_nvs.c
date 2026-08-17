@@ -1,4 +1,5 @@
 #include "tdx_cfg.h"
+#include "app_nvs.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -9,7 +10,112 @@
 
 static const char *TAG = "app_nvs";
 
-uint8_t g_slideshow_random_enable;
+static esp_err_t app_nvs_image_state_open(nvs_open_mode_t mode, nvs_handle_t *handle)
+{
+    if (handle == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t ret = nvs_open(APP_STATE_NVS_NAMESPACE, mode, handle);
+    if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "image-state namespace open failed mode=%d ret=%s",
+                 (int)mode, esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+esp_err_t app_nvs_image_state_get_blob_size(const char *key, size_t *size)
+{
+    nvs_handle_t handle;
+    esp_err_t ret;
+
+    if (key == NULL || size == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *size = 0;
+    ret = app_nvs_image_state_open(NVS_READONLY, &handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = nvs_get_blob(handle, key, NULL, size);
+    nvs_close(handle);
+    if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "image-state size read failed key=%s ret=%s",
+                 key, esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+esp_err_t app_nvs_image_state_read_blob(const char *key, void *value, size_t *size)
+{
+    nvs_handle_t handle;
+    esp_err_t ret;
+
+    if (key == NULL || value == NULL || size == NULL || *size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    ret = app_nvs_image_state_open(NVS_READONLY, &handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = nvs_get_blob(handle, key, value, size);
+    nvs_close(handle);
+    if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "image-state blob read failed key=%s ret=%s",
+                 key, esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+esp_err_t app_nvs_image_state_write_blob(const char *key, const void *value, size_t size)
+{
+    nvs_handle_t handle;
+    esp_err_t ret;
+
+    if (key == NULL || value == NULL || size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    ret = app_nvs_image_state_open(NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = nvs_set_blob(handle, key, value, size);
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "image-state blob write failed key=%s size=%u ret=%s",
+                 key, (unsigned int)size, esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+esp_err_t app_nvs_image_state_erase_key(const char *key)
+{
+    nvs_handle_t handle;
+    esp_err_t ret;
+
+    if (key == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    ret = app_nvs_image_state_open(NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = nvs_erase_key(handle, key);
+    if (ret == ESP_ERR_NVS_NOT_FOUND) {
+        ret = ESP_OK;
+    }
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "image-state key erase failed key=%s ret=%s",
+                 key, esp_err_to_name(ret));
+    }
+    return ret;
+}
 
 esp_err_t app_nvs_read_u8(const char *key, uint8_t *out_value, uint8_t default_value)
 {

@@ -9,8 +9,10 @@
 #include <time.h>
 
 #include "epd_display_mode.h"
+#include "app_persistent_state.h"
 #include "esp_log.h"
 #include "server_network_sta_slideshow.h"
+#include "server_network_sta_slideshow_control.h"
 #include "server_network_sta_time.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
@@ -229,92 +231,62 @@ static bool usb_slideshow_force_random_config(const char *scope, bool random)
     return false;
 }
 
-static bool write_slideshow_config(const char *body,
-                                   uint32_t interval,
-                                   bool random,
-                                   uint32_t start_index)
+static bool save_slideshow_persistent_state(const char *body,
+                                            uint32_t interval,
+                                            bool random,
+                                            uint32_t start_index,
+                                            int64_t timestamp,
+                                            bool *control_stage_reached)
 {
-    char config_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char *json = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
-    if (json == NULL) {
+    (void)random;
+    app_persistent_slideshow_config_t *config =
+        (app_persistent_slideshow_config_t *)calloc(1, sizeof(*config));
+    if (config == NULL) {
         return false;
     }
     const char *file_names_key = find_json_key(body, "fileNames");
     const char *array_start = file_names_key != NULL ? strchr(file_names_key, '[') : NULL;
     const char *array_end = array_start != NULL ? strchr(array_start, ']') : NULL;
     if (array_start == NULL || array_end == NULL || array_end < array_start) {
-        free(json);
+        free(config);
         return false;
     }
-    size_t array_len = (size_t)(array_end - array_start + 1);
-    int len = snprintf(json,
-                       SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX,
-                       "{\"fileNames\":%.*s,\"interval\":%lu,\"random\":%s,\"startIndex\":%lu}",
-                       (int)array_len,
-                       array_start,
-                       (unsigned long)interval,
-                       random ? "true" : "false",
-                       (unsigned long)start_index);
-    if (len < 0 || (size_t)len >= SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX) {
-        free(json);
-        return false;
+    const char *cursor = array_start + 1;
+    while (cursor < array_end && config->file_count < TDX_SLIDESHOW_MAX_FILES) {
+        const char *quote = strchr(cursor, '"');
+        if (quote == NULL || quote >= array_end) {
+            break;
+        }
+        const char *quote_end = strchr(quote + 1, '"');
+        if (quote_end == NULL || quote_end > array_end) {
+            free(config);
+            return false;
+        }
+        size_t name_len = (size_t)(quote_end - quote - 1);
+        if (name_len == 0 || name_len > TDX_IMAGE_BASE_NAME_MAX_BYTES) {
+            free(config);
+            return false;
+        }
+        memcpy(config->file_names[config->file_count], quote + 1, name_len);
+        config->file_names[config->file_count][name_len] = '\0';
+        config->file_count++;
+        cursor = quote_end + 1;
     }
-
-    snprintf(config_path, sizeof(config_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, TDX_SLIDESHOW_CONFIG_FILE);
-    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
-        free(json);
-        return false;
-    }
-    FILE *fp = fopen(config_path, "wb");
-    if (fp == NULL) {
-        TdxSharedSpi_Unlock();
-        free(json);
-        return false;
-    }
-    size_t written = fwrite(json, 1, (size_t)len, fp);
-    bool ok = fclose(fp) == 0 && written == (size_t)len;
-    TdxSharedSpi_Unlock();
-    free(json);
-    return ok;
-}
-
-static bool write_slideshow_rtc_control(uint32_t interval, bool random, int64_t timestamp)
-{
-    char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char json[256];
-
-    snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", USB_CONSOLE_BASE_PATH, TDX_SLIDESHOW_CONTROL_FILE);
-    int len = snprintf(json,
-                       sizeof(json),
-                       "{\"func\":\"set_slideshow\",\"sw\":1,\"interval\":%lu,\"random\":%s,"
-                       "\"timestamp\":%lld,\"anchor_epoch\":%lld}",
-                       (unsigned long)interval,
-                       random ? "true" : "false",
-                       (long long)timestamp,
-                       (long long)timestamp);
-    if (len < 0 || (size_t)len >= sizeof(json)) {
-        return false;
-    }
-
-    if (TdxSharedSpi_Lock(portMAX_DELAY) != ESP_OK) {
-        return false;
-    }
-    FILE *fp = fopen(control_path, "wb");
-    if (fp == NULL) {
-        TdxSharedSpi_Unlock();
-        return false;
-    }
-    size_t written = fwrite(json, 1, (size_t)len, fp);
-    bool ok = fclose(fp) == 0 && written == (size_t)len;
-    TdxSharedSpi_Unlock();
-    ESP_LOGI("usb_slideshow",
-             "start_slideshow write rtc control sw=1 interval=%lu random=%d timestamp=%lld anchor=%lld json=%s",
-             (unsigned long)interval,
-             random ? 1 : 0,
-             (long long)timestamp,
-             (long long)timestamp,
-             json);
-    return ok;
+    config->start_index = start_index;
+    config->interval = interval;
+    config->random = false;
+    app_persistent_slideshow_control_t control = {
+        .enabled = true,
+        .interval = interval,
+        .random = false,
+        .timestamp = timestamp,
+        .anchor_epoch = timestamp,
+    };
+    esp_err_t ret = AppPersistentState_SaveSlideshowState(config,
+                                                          &control,
+                                                          control_stage_reached);
+    free(config);
+    return ret == ESP_OK;
 }
 
 static int apply_start_slideshow_timestamp(int64_t timestamp)
@@ -477,38 +449,27 @@ esp_err_t UsbConsoleSlideshow_Process(const usb_console_http_request_t *request,
                                          time_result);
     }
 
-    if (!write_slideshow_config(request->body, interval, random, start_index)) {
+    bool control_stage_reached = false;
+    if (!save_slideshow_persistent_state(request->body,
+                                         interval,
+                                         random,
+                                         start_index,
+                                         timestamp,
+                                         &control_stage_reached)) {
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
                                          "{\"func\":\"start_slideshow_result\",\"result\":%d,"
-                                         "\"message\":\"save config failed\"}",
-                                         TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED);
-    }
-    esp_err_t random_save_ret = app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
-                                                  random ? "true" : "false");
-    g_slideshow_random_enable = random ? 1 : 0;
-    ESP_LOGI("usb_slideshow", "start_slideshow save random=%d ret=%s",
-             g_slideshow_random_enable, esp_err_to_name(random_save_ret));
-    if (random_save_ret != ESP_OK) {
-        return UsbConsoleCommon_SetJsonf(response,
-                                         200,
-                                         "OK",
-                                         "{\"func\":\"start_slideshow_result\",\"result\":%d,"
-                                         "\"message\":\"save random config failed\"}",
-                                         TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED);
-    }
-
-    if (!write_slideshow_rtc_control(interval, random, timestamp)) {
-        return UsbConsoleCommon_SetJsonf(response,
-                                         200,
-                                         "OK",
-                                         "{\"func\":\"start_slideshow_result\",\"result\":%d,"
-                                         "\"message\":\"save slideshow control failed\"}",
-                                         TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED);
+                                         "\"message\":\"%s\"}",
+                                         control_stage_reached ?
+                                         TDX_JSON_RESULT_SLIDESHOW_CONTROL_SAVE_FAILED :
+                                         TDX_JSON_RESULT_SLIDESHOW_CONFIG_SAVE_FAILED,
+                                         control_stage_reached ?
+                                         "save slideshow control failed" : "save config failed");
     }
     esp_err_t mode_ret = EpdDisplayMode_SetBySlideshowSwitch(true);
     if (mode_ret != ESP_OK) {
+        (void)ServerNetworkStaSlideshowControl_Disable(USB_CONSOLE_BASE_PATH);
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",

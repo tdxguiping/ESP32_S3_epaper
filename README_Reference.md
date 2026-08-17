@@ -2,6 +2,8 @@
 
 本文件保存代码定位资料：公共配置、WiFi/HTTP Server、EPD 驱动、静态资源、目录与函数索引，以及日志约定。功能与状态规则以 [README_Fun.md](README_Fun.md) 为准。
 
+图片业务持久状态源码索引：`main/app_nvs.c/.h` 固定通过 `nvs_open()` 访问默认 NVS 分区的 `image_state` namespace，并负责 Blob size/read/write/erase；`main/persistent_state/app_persistent_state.c/.h` 负责 `slide_cfg`、`slide_ctl`、`last_cast` 的版本化结构、CRC、generation、字段校验、写后读回和互斥。固件不包含 SD 文本迁移模块，不读取相关 `.txt`，也不维护独立 `slide_random` key；完整烧录和应用程序 OTA 使用同一 NVS 位置。相关宏全部位于 `main/tdx_cfg.h`，`partitions/v2/16m.csv` 不为图片状态增加独立分区。
+
 ## 目录 <span id="toc"></span>
 
 - [调试日志与敏感信息约定](#sec-debug-log)
@@ -472,8 +474,8 @@ PhotoPainter:epd_mode，u8
 同步规则：
 
 ```text
-show_control.txt sw=1 写入成功 -> EpdDisplayMode_SetBySlideshowSwitch(true)  -> epd_mode=1
-show_control.txt sw=0 写入成功 -> EpdDisplayMode_SetBySlideshowSwitch(false) -> epd_mode=0
+NVS slide_ctl enabled=true 写入并读回成功 -> EpdDisplayMode_SetBySlideshowSwitch(true)  -> epd_mode=1
+NVS slide_ctl enabled=false 写入并读回成功 -> EpdDisplayMode_SetBySlideshowSwitch(false) -> epd_mode=0
 ```
 
 存 / 取信息（含条件限制）：
@@ -1957,6 +1959,8 @@ main/
 ```text
 main/app_nvs.c
 main/tdx_cfg.h
+main/persistent_state/app_persistent_state.c
+main/persistent_state/app_persistent_state.h
 main/epd_display/epd_display_mode.c
 main/epd_display/epd_display_mode.h
 ```
@@ -2242,7 +2246,7 @@ main/server_network_sta/slideshow/server_network_sta_slideshow.h
 server_network_sta_slideshow.c
 ├─ parse_start_slideshow_request()
 ├─ check_slideshow_files_exist()
-├─ save_slideshow_config()
+├─ save_slideshow_persistent_state()
 ├─ ServerNetworkStaSlideshow_ShowFirst()
 ├─ ServerNetworkStaSlideshow_StartSaved()
 ├─ ServerNetworkStaSlideshow_StartSavedResetInterval()
@@ -2250,11 +2254,11 @@ server_network_sta_slideshow.c
 ├─ ServerNetworkStaSlideshow_StartSavedDelayed()
 ├─ ServerNetworkStaSlideshow_GetRuntimeTiming()
 ├─ ServerNetworkStaSlideshow_Stop()
-├─ slideshow_worker_task()（固定 6 KB 静态栈，常驻等待通知）
-└─ slideshow_run_runtime()（单次轮播运行，结束后释放 runtime）
+├─ ImageBusinessWorker_Submit(SLIDESHOW)（提交给9KB统一常驻worker）
+└─ slideshow_run_runtime()（由统一worker串行执行，结束后释放 runtime）
 ```
 
-轮播 worker 的 TCB 和 6 KB 栈从开机起固定保留在静态内部 RAM，不从 heap 动态申请任务栈；worker 在开机恢复轮播或第一次收到轮播启动请求时创建，创建后常驻复用。每次启动仍优先从 PSRAM 分配约 2.9 KB runtime，失败时回退内部 RAM。运行结束后 worker 保留、runtime 释放。开机自动恢复遇到临时资源失败时保留已保存的轮播控制、模式和进度，供下次唤醒继续恢复；新命令启动失败仍按原规则回退并返回 1506。
+`main/image_business_worker/` 提供一个固定9KB内部RAM静态栈、一个静态TCB、一个静态状态mutex和一个640字节单pending命令槽。该worker在读取 `epd_mode` 后立即创建并永久常驻，串行执行每日一图、轮播runtime和轮播启动延迟；旧6KB轮播静态任务、旧7KB daily静态任务及6KB动态启动延迟任务均已取消。轮播runtime仍优先从PSRAM分配约2.9KB，结束或在pending阶段被取消时只释放一次。启动延迟使用统一worker的task notification进行可中断等待，模式切换会增加generation并立即唤醒，禁止过期延迟在10秒后重新启动旧轮播。新命令失败、开机恢复和CH583模式协调规则保持不变。
 
 ---
 
@@ -2280,7 +2284,8 @@ server_network_sta_slideshow_control.c
 ├─ parse_json_i64()
 ├─ timestamp_reasonable()
 ├─ ServerNetworkStaSlideshowControl_ApplyJson()
-├─ write_control_file()
+├─ write_control_state()
+├─ rollback_slideshow_control_failure()
 └─ ServerNetworkStaSlideshowControl_ProcessJson()
 ```
 
@@ -3119,7 +3124,7 @@ USER_ZLIB_TEST_DECOMPRESSED_RELATIVE_PATH
 
 cast、cast2pic和upload入口只校验 `bin_size` 是否等于实际收到的 `bin` part长度，不把压缩输入长度与屏幕原始 `display_size` 比较。宏为 `1` 时由公共EPD入口解压并校验输出长度；宏为 `0` 时继续把raw数据交给原有EPD长度检查。
 
-每日一图下载接口增加 `exact_size_required` 参数：非压缩模式维持严格原始长度，压缩模式使用 `TdxZlibBuffer_GetCompressBound()` 作为容量并接受实际压缩长度。轮播在压缩模式下跳过旧的原始BIN文件名SHA诊断，避免对压缩字节产生误报；非压缩模式保留原诊断。
+每日一图下载接口增加 `exact_size_required` 参数：非压缩模式维持严格原始长度，压缩模式使用 `TdxZlibBuffer_GetCompressBound()` 作为容量并接受实际压缩长度。轮播在压缩模式下跳过旧的原始BIN文件名SHA诊断，避免对压缩字节产生误报；非压缩模式保留原诊断。ESP32-C5使用 ESP-IDF 5.5.3 FreeRTOS `xTaskCreateStatic()`：daily、slideshow及轮播启动延迟共用9216字节内部RAM统一静态栈和一个静态TCB，通过按值复制的小型pending命令及generation取消机制串行运行，不依赖运行期heap最大连续块。
 
 `main/main.c` 完整保留 `TdxZlibEpdTest_Run()` 的启动调用代码，当前使用局部 `#if 0` 关闭，没有增加临时测试宏；以后需要诊断时可临时改为 `#if 1`。该函数读取已生成的 `.bin.zlib` 并提交公共EPD入口；读取期间持有 `TdxSharedSpi`，提交显示前释放锁，避免同步等待EPD任务时死锁。
 

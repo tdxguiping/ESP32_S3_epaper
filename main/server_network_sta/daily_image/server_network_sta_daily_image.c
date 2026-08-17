@@ -14,9 +14,9 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "image_business_worker.h"
 #include "nvs.h"
 #include "server_network_sta.h"
 #include "server_network_sta_slideshow_control.h"
@@ -33,10 +33,12 @@ typedef struct {
     uint32_t generation;
 } daily_image_job_t;
 
-static QueueHandle_t s_daily_queue;
-static TaskHandle_t s_daily_task;
-static SemaphoreHandle_t s_daily_init_mutex;
+_Static_assert(sizeof(daily_image_job_t) <=
+                   USER_IMAGE_BUSINESS_WORKER_PAYLOAD_SIZE,
+               "daily image job exceeds shared worker payload");
+
 static SemaphoreHandle_t s_daily_config_mutex;
+static StaticSemaphore_t s_daily_config_mutex_control;
 static volatile uint32_t s_daily_request_generation;
 static volatile uint32_t s_daily_running_generation;
 static volatile uint32_t s_daily_relative_wake_seconds;
@@ -113,7 +115,7 @@ static esp_err_t stop_slideshow_for_daily(const char *base_path)
                  result.message);
         return ret != ESP_OK ? ret : ESP_FAIL;
     }
-    ESP_LOGI(TAG, "slideshow stopped and show_control sw=0 confirmed");
+    ESP_LOGI(TAG, "slideshow stopped and NVS control disabled");
     return ESP_OK;
 }
 
@@ -157,10 +159,12 @@ static void invalidate_previous_generation(const char *reason)
              (unsigned long)generation);
 }
 
+static esp_err_t daily_run_command(const void *payload, size_t payload_size);
+
 static esp_err_t submit_job(const daily_image_config_t *config,
                             const char *source)
 {
-    if (config == NULL || s_daily_queue == NULL) {
+    if (config == NULL || !s_daily_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -169,10 +173,17 @@ static esp_err_t submit_job(const daily_image_config_t *config,
                                         1U,
                                         __ATOMIC_ACQ_REL);
     strlcpy(job.source, source != NULL ? source : "unknown", sizeof(job.source));
-    if (xQueueOverwrite(s_daily_queue, &job) != pdPASS) {
+    (void)ImageBusinessWorker_CancelPending(IMAGE_BUSINESS_OWNER_DAILY);
+    esp_err_t ret = ImageBusinessWorker_Submit(IMAGE_BUSINESS_OWNER_DAILY,
+                                               daily_run_command,
+                                               NULL,
+                                               &job,
+                                               sizeof(job),
+                                               job.generation);
+    if (ret != ESP_OK) {
         ESP_LOGE(TAG, "job submit failed source=%s generation=%lu",
                  job.source, (unsigned long)job.generation);
-        return ESP_ERR_INVALID_STATE;
+        return ret;
     }
     ESP_LOGI(TAG, "job submitted source=%s generation=%lu",
              job.source, (unsigned long)job.generation);
@@ -705,174 +716,130 @@ static esp_err_t save_retry_until_done(daily_image_config_t *config,
     }
 }
 
-static void daily_worker(void *arg)
+static esp_err_t daily_run_command(const void *payload, size_t payload_size)
 {
-    (void)arg;
+    if (payload == NULL || payload_size != sizeof(daily_image_job_t)) {
+        return ESP_ERR_INVALID_ARG;
+    }
     daily_image_job_t job = {0};
+    memcpy(&job, payload, sizeof(job));
 
-    ESP_LOGI(TAG, "worker started");
-    for (;;) {
-        if (xQueueReceive(s_daily_queue, &job, portMAX_DELAY) != pdTRUE) {
-            continue;
-        }
-        __atomic_store_n(&s_daily_running_generation,
-                         job.generation,
-                         __ATOMIC_RELEASE);
-        __atomic_store_n(&s_daily_job_active, true, __ATOMIC_RELEASE);
-        ESP_LOGI(TAG, "job start source=%s generation=%lu mode=%u",
-                 job.source,
-                 (unsigned long)job.generation,
-                 (unsigned int)EpdDisplayMode_Get());
+    __atomic_store_n(&s_daily_running_generation,
+                     job.generation,
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&s_daily_job_active, true, __ATOMIC_RELEASE);
+    ESP_LOGI(TAG, "job start source=%s generation=%lu mode=%u",
+             job.source,
+             (unsigned long)job.generation,
+             (unsigned int)EpdDisplayMode_Get());
 
-        esp_err_t ret = wait_until_ready();
-        daily_image_schedule_decision_t decision = {0};
-        if (ret == ESP_OK) {
-            ret = wait_for_run_window(&job.config, &decision);
-        }
+    esp_err_t ret = wait_until_ready();
+    daily_image_schedule_decision_t decision = {0};
+    if (ret == ESP_OK) {
+        ret = wait_for_run_window(&job.config, &decision);
+    }
 
-        uint8_t *display_buffer = NULL;
-        size_t downloaded_size = 0;
-        const epd_type_config_t *epd_config = NULL;
-        if (ret == ESP_OK) {
-            ret = download_with_retries(&job.config,
-                                        &display_buffer,
-                                        &downloaded_size,
-                                        &epd_config);
-        }
-        int64_t display_start_epoch = 0;
-        if (ret == ESP_OK) {
-            ret = save_display_start_until_done(&job.config,
-                                                &display_start_epoch);
-        }
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG,
-                     "daily EPD start saved epoch=%lld initial=%d target=%lld",
-                     (long long)display_start_epoch,
-                     decision.initial_run ? 1 : 0,
-                     (long long)decision.target_epoch);
-            /* Display is intentionally attempted once per wake cycle. */
-            ret = display_once(display_buffer, downloaded_size, epd_config);
-        }
-        if (display_buffer != NULL) {
-            heap_caps_free(display_buffer);
-        }
+    uint8_t *display_buffer = NULL;
+    size_t downloaded_size = 0;
+    const epd_type_config_t *epd_config = NULL;
+    if (ret == ESP_OK) {
+        ret = download_with_retries(&job.config,
+                                    &display_buffer,
+                                    &downloaded_size,
+                                    &epd_config);
+    }
+    int64_t display_start_epoch = 0;
+    if (ret == ESP_OK) {
+        ret = save_display_start_until_done(&job.config,
+                                            &display_start_epoch);
+    }
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG,
+                 "daily EPD start saved epoch=%lld initial=%d target=%lld",
+                 (long long)display_start_epoch,
+                 decision.initial_run ? 1 : 0,
+                 (long long)decision.target_epoch);
+        /* Display is intentionally attempted once per wake cycle. */
+        ret = display_once(display_buffer, downloaded_size, epd_config);
+    }
+    if (display_buffer != NULL) {
+        heap_caps_free(display_buffer);
+    }
 
-        if (ret == ESP_OK) {
-            if (decision.initial_run) {
-                int64_t success_now = 0;
-                ret = save_initial_success_until_done(&job.config,
-                                                      &success_now);
-                if (ret == ESP_OK) {
-                    daily_image_schedule_decision_t next = {0};
-                    esp_err_t next_ret =
-                        DailyImageSchedule_Decide(&job.config, &next);
-                    if (next_ret == ESP_OK) {
-                        ESP_LOGI(TAG,
-                                 "initial daily run complete now=%lld next_target=%lld next_execute=%lld delayed=%d source=%s",
-                                 (long long)success_now,
-                                 (long long)next.target_epoch,
-                                 (long long)next.execute_epoch,
-                                 next.interval_delayed ? 1 : 0,
-                                 job.source);
-                    } else {
-                        ESP_LOGI(TAG,
-                                 "initial daily run complete now=%lld source=%s",
-                                 (long long)success_now,
-                                 job.source);
-                    }
-                }
-            } else {
-                int64_t completed_target =
-                    decision.retry ? job.config.retry_target_epoch
-                                   : decision.target_epoch;
-                ret = save_success_until_done(&job.config, completed_target);
-                if (ret == ESP_OK) {
-                    ESP_LOGI(TAG, "job complete target=%lld source=%s",
-                             (long long)completed_target, job.source);
+    esp_err_t command_ret = ret;
+    if (ret == ESP_OK) {
+        if (decision.initial_run) {
+            int64_t success_now = 0;
+            ret = save_initial_success_until_done(&job.config,
+                                                  &success_now);
+            if (ret == ESP_OK) {
+                daily_image_schedule_decision_t next = {0};
+                esp_err_t next_ret =
+                    DailyImageSchedule_Decide(&job.config, &next);
+                if (next_ret == ESP_OK) {
+                    ESP_LOGI(TAG,
+                             "initial daily run complete now=%lld next_target=%lld next_execute=%lld delayed=%d source=%s",
+                             (long long)success_now,
+                             (long long)next.target_epoch,
+                             (long long)next.execute_epoch,
+                             next.interval_delayed ? 1 : 0,
+                             job.source);
+                } else {
+                    ESP_LOGI(TAG,
+                             "initial daily run complete now=%lld source=%s",
+                             (long long)success_now,
+                             job.source);
                 }
             }
-            if (ret != ESP_OK) {
-                if (ret != ESP_ERR_INVALID_STATE) {
-                    ESP_LOGE(TAG,
-                             "success state save failed initial=%d ret=%s",
-                             decision.initial_run ? 1 : 0,
-                             esp_err_to_name(ret));
-                }
+        } else {
+            int64_t completed_target =
+                decision.retry ? job.config.retry_target_epoch
+                               : decision.target_epoch;
+            ret = save_success_until_done(&job.config, completed_target);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "job complete target=%lld source=%s",
+                         (long long)completed_target, job.source);
             }
-        } else if (ret != ESP_ERR_INVALID_STATE) {
-            ESP_LOGE(TAG, "job failed source=%s initial=%d ret=%s",
-                     job.source,
+        }
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG,
+                     "success state save failed initial=%d ret=%s",
                      decision.initial_run ? 1 : 0,
                      esp_err_to_name(ret));
-            ret = save_retry_until_done(&job.config,
-                                        decision.retry
-                                            ? job.config.retry_target_epoch
-                                            : decision.target_epoch);
+            command_ret = ret;
         }
+    } else if (ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "job failed source=%s initial=%d ret=%s",
+                 job.source,
+                 decision.initial_run ? 1 : 0,
+                 esp_err_to_name(ret));
+        ret = save_retry_until_done(&job.config,
+                                    decision.retry
+                                        ? job.config.retry_target_epoch
+                                        : decision.target_epoch);
+    }
 
-        ServerNetworkStaWifiWorkTime_SetDailyImageInProgress(false);
-        if (ret != ESP_ERR_INVALID_STATE && daily_mode_is_active()) {
-            /*
-             * Success selects the next daily slot. Failure selects the saved
-             * one-hour retry. Both use the same guarded CH583 power-off path.
-             */
-            esp_err_t wait_ret = wait_for_run_window(&job.config, &decision);
-            if (wait_ret == ESP_OK) {
-                /*
-                 * This is only reached if a requested shutdown was delayed for
-                 * the whole interval. Requeue locally to perform the due work.
-                 */
-                if (resubmit_job_if_current(&job) != ESP_OK) {
-                    ServerNetworkStaWifiWorkTime_SetDailyImageInProgress(false);
-                }
+    ServerNetworkStaWifiWorkTime_SetDailyImageInProgress(false);
+    if (ret != ESP_ERR_INVALID_STATE && daily_mode_is_active()) {
+        /*
+         * Success selects the next daily slot. Failure selects the saved
+         * one-hour retry. Both use the same guarded CH583 power-off path.
+         */
+        esp_err_t wait_ret = wait_for_run_window(&job.config, &decision);
+        if (wait_ret == ESP_OK) {
+            /* A delayed shutdown expired locally; queue the now-due work. */
+            if (resubmit_job_if_current(&job) != ESP_OK) {
+                ServerNetworkStaWifiWorkTime_SetDailyImageInProgress(false);
             }
         }
-
-        if (ret == ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "job canceled source=%s mode=%u",
-                     job.source, (unsigned int)EpdDisplayMode_Get());
-        }
-        __atomic_store_n(&s_daily_job_active, false, __ATOMIC_RELEASE);
-        memset(&job, 0, sizeof(job));
-    }
-}
-
-static esp_err_t ensure_worker(void)
-{
-    if (!s_daily_initialized || s_daily_init_mutex == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (xSemaphoreTake(s_daily_init_mutex, portMAX_DELAY) != pdTRUE) {
-        return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t ret = ESP_OK;
-    if (s_daily_queue == NULL) {
-        s_daily_queue = xQueueCreate(USER_DAILY_IMAGE_QUEUE_LENGTH,
-                                     sizeof(daily_image_job_t));
-        if (s_daily_queue == NULL) {
-            ret = ESP_ERR_NO_MEM;
-        }
+    if (ret == ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "job canceled source=%s mode=%u",
+                 job.source, (unsigned int)EpdDisplayMode_Get());
     }
-    if (ret == ESP_OK && s_daily_task == NULL) {
-        BaseType_t task_ret = xTaskCreate(daily_worker,
-                                          "daily_image",
-                                          USER_DAILY_IMAGE_TASK_STACK_SIZE,
-                                          NULL,
-                                          USER_DAILY_IMAGE_TASK_PRIORITY,
-                                          &s_daily_task);
-        if (task_ret != pdPASS) {
-            s_daily_task = NULL;
-            ret = ESP_ERR_NO_MEM;
-        }
-    }
-    xSemaphoreGive(s_daily_init_mutex);
-
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "worker initialization failed ret=%s",
-                 esp_err_to_name(ret));
-    }
-    return ret;
+    __atomic_store_n(&s_daily_job_active, false, __ATOMIC_RELEASE);
+    return command_ret;
 }
 
 esp_err_t ServerNetworkStaDailyImage_Init(const char *base_path)
@@ -883,22 +850,23 @@ esp_err_t ServerNetworkStaDailyImage_Init(const char *base_path)
             sizeof(s_daily_base_path)) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (s_daily_init_mutex == NULL) {
-        s_daily_init_mutex = xSemaphoreCreateMutex();
-        if (s_daily_init_mutex == NULL) {
-            return ESP_ERR_NO_MEM;
-        }
-    }
     if (s_daily_config_mutex == NULL) {
-        s_daily_config_mutex = xSemaphoreCreateMutex();
+        s_daily_config_mutex =
+            xSemaphoreCreateMutexStatic(&s_daily_config_mutex_control);
         if (s_daily_config_mutex == NULL) {
+            ESP_LOGE(TAG, "static config mutex create failed");
             return ESP_ERR_NO_MEM;
         }
     }
     s_daily_initialized = true;
-    ESP_LOGI(TAG, "base initialized mode=%u",
+    esp_err_t ret = ImageBusinessWorker_Init();
+    if (ret != ESP_OK) {
+        s_daily_initialized = false;
+        return ret;
+    }
+    ESP_LOGI(TAG, "base initialized mode=%u shared_worker=resident",
              (unsigned int)EpdDisplayMode_Get());
-    return ESP_OK;
+    return ret;
 #else
     (void)base_path;
     return ESP_OK;
@@ -940,10 +908,7 @@ esp_err_t ServerNetworkStaDailyImage_StartSaved(void)
         xSemaphoreGive(s_daily_config_mutex);
         return mode_ret != ESP_OK ? mode_ret : ret;
     }
-    ret = ensure_worker();
-    if (ret == ESP_OK) {
-        ret = submit_job(&config, "startup");
-    }
+    ret = submit_job(&config, "startup");
     if (ret != ESP_OK) {
         ESP_LOGE(TAG,
                  "DAILY startup job unavailable, restore NORMAL ret=%s",
@@ -965,15 +930,14 @@ static void stop_daily_work(void)
 {
 #if USER_DAILY_IMAGE_ENABLE
     bool had_work = __atomic_load_n(&s_daily_job_active, __ATOMIC_ACQUIRE) ||
-                    (s_daily_queue != NULL &&
-                     uxQueueMessagesWaiting(s_daily_queue) > 0U);
+                    ImageBusinessWorker_IsOwnerBusy(
+                        IMAGE_BUSINESS_OWNER_DAILY);
     uint32_t generation = __atomic_add_fetch(&s_daily_request_generation,
                                               1U,
                                               __ATOMIC_ACQ_REL);
     __atomic_store_n(&s_daily_relative_wake_seconds, 0U, __ATOMIC_RELEASE);
-    if (s_daily_queue != NULL) {
-        xQueueReset(s_daily_queue);
-    }
+    (void)ImageBusinessWorker_CancelPending(IMAGE_BUSINESS_OWNER_DAILY);
+    ImageBusinessWorker_Wake();
     if (had_work) {
         ESP_LOGI(TAG, "daily work stopped generation=%lu",
                  (unsigned long)generation);
@@ -985,13 +949,11 @@ esp_err_t ServerNetworkStaDailyImage_StopAndWait(void)
 {
     stop_daily_work();
 #if USER_DAILY_IMAGE_ENABLE
-    TickType_t start_tick = xTaskGetTickCount();
     TickType_t timeout_ticks = pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS + 5000U);
-    while (__atomic_load_n(&s_daily_job_active, __ATOMIC_ACQUIRE) &&
-           (xTaskGetTickCount() - start_tick) < timeout_ticks) {
-        vTaskDelay(pdMS_TO_TICKS(50U));
-    }
-    if (__atomic_load_n(&s_daily_job_active, __ATOMIC_ACQUIRE)) {
+    esp_err_t wait_ret = ImageBusinessWorker_WaitOwnerIdle(
+        IMAGE_BUSINESS_OWNER_DAILY, timeout_ticks);
+    if (wait_ret != ESP_OK ||
+        __atomic_load_n(&s_daily_job_active, __ATOMIC_ACQUIRE)) {
         ESP_LOGE(TAG, "daily job stop timeout");
         return ESP_ERR_TIMEOUT;
     }
@@ -1189,7 +1151,7 @@ esp_err_t ServerNetworkStaDailyImage_ProcessJson(httpd_req_t *req,
 
     ESP_LOGI(TAG, "daily request sw=1 enable");
     uint8_t previous_mode = EpdDisplayMode_Get();
-    ret = ensure_worker();
+    ret = ImageBusinessWorker_Init();
     if (ret != ESP_OK) {
         xSemaphoreGive(s_daily_config_mutex);
         return send_result(req,

@@ -13,10 +13,19 @@
 
 项目芯片为 ESP32-C5，SDK 资料位于 `C:\esp\v5.5.3\esp-idf`。当前处于开发阶段：错误使用 `ESP_LOGE`，需要注意使用 `ESP_LOGW`，普通关键信息使用 `ESP_LOGI`。
 
+持久状态规则：轮播配置、轮播控制和最后投图只保存在默认 NVS 分区的 `image_state` namespace，分别使用 `slide_cfg`、`slide_ctl`、`last_cast` Blob。固件不建立、不读取、不迁移任何对应的 SD `.txt` 文件，因此这些状态不会取得 SD/EPD 共用的 `TdxSharedSpi` 锁。所有 OTA 版本固定使用同一默认 NVS 分区、namespace 和版本化记录格式。
+
 ## 目录 <span id="toc"></span>
 
 - [存 / 取条件总表](#sec-storage-summary)
 - [1. 启动总流程](#sec-01)
+- [2. 永久常驻统一图片业务任务](#sec-02-image-business-worker)
+  - [2.1 定位、范围与重要规则](#sec-02-1)
+  - [2.2 启动、常驻与静态内存](#sec-02-2)
+  - [2.3 命令模型与串行规则](#sec-02-3)
+  - [2.4 DAILY / SLIDESHOW 切换规则](#sec-02-4)
+  - [2.5 取消、等待与资源所有权](#sec-02-5)
+  - [2.6 关键日志、异常和修改约束](#sec-02-6)
 - [3. NVS 配置读写](#sec-03)
 - [4. 存储挂载：SD / SPIFFS](#sec-04)
 - [Local Image Browsing 本地图片浏览](#sec-local-image-browsing)
@@ -61,12 +70,12 @@
 |---|---|---|---|
 | `app_nvs` 通用 NVS | `PhotoPainter` namespace | `key != NULL`；写字符串时 `value != NULL`；写入后必须 `nvs_commit()`；`read_u8` 发现 key 不存在时会写入默认值 | `read_u8` 要求 `out_value != NULL`；`read_str` 要求 `value != NULL` 且 `value_size > 0`；打开失败或读取失败时按默认值回退 |
 | WiFi 配网 NVS | `wifi:ssid/password`，`nvs.net80211:sta.ssid/sta.pswd` | USB、BLE、CH583 配网都要求 `func=wifi`、`ssid` 可解析且长度 1..32、`key` 可解析且长度小于 65；两个 namespace 都写入成功后才提交 worker 连接 | STA 启动时从保存的 WiFi 配置恢复连接；请求侧只负责保存和提交 worker，真正连接在 `User_Network_mode_app_init()` / `server_network_sta.c` |
-| `cast` 图片保存 | `/data/cast_img/<fileName>.bin`，`/data/cast_img/<fileName>.jpg`，`/data/cast_img/last_cast.txt` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；zlib模式下`bin_size`是压缩后的实际传输长度，不要求等于屏幕原始长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename；新 bin/jpg 保存和 last_cast 记录成功后，清理 `/data/cast_img` 中非本次文件名的旧 `.bin/.jpg` | `show=true && save=true` 时先成功停止轮播，再显示、保存并记录 last cast；启动时不读取或显示 last_cast |
+| `cast` 图片保存 | `/data/cast_img/<fileName>.bin`、`/data/cast_img/<fileName>.jpg`；最后投图名保存到默认 NVS `image_state:last_cast` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；zlib模式下`bin_size`是压缩后的实际传输长度，不要求等于屏幕原始长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename；新 bin/jpg 和 NVS last-cast 记录成功后，清理 `/data/cast_img` 中非本次文件名的旧 `.bin/.jpg` | `show=true && save=true` 时先成功停止轮播，再显示、保存并记录 last cast；启动时不读取或显示 last_cast |
 | `cast2pic` 数据接收 | 一次接收一组 `fileName/bin_size/image_size/bin/image` | 网络和 USB 只接受 `screen=a/b`；`ab` 和缺少 `screen` 返回 `1617`；字段完整、文件名安全且实际传输长度等于声明长度后返回 `result=0`；zlib模式不把压缩BIN长度与屏幕原始长度比较 | `result=0` 只表示数据接收校验成功；显示和保存由后台处理，结果只写日志 |
 | `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | 字段、文件名安全、实际传输长度等于声明长度、目录和剩余空间条件与cast类似；zlib模式不要求压缩BIN等于屏幕原始长度；主要用于保存，`show=true` 时也可显示 | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存；图片列表、轮播、快照从 jpg/bin 目录取数据 |
-| `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `TDX_DELETE_MAX_FILES=50` 限制；超过上限返回 `1514`，文件名非法返回 `1502`；网络与 USB 入口都先完整校验，校验失败不执行删除；只删除匹配的 bin/jpg；不清理、不修改 last_cast、slideshow_config、show_control 或 NVS 轮播进度 | 从 JSON `fileNames` 取删除列表；校验通过后按文件名拼路径并删除 |
-| `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从轮播配置/control 文件读取轮播状态 |
-| `slideshow` | `slideshow_config.txt`、`show_control.txt`、NVS `slide_progress` 诊断/兼容进度 | 最终 `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=150` 限制，允许重复，且全部 bin 文件必须存在、是普通文件并且非空；APP 在 `random=true` 时负责将每个原始文件复制 3 次并打乱，设备按收到的最终顺序播放；列表校验失败不改动现有轮播状态；`startIndex` 必填且满足 `0 <= startIndex < file_count`；业务基础文件名为 1..16 个安全 ASCII 字节、不带扩展名，内部缓冲区为 17 字节（含 `\0`）；`interval` 限制在 `60..604800` 秒；设备保存的 `random` 永久强制为 `false` | 不兼容缺少 `startIndex` 的旧轮播协议/配置；启动时已有 SNTP 或运行中首次取得 SNTP 后，按最终 `fileNames + startIndex + anchor_epoch + interval` 使用绝对时间槽 |
+| `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `TDX_DELETE_MAX_FILES=50` 限制；超过上限返回 `1514`，文件名非法返回 `1502`；网络与 USB 入口都先完整校验，校验失败不执行删除；只删除匹配的 bin/jpg；不清理、不修改 NVS `last_cast`、`slide_cfg`、`slide_ctl` 或轮播进度 | 从 JSON `fileNames` 取删除列表；校验通过后按文件名拼路径并删除 |
+| `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从 NVS `slide_cfg` / `slide_ctl` 读取轮播状态 |
+| `slideshow` | 默认 NVS `image_state:slide_cfg`、`image_state:slide_ctl`，以及 `PhotoPainter:slide_progress` | 最终 `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=150` 限制，允许重复，且全部 bin 文件必须存在、是普通文件并且非空；APP 在 `random=true` 时负责将每个原始文件复制 3 次并打乱，设备按收到的最终顺序播放；列表校验失败不改动现有轮播状态；`startIndex` 必填且满足 `0 <= startIndex < file_count`；业务基础文件名为 1..16 个安全 ASCII 字节、不带扩展名，内部缓冲区为 17 字节（含 `\0`）；`interval` 限制在 `60..604800` 秒；设备保存的 `random` 永久强制为 `false`；config/control 使用 version、CRC 和 generation 校验 | 不兼容缺少 `startIndex` 的旧轮播协议/配置；启动时已有 SNTP 或运行中首次取得 SNTP 后，按最终 `fileNames + startIndex + anchor_epoch + interval` 使用绝对时间槽 |
 | `wifi_work_time` | `work_state` namespace blob；`PhotoPainter:work_continue/wifi_standby` 字符串兼容键 | 网络 HTTP 与 USB JSON 只接受 `seconds=0..3600`，旧字段 `time` 返回参数非法；BLE/CH583 继续保持原有协议和 `60..3600` 范围；内部 `SetAndSave()` clamp 到 `0..3600`；保存 blob 后会读回验证 | 启动时读取 blob；blob size 不匹配则回退默认值；兼容读取字符串键并解析为 u32；超时后保留原 CH583 POWER_OFF 关机链路，本地 EPD/SD GPIO4 电源保持开启 |
 | OTA | OTA update partition；boot partition 选择 | 请求必须被识别为 `/ota` 或 `/ota_upload`；body 不超过 `SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE=6MB`；meta/firmware 字段可解析；固件 magic、app_desc、版本、长度和目标分区大小检查通过；写入成功后才设置 boot partition；成功响应固定以 `ota_result` 作为最后一条 JSON，HTTP handler 返回后由 OTA 专用任务延时自动复位 | 读取 meta JSON、firmware/bin 字段、running partition、next update partition、app desc 和 OTA 状态；OTA 接收与写入使用独立 power hold，任一阶段进行中都不发送 `POWER_OFF`；等待复位期间保留 OTA 成功状态 |
 | EPD 类型 | `PhotoPainter:epd_type` | 只允许保存 `EpdType_GetConfig(type)` 能找到的合法type；未变化时跳过写入；非法type返回 `ESP_ERR_INVALID_ARG` | 启动优先读取 `epd_type`；不存在或无效时回退 `USER_EPD_TYPE_DEFAULT`；DEVICE_INFO上报类型只保存供下次启动使用，不切换本次运行的显示驱动 |
@@ -83,7 +92,7 @@ cast、cast2pic、upload 中的 show 和 save 是两个动作。
 这样即使不是同一次 cast/upload 请求，也避免 SD 文件 I/O 与 EPD 刷新同时占用共用 SPI。
 网络 /dataUP 的 multipart 入口在 EPD 正忙或已有 show=true 后台投图任务未完成时，会在读取大 body 和分配 PSRAM 前直接返回 busy/timeout JSON，并关闭本次 HTTP 连接；后台任务 busy 超过 50 秒时返回 `dataup_result/1008 async_timeout`。
 由于 EPD 显示是重点，处理顺序固定为：先处理 EPD 显示，等待本次 EPD 显示任务完成之后，再去存文件到 SD 卡。
-网络 cast/cast2pic/upload 请求解析校验通过且存在 show=true 时，HTTP handler 只返回接收成功 JSON 后立即结束；EPD 显示、SD 保存、last_cast/screen 文件记录和旧文件清理由固定的 `dataup_async_worker` 队列任务继续执行，同一时刻只允许一个网络 show=true 后台任务，不再返回第二个最终结果 JSON。后台任务仍会先把 `show_control.txt` 写为 `sw=0`、停止轮播 task，并读回确认 `sw=0`，再进入 EPD 显示和保存流程。
+网络 cast/cast2pic/upload 请求解析校验通过且存在 show=true 时，HTTP handler 只返回接收成功 JSON 后立即结束；EPD 显示、SD 保存、NVS last-cast 状态和旧图片清理由固定的 `dataup_async_worker` 队列任务继续执行，同一时刻只允许一个网络 show=true 后台任务，不再返回第二个最终结果 JSON。后台任务先把 NVS `slide_ctl.enabled` 写为 `false`、停止轮播 task，并读回确认，再进入 EPD 显示和保存流程。
 同步等待受 USER_EPD_DISPLAY_WAIT_TIMEOUT_MS 限制；调用方超时后 completion 仍由 EPD 任务持有，任务完成后再安全释放。
 显示驱动的尺寸错误、buffer 分配失败、SPI 帧写入失败或 BUSY 超时会返回失败，不再把“驱动函数已经返回”等同于显示成功。
 save=true 表示把 bin/jpg 保存到 SD。
@@ -113,19 +122,22 @@ sequenceDiagram
     APP->>DBG: UserDebugOutput_Init()
     APP->>SYS: esp_log_level_set()
     APP->>SYS: nvs_flash_init()
+    APP->>SYS: AppPersistentState_Init()
     APP->>SYS: esp_netif_init()
     APP->>SYS: esp_event_loop_create_default()
     APP->>SYS: ServerNetworkStaTime_Init()
     APP->>SYS: TdxSharedSpi_Init()
     APP->>SYS: TdxCastCore_Init()
-    APP->>USB: UsbConsoleEcho_Init()
     APP->>WORK: ServerNetworkStaWifiWorkTime_Init()
     APP->>SYS: EpdDisplayMode_Init()
-    APP->>SYS: read/write slideshow random NVS
+    APP->>SYS: ImageBusinessWorker_Init() / 创建9KB统一常驻静态worker
+    APP->>SYS: ServerNetworkStaDailyImage_Init("/data")
     APP->>SYS: print_base_info()
     APP->>SYS: GpioTest_Init()
     APP->>STA: ServerNetworkSta_Init()
     APP->>CH583: Ch583UartApp_Init()
+    APP->>SYS: reconcile persistent slideshow mode
+    APP->>USB: UsbConsoleEcho_Init()
     APP->>CH583: ServerNetworkStaTime_RequestCh583Backup()
     APP->>LED: UserLedStatus_Init()
     opt USER_BLE_ENABLE
@@ -137,7 +149,6 @@ sequenceDiagram
         APP->>SD: FactoryReset_Init("/data")
     end
     APP->>EPD: EpdSdPowerTest_Init()
-    APP->>SYS: ServerNetworkStaDailyImage_Init("/data")
     APP->>STA: User_Network_mode_app_init("/data")
     APP->>SYS: ServerNetworkStaDailyImage_StartSaved()
     opt epd_mode=SLIDESHOW and storage mount ok
@@ -178,17 +189,14 @@ main/main.c
    ├─ TdxSharedSpi_Init()
    │  └─ tdx_shared_spi.c 创建 SD/EPD 共用 SPI 递归 mutex
    ├─ TdxCastCore_Init()
-   ├─ UsbConsoleEcho_Init()
-   │  └─ usb_console_echo/usb_console_echo.c
-   │     ├─ UsbConsoleEcho_Task()
-   │     ├─ 延迟 USB_CONSOLE_START_DELAY_MS 后开始接收 HTTP-like 请求
-   │     └─ 存储相关路由在 storage ready 前由 router 返回 1012
    ├─ ServerNetworkStaWifiWorkTime_Init()
    │  └─ server_network_sta/wifi_work_time/server_network_sta_wifi_work_time.c
    │     └─ work_state_task()
    ├─ EpdDisplayMode_Init()
-   ├─ app_nvs_read_str(TDX_SLIDESHOW_RANDOM_NVS_KEY)
-   ├─ app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY)
+   ├─ ImageBusinessWorker_Init()
+   │  └─ 创建9KB统一静态worker，串行执行DAILY、SLIDESHOW和轮播启动延迟
+   ├─ ServerNetworkStaDailyImage_Init("/data")
+   │  └─ 初始化daily配置mutex和基础状态，不再创建独立任务
    ├─ print_base_info()
    │  └─ 打印短 boot 摘要：reset / flash / RAM / PSRAM / NVS / work state
    ├─ GpioTest_Init()
@@ -201,6 +209,13 @@ main/main.c
    │     ├─ User_UartEventTask()
    │     ├─ User_UartReceiveTask()
    │     └─ 先启动 CH583 UART，供 C5 GPIO/LED 状态使用
+   ├─ reconcile_persistent_slideshow_mode()
+   │  └─ CH583 UART 就绪后协调 slide_cfg、slide_ctl 与 epd_mode，避免模式通知早于协议初始化
+   ├─ UsbConsoleEcho_Init()
+   │  └─ usb_console_echo/usb_console_echo.c
+   │     ├─ UsbConsoleEcho_Task()
+   │     ├─ 延迟 USB_CONSOLE_START_DELAY_MS 后开始接收 HTTP-like 请求
+   │     └─ 存储相关路由在 storage ready 前由 router 返回 1012
    ├─ ServerNetworkStaTime_RequestCh583Backup()
    ├─ UserLedStatus_Init()
    │  └─ led_status/led_status.c
@@ -215,7 +230,6 @@ main/main.c
    ├─ storage_ret == ESP_OK
    │  └─ FactoryReset_Init("/data")
    ├─ EpdSdPowerTest_Init()
-   ├─ ServerNetworkStaDailyImage_Init("/data")
    ├─ User_Network_mode_app_init("/data")
    │  └─ server_network_sta/server_network_sta.c 启动 STA / HTTP
    │     └─ CH583/BLE 的 wifi_wakeup 若提前取得 1307、但 manager 仍处于连接或重试状态，通知 task 只观察现有状态并暂缓 10 秒；期间 READY 则返回 wifi_info_result，超时仍按原 1307 返回
@@ -282,6 +296,158 @@ EPD 显示期间会临时把 WiFi PS 切到 WIFI_PS_MAX_MODEM，以降低 EPD �
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-01)
+
+---
+
+## 2. 永久常驻统一图片业务任务 <span id="sec-02-image-business-worker"></span>
+
+`image_business_worker` 是每日一图和轮播共同依赖的核心业务任务。它在每次开机早期创建一次，使用固定静态资源，创建后永久常驻且不删除。每日一图、轮播主 runtime 和轮播开机启动延迟不得再各自创建独立 worker；三类工作统一提交给该任务串行执行，任何时刻最多只有一个图片业务 owner 正在运行。
+
+该任务只统一“每日一图 / 轮播”的业务调度，不替代公共 EPD 显示任务、cast 保存任务、HTTP/USB worker、Local Image Browsing 或 WiFi 管理任务。已经提交给 EPD 硬件的刷新不由统一任务强制中断，必须等待当前 EPD 调用安全结束后才能完成业务切换。
+
+### 2.1 定位、范围与重要规则 <span id="sec-02-1"></span>
+
+```text
+image_business_worker（永久常驻、固定9KB静态栈）
+├─ owner=DAILY
+│  └─ daily_run_command()
+├─ owner=SLIDESHOW
+│  ├─ slideshow_run_command()          轮播主runtime
+│  └─ slideshow_startup_delay_run()   开机轮播启动延迟
+└─ idle
+   └─ 没有业务命令时阻塞等待task notification，不轮询、不重复打印
+```
+
+必须保持的功能规则：
+
+- DAILY、SLIDESHOW和轮播启动延迟只能使用这一个统一任务，不得恢复旧daily queue、旧7KB daily任务、旧6KB轮播任务或6KB动态启动延迟任务。
+- DAILY与SLIDESHOW是互斥业务。同一时间只能运行一个owner；新的模式请求先使旧generation失效，再停止或等待旧owner退出。
+- 统一任务永久常驻只是保留任务栈和控制状态，不代表开机一定执行图片业务。`NORMAL`、`LOCAL_IMAGE_BROWSING`等模式下没有有效命令时，任务保持阻塞空闲。
+- 统一任务不能承载无关的永久循环、HTTP服务、WiFi管理或EPD底层任务，避免长业务相互阻塞并扩大核心任务风险范围。
+- callback执行结束或被取消后必须返回统一循环；单次业务失败不得删除或停止统一任务。
+
+### 2.2 启动、常驻与静态内存 <span id="sec-02-2"></span>
+
+启动顺序：
+
+```text
+app_main()
+├─ EpdDisplayMode_Init()
+├─ ImageBusinessWorker_Init()
+│  ├─ 创建静态state mutex
+│  ├─ 使用静态TCB和固定9KB内部RAM栈创建image_worker
+│  └─ worker永久循环；空闲时阻塞等待notification
+├─ ServerNetworkStaDailyImage_Init("/data")
+├─ 初始化存储、网络、HTTP、SNTP等模块
+├─ ServerNetworkStaDailyImage_StartSaved()
+│  └─ 仅mode=DAILY且配置有效时提交DAILY命令
+└─ ServerNetworkStaSlideshow_StartSavedDelayed("/data")
+   └─ 仅mode=SLIDESHOW且存储可用时提交SLIDESHOW启动延迟命令
+```
+
+`ImageBusinessWorker_Init()` 放在WiFi、HTTP等可选服务之前，并由启动主流程用 `ESP_ERROR_CHECK()` 检查。统一任务是DAILY和SLIDESHOW的基础设施；静态任务创建失败时不能继续假装相关功能可用。后续模块可以再次调用Init，但初始化必须保持幂等，不得创建第二个任务。
+
+固定资源如下：
+
+| 资源 | 当前规则 |
+|---|---|
+| worker任务栈 | `USER_IMAGE_BUSINESS_WORKER_STACK_SIZE=9*1024`，内部RAM静态栈 |
+| worker优先级 | `USER_IMAGE_BUSINESS_WORKER_PRIORITY=4` |
+| pending命令 | 一个静态命令槽；inline payload上限 `USER_IMAGE_BUSINESS_WORKER_PAYLOAD_SIZE=640` 字节 |
+| 控制锁 | 一个静态mutex，保护current owner和pending命令 |
+| TCB | 一个静态TCB |
+| 生命周期 | 开机创建一次，永久常驻，不调用 `vTaskDelete()` |
+
+当前ESP32-C5 / ESP-IDF v5.5.3测试构建打印：栈9216字节、TCB336字节、命令槽664字节、mutex控制块84字节，合计固定核心资源约10300字节，另有少量句柄和状态变量。callback中的局部命令副本计入9KB任务栈，不是第二份独立任务栈。栈大小不得只按轮播路径判断；以DAILY HTTPS、TLS、下载、保存和EPD完整路径的最低余量为最终依据。
+
+### 2.3 命令模型与串行规则 <span id="sec-02-3"></span>
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE: ImageBusinessWorker_Init
+    IDLE --> DAILY: Submit owner=DAILY
+    IDLE --> SLIDESHOW_DELAY: Submit startup delay
+    IDLE --> SLIDESHOW_RUNTIME: Submit slideshow runtime
+    DAILY --> IDLE: 完成 / 失败 / generation失效
+    SLIDESHOW_DELAY --> SLIDESHOW_RUNTIME: 延迟结束且模式仍为SLIDESHOW
+    SLIDESHOW_DELAY --> IDLE: 模式切换 / control关闭 / generation失效
+    SLIDESHOW_RUNTIME --> IDLE: 停止 / 失败
+```
+
+统一任务维持“一个current命令 + 一个pending命令槽”，不是多项FreeRTOS queue：
+
+- worker从pending槽复制命令后，把owner记为current并执行callback。
+- current运行期间允许暂存一个后续命令，因此SLIDESHOW退出后可以直接接续DAILY，反向切换同理。
+- pending槽已有命令时，第二个未协调的提交返回 `ESP_ERR_INVALID_STATE`，并打印一次 `submit blocked`。调用方不能覆盖不同owner的新命令。
+- DAILY重新提交前只取消旧的pending DAILY；SLIDESHOW启动不能删除同时刚提交、且代表更新模式的DAILY命令。
+- payload由提交函数按值复制到固定inline区域，禁止提交超过640字节的结构；DAILY、轮播runtime和启动延迟payload必须保留 `_Static_assert` 上限检查。
+- task notification只用于唤醒统一任务和实现可中断等待；新增业务不能擅自占用同一个任务notification做无关协议，否则会破坏提交和停止语义。
+
+### 2.4 DAILY / SLIDESHOW 切换规则 <span id="sec-02-4"></span>
+
+| 场景 | 必须执行的规则 |
+|---|---|
+| 开机为DAILY | 统一任务已常驻；网络启动完成后读取daily配置并提交DAILY；配置无效时恢复NORMAL |
+| 开机为SLIDESHOW | daily不提交；存储可用后把10秒启动延迟作为SLIDESHOW命令提交给统一任务 |
+| DAILY切换SLIDESHOW | 保存轮播状态并写SLIDESHOW模式；使旧daily generation失效；等待DAILY退出后提交轮播runtime |
+| SLIDESHOW切换DAILY | 关闭并保存轮播control，写NORMAL后再写DAILY；使旧slideshow generation失效；当前EPD安全结束、轮播退出后执行pending DAILY |
+| 启动延迟期间切换模式 | 增加slideshow generation并唤醒统一任务；旧延迟立即返回，10秒到点后不得重新启动旧轮播 |
+| 重复DAILY请求 | 新generation覆盖旧generation；正在下载的旧请求在检查点取消，释放资源后执行最新pending DAILY |
+| NORMAL或其他模式 | 停止不再适用的DAILY/SLIDESHOW；统一任务本身不删除，只回到IDLE |
+
+模式值和generation必须共同检查。仅检查 `epd_mode` 不足以区分相同模式下的新旧请求；仅检查generation也不能允许旧业务在模式已经切换后继续提交下一工作。轮播启动延迟转为正式runtime前必须再次检查SLIDESHOW模式和generation，禁止旧启动命令覆盖更新的DAILY或cast请求。
+
+### 2.5 取消、等待与资源所有权 <span id="sec-02-5"></span>
+
+- `ImageBusinessWorker_CancelPending(owner)` 只取消指定owner的pending命令，不强制终止current命令，也不能误删另一owner的更新请求。
+- `ImageBusinessWorker_Wake()` 唤醒正在做可中断等待的统一任务。启动延迟收到模式切换后应立即退出；轮播和DAILY长流程在各自安全检查点读取stop/mode/generation。
+- `ImageBusinessWorker_WaitOwnerIdle()` 同时检查current和pending。外部切换函数用它确认旧owner已经退出；统一worker callback内部禁止等待自己变为idle，避免自死锁。
+- 已经开始的EPD刷新不强制中断。停止请求先阻止旧业务继续下一张或下一阶段，当前EPD结束后释放业务资源并返回统一任务。
+- DAILY job和轮播启动延迟payload按值保存在pending命令中，不需要独立heap节点。
+- 轮播runtime优先从PSRAM分配；pending阶段取消由cancel callback释放，进入run callback后由runtime退出路径释放。两条路径互斥，必须保证只释放一次。
+- DAILY下载缓冲、TLS资源、轮播预加载缓冲仍由各业务原有路径申请和释放，不因合并任务改变所有权。
+- worker完成命令后清除current owner并继续永久循环；不得因为callback返回 `ESP_ERR_INVALID_STATE`、网络失败或正常停止而删除任务。
+
+### 2.6 关键日志、异常和修改约束 <span id="sec-02-6"></span>
+
+正常情况下只保留以下关键日志：
+
+```text
+image_worker: static resources ... stack=9216 tcb=... command=... mutex=...
+image_worker: started stack=9216 priority=4
+image_worker: job start owner=DAILY|SLIDESHOW generation=N
+image_worker: job done owner=... generation=N ret=... min_free=... peak_used=... configured=9216
+```
+
+异常或切换时按需打印：
+
+- pending被取消：打印owner和generation。
+- pending槽冲突：打印提交owner、pending owner和current owner。
+- 过期命令：业务模块打印generation、当前模式和取消原因。
+- 正常空闲不周期打印；等待循环不每秒打印；统一任务不得增加大量调试日志。
+
+修改DAILY、SLIDESHOW或启动延迟时必须同时检查：
+
+1. 是否仍只创建一个统一静态任务，相关目录中不得新增独立 `xTaskCreate()` / `xTaskCreateStatic()`。
+2. callback是否能在模式切换和generation失效后于安全检查点退出。
+3. 是否可能在统一worker内部调用 `WaitOwnerIdle()` 等待自己，造成死锁。
+4. pending取消、提交失败、过期命令和正常完成是否各自只释放一次heap资源。
+5. payload是否不超过640字节，并保持编译期 `_Static_assert`。
+6. 完整DAILY HTTPS/TLS路径的 `min_free` 是否不少于2048字节；低于警戒线时优先增加统一栈，不得为了节省内存冒栈溢出风险。
+7. 是否保持“当前EPD不强制中断、旧业务不继续下一阶段、更新模式请求优先”的状态规则。
+8. 若修改代码，必须同步本章、7.8轮播章节、7.15每日一图章节和 `README_Test.md` 对应测试。
+
+相关源码：
+
+```text
+main/image_business_worker/image_business_worker.c/.h
+main/server_network_sta/daily_image/server_network_sta_daily_image.c
+main/server_network_sta/slideshow/server_network_sta_slideshow.c
+main/main.c
+main/tdx_cfg.h
+```
+
+[⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-02-image-business-worker)
 
 ---
 
@@ -354,7 +520,7 @@ sequenceDiagram
 - EPD 显示模式保存 / 读取：PhotoPainter:epd_mode，u8，0=NORMAL，1=SLIDESHOW，2=DAILY，3=LOCAL_IMAGE_BROWSING。
 - CH583 BLE MAC 保存 / 读取。
 - WiFi 工作时间字符串兼容保存 / 读取。
-- 独立轮播控制写入show_control.txt后同步模式：sw=1写SLIDESHOW，sw=0写NORMAL。每日一图启用会先停止轮播，再显式写DAILY；cast/cast2pic写NORMAL。
+- 独立轮播控制写入 NVS `slide_ctl` 后同步模式：enabled=true 写 SLIDESHOW，enabled=false 写 NORMAL。每日一图启用会先停止轮播，再显式写 DAILY；cast/cast2pic 写 NORMAL。
 
 日志：
 - 成功读写默认不打印，避免启动和轮播状态读写刷屏。
@@ -582,7 +748,7 @@ V2 协议中，HTTP 图片与控制协议主要使用：
 存：
 - network/USB cast/cast2pic：/data/cast_img/*.bin，/data/cast_img/*.jpg。
 - upload / saved_images / slideshow：/data/bin_img/*.bin，/data/jpg_img/*.jpg。
-- 状态类：last cast 记录、slideshow_config、show_control / slideshow control 文件。
+- 状态类：默认 NVS `image_state` namespace 中的 `last_cast`、`slide_cfg`、`slide_ctl` Blob。
 - OTA 类：OTA update partition。
 - WiFi 工作时间：NVS blob + PhotoPainter 字符串 key。
 
@@ -647,10 +813,10 @@ HTTP multipart /dataUP
                   ├─ check_save_space()
                   ├─ save /data/cast_img/<fileName>.bin
                   ├─ save /data/cast_img/<fileName>.jpg
-                  └─ record /data/cast_img/last_cast.txt
+                  └─ record default NVS image_state:last_cast
 ```
 
-说明：network cast 和 USB cast 都复用 `cast_core`，并通过 `TdxCastCore_ProcessValidatedCastDir()` 指定保存到 `/data/cast_img`。EPD 显示使用已有的 `ServerNetworkStaEpdDisplay` task，保存使用统一的 `CastSaveTask`。network cast 在 `show=true` 时解析和字段校验通过后只返回 `cast_received`，随后结束 HTTP handler；EPD 显示、bin/jpg 保存和 last_cast 记录由固定的 `dataup_async_worker` 调用 `cast_async_process()` 后台执行，不再返回 `cast_result` 第二个 JSON。`show=true && save=true` 时后台先调用 `stop_slideshow_for_cast()` 停止轮播、写 `show_control.txt sw=0` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再通过 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 等待 EPD 显示任务完成，最后提交保存任务。`show=false` 的 network cast 仍可走同步处理并返回最终结果。
+说明：network cast 和 USB cast 都复用 `cast_core`，并通过 `TdxCastCore_ProcessValidatedCastDir()` 指定保存到 `/data/cast_img`。EPD 显示使用已有的 `ServerNetworkStaEpdDisplay` task，保存使用统一的 `CastSaveTask`。network cast 在 `show=true` 时解析和字段校验通过后只返回 `cast_received`，随后结束 HTTP handler；EPD 显示、bin/jpg 保存和 NVS last-cast 记录由固定的 `dataup_async_worker` 调用 `cast_async_process()` 后台执行，不再返回 `cast_result` 第二个 JSON。`show=true && save=true` 时后台先调用 `stop_slideshow_for_cast()` 停止轮播、写 NVS `slide_ctl.enabled=false` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再通过 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 等待 EPD 显示任务完成，最后提交保存任务。`show=false` 的 network cast 仍可走同步处理并返回最终结果。
 
 V2 协议资料拆分：
 
@@ -687,21 +853,21 @@ image      缩略图 jpg 文件
 {"func":"cast_received","result":0,"fileName":"26422"}
 ```
 
-V2 说明：`cast` 成功后记录最后一次投图；设备启动时不读取、解析或显示 `last_cast.txt`。
+V2 说明：`cast` 成功后在 NVS `last_cast` 记录最后一次投图文件名；设备启动时不读取或显示该记录。
 
 当前源码注意点：
 
 ```text
 network cast 当前要求 save=true。
 如果 save=false，设备返回 cast_result 失败，error=save_required_for_last_cast。
-原因是 cast 成功后需要保存 bin/jpg，并记录 `/data/cast_img/last_cast.txt`。
+原因是 cast 成功后需要保存 bin/jpg，并记录 NVS `last_cast`。
 
 停止轮播或 `sw=0` 读回确认失败时，本次 cast 中止，不显示、不保存。
 
 show/save 顺序：
 1. show=true 时，先把当前请求中的 bin 投递到 EPD 显示任务并等待完成。
 2. save=true 时，再保存 bin/jpg 到 SD。
-3. 保存成功后写入 /data/cast_img/last_cast.txt。
+3. 保存成功后写入默认 NVS `image_state:last_cast`。
 ```
 
 
@@ -711,12 +877,12 @@ show/save 顺序：
 ```text
 存：
 - show=true 时 dataup_async_worker 调用 cast_async_process()，后台先等待 EPD 显示任务完成，再提交 CastSaveTask。
-- show=true 停止轮播并写入 show_control.txt sw=0 后，同步写 PhotoPainter:epd_mode=0。
+- show=true 停止轮播并写入 NVS `slide_ctl.enabled=false` 后，同步写 `PhotoPainter:epd_mode=0`。
 - CastSaveTask 写入：/data/cast_img/<fileName>.bin。
 - CastSaveTask 写入：/data/cast_img/<fileName>.jpg。
 - CastSaveTask 使用 <fileName>.<ext>.tmp 临时文件，写完校验大小后 rename 成正式文件。
 - CastSaveTask 写入 last cast 记录文件，路径在 /data/cast_img/ 下。
-- 保存和 last_cast 全部成功后，扫描 /data/cast_img，删除非本次 <fileName> 的旧 .bin/.jpg；last_cast.txt 不删除。
+- 保存和 NVS last-cast 全部成功后，扫描 `/data/cast_img`，删除非本次 `<fileName>` 的旧 `.bin/.jpg`；NVS `last_cast` 保留。
 
 取：
 - check_save_space() 通过 example_storage_get_free_bytes() 读取剩余空间。
@@ -842,7 +1008,7 @@ screen=b -> epd_number=1 -> 保存为 /data/cast_img/screen_a.bin 和 /data/cast
 - 保存当前 1 组图片对应的 .bin 和 .jpg 到 /data/cast_img。
 - screen=a 保存为 screen_b.bin / screen_b.jpg；screen=b 保存为 screen_a.bin / screen_a.jpg。
 - 使用临时文件写入再 rename，避免半文件覆盖正式文件。
-- 本次需要保存的 screen 文件全部成功后，扫描 /data/cast_img，删除非本次 screen 名的旧 .bin/.jpg，并删除旧 last_cast.txt，避免它指向已清理文件。
+- 本次需要保存的 screen 文件全部成功后，扫描 `/data/cast_img`，删除非本次 screen 名的旧 `.bin/.jpg`，并擦除 NVS `last_cast`，避免它指向已清理文件。
 
 取：
 - 读取 multipart 中的一组标准 `fileName/bin_size/image_size/bin/image`。
@@ -858,7 +1024,7 @@ screen=b -> epd_number=1 -> 保存为 /data/cast_img/screen_a.bin 和 /data/cast
 
 结果码以 [README_Result_Code.md](README_Result_Code.md) 为准。
 
-功能说明：只删除 JSON `fileNames` 指定的图片和缩略图文件。网络入口先完整解析并校验全部名称；超过 50 个返回 `1514`，单个名称非法返回 `1502`，两种情况都不会删除任何文件。部分路径不存在不影响成功，但任一路径发生真实删除错误时整体返回 `1503`。delete 不清理、不修改 `last_cast.txt`、`slideshow_config.txt`、`show_control.txt`，也不清理 NVS 中的轮播进度。
+功能说明：只删除 JSON `fileNames` 指定的图片和缩略图文件。网络入口先完整解析并校验全部名称；超过 50 个返回 `1514`，单个名称非法返回 `1502`，两种情况都不会删除任何文件。部分路径不存在不影响成功，但任一路径发生真实删除错误时整体返回 `1503`。delete 不清理、不修改 NVS `last_cast`、`slide_cfg`、`slide_ctl`，也不清理 NVS 中的轮播进度。
 
 Mermaid 时序图：
 
@@ -911,9 +1077,9 @@ fileNames  要删除的图片文件名数组，不带扩展名
 ```text
 存：
 - 删除动作会修改持久化文件系统：unlink /data/bin_img/<file>.bin 与 /data/jpg_img/<file>.jpg。
-- 不修改 /data/cast_img/last_cast.txt。
-- 不修改 /data/bin_img/slideshow_config.txt。
-- 不修改 /data/bin_img/show_control.txt。
+- 不修改默认 NVS `image_state:last_cast`。
+- 不修改默认 NVS `image_state:slide_cfg`。
+- 不修改默认 NVS `image_state:slide_ctl`。
 - 不修改 NVS 中的 slideshow progress / last slideshow 状态。
 
 取：
@@ -1290,6 +1456,8 @@ V2 说明：前端会用设备 `baseUrl` 拼接相对缩略图地址。
 
 ### 7.8 slideshow：图片轮播的文件列表，轮播间隔，是否随机 <span id="sec-07-8"></span>
 
+> 轮播runtime和开机启动延迟的任务生命周期、串行执行、取消及内存规则统一以 [第2章：永久常驻统一图片业务任务](#sec-02-image-business-worker) 为准。本节只说明轮播自身业务规则。
+
 结果码以 [README_Result_Code.md](README_Result_Code.md) 为准。
 
 功能说明：`start_slideshow` 用于下发并保存轮播图片列表、轮播顺序、随机模式和默认 interval，并在同一条命令中使用 `timestamp` 写入标准 RTC control、强制 `sw=1`、启动 RTC 轮播。它等价于“原 start_slideshow 列表配置功能 + set_slideshow 的 sw=1/interval/random/timestamp 启动功能”。
@@ -1301,16 +1469,15 @@ sequenceDiagram
     participant APP as App/PC
     participant DATAUP as POST /dataUP JSON
     participant SS as ServerNetworkStaSlideshow_ProcessJson
-    participant FILE as slideshow config/control
+    participant STATE as NVS image_state
     participant TASK as slideshow_task
     participant EPD as EPD Display Queue
     APP->>DATAUP: start_slideshow fileNames/interval/random/timestamp/startIndex
     DATAUP->>SS: process_small_json_request()
     SS->>SS: validate all fields, final count and name format
-    SS->>FILE: check every bin file exists and is non-empty
+    SS->>STATE: check every SD bin file exists and is non-empty
     SS->>SS: check/set RTC
-    SS->>FILE: save slideshow_config fileNames/interval/random/startIndex
-    SS->>FILE: write show_control sw=1 interval/random/timestamp/anchor_epoch
+    SS->>STATE: save slide_cfg + slide_ctl with one generation
     SS->>TASK: ServerNetworkStaSlideshow_StartSavedForNewCommand()
     SS-->>APP: start_slideshow_result result=0
 ```
@@ -1326,21 +1493,19 @@ HTTP small JSON start_slideshow
          ├─ validate final fileNames count and name format
          ├─ check_slideshow_files_exist()
          ├─ parse timestamp and check/set RTC
-         ├─ save_slideshow_config()
-         ├─ save random config
-         ├─ write show_control sw=1 interval/random/timestamp/anchor_epoch
+         ├─ save_slideshow_persistent_state()
          └─ ServerNetworkStaSlideshow_StartSavedForNewCommand()
 
 main/main.c
 └─ ServerNetworkStaSlideshow_StartSavedDelayed("/data")
    ├─ 延迟 TDX_SLIDESHOW_STARTUP_DELAY_MS 毫秒
-   ├─ 重新读取 show_control.txt
+   ├─ 重新读取 NVS slide_ctl
    ├─ sw=0 时跳过自动恢复轮播
    └─ sw=1 时调用 ServerNetworkStaSlideshow_StartSaved("/data")
-      ├─ read_slideshow_config_file()
+      ├─ read_slideshow_config_state()
       ├─ read_slideshow_control_on()
       ├─ 读取并校验 NVS slide_progress
-      └─ 通知常驻 slideshow_worker_task 执行 slideshow_run_runtime()
+      └─ 提交给常驻 image_business_worker 执行 slideshow_run_runtime()
 ```
 
 V2 协议资料拆分：
@@ -1372,12 +1537,12 @@ startIndex 必填；从 0 开始，必须小于 APP 最终发送的 fileNames �
 
 ```text
 存：
-- start_slideshow 严格要求合法 startIndex，保存 slideshow_config 的 fileNames / interval / random / startIndex，保存 random 配置，并写入 `show_control.txt`：`{"func":"set_slideshow","sw":1,"interval":...,"random":...,"timestamp":...,"anchor_epoch":...}`。旧字段 `index` 不兼容；缺少 startIndex 时拒绝启动，不默认补 0。
+- start_slideshow 严格要求合法 startIndex，把 fileNames / interval / random / startIndex 保存到 NVS `slide_cfg`，把 enabled / interval / timestamp / anchor_epoch 保存到 NVS `slide_ctl`。两个记录使用相同 generation；旧字段 `index` 不兼容，缺少 startIndex 时拒绝启动，不默认补 0。
 - APP / 网络端 start_slideshow 在任何写入或校时前完成整条指令校验：最终 fileNames 最多 150 个并允许重复，设备逐项检查全部 bin 文件。发现任一非法文件时只返回错误，不保存配置、不写 RTC / 系统时间、不改变显示模式，也不停止或重启现有轮播。
 - 网络和 USB 的 cast、cast2pic、upload、delete、start_slideshow 统一要求业务基础文件名最多 16 个安全 ASCII 字节且不带 `.bin/.jpg`；APP 新名称建议固定使用 16 位小写十六进制，设备继续兼容 `26422` 等较短名称。解析阶段先检查真实长度，超过上限直接返回现有文件名非法结果，不截断、不执行显示、保存、删除或状态修改。multipart 原始 `filename` 解析缓冲仍保留 96 字节；legacy multipart fallback 保存前按去掉匹配的 `.bin/.jpg` 后的基础名检查 16 字节上限。
 - fileNames 数组严格要求文件名之间使用单个逗号分隔，不接受缺少逗号、重复逗号或尾随逗号；文件检查阶段无法取得共享 SPI 锁时返回 1012，不误报为文件不存在。
 - set_slideshow 写入 sw / interval / timestamp / anchor_epoch，并同步写 PhotoPainter:epd_mode=1。
-- 设备端 `random` 永久禁用；协议仍兼容接收 `random:true/false`。`random=true` 时复制 3 次及打乱由 APP 在发送前完成，设备统一强制为 `random=false`，并在 `slideshow_config.txt`、`show_control.txt`、NVS `slide_random` 和 snapshot 中固定保存/返回 false。
+- 设备端 `random` 永久禁用；协议仍兼容接收 `random:true/false`。`random=true` 时复制 3 次及打乱由 APP 在发送前完成，设备统一强制为 `random=false`，并在 NVS `slide_cfg`、`slide_ctl` 和 snapshot 中固定保存/返回 false；不再维护独立的 random NVS key。
 - NVS `slide_progress` 继续保存版本、配置 hash、待显示文件和位置，供诊断及非 SNTP 兼容路径使用；SNTP 已同步时它不再是选图依据，启动时 NVS 读写失败可用 RAM 进度继续绝对时间轮播。
 - SNTP 绝对时间槽公式：`slot=floor((now_epoch-anchor_epoch)/interval)`，`current_index=(startIndex+(slot%file_count))%file_count`，`current_file=fileNames[current_index]`，`next_epoch=anchor_epoch+(slot+1)*interval`。
 - 当 `fileNames` 只有一张时，合法值只能是 `startIndex=0`；每个绝对时间槽都映射到同一张图片，因此设备仍会按 interval 到点重复刷新该图片。其他 startIndex 返回 1516。
@@ -1387,7 +1552,7 @@ startIndex 必填；从 0 开始，必须小于 APP 最终发送的 fileNames �
 - `ServerNetworkStaSlideshow_GetScheduleTiming()` 可读取 RTC 轮播的 now / next / remain；`ServerNetworkStaSlideshow_GetRuntimeTiming()` 只作为非 RTC 兼容状态读取。
 - slideshow_run_runtime() 在 EPD 显示成功且下一进度保存成功后，SNTP 模式按绝对槽计算下一目标；其他时间源继续使用原 RTC 进度逻辑。
 - slideshow_run_runtime() 在上一张 EPD 显示完成并保存下一进度后，会在剩余 interval 时间内用 PSRAM 预加载下一张 bin 并做 SHA-256 文件名校验；RTC 真实目标时间保持 `next_epoch` 不变，但设备内部会在 `next_epoch - lead_seconds` 时进入 EPD 显示流程，用于抵消 SD / 调度 / EPD 调用链路开销。`lead_seconds` 按当前 EPD type 选择：`EPD_TYPE_1600_1200_133_DKE` 为 1 秒，`EPD_TYPE_1600_1200_133` 为 3 秒，其它屏型使用默认 `TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS=2` 秒。若 PSRAM 预加载失败，已保存的下一进度不变，下一轮会重新读取该图片，不长时间占用内部 RAM，不影响停止和失败不推进的规则。
-- 业务基础文件名缓冲从 48 字节缩为 17 字节后，150 项轮播列表由 7200 字节降为 2550 字节，轮播 runtime 由约 7.5 KB 降为约 2.9 KB；runtime 仍优先从 PSRAM 分配，失败时兼容回退内部 RAM。轮播主任务改为固定 6 KB 的静态内部 RAM 栈和静态 TCB：静态内存从开机起固定保留；`slideshow_worker_task` 在开机恢复轮播或第一次收到轮播启动请求时创建，创建后常驻等待通知。每次启动只提交 runtime，运行结束释放 runtime 并回到空闲，不再反复动态申请/释放任务栈，因此不受内部堆最大连续块和碎片影响。栈水位在启动、最低余量继续下降至少 256 字节、运行退出时打印；实测完整路径峰值约 2920 字节，6 KB 仍保留约 3.2 KB 余量。新命令的 runtime 启动失败仍执行原回退并返回 1506；开机自动恢复的临时资源失败只打印关键告警并保留 `show_control.sw=1`、`epd_mode=SLIDESHOW` 和进度，等待下次唤醒恢复，避免一次内存失败永久关闭轮播。开机延迟辅助任务仍独立使用 6 KB 动态栈，结束后释放。
+- 业务基础文件名缓冲从 48 字节缩为 17 字节后，150 项轮播列表由 7200 字节降为 2550 字节，轮播 runtime 由约 7.5 KB 降到约 2.9 KB；runtime 仍优先从 PSRAM 分配，失败时兼容回退内部 RAM。轮播主循环、每日一图和开机轮播启动延迟统一提交给启动早期创建的9KB静态 `image_business_worker`，旧6KB轮播静态栈、旧7KB daily静态栈、两个旧TCB以及轮播启动延迟的6KB动态任务全部取消。统一worker同一时间只执行一个owner，轮播停止使用generation和可中断等待唤醒，runtime结束后释放并返回统一worker空闲状态。新命令的runtime启动失败仍禁用NVS `slide_ctl`、恢复NORMAL并返回1506；开机自动恢复临时失败仍保留控制、模式和进度等待下次唤醒。
 - RTC 轮播显示失败时不立即重试；当前失败图片视为跳过，先保存并切换到下一张 pending_file，再排到下一次 RTC 播放点，等待下一次轮播到来后显示下一张图片。若跳过进度保存失败，则不推进当前 progress，但仍排到下一次 RTC 播放点，避免立即重试。
 - `lead_seconds` 只用于提前进入 EPD 硬件刷新，目标图片仍按逻辑播放点的绝对槽选择，不使用提前后的时间改变图片索引。
 - 相同文件名出现在不同列表索引时，按不同播放事件处理；如果随机后的最终列表包含相邻相同名称，设备会在相邻两个 RTC 播放点分别调用 EPD 显示同一文件，这是当前产品策略的预期行为。
@@ -1395,10 +1560,11 @@ startIndex 必填；从 0 开始，必须小于 APP 最终发送的 fileNames �
 取：
 - ServerNetworkStaSlideshow_StartSavedDelayed() 只用于开机自动恢复轮播：启动位置仍保持在网络初始化之后，但先等待 `TDX_SLIDESHOW_STARTUP_DELAY_MS=10000` 毫秒；等待期间手机 APP 或 USB Serial 的 cast/cast2pic/upload `show=true` 请求优先进入 EPD 显示；延迟结束时如果 EPD task 仍忙，则继续推迟启动。
 - 延迟结束后先重新读取 control；如果 `show=true` 已把 control 写成 `sw=0`，则跳过自动恢复；EPD 忙时继续推迟。启动时没有 SNTP 就按原 CH583/CH585、anchor fallback 和 pending_file 逻辑运行，不等待网络时间；运行中首次取得 SNTP 时，等待当前 EPD 操作结束后一次性切换到绝对时间槽。若本次 runtime 已消费过播放事件，且此时 progress 的列表索引和文件名已经共同指向当前绝对槽的下一项，则认为当前槽已经消费，直接等待下一绝对播放点，不重复调用 EPD；否则显示 SNTP 计算出的当前槽。
-- 读取 SD 卡中的 control 时严格校验：`sw=1` 必须包含合法 `interval`、`timestamp` 和 `anchor_epoch`；旧格式如 `{"sw":1,"interval":90,"random":false,"run_mode":0}` 视为非法，打印 `legacy control rejected`，不启动轮播，也不回退到 task tick 计时。
+- 读取 NVS control 时严格校验 magic、version、size、CRC、interval、timestamp 和 anchor_epoch；enabled control 还必须与 config generation 相同，否则不启动轮播，也不回退到 task tick 计时。
 - ServerNetworkStaSlideshow_StartSaved() 仍用于立即启动已保存轮播，不带开机 10 秒延迟。
 - startIndex 会加入配置 hash；进度版本、配置 hash、随机模式、排列或文件名不匹配时，从 `fileNames[startIndex]` 重建进度。
 - slideshow_run_runtime() 读取 `/data/bin_img/*.bin`，等待 EPD 真正完成后再提交下一进度；如果读文件前、读文件后或送 EPD 前收到停止请求，则放弃本张显示并退出。
+- 停止请求与预加载并发时，`ESP_ERR_INVALID_STATE` 属于正常取消；保留一条 `ESP_LOGI` 说明取消位置，不再追加误导性的 preload failed 警告。真实文件读取、内存或 SPI 错误仍按原规则输出关键错误/警告。
 - slideshow_run_runtime() 从 SD 读出 bin 后、送 EPD 前，会计算文件内容 SHA-256 的十六进制后 16 位并与 fileName 比对，只打印 `sha256 ok` / `sha256 mismatch` / `sha256 failed` / `skip invalid basename` 诊断日志，不阻止显示、不修改进度；匹配成功用 `ESP_LOGI`，无效 basename 跳过用 `ESP_LOGW`，计算失败或 mismatch 用 `ESP_LOGE`。
 - 轮播日志中 `slideshow rtc ...` / `slide_timer rtc ...` 表示真实 RTC 时间控制；`slideshow rtc wait target=... display_target=... lead=...` 中 `target` 是真实播放点，`display_target` 是提前进入显示流程的时间点，`lead` 是当前 EPD type 实际提前秒数；`slideshow rtc display start file=... position=x/y interval=...` 表示本轮第 x/y 个播放点已进入 EPD 显示；`legacy_tick` 只表示非 RTC 兼容路径或旧状态统计，不能作为新协议轮播判断依据。RTC 模式以真实系统时间计算 remain，不依赖 task tick 延时。
 - `set_slideshow sw=1` 会按新的 timestamp / interval 重算 RTC 播放点；`start_slideshow` 也会用自身 timestamp 写 RTC control 并启动轮播。
@@ -1422,11 +1588,11 @@ sequenceDiagram
     participant APP as App/PC
     participant DATAUP as POST /dataUP JSON
     participant CTRL as ServerNetworkStaSlideshowControl_ProcessJson
-    participant FILE as show_control/slideshow state
+    participant STATE as NVS image_state:slide_ctl
     participant SS as slideshow task
     APP->>DATAUP: set_slideshow sw/interval/random/timestamp
     DATAUP->>CTRL: process_small_json_request()
-    CTRL->>FILE: write control file/state
+    CTRL->>STATE: write versioned control state
     alt sw=0
         CTRL->>SS: ServerNetworkStaSlideshow_Stop()
     else sw=1
@@ -1445,11 +1611,13 @@ HTTP small JSON set_slideshow
          ├─ parse sw field
          ├─ parse interval/random
          ├─ sw=1 parse timestamp and check/set RTC
-         ├─ write_control_file(sw/interval/timestamp/anchor_epoch)
+         ├─ write_control_state(sw/interval/timestamp/anchor_epoch)
+         ├─ EpdDisplayMode_SetBySlideshowSwitch(sw)
          ├─ sw=0
          │  └─ ServerNetworkStaSlideshow_Stop()
          └─ sw=1
-            └─ ServerNetworkStaSlideshow_StartSavedResetInterval()
+            ├─ ServerNetworkStaSlideshow_StartSavedResetInterval()
+            └─ 模式保存或 runtime 启动失败时回滚 slide_ctl.enabled=false 和 NORMAL
 ```
 
 V2 协议资料拆分：
@@ -1470,20 +1638,20 @@ V2 协议资料拆分：
 sw=1 开启轮播
 sw=0 关闭轮播
 interval 轮播间隔，单位秒
-interval 允许范围 60..604800；sw=0 时可省略，省略时沿用已有控制文件或默认最小值
+interval 允许范围 60..604800；sw=0 时可省略，省略时沿用已有 NVS control 或默认最小值
 random 字段保留，但设备始终强制为 false 并按列表顺序轮播；省略时也不会启用随机模式
-control.interval / control.random 是 set_slideshow 写入控制文件的配置值；轮播 task 实际使用的是启动/恢复后复制到 runtime 的 RAM 值。
+control.interval / control.random 是 set_slideshow 写入 NVS `slide_ctl` 的配置值；轮播 task 实际使用的是启动/恢复后复制到 runtime 的 RAM 值。
 timestamp 保存的 `fileNames[startIndex]` 起始图片目标播放时间，秒级标准 Unix 时间戳
 旧 datetime/timezone 已删除；新请求中不再发送 timezone
 anchor_epoch 等于 timestamp，用于后续按 interval 计算播放点
-startIndex 不由 set_slideshow 修改；始终沿用 slideshow_config.txt 中 start_slideshow 保存的必填起始索引
+startIndex 不由 set_slideshow 修改；始终沿用 NVS `slide_cfg` 中 start_slideshow 保存的必填起始索引
 ```
 
 RTC 同步规则：
 
 ```text
 sw=1 时如果 SNTP 已同步，设备使用 SNTP 当前时间，不用 APP / PC 的 timestamp 修 RTC；同时比较 abs(now_epoch - timestamp)。
-SNTP 已同步且差值 > 5 秒时，返回 1513，不写控制文件，不停止/启动轮播，不执行本次指令；返回中带 timestamp、now_epoch、time_diff，方便 APP / PC 知道差几秒。
+SNTP 已同步且差值 > 5 秒时，返回 1513，不写 NVS control，不停止/启动轮播，不执行本次指令；返回中带 timestamp、now_epoch、time_diff，方便 APP / PC 知道差几秒。
 SNTP 已同步且差值 <= 5 秒时，接受指令，anchor_epoch=timestamp。
 若 timestamp 在未来，设备不会无条件提前显示；进入起始图片 EPD 刷新的时间点为 `timestamp-lead_seconds`。该时间点已经到达时立即进入，否则等待到该时间点。
 SNTP 未同步时，设备把 APP / PC 发来的 timestamp 写入 ESP32-C5 RTC / 系统时间，并以此作为本次轮播时间基准；写入失败返回 1512。
@@ -1504,7 +1672,8 @@ timestamp 表示 `fileNames[startIndex]` 起始图片播放时间，之后每 in
 
 ```text
 存：
-- set_slideshow 写入轮播控制文件，保存 sw / interval / random / timestamp / anchor_epoch；random 省略时沿用已有 control。sw=1 时通过 ServerNetworkStaSlideshow_StartSavedResetInterval() 启动，并按 RTC next_epoch 等待。
+- set_slideshow 写入 NVS `slide_ctl`，保存 sw / interval / random / timestamp / anchor_epoch；random 省略时仍固定为 false。sw=1 时通过 ServerNetworkStaSlideshow_StartSavedResetInterval() 启动，并按 RTC next_epoch 等待。
+- NVS control 保存后若显示模式保存或新命令 runtime 启动失败，停止轮播并尽力把 `slide_ctl.enabled=false`、`epd_mode=NORMAL` 写回；接口仍返回原有 1509 或 1506。
 - sw 写入成功后同步写 PhotoPainter:epd_mode；sw=1 写 1，sw=0 写 0。
 - 关闭轮播时更新控制状态并请求停止轮播任务；若 EPD 正在刷新，等待本次真实结果，成功时先提交下一待显示进度再退出。
 - 配置 hash 或已保存随机排列失效时，再次开启会从当前配置第一张建立新一轮进度。
@@ -1588,7 +1757,7 @@ V2 说明：如果设备未设置过轮播，返回的 `startIndex=-1` 表示没
 RTC 轮播字段：
 
 ```text
-timestamp     set_slideshow sw=1 写入的起始槽播放时间，该槽图片由 slideshow_config.startIndex 决定。
+timestamp     set_slideshow sw=1 写入的起始槽播放时间，该槽图片由 NVS `slide_cfg.start_index` 决定。
 anchor_epoch  等于 timestamp，用于按 interval 计算后续播放点。
 now_epoch     设备当前 RTC / 系统 Unix 秒。
 next_epoch    当前运行中下一次轮播播放点；未运行或非 RTC 轮播为 0。
@@ -1607,7 +1776,7 @@ startIndex    start_slideshow 保存的起始图片索引；缺少或非法配�
 
 取：
 - append_images_json() 扫描 /data/jpg_img 下保存的缩略图。
-- read_slideshow_state() 读取 slideshow_config 和 control 文件。
+- read_slideshow_state() 读取 NVS `slide_cfg` 和 `slide_ctl`。
 - 返回 images[] 与 slideshow 状态。
 - 网络 JSON 的 `func` 判断支持空格、CRLF 和 PowerShell `ConvertTo-Json` 输出格式。
 ```
@@ -1667,7 +1836,7 @@ HTTP multipart /dataUP
                   └─ save /data/jpg_img/<fileName>.jpg
 ```
 
-说明：network upload 与 USB upload 共享 `TdxImageTransfer_ParseSingle()`、`TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。network upload 在 `show=true` 时解析和字段校验通过后先返回 `upload_result=0` 并结束 HTTP handler；EPD 显示和保存由固定的 `dataup_async_worker` 调用 `upload_async_process()` 后台执行。后台存在 `show=true` 时先停止轮播、写 `show_control.txt sw=0` 并读回确认，再等待 EPD 显示任务完成；`save=true` 时再提交保存任务。`show=false` 的 network upload 仍同步返回最终结果。
+说明：network upload 与 USB upload 共享 `TdxImageTransfer_ParseSingle()`、`TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。network upload 在 `show=true` 时解析和字段校验通过后先返回 `upload_result=0` 并结束 HTTP handler；EPD 显示和保存由固定的 `dataup_async_worker` 调用 `upload_async_process()` 后台执行。后台存在 `show=true` 时先停止轮播、写 NVS `slide_ctl.enabled=false` 并读回确认，再等待 EPD 显示任务完成；`save=true` 时再提交保存任务。`show=false` 的 network upload 仍同步返回最终结果。
 
 成功或失败返回 JSON 会包含 `fileName`、`bin_file`、`image_file`、`save`、`show`、`error` 字段；成功时 `message="upload success"` 且 `error="no error"`。
 
@@ -2044,12 +2213,11 @@ SNTP 同步成功响应示例：
 /data/jpg_img/*.jpg
 /data/cast_img/*.bin
 /data/cast_img/*.jpg
-/data/bin_img/slideshow_config.txt
-/data/bin_img/show_control.txt
-/data/cast_img/last_cast.txt
+默认 NVS image_state:slide_cfg 删除
+默认 NVS image_state:slide_ctl 删除
+默认 NVS image_state:last_cast 删除
 NVS: slide_progress
 NVS: slide_last
-NVS: slide_random 写回 false
 NVS: daily_cfg 删除
 NVS: epd_mode 强制写入并读回校验 USER_EPD_DISPLAY_MODE_DEFAULT
 NVS namespace wifi: 全部键删除
@@ -2097,6 +2265,8 @@ factory reset done source=GPIO28 seq=0 ret=ESP_OK upload_bin_deleted=... upload_
 
 ### 7.15 daily_download_file：每日一图 <span id="sec-07-15"></span>
 
+> 每日一图worker的任务生命周期、串行执行、取消及内存规则统一以 [第2章：永久常驻统一图片业务任务](#sec-02-image-business-worker) 为准。本节只说明每日一图自身业务规则。
+
 APP通过 `/dataUP` small JSON 下发 `daily_download_file`。`sw=1` 要求完整的 `imageHeight/imageWidth/orientation/api_url/timestamp`；每次合法请求都建立一次不受间隔限制的首次立即执行。首次完成后仍以APP的 `timestamp + N*86400` 为绝对时间槽，不改变APP锚点。
 
 第二次及以后，原执行点为 `target-slideshow_rtc_display_lead_seconds()`；若距离上次每日一图EPD调用不足300秒，只把本槽推迟到满300秒，后续槽仍按原timestamp计算。EPD调用前持久化 `last_daily_epd_epoch`，显示失败也受该间隔限制；下载失败且未调用EPD时不更新。每周期下载最多3次、EPD只调用1次，失败保存1小时重试；提前不超过30秒在线等待，更早则设置CH583提前30秒唤醒。
@@ -2110,7 +2280,7 @@ sequenceDiagram
     participant APP
     participant HTTP as /dataUP
     participant CFG as daily config/NVS
-    participant WORK as daily worker
+    participant WORK as shared image worker
     participant API as HTTPS API/BIN
     participant EPD
     participant CH as CH583
@@ -2157,10 +2327,12 @@ main/tdx_cfg.h                           DAILY标志和限制
 ```text
 app_main
 ├─ EpdDisplayMode_Init()读取PhotoPainter:epd_mode
-├─ ServerNetworkStaDailyImage_Init()只初始化锁和基础状态
+├─ ImageBusinessWorker_Init()创建9KB统一静态worker和单pending命令槽
+├─ ServerNetworkStaDailyImage_Init()初始化daily配置mutex和基础状态
 ├─ 启动WiFi、HTTP和SNTP
 └─ ServerNetworkStaDailyImage_StartSaved()
-   ├─ mode不是DAILY：不创建daily worker
+   ├─ 启动早期创建的统一worker永久常驻
+   ├─ mode不是DAILY：统一worker保持空闲，不提交daily命令
    ├─ mode是DAILY：读取并校验daily_cfg
    ├─ retry_pending=1：先等待1小时重试点
    ├─ initial_run_pending=1：SNTP可用后立即执行
@@ -2197,7 +2369,7 @@ daily_download_file
 存：
 - PhotoPainter:daily_cfg保存版本、CRC、尺寸、orientation、api_url、timestamp、
   initial_run_pending、retry状态、last_daily_epd_epoch和last_completed_target_epoch。
-- PhotoPainter:epd_mode保存NORMAL/SLIDESHOW/DAILY/LOCAL_IMAGE_BROWSING；show_control.txt只用于停止轮播。
+- PhotoPainter:epd_mode保存NORMAL/SLIDESHOW/DAILY/LOCAL_IMAGE_BROWSING；NVS `slide_ctl` 保存轮播启停和 RTC anchor。
 - BIN只在PSRAM中下载并交给EPD，不写SD；mbedTLS大块内存可按项目malloc策略进入PSRAM。
 - `api_url`和`dailyImageUrl`都必须直接返回HTTPS 2xx；当前关闭自动重定向，不接受30x。
 
@@ -2215,6 +2387,7 @@ daily_download_file
 - daily重复检查关机时保留已激活的一次性截止时间，不重新开始倒计时。
 - daily申请一次性关机时记录DAILY owner；模式切换只取消DAILY拥有的一次性关机，不取消其他功能新建的倒计时。
 - daily one-shot激活后若cast/cast2pic/slideshow把模式切离DAILY，恢复原工作时间并取消旧daily关机。
+- daily与slideshow共用9KB内部RAM静态 `image_business_worker`、一个静态TCB、一个静态状态mutex和一个640字节单pending命令槽；统一worker在WiFi、HTTP等可选服务之前创建并永久常驻。旧daily queue、独立daily/轮播任务栈以及轮播启动延迟任务已取消。启动打印一次统一静态资源，命令完成时打印owner、返回值、最小栈余量和峰值，正常空闲不重复打印。
 - 新配置保存后若停止轮播、模式或任务提交失败，恢复旧daily_cfg；不自动恢复轮播，模式保持NORMAL。
 - 新配置首次保存失败时尚未停止轮播：恢复旧daily_cfg并保留原NORMAL/SLIDESHOW；旧模式为DAILY时回到NORMAL。
 ```
@@ -2410,7 +2583,7 @@ HTTP POST /dataUP
 - show=true 时先等待 ServerNetworkStaEpdDisplay_QueueToScreenAndWait() 完成。
 - network/USB cast/cast2pic save=true 时提交 CastSaveTask 保存到 /data/cast_img；network/USB upload 仍保存到 /data/bin_img 与 /data/jpg_img。
 - CastSaveTask 使用 <fileName>.<ext>.tmp 临时文件，写完校验大小后 rename 成正式文件。
-- network/USB cast 的 last cast 记录文件写入 /data/cast_img/last_cast.txt。
+- network/USB cast 的 last cast 文件名写入默认 NVS `image_state:last_cast` Blob。
 
 取：
 - check_save_space() 通过 example_storage_get_free_bytes() 读取剩余空间。

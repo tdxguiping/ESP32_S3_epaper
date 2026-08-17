@@ -1,4 +1,5 @@
 #include "cast_core.h"
+#include "app_persistent_state.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -342,20 +343,10 @@ static esp_err_t cleanup_cast_dir_old_images(const char *base_path,
     closedir(dir);
 
     if (!has_last_cast_record) {
-        char last_cast_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-        int len = snprintf(last_cast_path,
-                           sizeof(last_cast_path),
-                           "%s/%s",
-                           cast_dir,
-                           SERVER_NETWORK_STA_LAST_CAST_FILE);
-        if (len > 0 && (size_t)len < sizeof(last_cast_path)) {
-            if (unlink(last_cast_path) == 0) {
-                ESP_LOGI(TAG, "cleanup cast dir stale last_cast=%s", last_cast_path);
-            } else if (errno != ENOENT) {
-                ESP_LOGW(TAG, "cleanup cast dir last_cast unlink failed path=%s errno=%d",
-                         last_cast_path,
-                         errno);
-            }
+        esp_err_t erase_ret = AppPersistentState_EraseLastCast();
+        if (erase_ret != ESP_OK) {
+            ESP_LOGW(TAG, "cleanup cast state erase failed ret=%s",
+                     esp_err_to_name(erase_ret));
         }
     }
 
@@ -383,20 +374,10 @@ static esp_err_t record_last_cast(const char *base_path,
                                   tdx_image_transfer_storage_t storage,
                                   const char *file_name)
 {
+    (void)base_path;
+    (void)storage;
     int64_t start_us = esp_timer_get_time();
-    char record_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char json[256];
-    const char *bin_dir = storage_bin_dir_name(storage);
-    const char *jpg_dir = storage_jpg_dir_name(storage);
-
-    snprintf(record_path, sizeof(record_path), "%s/%s/%s", base_path, bin_dir, SERVER_NETWORK_STA_LAST_CAST_FILE);
-    int len = snprintf(json, sizeof(json),
-                       "{\"fileName\":\"%s\",\"bin\":\"%s/%s/%s.bin\",\"image\":\"%s/%s/%s.jpg\"}",
-                       file_name, base_path, bin_dir, file_name, base_path, jpg_dir, file_name);
-    if (len < 0 || (size_t)len >= sizeof(json)) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-    esp_err_t ret = write_file_exact(record_path, json, (size_t)len);
+    esp_err_t ret = AppPersistentState_SaveLastCast(file_name);
     ESP_LOGI(TAG, "record last cast file=%s ret=%s elapsed_ms=%lu",
              file_name, esp_err_to_name(ret), (unsigned long)elapsed_ms_since(start_us));
     return ret;
@@ -677,138 +658,25 @@ save_done:
     return ESP_OK;
 }
 
-static const char *find_json_key(const char *body, const char *key)
-{
-    char pattern[64];
-    const char *pos = body;
-    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    while ((pos = strstr(pos, pattern)) != NULL) {
-        const char *after = pos + strlen(pattern);
-        while (*after == ' ' || *after == '\t' || *after == '\r' || *after == '\n') {
-            after++;
-        }
-        if (*after == ':') {
-            return pos;
-        }
-        pos += strlen(pattern);
-    }
-    return NULL;
-}
-
-static bool parse_json_u32(const char *body, const char *key, uint32_t *out)
-{
-    const char *pos = find_json_key(body, key);
-    char *end_ptr = NULL;
-    unsigned long value = 0;
-    if (pos == NULL || out == NULL) {
-        return false;
-    }
-    pos += strlen(key) + 2;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != ':') {
-        return false;
-    }
-    pos++;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos == '-') {
-        return false;
-    }
-    errno = 0;
-    value = strtoul(pos, &end_ptr, 10);
-    if (errno != 0 || end_ptr == pos || value > UINT32_MAX) {
-        return false;
-    }
-    *out = (uint32_t)value;
-    return true;
-}
-
-static bool parse_json_bool(const char *body, const char *key, bool *out)
-{
-    const char *pos = find_json_key(body, key);
-    if (pos == NULL || out == NULL) {
-        return false;
-    }
-    pos += strlen(key) + 2;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (*pos != ':') {
-        return false;
-    }
-    pos++;
-    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
-        pos++;
-    }
-    if (strncmp(pos, "true", 4) == 0 || *pos == '1') {
-        *out = true;
-        return true;
-    }
-    if (strncmp(pos, "false", 5) == 0 || *pos == '0') {
-        *out = false;
-        return true;
-    }
-    return false;
-}
-
-static void read_slideshow_control_values(const char *control_path, uint32_t *interval, bool *random)
-{
-    FILE *fp = fopen(control_path, "rb");
-    if (fp == NULL) {
-        return;
-    }
-    char buf[192] = {0};
-    size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
-    fclose(fp);
-    buf[len] = '\0';
-    parse_json_u32(buf, "interval", interval);
-    parse_json_bool(buf, "random", random);
-}
-
-static bool read_slideshow_control_sw(const char *control_path, uint32_t *sw_out)
-{
-    FILE *fp = fopen(control_path, "rb");
-    if (fp == NULL) {
-        return false;
-    }
-    char buf[192] = {0};
-    size_t len = fread(buf, 1, sizeof(buf) - 1, fp);
-    fclose(fp);
-    buf[len] = '\0';
-    return parse_json_u32(buf, "sw", sw_out);
-}
-
 static esp_err_t stop_slideshow_for_cast(const char *base_path)
 {
-    char control_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 64];
-    char json[160];
-    uint32_t interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
-    bool random = false;
-    uint32_t sw = UINT32_MAX;
-
-    snprintf(control_path, sizeof(control_path), "%s/bin_img/%s", base_path, TDX_SLIDESHOW_CONTROL_FILE);
-    ESP_LOGI(TAG, "show=true stop slideshow requested path=%s", control_path);
-    esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
-    if (lock_ret != ESP_OK) {
-        return lock_ret;
+    (void)base_path;
+    app_persistent_slideshow_control_t control = {
+        .enabled = false,
+        .interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS,
+        .random = false,
+    };
+    app_persistent_slideshow_control_t saved_control = {0};
+    if (AppPersistentState_LoadSlideshowControl(&saved_control, NULL) == ESP_OK) {
+        control.interval = saved_control.interval;
+        control.timestamp = saved_control.timestamp;
+        control.anchor_epoch = saved_control.anchor_epoch;
     }
-    read_slideshow_control_values(control_path, &interval, &random);
-    int json_len = snprintf(json, sizeof(json),
-                            "{\"sw\":0,\"interval\":%lu,\"random\":%s,\"run_mode\":%d}",
-                            (unsigned long)interval,
-                            random ? "true" : "false",
-                            TDX_SLIDESHOW_RUN_MODE);
-    if (json_len < 0 || (size_t)json_len >= sizeof(json)) {
-        TdxSharedSpi_Unlock();
-        return ESP_ERR_INVALID_SIZE;
-    }
-    esp_err_t ret = write_file_exact(control_path, json, strlen(json));
-    TdxSharedSpi_Unlock();
+    ESP_LOGI(TAG, "show=true stop slideshow requested through app-state NVS");
+    esp_err_t ret = AppPersistentState_SaveSlideshowControl(&control);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "show=true slideshow stop write failed ret=%s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "show=true slideshow stop NVS write failed ret=%s",
+                 esp_err_to_name(ret));
         return ret;
     }
 
@@ -819,18 +687,12 @@ static esp_err_t stop_slideshow_for_cast(const char *base_path)
                  esp_err_to_name(mode_ret));
     }
 
-    lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
-    if (lock_ret != ESP_OK) {
-        ESP_LOGW(TAG, "show=true slideshow stop check lock failed ret=%s",
-                 esp_err_to_name(lock_ret));
-        return lock_ret;
-    }
-    bool read_ok = read_slideshow_control_sw(control_path, &sw);
-    TdxSharedSpi_Unlock();
-    if (!read_ok || sw != 0) {
-        ESP_LOGW(TAG, "show=true slideshow stop check failed read_ok=%d sw=%lu",
-                 read_ok ? 1 : 0,
-                 (unsigned long)sw);
+    app_persistent_slideshow_control_t verify = {0};
+    esp_err_t verify_ret = AppPersistentState_LoadSlideshowControl(&verify, NULL);
+    if (verify_ret != ESP_OK || verify.enabled) {
+        ESP_LOGW(TAG, "show=true slideshow stop NVS check failed ret=%s enabled=%d",
+                 esp_err_to_name(verify_ret),
+                 verify.enabled ? 1 : 0);
         return ESP_FAIL;
     }
 

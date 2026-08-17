@@ -23,6 +23,7 @@
 #include "esp_system.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "app_persistent_state.h"
 #include "ch583_uart_app.h"
 #include "cast_core.h"
 #include "debug_output.h"
@@ -32,6 +33,7 @@
 #include "factory_reset.h"
 #include "file_serving_example_common.h"
 #include "gpio_test.h"
+#include "image_business_worker.h"
 #include "led_status.h"
 #include "local_image_browsing.h"
 #include "server_network_sta.h"
@@ -47,6 +49,7 @@
 #include "user_app.h"
 
 #include <string.h>
+#include <stdlib.h>
 
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -232,6 +235,83 @@ static bool startup_wifi_status_is_progressing(
            status->state == SERVER_NETWORK_STA_STATE_STARTING_SERVICES;
 }
 
+static void reconcile_persistent_slideshow_mode(void)
+{
+    app_persistent_slideshow_control_t control = {0};
+    uint32_t control_generation = 0;
+    esp_err_t control_ret = AppPersistentState_LoadSlideshowControl(
+        &control, &control_generation);
+    uint8_t mode = EpdDisplayMode_Get();
+
+    if (control_ret == ESP_ERR_NVS_NOT_FOUND) {
+        if (mode == USER_EPD_DISPLAY_MODE_SLIDESHOW) {
+            ESP_LOGW(TAG,
+                     "startup slideshow mode has no NVS control; reset mode to NORMAL");
+            (void)EpdDisplayMode_SetBySlideshowSwitch(false);
+        }
+        return;
+    }
+    if (control_ret != ESP_OK) {
+        ESP_LOGE(TAG, "startup slideshow control read failed ret=%s",
+                 esp_err_to_name(control_ret));
+        if (mode == USER_EPD_DISPLAY_MODE_SLIDESHOW) {
+            (void)EpdDisplayMode_SetBySlideshowSwitch(false);
+        }
+        return;
+    }
+
+    bool effective_enabled = control.enabled;
+    if (control.enabled) {
+        app_persistent_slideshow_config_t *config =
+            (app_persistent_slideshow_config_t *)calloc(1, sizeof(*config));
+        uint32_t config_generation = 0;
+        esp_err_t config_ret = config != NULL ?
+                               AppPersistentState_LoadSlideshowConfig(
+                                   config, &config_generation) : ESP_ERR_NO_MEM;
+        free(config);
+        if (config_ret != ESP_OK || config_generation != control_generation) {
+            effective_enabled = false;
+            ESP_LOGE(TAG,
+                     "startup slideshow state invalid config_ret=%s config_generation=%lu control_generation=%lu",
+                     esp_err_to_name(config_ret),
+                     (unsigned long)config_generation,
+                     (unsigned long)control_generation);
+        }
+    }
+
+    bool scheduled_mode_owns_display =
+        mode == USER_EPD_DISPLAY_MODE_DAILY ||
+        mode == USER_EPD_DISPLAY_MODE_LOCAL_IMAGE_BROWSING;
+    if (control.enabled && (!effective_enabled || scheduled_mode_owns_display)) {
+        control.enabled = false;
+        esp_err_t save_ret = AppPersistentState_SaveSlideshowControl(&control);
+        if (save_ret != ESP_OK) {
+            ESP_LOGE(TAG, "startup slideshow disable save failed ret=%s",
+                     esp_err_to_name(save_ret));
+        } else {
+            ESP_LOGI(TAG,
+                     "startup slideshow control disabled for mode=%u(%s)",
+                     (unsigned int)mode,
+                     EpdDisplayMode_ToString(mode));
+        }
+        effective_enabled = false;
+    }
+
+    if (!scheduled_mode_owns_display) {
+        uint8_t desired_mode = effective_enabled ?
+                               USER_EPD_DISPLAY_MODE_SLIDESHOW :
+                               USER_EPD_DISPLAY_MODE_NORMAL;
+        if (mode != desired_mode) {
+            esp_err_t mode_ret =
+                EpdDisplayMode_SetBySlideshowSwitch(effective_enabled);
+            if (mode_ret != ESP_OK) {
+                ESP_LOGE(TAG, "startup slideshow mode reconcile failed ret=%s",
+                         esp_err_to_name(mode_ret));
+            }
+        }
+    }
+}
+
 void app_main(void)
 {
     ESP_ERROR_CHECK(UserDebugOutput_Init());
@@ -260,13 +340,13 @@ void app_main(void)
         nvs_ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(nvs_ret);
+    ESP_ERROR_CHECK(AppPersistentState_Init());
     esp_err_t ota_boot_ret = NetworkOtaBoot_Init();
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(ServerNetworkStaTime_Init());
     ESP_ERROR_CHECK(TdxSharedSpi_Init());
     ESP_ERROR_CHECK(TdxCastCore_Init());
-    ESP_ERROR_CHECK(UsbConsoleEcho_Init());
     ESP_ERROR_CHECK(ServerNetworkStaWifiWorkTime_Init());
     if (ota_boot_ret != ESP_OK) {
         /*
@@ -280,27 +360,13 @@ void app_main(void)
     ESP_LOGI(TAG, "EPD display mode=%u(%s)",
              (unsigned int)EpdDisplayMode_Get(),
              EpdDisplayMode_ToString(EpdDisplayMode_Get()));
-    char random_value[8] = {0};
-    esp_err_t random_read_ret = app_nvs_read_str(TDX_SLIDESHOW_RANDOM_NVS_KEY,
-                                                 random_value,
-                                                 sizeof(random_value),
-                                                 "false");
-    g_slideshow_random_enable = (strcmp(random_value, "true") == 0) ? 1 : 0;
-    if (g_slideshow_random_enable) {
-        ESP_LOGW(TAG, "slideshow random permanently disabled, force random=false");
+    ESP_ERROR_CHECK(ImageBusinessWorker_Init());
+    const char *base_path = "/data";
+    esp_err_t daily_ret = ServerNetworkStaDailyImage_Init(base_path);
+    if (daily_ret != ESP_OK) {
+        ESP_LOGE(TAG, "daily image early init failed ret=%s",
+                 esp_err_to_name(daily_ret));
     }
-    g_slideshow_random_enable = 0;
-    if (random_read_ret != ESP_OK || strcmp(random_value, "false") != 0) {
-        esp_err_t random_write_ret = app_nvs_write_str(TDX_SLIDESHOW_RANDOM_NVS_KEY, "false");
-        if (random_write_ret != ESP_OK) {
-            ESP_LOGW(TAG, "slideshow random save failed ret=%s",
-                     esp_err_to_name(random_write_ret));
-        }
-    }
-    ESP_LOGI(TAG, "slideshow random config=%s enable=%u",
-             random_value, (unsigned int)g_slideshow_random_enable);
-
-
     print_base_info();
     if (NetworkOtaBoot_WasPendingVerify()) {
         esp_err_t gpio_test_ret = GpioTest_Init();
@@ -316,6 +382,8 @@ void app_main(void)
     // Start CH583 UART before LED status because C5 status LEDs are controlled by CH583 GPIO.
     // 先启动 CH583 串口再初始化 LED 状态，因为 C5 状态灯由 CH583 GPIO 控制。
     ESP_ERROR_CHECK(Ch583UartApp_Init());
+    reconcile_persistent_slideshow_mode();
+    ESP_ERROR_CHECK(UsbConsoleEcho_Init());
 
     if (NetworkOtaBoot_IsPendingVerify()) {
         /*
@@ -343,7 +411,6 @@ void app_main(void)
 
 
     /* Initialize file storage */
-    const char* base_path = "/data";
     esp_err_t storage_ret = example_mount_storage(base_path);
     if (storage_ret != ESP_OK) {
         UserLedStatus_SetStorageFailed(true);
@@ -384,15 +451,7 @@ void app_main(void)
     }
 #endif
 
-    /*
-     * Initialize the DAILY synchronization state before HTTP can accept an APP
-     * request. Saved work starts only after the existing network stack starts.
-     */
-    esp_err_t daily_ret = ServerNetworkStaDailyImage_Init(base_path);
-    if (daily_ret != ESP_OK) {
-        ESP_LOGE(TAG, "daily image base init failed ret=%s",
-                 esp_err_to_name(daily_ret));
-    }
+    /* The resident DAILY worker was created before other optional services. */
     esp_err_t local_browsing_ret = LocalImageBrowsing_Init(base_path);
     if (local_browsing_ret != ESP_OK) {
         ESP_LOGE(TAG, "local image browsing init failed ret=%s",
