@@ -41,6 +41,16 @@ static const char *owner_name(image_business_owner_t owner)
         return "SLIDESHOW";
     case IMAGE_BUSINESS_OWNER_LOCAL_IMAGE:
         return "LOCAL_IMAGE";
+    case IMAGE_BUSINESS_OWNER_CAST:
+        return "CAST";
+    case IMAGE_BUSINESS_OWNER_CAST2PIC:
+        return "CAST2PIC";
+    case IMAGE_BUSINESS_OWNER_USB_CAST:
+        return "USB_CAST";
+    case IMAGE_BUSINESS_OWNER_USB_CAST2PIC:
+        return "USB_CAST2PIC";
+    case IMAGE_BUSINESS_OWNER_FACTORY_RESET:
+        return "FACTORY_RESET";
     default:
         return "NONE";
     }
@@ -150,16 +160,60 @@ esp_err_t ImageBusinessWorker_SubmitReplacingPending(
     uint32_t generation,
     uint32_t replace_pending_owner_mask)
 {
+    return ImageBusinessWorker_SubmitReplacingPendingUnlessBusy(
+        owner,
+        run,
+        cancel,
+        payload,
+        payload_size,
+        generation,
+        replace_pending_owner_mask,
+        0U);
+}
+
+esp_err_t ImageBusinessWorker_SubmitReplacingPendingUnlessBusy(
+    image_business_owner_t owner,
+    image_business_run_fn_t run,
+    image_business_cancel_fn_t cancel,
+    const void *payload,
+    size_t payload_size,
+    uint32_t generation,
+    uint32_t replace_pending_owner_mask,
+    uint32_t reject_busy_owner_mask)
+{
     if (!s_initialized || s_worker_task == NULL || s_state_mutex == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
     if (owner <= IMAGE_BUSINESS_OWNER_NONE ||
-        owner > IMAGE_BUSINESS_OWNER_LOCAL_IMAGE || run == NULL ||
+        owner > IMAGE_BUSINESS_OWNER_FACTORY_RESET || run == NULL ||
         payload_size > sizeof(s_pending_command.payload) ||
         (payload_size > 0U && payload == NULL)) {
         return ESP_ERR_INVALID_ARG;
     }
     if (xSemaphoreTake(s_state_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (owner != IMAGE_BUSINESS_OWNER_FACTORY_RESET &&
+        (s_current_owner == IMAGE_BUSINESS_OWNER_FACTORY_RESET ||
+         (s_pending_command.valid &&
+          s_pending_command.owner == IMAGE_BUSINESS_OWNER_FACTORY_RESET))) {
+        ESP_LOGW(TAG,
+                 "submit blocked by factory reset owner=%s pending_owner=%s current_owner=%s",
+                 owner_name(owner),
+                 s_pending_command.valid ? owner_name(s_pending_command.owner) : "NONE",
+                 owner_name(s_current_owner));
+        xSemaphoreGive(s_state_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if ((reject_busy_owner_mask & IMAGE_BUSINESS_OWNER_MASK(s_current_owner)) != 0U ||
+        (s_pending_command.valid &&
+         (reject_busy_owner_mask & IMAGE_BUSINESS_OWNER_MASK(s_pending_command.owner)) != 0U)) {
+        ESP_LOGW(TAG,
+                 "submit busy owner=%s pending_owner=%s current_owner=%s",
+                 owner_name(owner),
+                 s_pending_command.valid ? owner_name(s_pending_command.owner) : "NONE",
+                 owner_name(s_current_owner));
+        xSemaphoreGive(s_state_mutex);
         return ESP_ERR_INVALID_STATE;
     }
     if (s_pending_command.valid &&
@@ -177,7 +231,7 @@ esp_err_t ImageBusinessWorker_SubmitReplacingPending(
     if (s_pending_command.valid) {
         image_business_owner_t replaced_owner = s_pending_command.owner;
         uint32_t replaced_generation = s_pending_command.generation;
-        /* Cancel callbacks are bounded and must not call worker APIs. */
+        /* The state lock keeps the old payload valid until cancellation completes. */
         if (s_pending_command.cancel != NULL) {
             s_pending_command.cancel(s_pending_command.payload,
                                      s_pending_command.payload_size);
@@ -258,6 +312,41 @@ bool ImageBusinessWorker_IsOwnerBusy(image_business_owner_t owner)
                 (s_pending_command.valid && s_pending_command.owner == owner);
     xSemaphoreGive(s_state_mutex);
     return busy;
+}
+
+bool ImageBusinessWorker_IsAnyOwnerBusy(uint32_t owner_mask)
+{
+    if (!s_initialized || s_state_mutex == NULL || owner_mask == 0U ||
+        xSemaphoreTake(s_state_mutex, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    bool busy = (owner_mask & IMAGE_BUSINESS_OWNER_MASK(s_current_owner)) != 0U ||
+                (s_pending_command.valid &&
+                 (owner_mask & IMAGE_BUSINESS_OWNER_MASK(s_pending_command.owner)) != 0U);
+    xSemaphoreGive(s_state_mutex);
+    return busy;
+}
+
+image_business_owner_t ImageBusinessWorker_GetCurrentOwner(void)
+{
+    if (!s_initialized || s_state_mutex == NULL ||
+        xSemaphoreTake(s_state_mutex, portMAX_DELAY) != pdTRUE) {
+        return IMAGE_BUSINESS_OWNER_NONE;
+    }
+    image_business_owner_t owner = s_current_owner;
+    xSemaphoreGive(s_state_mutex);
+    return owner;
+}
+
+bool ImageBusinessWorker_HasPendingCommand(void)
+{
+    if (!s_initialized || s_state_mutex == NULL ||
+        xSemaphoreTake(s_state_mutex, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    bool pending = s_pending_command.valid;
+    xSemaphoreGive(s_state_mutex);
+    return pending;
 }
 
 esp_err_t ImageBusinessWorker_WaitOwnerIdle(image_business_owner_t owner,

@@ -13,6 +13,7 @@ esp_err_t TdxSharedSpi_Lock(TickType_t ticks_to_wait);
 esp_err_t TdxSharedSpi_LockForEpdSdPowerTest(TickType_t ticks_to_wait);
 void TdxSharedSpi_UnlockForEpdSdPowerTest(void);
 bool TdxSharedSpi_HasNormalRequests(void);
+bool TdxSharedSpi_IsBusy(void);
 void TdxSharedSpi_Unlock(void);
 
 #ifdef __cplusplus

@@ -8,9 +8,10 @@
 #include "epd_display_mode.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "image_business_worker.h"
 #include "local_image_browsing.h"
 #include "esp_timer.h"
-#include "server_network_sta_dataup_async.h"
+#include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_cast";
@@ -21,6 +22,15 @@ typedef struct {
     char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
     tdx_cast_core_request_t cast;
 } cast_async_job_t;
+
+typedef struct {
+    cast_async_job_t *job;
+} cast_worker_command_t;
+
+_Static_assert(sizeof(cast_worker_command_t) <= USER_IMAGE_BUSINESS_WORKER_PAYLOAD_SIZE,
+               "cast worker command exceeds image worker payload");
+
+static uint32_t s_cast_generation;
 
 static uint32_t elapsed_ms_since(int64_t start_us)
 {
@@ -64,23 +74,26 @@ static esp_err_t send_cast_received(httpd_req_t *req, const tdx_cast_core_reques
     return httpd_resp_send_chunk(req, json, strlen(json));
 }
 
-static void cast_async_process(void *arg)
+static esp_err_t cast_async_process(cast_async_job_t *job)
 {
-    cast_async_job_t *job = (cast_async_job_t *)arg;
     int64_t start_us = esp_timer_get_time();
     tdx_cast_core_result_t result = {0};
 
     if (job == NULL) {
-        return;
+        return ESP_ERR_INVALID_ARG;
     }
 
     ESP_LOGI(TAG, "cast async process start file=%s", job->cast.file_name);
-    (void)TdxCastCore_ProcessValidatedCastDir(&job->cast, job->base_path, "network cast async", &result);
+    esp_err_t ret = TdxCastCore_ProcessValidatedCastDir(&job->cast,
+                                                        job->base_path,
+                                                        "network cast async",
+                                                        &result);
     ESP_LOGI(TAG, "cast async process done file=%s result=%d error=%s elapsed_ms=%lu",
              job->cast.file_name,
              result.result,
              result.error[0] ? result.error : "",
              (unsigned long)elapsed_ms_since(start_us));
+    return ret;
 }
 
 static void cast_async_cleanup(void *arg)
@@ -91,6 +104,30 @@ static void cast_async_cleanup(void *arg)
     }
     heap_caps_free(job->body);
     free(job);
+}
+
+static esp_err_t cast_run_command(const void *payload, size_t payload_size)
+{
+    if (payload == NULL || payload_size != sizeof(cast_worker_command_t)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    cast_worker_command_t command = {0};
+    memcpy(&command, payload, sizeof(command));
+    esp_err_t ret = cast_async_process(command.job);
+    cast_async_cleanup(command.job);
+    ServerNetworkStaWifiWorkTime_ImageTransferEnd();
+    return ret;
+}
+
+static void cast_cancel_command(const void *payload, size_t payload_size)
+{
+    if (payload == NULL || payload_size != sizeof(cast_worker_command_t)) {
+        return;
+    }
+    cast_worker_command_t command = {0};
+    memcpy(&command, payload, sizeof(command));
+    cast_async_cleanup(command.job);
+    ServerNetworkStaWifiWorkTime_ImageTransferEnd();
 }
 
 static esp_err_t start_cast_async(char *body,
@@ -110,16 +147,41 @@ static esp_err_t start_cast_async(char *body,
     job->cast = *cast;
     snprintf(job->base_path, sizeof(job->base_path), "%s", base_path);
 
-    esp_err_t submit_ret = ServerNetworkStaDataupAsync_Submit("cast",
-                                                              cast_async_process,
-                                                              cast_async_cleanup,
-                                                              job);
+    cast_worker_command_t command = {
+        .job = job,
+    };
+    uint32_t generation =
+        __atomic_add_fetch(&s_cast_generation, 1U, __ATOMIC_ACQ_REL);
+    uint32_t replace_mask =
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_DAILY) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_SLIDESHOW) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_LOCAL_IMAGE) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_USB_CAST) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_USB_CAST2PIC);
+    uint32_t cast_busy_mask =
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_CAST) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_CAST2PIC);
+    ServerNetworkStaWifiWorkTime_ImageTransferBegin();
+    esp_err_t submit_ret = ImageBusinessWorker_SubmitReplacingPendingUnlessBusy(
+        IMAGE_BUSINESS_OWNER_CAST,
+        cast_run_command,
+        cast_cancel_command,
+        &command,
+        sizeof(command),
+        generation,
+        replace_mask,
+        cast_busy_mask);
     if (submit_ret != ESP_OK) {
+        ServerNetworkStaWifiWorkTime_ImageTransferEnd();
         free(job);
         return submit_ret;
     }
 
-    ESP_LOGI(TAG, "cast async accepted file=%s body=%u", cast->file_name, (unsigned int)body_len);
+    ImageBusinessWorker_Wake();
+    ESP_LOGI(TAG, "cast async accepted file=%s body=%u generation=%lu",
+             cast->file_name,
+             (unsigned int)body_len,
+             (unsigned long)generation);
     return ESP_OK;
 }
 

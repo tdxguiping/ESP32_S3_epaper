@@ -6,12 +6,13 @@
 
 #include "cast_core.h"
 #include "epd_display_mode.h"
+#include "image_business_worker.h"
 #include "local_image_browsing.h"
+#include "server_network_sta_wifi_work_time.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "tdx_cfg.h"
 #include "usb_console_common.h"
-#include "usb_console_worker.h"
 
 static const char *TAG = "usb_console_cast2pic";
 
@@ -20,6 +21,15 @@ typedef struct {
     char *bin_data;
     char *image_data;
 } usb_cast2pic_background_job_t;
+
+typedef struct {
+    usb_cast2pic_background_job_t *job;
+} usb_cast2pic_worker_command_t;
+
+_Static_assert(sizeof(usb_cast2pic_worker_command_t) <= USER_IMAGE_BUSINESS_WORKER_PAYLOAD_SIZE,
+               "USB cast2pic command exceeds image worker payload");
+
+static uint32_t s_usb_cast2pic_generation;
 
 static uint32_t cast2pic_elapsed_ms_since(int64_t start_us)
 {
@@ -147,16 +157,19 @@ static void cast2pic_background_free(usb_cast2pic_background_job_t *job)
     free(job);
 }
 
-static void cast2pic_background_process(void *ctx)
+static esp_err_t cast2pic_background_process(void *ctx)
 {
     usb_cast2pic_background_job_t *job = (usb_cast2pic_background_job_t *)ctx;
     tdx_cast_core_result_t result = {0};
 
     if (job == NULL) {
-        return;
+        return ESP_ERR_INVALID_ARG;
     }
-    (void)TdxImageTransfer_ProcessItems(&job->item, 1, USB_CONSOLE_BASE_PATH,
-                                        "usb cast2pic", &result);
+    esp_err_t ret = TdxImageTransfer_ProcessItems(&job->item,
+                                                  1,
+                                                  USB_CONSOLE_BASE_PATH,
+                                                  "usb cast2pic",
+                                                  &result);
     if (result.result == TDX_JSON_RESULT_OK) {
         ESP_LOGI(TAG, "cast2pic background done result=0");
     } else {
@@ -165,6 +178,30 @@ static void cast2pic_background_process(void *ctx)
                  result.error[0] ? result.error : "cast2pic_failed");
     }
     cast2pic_background_free(job);
+    return ret;
+}
+
+static esp_err_t usb_cast2pic_run_command(const void *payload, size_t payload_size)
+{
+    if (payload == NULL || payload_size != sizeof(usb_cast2pic_worker_command_t)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    usb_cast2pic_worker_command_t command = {0};
+    memcpy(&command, payload, sizeof(command));
+    esp_err_t ret = cast2pic_background_process(command.job);
+    ServerNetworkStaWifiWorkTime_ImageTransferEnd();
+    return ret;
+}
+
+static void usb_cast2pic_cancel_command(const void *payload, size_t payload_size)
+{
+    if (payload == NULL || payload_size != sizeof(usb_cast2pic_worker_command_t)) {
+        return;
+    }
+    usb_cast2pic_worker_command_t command = {0};
+    memcpy(&command, payload, sizeof(command));
+    cast2pic_background_free(command.job);
+    ServerNetworkStaWifiWorkTime_ImageTransferEnd();
 }
 
 static void cast2pic_submit_background(const tdx_image_transfer_item_t *item)
@@ -193,14 +230,40 @@ static void cast2pic_submit_background(const tdx_image_transfer_item_t *item)
     job->item.bin_part.data = job->bin_data;
     job->item.image_part.data = job->image_data;
 
-    esp_err_t submit_ret = UsbConsoleWorker_SubmitJob("cast2pic_bg",
-                                                      cast2pic_background_process,
-                                                      job);
+    usb_cast2pic_worker_command_t command = {
+        .job = job,
+    };
+    uint32_t generation =
+        __atomic_add_fetch(&s_usb_cast2pic_generation, 1U, __ATOMIC_ACQ_REL);
+    uint32_t replace_mask =
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_DAILY) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_SLIDESHOW) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_LOCAL_IMAGE);
+    uint32_t cast_busy_mask =
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_CAST) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_CAST2PIC) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_USB_CAST) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_USB_CAST2PIC);
+    ServerNetworkStaWifiWorkTime_ImageTransferBegin();
+    esp_err_t submit_ret = ImageBusinessWorker_SubmitReplacingPendingUnlessBusy(
+        IMAGE_BUSINESS_OWNER_USB_CAST2PIC,
+        usb_cast2pic_run_command,
+        usb_cast2pic_cancel_command,
+        &command,
+        sizeof(command),
+        generation,
+        replace_mask,
+        cast_busy_mask);
     if (submit_ret != ESP_OK) {
+        ServerNetworkStaWifiWorkTime_ImageTransferEnd();
         ESP_LOGE(TAG, "cast2pic received but background submit failed ret=%s",
                  esp_err_to_name(submit_ret));
         cast2pic_background_free(job);
+        return;
     }
+    ImageBusinessWorker_Wake();
+    ESP_LOGI(TAG, "cast2pic background queued generation=%lu",
+             (unsigned long)generation);
 }
 
 esp_err_t UsbConsoleCast2Pic_Handle(const usb_console_http_request_t *request,

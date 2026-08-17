@@ -463,19 +463,6 @@ extern "C" {
 #define USB_CONSOLE_TASK_STACK_SIZE (12 * 1024)
 // FreeRTOS task priority for USB CONSOLE TASK PRIORITY; keep scheduler side effects in mind when changing it.
 #define USB_CONSOLE_TASK_PRIORITY 3
-// Queue length for USB CONSOLE WORKER QUEUE LENGTH; size it for burst traffic without wasting RAM.
-#define USB_CONSOLE_WORKER_QUEUE_LENGTH 4
-// Task stack size for USB CONSOLE WORKER TASK STACK SIZE; tune with runtime stack high-water data.
-#define USB_CONSOLE_WORKER_TASK_STACK_SIZE (8 * 1024)
-// FreeRTOS task priority for USB CONSOLE WORKER TASK PRIORITY; keep scheduler side effects in mind when changing it.
-#define USB_CONSOLE_WORKER_TASK_PRIORITY 4
-// Queue length for CAST SAVE TASK QUEUE LENGTH; size it for burst traffic without wasting RAM.
-#define CAST_SAVE_TASK_QUEUE_LENGTH 2
-// Task stack size for CAST SAVE TASK STACK SIZE; tune with runtime stack high-water data.
-#define CAST_SAVE_TASK_STACK_SIZE (8 * 1024)
-// FreeRTOS task priority for CAST SAVE TASK PRIORITY; keep scheduler side effects in mind when changing it.
-#define CAST_SAVE_TASK_PRIORITY 4
-
 // Use a longer idle USB read wait so the console task does not wake CPU too often without traffic.
 #define USB_CONSOLE_READ_IDLE_TIMEOUT_MS 1000
 
@@ -621,7 +608,6 @@ extern "C" {
 // The button must remain continuously active for 5 seconds. Any high-level sample before this timeout cancels the hold.
 #define TDX_FACTORY_RESET_HOLD_MS 5000
 // Keep disabled by default: clearing images does not require a reboot, and no WiFi/EPD/CH583 settings are erased.
-#define TDX_FACTORY_RESET_RESTART_AFTER_DONE 0
 
 /* -------------------------------------------------------------------------- */
 /* 11. WiFi Work Time / Sleep Runtime State / NVS Keys                         */
@@ -1031,9 +1017,9 @@ extern "C" {
 #define USER_DAILY_IMAGE_QUERY_RESPONSE_SIZE 4096U
 // Bound connect and socket operations for both HTTPS requests.
 #define USER_DAILY_IMAGE_HTTP_TIMEOUT_MS 15000U
-// One permanent worker serializes DAILY, SLIDESHOW, startup delay, and LOCAL_IMAGE.
-#define USER_IMAGE_BUSINESS_WORKER_STACK_SIZE (9U * 1024U)
-// DAILY currently needs 616 bytes; keep a small bounded inline copy for one pending command.
+// One permanent worker serializes scheduled, local, network cast, and USB cast image business.
+#define USER_IMAGE_BUSINESS_WORKER_STACK_SIZE (12U * 1024U)
+// Keep one bounded inline pending command; large cast bodies are transferred by owned heap pointer.
 #define USER_IMAGE_BUSINESS_WORKER_PAYLOAD_SIZE 640U
 // Keep image business work below the EPD display task priority.
 #define USER_IMAGE_BUSINESS_WORKER_PRIORITY 4U

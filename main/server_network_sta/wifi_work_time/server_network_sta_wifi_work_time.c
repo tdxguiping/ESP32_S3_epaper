@@ -45,6 +45,7 @@ static uint32_t s_one_shot_restore_standby_time = USER_WORK_STATE_DEFAULT_STANDB
 static bool s_factory_reset_guard_active = false;
 static uint32_t s_factory_reset_wake_seconds = 0;
 static bool s_image_save_in_progress = false;
+static uint32_t s_image_transfer_pending_count = 0;
 static bool s_daily_image_in_progress = false;
 
 static void format_epoch_local(int64_t epoch, char *buf, size_t buf_size)
@@ -1512,7 +1513,34 @@ void ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(bool in_progress)
 
 bool ServerNetworkStaWifiWorkTime_IsImageSaveInProgress(void)
 {
-    return __atomic_load_n(&s_image_save_in_progress, __ATOMIC_ACQUIRE);
+    return __atomic_load_n(&s_image_save_in_progress, __ATOMIC_ACQUIRE) ||
+           __atomic_load_n(&s_image_transfer_pending_count, __ATOMIC_ACQUIRE) > 0U;
+}
+
+void ServerNetworkStaWifiWorkTime_ImageTransferBegin(void)
+{
+    uint32_t count =
+        __atomic_add_fetch(&s_image_transfer_pending_count, 1U, __ATOMIC_ACQ_REL);
+    ESP_LOGI(TAG, "image transfer pending count=%lu", (unsigned long)count);
+}
+
+void ServerNetworkStaWifiWorkTime_ImageTransferEnd(void)
+{
+    uint32_t current =
+        __atomic_load_n(&s_image_transfer_pending_count, __ATOMIC_ACQUIRE);
+    while (current > 0U) {
+        if (__atomic_compare_exchange_n(&s_image_transfer_pending_count,
+                                        &current,
+                                        current - 1U,
+                                        false,
+                                        __ATOMIC_ACQ_REL,
+                                        __ATOMIC_ACQUIRE)) {
+            ESP_LOGI(TAG, "image transfer pending count=%lu",
+                     (unsigned long)(current - 1U));
+            return;
+        }
+    }
+    ESP_LOGE(TAG, "image transfer pending underflow prevented");
 }
 
 void ServerNetworkStaWifiWorkTime_SetDailyImageInProgress(bool in_progress)
@@ -1576,6 +1604,11 @@ void ServerNetworkStaWifiWorkTime_SetOtaPendingVerify(bool pending)
     ESP_LOGI(TAG, "ota pending verify=%d hold=0x%lx",
              pending ? 1 : 0,
              (unsigned long)__atomic_load_n(&s_ota_hold_flags, __ATOMIC_ACQUIRE));
+}
+
+bool ServerNetworkStaWifiWorkTime_IsOtaBusy(void)
+{
+    return __atomic_load_n(&s_ota_hold_flags, __ATOMIC_ACQUIRE) != 0U;
 }
 
 esp_err_t ServerNetworkStaWifiWorkTime_Init(void)

@@ -16,19 +16,20 @@
 #include "file_serving_example_common.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "image_business_worker.h"
 #include "led_status.h"
 #include "network_ota_upload.h"
 #include "network_ota_boot.h"
 #include "server_network_sta_cast2pic.h"
 #include "server_network_sta_cast.h"
 #include "server_network_sta_daily_image.h"
-#include "server_network_sta_dataup_async.h"
 #include "server_network_sta_delete.h"
 #include "server_network_sta_saved_images.h"
 #include "server_network_sta_slideshow.h"
 #include "server_network_sta_slideshow_control.h"
 #include "server_network_sta_snapshot.h"
 #include "server_network_sta_upload.h"
+#include "server_network_sta_upload_gate.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
@@ -513,26 +514,31 @@ static esp_err_t receive_data_redirect_handler_impl(httpd_req_t *req)
                                   "{\"func\":\"dataup_result\",\"result\":1007,\"message\":\"restart_pending\",\"error\":\"restart_pending\"}");
     }
 
-    server_network_sta_dataup_async_state_t async_state = ServerNetworkStaDataupAsync_GetState();
     bool epd_busy = ServerNetworkStaEpdDisplay_IsBusy();
+    uint32_t cast_owner_mask =
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_CAST) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_CAST2PIC);
+    bool cast_busy = ImageBusinessWorker_IsAnyOwnerBusy(cast_owner_mask);
+    bool upload_reserved = ServerNetworkStaUploadGate_IsReserved();
     if (!is_network_ota && is_multipart &&
-        (epd_busy || async_state != SERVER_NETWORK_STA_DATAUP_ASYNC_IDLE)) {
-        const char *message = epd_busy ? "epd_busy" : ServerNetworkStaDataupAsync_StateName(async_state);
-        int result = async_state == SERVER_NETWORK_STA_DATAUP_ASYNC_TIMEOUT ?
-                     TDX_JSON_RESULT_TIMEOUT : TDX_JSON_RESULT_BUSY;
+        (epd_busy || cast_busy || upload_reserved)) {
+        const char *message = epd_busy ? "epd_busy" :
+                               cast_busy ? "cast_busy" :
+                               "upload_busy";
         char busy_json[112];
         snprintf(busy_json,
                  sizeof(busy_json),
                  "{\"func\":\"dataup_result\",\"result\":%d,\"message\":\"%s\",\"error\":\"%s\"}",
-                 result,
+                 TDX_JSON_RESULT_BUSY,
                  message,
                  message);
-        ESP_LOGW(TAG, "HTTP data multipart rejected uri=%s len=%u reason=%s epd=%d async=%s",
+        ESP_LOGW(TAG, "HTTP data multipart rejected uri=%s len=%u reason=%s epd=%d cast=%d upload=%d",
                  uri != NULL ? uri : "<null>",
                  (unsigned int)remaining,
                  message,
                  epd_busy ? 1 : 0,
-                 ServerNetworkStaDataupAsync_StateName(async_state));
+                 cast_busy ? 1 : 0,
+                 upload_reserved ? 1 : 0);
         httpd_resp_set_hdr(req, "Connection", "close");
         return send_json_response(req, busy_json);
     }
@@ -733,11 +739,6 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
 esp_err_t server_network_sta_net_data_register_handlers(httpd_handle_t server, const char *base_path)
 {
     strlcpy(s_base_path, base_path, sizeof(s_base_path));
-    esp_err_t async_ret = ServerNetworkStaDataupAsync_Init();
-    if (async_ret != ESP_OK) {
-        ESP_LOGE(TAG, "net handlers: dataup async init failed ret=%s", esp_err_to_name(async_ret));
-        return async_ret;
-    }
     if (s_upload_mutex == NULL) {
         s_upload_mutex = xSemaphoreCreateMutex();
         if (s_upload_mutex == NULL) {

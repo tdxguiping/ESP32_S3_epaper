@@ -17,6 +17,7 @@
 #include "app_persistent_state.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "image_business_worker.h"
 #include "led_status.h"
 #include "local_image_browsing.h"
 #include "nvs.h"
@@ -31,8 +32,10 @@ static const char *TAG = "factory_reset";
 
 #define FACTORY_RESET_TASK_STACK_SIZE (5 * 1024)
 #define FACTORY_RESET_TASK_PRIORITY 3
-#define FACTORY_RESET_CH583_WAKE_SECONDS 10U
 #define FACTORY_RESET_WELCOME_DISPLAY_SIZE 960000U
+#define FACTORY_RESET_WELCOME_PENDING_NVS_KEY "fr_welcome"
+#define FACTORY_RESET_WELCOME_PENDING_VALUE 1U
+#define WHITE 0x11
 
 extern const uint8_t factory_reset_welcome_start[] asm("_binary_welcome_bin_start");
 extern const uint8_t factory_reset_welcome_end[] asm("_binary_welcome_bin_end");
@@ -50,7 +53,8 @@ typedef struct {
     int file_delete_failed;
     esp_err_t file_ret;
     esp_err_t nvs_ret;
-    esp_err_t welcome_display_ret;
+    esp_err_t welcome_pending_ret;
+    esp_err_t white_display_ret;
 } factory_reset_result_t;
 
 typedef enum {
@@ -67,11 +71,22 @@ typedef struct {
     bool guard_armed;
 } factory_reset_request_t;
 
+typedef struct {
+    factory_reset_trigger_t trigger;
+    uint16_t protocol_seq;
+} factory_reset_worker_request_t;
+
+_Static_assert(sizeof(factory_reset_worker_request_t) <=
+                   USER_IMAGE_BUSINESS_WORKER_PAYLOAD_SIZE,
+               "factory reset request exceeds image worker payload");
+
 static TaskHandle_t s_factory_reset_task = NULL;
 static factory_reset_context_t s_factory_reset_ctx;
 static portMUX_TYPE s_factory_reset_request_mux = portMUX_INITIALIZER_UNLOCKED;
 static factory_reset_request_t s_factory_reset_request;
 static bool s_factory_reset_ready;
+static uint32_t s_factory_reset_generation;
+static bool s_factory_reset_submit_failure_logged;
 
 static const char *factory_reset_trigger_to_string(factory_reset_trigger_t trigger)
 {
@@ -113,6 +128,15 @@ static bool factory_reset_remote_request_is_pending(void)
     return pending;
 }
 
+bool FactoryReset_IsBusy(void)
+{
+    factory_reset_request_state_t state;
+    taskENTER_CRITICAL(&s_factory_reset_request_mux);
+    state = s_factory_reset_request.state;
+    taskEXIT_CRITICAL(&s_factory_reset_request_mux);
+    return state != FACTORY_RESET_REQUEST_IDLE;
+}
+
 static bool factory_reset_claim_remote_request(factory_reset_trigger_t *trigger,
                                                uint16_t *protocol_seq)
 {
@@ -142,6 +166,7 @@ static bool factory_reset_claim_gpio_request(void)
         s_factory_reset_request.state = FACTORY_RESET_REQUEST_RUNNING;
         s_factory_reset_request.trigger = FACTORY_RESET_TRIGGER_GPIO28;
         s_factory_reset_request.protocol_seq = 0;
+        s_factory_reset_request.guard_armed = true;
         claimed = true;
     }
     taskEXIT_CRITICAL(&s_factory_reset_request_mux);
@@ -343,6 +368,52 @@ static esp_err_t factory_reset_clear_wifi_credentials(void)
     return net80211_ret;
 }
 
+static esp_err_t factory_reset_save_welcome_pending(void)
+{
+    esp_err_t ret = app_nvs_write_u8(FACTORY_RESET_WELCOME_PENDING_NVS_KEY,
+                                     FACTORY_RESET_WELCOME_PENDING_VALUE);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    uint8_t value = 0;
+    ret = app_nvs_read_u8(FACTORY_RESET_WELCOME_PENDING_NVS_KEY, &value, 0);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    if (value != FACTORY_RESET_WELCOME_PENDING_VALUE) {
+        ESP_LOGE(TAG,
+                 "factory reset welcome pending verify failed expected=%u actual=%u",
+                 (unsigned int)FACTORY_RESET_WELCOME_PENDING_VALUE,
+                 (unsigned int)value);
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "factory reset welcome pending saved");
+    return ESP_OK;
+}
+
+static esp_err_t factory_reset_display_welcome(
+    epd_display_reservation_t *reservation)
+{
+    const epd_type_config_t *epd_config = EpdType_GetCurrentConfig();
+    size_t welcome_size =
+        (size_t)(factory_reset_welcome_end - factory_reset_welcome_start);
+    if (epd_config == NULL ||
+        epd_config->display_size != FACTORY_RESET_WELCOME_DISPLAY_SIZE) {
+        ESP_LOGE(TAG,
+                 "factory reset welcome display size unsupported epd_type=%u actual=%u expected=%u",
+                 epd_config != NULL ? (unsigned int)epd_config->type : 0U,
+                 epd_config != NULL ? (unsigned int)epd_config->display_size : 0U,
+                 (unsigned int)FACTORY_RESET_WELCOME_DISPLAY_SIZE);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return ServerNetworkStaEpdDisplay_QueueReservedToScreenAndWait(
+        reservation,
+        factory_reset_welcome_start,
+        welcome_size,
+        1);
+}
+
 static void factory_reset_clear_persistent_state(factory_reset_result_t *result)
 {
     esp_err_t ret = ESP_OK;
@@ -413,7 +484,8 @@ static esp_err_t factory_reset_execute(const char *base_path,
     memset(result, 0, sizeof(*result));
     result->file_ret = ESP_OK;
     result->nvs_ret = ESP_OK;
-    result->welcome_display_ret = ESP_OK;
+    result->welcome_pending_ret = ESP_ERR_NOT_FINISHED;
+    result->white_display_ret = ESP_ERR_NOT_FINISHED;
 
     snprintf(bin_dir, sizeof(bin_dir), "%s/bin_img", base_path);
     snprintf(jpg_dir, sizeof(jpg_dir), "%s/jpg_img", base_path);
@@ -473,36 +545,74 @@ static esp_err_t factory_reset_execute(const char *base_path,
     esp_err_t cleanup_ret =
         result->file_ret != ESP_OK ? result->file_ret : result->nvs_ret;
     if (cleanup_ret == ESP_OK) {
-        const epd_type_config_t *epd_config = EpdType_GetCurrentConfig();
-        size_t welcome_size =
-            (size_t)(factory_reset_welcome_end - factory_reset_welcome_start);
-        if (epd_config == NULL ||
-            epd_config->display_size != FACTORY_RESET_WELCOME_DISPLAY_SIZE) {
-            result->welcome_display_ret = ESP_ERR_INVALID_SIZE;
-            ESP_LOGE(TAG,
-                     "factory reset welcome display size unsupported epd_type=%u expected=%u",
-                     epd_config != NULL ? (unsigned int)epd_config->type : 0U,
-                     (unsigned int)FACTORY_RESET_WELCOME_DISPLAY_SIZE);
-        } else {
-            result->welcome_display_ret =
-                ServerNetworkStaEpdDisplay_QueueReservedToScreenAndWait(
+        result->welcome_pending_ret = factory_reset_save_welcome_pending();
+        if (result->welcome_pending_ret == ESP_OK) {
+            result->white_display_ret =
+                ServerNetworkStaEpdDisplay_QueueReservedSolidColorAndWait(
                     &reset_reservation,
-                    factory_reset_welcome_start,
-                    welcome_size,
+                    WHITE,
                     1);
-            if (result->welcome_display_ret == ESP_OK) {
-                ESP_LOGI(TAG,
-                         "factory reset welcome display completed compressed_size=%u",
-                         (unsigned int)welcome_size);
+            if (result->white_display_ret == ESP_OK) {
+                ESP_LOGI(TAG, "factory reset white display completed color=0x%02x",
+                         WHITE);
             } else {
-                ESP_LOGE(TAG,
-                         "factory reset welcome display failed ret=%s",
-                         esp_err_to_name(result->welcome_display_ret));
+                ESP_LOGE(TAG, "factory reset white display failed ret=%s",
+                         esp_err_to_name(result->white_display_ret));
             }
         }
     }
     ServerNetworkStaEpdDisplay_ReleaseReservation(&reset_reservation);
-    return cleanup_ret != ESP_OK ? cleanup_ret : result->welcome_display_ret;
+    return cleanup_ret != ESP_OK ? cleanup_ret :
+           result->welcome_pending_ret != ESP_OK ? result->welcome_pending_ret :
+                                                   result->white_display_ret;
+}
+
+esp_err_t FactoryReset_HandleStartupWelcome(void)
+{
+    uint8_t pending = 0;
+    esp_err_t ret = app_nvs_read_u8(FACTORY_RESET_WELCOME_PENDING_NVS_KEY,
+                                    &pending,
+                                    0);
+    if (ret != ESP_OK || pending == 0) {
+        return ret;
+    }
+    if (pending != FACTORY_RESET_WELCOME_PENDING_VALUE) {
+        ESP_LOGE(TAG, "factory reset startup welcome flag invalid value=%u",
+                 (unsigned int)pending);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGW(TAG, "factory reset startup welcome begin");
+    ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(true);
+    UserLedStatus_FactoryResetBegin();
+
+    epd_display_reservation_t reservation = {0};
+    ret = ServerNetworkStaEpdDisplay_TryReserveIdle(&reservation);
+    if (ret == ESP_OK) {
+        ret = factory_reset_display_welcome(&reservation);
+    }
+    ServerNetworkStaEpdDisplay_ReleaseReservation(&reservation);
+
+    if (ret == ESP_OK) {
+        ret = app_nvs_erase_key(FACTORY_RESET_WELCOME_PENDING_NVS_KEY);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG,
+                     "factory reset startup welcome completed, pending flag cleared");
+        } else {
+            ESP_LOGE(TAG,
+                     "factory reset startup welcome flag clear failed ret=%s",
+                     esp_err_to_name(ret));
+        }
+    } else {
+        ESP_LOGE(TAG, "factory reset startup welcome failed ret=%s",
+                 esp_err_to_name(ret));
+    }
+
+    (void)ServerNetworkStaWifiWorkTime_StartWifiConnectGuardIfInactive(
+        WIFI_CONNECT_POWER_GUARD_MAX_MS);
+    ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(false);
+    UserLedStatus_FactoryResetEnd();
+    return ret;
 }
 
 static bool factory_reset_button_is_active(void)
@@ -510,9 +620,9 @@ static bool factory_reset_button_is_active(void)
     return gpio_get_level(TDX_FACTORY_RESET_GPIO) == TDX_FACTORY_RESET_ACTIVE_LEVEL;
 }
 
-static void factory_reset_run(const factory_reset_context_t *ctx,
-                              factory_reset_trigger_t trigger,
-                              uint16_t protocol_seq)
+static esp_err_t factory_reset_run(const factory_reset_context_t *ctx,
+                                   factory_reset_trigger_t trigger,
+                                   uint16_t protocol_seq)
 {
     ESP_LOGW(TAG,
              "factory reset start source=%s seq=%u",
@@ -527,7 +637,7 @@ static void factory_reset_run(const factory_reset_context_t *ctx,
     };
     esp_err_t ret = factory_reset_execute(ctx->base_path, &result);
     ESP_LOGW(TAG,
-             "factory reset done source=%s seq=%u ret=%s upload_bin_deleted=%d upload_jpg_deleted=%d cast_bin_deleted=%d cast_jpg_deleted=%d cfg_deleted=%d file_delete_failed=%d file_ret=%s nvs_ret=%s welcome_display_ret=%s",
+             "factory reset done source=%s seq=%u ret=%s upload_bin_deleted=%d upload_jpg_deleted=%d cast_bin_deleted=%d cast_jpg_deleted=%d cfg_deleted=%d file_delete_failed=%d file_ret=%s nvs_ret=%s welcome_pending_ret=%s white_display_ret=%s",
              factory_reset_trigger_to_string(trigger),
              (unsigned int)protocol_seq,
              esp_err_to_name(ret),
@@ -539,7 +649,8 @@ static void factory_reset_run(const factory_reset_context_t *ctx,
              result.file_delete_failed,
              esp_err_to_name(result.file_ret),
              esp_err_to_name(result.nvs_ret),
-             esp_err_to_name(result.welcome_display_ret));
+             esp_err_to_name(result.welcome_pending_ret),
+             esp_err_to_name(result.white_display_ret));
 
     if (ret == ESP_OK) {
         int provision_ret = ch583_wifi_uart_send_wifi_provision_status(0);
@@ -548,8 +659,6 @@ static void factory_reset_run(const factory_reset_context_t *ctx,
                      "factory reset WIFI_PROVISION unconfigured send failed ret=%d",
                      provision_ret);
         }
-        ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle(
-            FACTORY_RESET_CH583_WAKE_SECONDS);
     }
     if (ret == ESP_OK) {
         factory_reset_finish_request(true);
@@ -561,18 +670,92 @@ static void factory_reset_run(const factory_reset_context_t *ctx,
         factory_reset_finish_request(false);
     }
     UserLedStatus_FactoryResetEnd();
-#if TDX_FACTORY_RESET_RESTART_AFTER_DONE
-    if (ret == ESP_OK) {
-        UserLedStatus_SetRestartPending(true);
-        vTaskDelay(pdMS_TO_TICKS(100));
-        esp_restart();
+    return ret;
+}
+
+static esp_err_t factory_reset_worker_run(const void *payload,
+                                          size_t payload_size)
+{
+    if (payload == NULL ||
+        payload_size != sizeof(factory_reset_worker_request_t)) {
+        ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(false);
+        factory_reset_finish_request(false);
+        return ESP_ERR_INVALID_ARG;
     }
-#endif
+
+    factory_reset_worker_request_t request = {0};
+    memcpy(&request, payload, sizeof(request));
+    return factory_reset_run(&s_factory_reset_ctx,
+                             request.trigger,
+                             request.protocol_seq);
+}
+
+static esp_err_t factory_reset_submit_claimed(factory_reset_trigger_t trigger,
+                                              uint16_t protocol_seq)
+{
+    factory_reset_worker_request_t request = {
+        .trigger = trigger,
+        .protocol_seq = protocol_seq,
+    };
+    uint32_t generation =
+        __atomic_add_fetch(&s_factory_reset_generation, 1U, __ATOMIC_ACQ_REL);
+    uint32_t replace_mask =
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_DAILY) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_SLIDESHOW) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_LOCAL_IMAGE) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_CAST) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_CAST2PIC) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_USB_CAST) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_USB_CAST2PIC);
+    esp_err_t ret = ImageBusinessWorker_SubmitReplacingPending(
+        IMAGE_BUSINESS_OWNER_FACTORY_RESET,
+        factory_reset_worker_run,
+        NULL,
+        &request,
+        sizeof(request),
+        generation,
+        replace_mask);
+    if (ret != ESP_OK) {
+        bool log_failure = false;
+        taskENTER_CRITICAL(&s_factory_reset_request_mux);
+        if (s_factory_reset_request.state == FACTORY_RESET_REQUEST_RUNNING) {
+            s_factory_reset_request.state = FACTORY_RESET_REQUEST_PENDING;
+            s_factory_reset_request.guard_armed = true;
+        }
+        if (!s_factory_reset_submit_failure_logged) {
+            s_factory_reset_submit_failure_logged = true;
+            log_failure = true;
+        }
+        taskEXIT_CRITICAL(&s_factory_reset_request_mux);
+        if (log_failure) {
+            ESP_LOGW(TAG,
+                     "factory reset worker submit deferred source=%s seq=%u ret=%s",
+                     factory_reset_trigger_to_string(trigger),
+                     (unsigned int)protocol_seq,
+                     esp_err_to_name(ret));
+        }
+        return ret;
+    }
+
+    taskENTER_CRITICAL(&s_factory_reset_request_mux);
+    s_factory_reset_submit_failure_logged = false;
+    taskEXIT_CRITICAL(&s_factory_reset_request_mux);
+
+    ServerNetworkStaDailyImage_Stop();
+    ServerNetworkStaSlideshow_Stop();
+    LocalImageBrowsing_Stop();
+    ImageBusinessWorker_Wake();
+    ESP_LOGI(TAG,
+             "factory reset worker submitted source=%s seq=%u generation=%lu",
+             factory_reset_trigger_to_string(trigger),
+             (unsigned int)protocol_seq,
+             (unsigned long)generation);
+    return ESP_OK;
 }
 
 static void factory_reset_task(void *arg)
 {
-    const factory_reset_context_t *ctx = (const factory_reset_context_t *)arg;
+    (void)arg;
     uint32_t held_ms = 0;
     bool waiting_release = false;
 
@@ -587,7 +770,7 @@ static void factory_reset_task(void *arg)
             factory_reset_trigger_t trigger;
             uint16_t protocol_seq;
             if (factory_reset_claim_remote_request(&trigger, &protocol_seq)) {
-                factory_reset_run(ctx, trigger, protocol_seq);
+                (void)factory_reset_submit_claimed(trigger, protocol_seq);
                 continue;
             }
         }
@@ -626,7 +809,8 @@ static void factory_reset_task(void *arg)
                  (unsigned long)held_ms);
 
         if (factory_reset_claim_gpio_request()) {
-            factory_reset_run(ctx, FACTORY_RESET_TRIGGER_GPIO28, 0);
+            (void)factory_reset_submit_claimed(
+                FACTORY_RESET_TRIGGER_GPIO28, 0);
         }
     }
 }

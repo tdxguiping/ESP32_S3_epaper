@@ -346,7 +346,6 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(ServerNetworkStaTime_Init());
     ESP_ERROR_CHECK(TdxSharedSpi_Init());
-    ESP_ERROR_CHECK(TdxCastCore_Init());
     ESP_ERROR_CHECK(ServerNetworkStaWifiWorkTime_Init());
     if (ota_boot_ret != ESP_OK) {
         /*
@@ -409,7 +408,6 @@ void app_main(void)
     /* 中文：启动时初始化移植过来的 EPD 驱动，保证网络 cast/upload 请求显示前屏幕已经就绪。 */
     ESP_ERROR_CHECK(ServerNetworkStaEpdDisplay_Init());
 
-
     /* Initialize file storage */
     esp_err_t storage_ret = example_mount_storage(base_path);
     if (storage_ret != ESP_OK) {
@@ -428,6 +426,10 @@ void app_main(void)
         } else {
             ESP_ERROR_CHECK(FactoryReset_Init(base_path));
         }
+
+        /* Display the pending Factory Reset welcome only after storage has
+         * mounted, so EPD traffic cannot disturb the initial SD handshake. */
+        (void)FactoryReset_HandleStartupWelcome();
     }
     esp_err_t power_test_ret = EpdSdPowerTest_Init();
     if (power_test_ret != ESP_OK) {

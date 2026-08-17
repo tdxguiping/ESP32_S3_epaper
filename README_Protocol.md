@@ -359,7 +359,7 @@ HTTP GET /ping
       ├─ ServerNetworkStaPing_ProcessGet(req)
       │  ├─ ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()
       │  ├─ get_ble_mac_no_colon()
-      │  ├─ ServerNetworkStaEpdDisplay_IsBusy()
+      │  ├─ ServerNetworkStaUploadGate_IsBusy()
       │  ├─ httpd_resp_set_type(application/json)
       │  ├─ httpd_resp_set_hdr(Connection: close)
       │  └─ httpd_resp_sendstr()
@@ -381,8 +381,10 @@ HTTP GET /ping
 字段规则：
 
 ```text
-EPD=BUSY：显示任务 active、pending job 计数大于 0、EPD 队列仍有消息，任一条件成立
-EPD=IDLE：以上三项均不存在
+EPD=BUSY：统一UPLOAD资源门判定当前不能安全开始network upload
+EPD=IDLE：当前允许尝试network upload；不是最终预约承诺
+网络和USB ping共用ServerNetworkStaUploadGate_IsBusy()，不得独立定义规则
+DAILY/SLIDESHOW等待下一时间点且EPD/SD/SPI空闲时可以IDLE；一次性owner、pending、EPD、Shared SPI、SD电源切换、Factory Reset、OTA或UPLOAD预约为BUSY
 Ble_MAC 已取得：result=0，message=ok，Ble_MAC 为 12 位大写无冒号字符串
 Ble_MAC 未取得：result=1405，message=Ble_MAC not ready，Ble_MAC 为空字符串
 当前固件正式输出字段名为 Ble_MAC，不输出小写 ble_mac
@@ -390,7 +392,9 @@ Ble_MAC 未取得：result=1405，message=Ble_MAC not ready，Ble_MAC 为空字�
 
 网络响应设置 `Content-Type: application/json` 和 `Connection: close`；`result=1405` 仍是正常返回的 JSON 业务结果。
 
-USB `/ping` 通过 `UsbConsolePing_Handle()` 提交异步请求，再由 `UsbConsolePing_Process()` 构造同字段 JSON；USB 路径调用 `ServerNetworkStaWifiWorkTime_OnNetworkData()`，网络 HTTP 路径调用 `ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()`，两者计时行为不同但响应字段一致。
+USB `/ping` 通过 `UsbConsolePing_Handle()` 调用 `UsbConsolePing_Process()` 构造同字段JSON；删除独立USB worker后，普通USB处理在USB接收任务当前上下文执行。USB路径调用 `ServerNetworkStaWifiWorkTime_OnNetworkData()`，网络HTTP路径调用 `ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()`，两者计时行为不同但响应字段一致。
+
+network upload只接受 `show=false && save=true`。`show=true` 或 `save=false` 由ESP32返回错误且不执行；即使客户端先前ping得到IDLE，upload入口最终零等待预约失败时仍返回1007且不保存。
 
 GET `/time` 在同一个 `download_get_handler()` 中紧接 `/ping` 检查，由 `ServerNetworkStaTime_ProcessGet()` 返回 `time_result`。
 
@@ -561,7 +565,7 @@ Connection: keep-alive
 
 ### 9.1 cast：投屏功能模块 <span id="sec-09-1"></span>
 
-USB接受`POST /cast`或`POST /dataUP`的multipart请求，通过独立worker复制body后复用第7.1节的`cast_core`、EPD显示、保存和清理规则。
+USB接受`POST /cast`或`POST /dataUP`的multipart请求，复制body后提交永久统一图片任务的低优先级 `USB_CAST` owner，并复用第7.1节的`cast_core`、EPD显示、同步保存和清理规则；不再创建独立USB worker或cast保存任务。
 
 USB差异：
 
@@ -582,7 +586,7 @@ USB差异：
 
 USB与网络使用同一协议和业务核心：只接受`screen=a/b`及一组无后缀的`fileName/bin_size/image_size/bin/image`；`ab`或缺少`screen`返回1617。
 
-校验成功后立即返回`cast2pic_result=0`，只表示数据接收成功；后台显示或保存失败只写日志，不改变已返回结果。入口为`UsbConsoleRouter_Handle()` → `UsbConsoleCast2Pic_Handle()`；正式返回码见`README_Result_Code.md`，完整映射和保存规则见[7.2 cast2pic](README_Fun.md#sec-07-2)。
+校验成功后立即返回`cast2pic_result=0`，只表示数据接收成功；后台显示或保存失败只写日志，不改变已返回结果。后台业务提交给永久统一图片任务的低优先级 `USB_CAST2PIC` owner；network CAST/CAST2PIC可以替换尚未开始的USB投屏，已经开始的EPD不强制中断。入口为`UsbConsoleRouter_Handle()` → `UsbConsoleCast2Pic_Handle()`；正式返回码见`README_Result_Code.md`，完整映射和保存规则见[7.2 cast2pic](README_Fun.md#sec-07-2)。
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-09)
 
@@ -590,7 +594,7 @@ USB与网络使用同一协议和业务核心：只接受`screen=a/b`及一组�
 
 ### 9.3 common：公共工具、通用函数、全局定义 <span id="sec-09-3"></span>
 
-`usb_console_common.c` 提供 USB 各业务共同使用的 JSON 字段读取、`func` 比较、安全文件名检查、multipart part 解析、图片列表生成和 JSON response 格式化。`usb_console_common_async.c` 复制请求 body 后提交统一 worker；后台 handler 返回失败时发送 `usb_async_result/1106`。
+`usb_console_common.c` 提供 USB 各业务共同使用的 JSON 字段读取、`func` 比较、安全文件名检查、multipart part 解析、图片列表生成和 JSON response 格式化。为节省8KB永久任务栈，`usb_console_common_async.c` 复制请求body后在USB接收任务当前上下文调用普通handler；cast/cast2pic例外，分别提交永久图片任务的 `USB_CAST/USB_CAST2PIC` owner。handler返回失败时仍发送 `usb_async_result/1106`，协议字段不变。
 
 这些文件没有独立 URI。业务入口仍由 `usb_console_router.c` 路由到具体模块。
 
@@ -1358,7 +1362,7 @@ CH583校验后回复ACK并关闭ESP32/WiFi电源。发送前必须通过HTTP/CH5
 轮播`wake_interval`小于`TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS`（当前10秒）时跳过本次关机；该阈值不改变轮播最小间隔60秒。
 ```
 
-Factory Reset 成功后的专用断电重启流程：
+Factory Reset 白屏保持及客户下次开机流程：
 
 ```text
 factory_reset_task()
@@ -1370,22 +1374,22 @@ factory_reset_task()
 ├─ epd_mode 强制写入并读回校验 USER_EPD_DISPLAY_MODE_DEFAULT
 ├─ 删除 wifi namespace 全部键
 ├─ 删除 nvs.net80211:sta.ssid / sta.pswd
-├─ 显示固件内置 zlib 欢迎图，并等待 EPD 实际完成
+├─ 写入并读回 PhotoPainter:fr_welcome=1
+├─ 使用 WHITE=0x11 显示白屏，并等待 EPD 实际完成
 ├─ WIFI_PROVISION 40（未配网 + 默认 NORMAL）
-├─ ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle(10)
 ├─ 无条件清除 Factory Reset guard
-└─ work_state_task()
-   ├─ 不等待普通 wifi_work_time，不使用普通或 DAILY one-shot
-   ├─ 保留 OTA、EPD、图片保存、daily 和 SPI 安全复检
-   ├─ WAKE_TIMER ON,10
-   ├─ LED 关机准备
-   ├─ WIFI_PROVISION 4F（未配网 + NORMAL 关机待机状态）
-   ├─ POWER_OFF
-   ├─ CH583 关闭 ESP32/WiFi，并从 POWER_OFF 后开始 10 秒计时
-   └─ 10 秒到期后 CH583 重新给 ESP32/WiFi 上电
+└─ ESP32继续运行并保持白屏；不发送专用WAKE_TIMER或POWER_OFF
+
+客人以后正常开机进入下一次 app_main() 冷启动
+├─ 初始化 EPD，并对共享 EPD/SD 电源执行一次启动复位
+├─ 完成 SD/SPIFFS 存储挂载和 Factory Reset 初始化
+├─ 读取 PhotoPainter:fr_welcome
+├─ 值为1时显示固件内置 zlib 欢迎图，并等待 EPD 实际完成
+├─ 显示成功后删除 fr_welcome，Factory Reset完整流程结束
+└─ 继续网络、DAILY、SLIDESHOW和本地浏览启动
 ```
 
-Factory Reset 没有改变 `WAKE_TIMER`、`WIFI_PROVISION` 或 `POWER_OFF` 的帧格式。文件和NVS清理成功后，ESP32先显示固件内置zlib欢迎图，并等待EPD实际完成；正常刷新约40～50秒，在完成前不得发送未配网 `WIFI_PROVISION`、`WAKE_TIMER ON,10` 或 `POWER_OFF`。欢迎图尺寸、解压、入队或显示失败时不发布本次专用关机请求。10秒是CH583在ESP32完全断电期间执行的唤醒倒计时，不是关机前等待时间；请求只保存在RAM，不修改用户WiFi工作时间。GPIO28在长按确认后设置guard；PB1远程请求若早于Factory Reset初始化则先保存PENDING，任务初始化成功后补设guard，若任务已就绪则请求接受后立即设置guard并等待EPD空闲。`work_state_task()`继续在普通入口、LED后和SPI锁内复检。显示成功时先发布专用请求再清guard，任一失败时不发布请求并清guard，所有结果都必须清guard。10秒后CH583重新供电并上报 `DEVICE_INFO.wake_reason=TIMER`，不得继续上报KEY_PB1。
+Factory Reset 没有改变 `WIFI_PROVISION`、`WAKE_TIMER` 或 `POWER_OFF` 的帧格式，但恢复出厂流程不再请求CH583断电重启。文件和NVS清理成功后，ESP32先持久化欢迎图待显示标志，再用一份当前屏幕大小的PSRAM缓冲区显示白屏；白屏完成后发送未配网 `WIFI_PROVISION 40`、清除Factory Reset guard并继续运行，不发送专用 `WAKE_TIMER ON,10` 或 `POWER_OFF`。标志保存或白屏失败时仍清除guard，已经保存的标志不回滚。客人以后正常开机时，ESP32在首次存储挂载前先完成共享EPD/SD电源复位，随后完成存储挂载和Factory Reset初始化，并在网络业务启动前显示欢迎图。只有显示成功才删除标志，失败或存储未就绪则保留到下次冷启动。普通wifi_work_time、轮播、DAILY和其他既有关机协议保持原逻辑。
 
 
 存 / 取信息（含条件限制）：
@@ -1393,7 +1397,7 @@ Factory Reset 没有改变 `WAKE_TIMER`、`WIFI_PROVISION` 或 `POWER_OFF` 的�
 ```text
 存：
 - POWER_OFF 不写持久化数据。
-- Factory Reset 的 `WAKE_TIMER ON,10` 由 CH583 保存，并在收到后续 POWER_OFF 时开始断电唤醒计时。
+- Factory Reset 只在ESP32 NVS保存 `fr_welcome`，不向CH583保存专用唤醒定时器。
 
 取：
 - 读取 WiFi 工作时间模块的 RAM 计时状态；超时后先配置 WAKE_TIMER，符合关电条件时发送 POWER_OFF。

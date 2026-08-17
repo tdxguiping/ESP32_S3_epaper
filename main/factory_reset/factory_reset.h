@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -11,5 +12,7 @@ typedef enum {
 } factory_reset_trigger_t;
 
 esp_err_t FactoryReset_Init(const char *base_path);
+esp_err_t FactoryReset_HandleStartupWelcome(void);
+bool FactoryReset_IsBusy(void);
 esp_err_t FactoryReset_Request(factory_reset_trigger_t trigger,
                                uint16_t protocol_seq);

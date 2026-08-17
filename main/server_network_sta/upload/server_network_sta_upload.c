@@ -2,29 +2,15 @@
 
 #include <stdbool.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "cast_core.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_timer.h"
-#include "server_network_sta_dataup_async.h"
+#include "server_network_sta_upload_gate.h"
 #include "tdx_cfg.h"
 
 static const char *TAG = "server_sta_upload";
-
-typedef struct {
-    char *body;
-    size_t body_len;
-    char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
-    tdx_cast_core_request_t upload;
-} upload_async_job_t;
-
-static uint32_t elapsed_ms_since(int64_t start_us)
-{
-    return (uint32_t)((esp_timer_get_time() - start_us) / 1000);
-}
 
 static void log_heap_watermark(const char *point)
 {
@@ -35,79 +21,6 @@ static void log_heap_watermark(const char *point)
              (unsigned int)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-}
-
-static void upload_async_process(void *arg)
-{
-    upload_async_job_t *job = (upload_async_job_t *)arg;
-    int64_t start_us = esp_timer_get_time();
-    tdx_cast_core_result_t result = {0};
-
-    if (job == NULL) {
-        return;
-    }
-
-    ESP_LOGI(TAG, "upload async process start file=%s show=%d save=%d",
-             job->upload.file_name,
-             job->upload.show ? 1 : 0,
-             job->upload.save ? 1 : 0);
-    tdx_image_transfer_item_t item = {
-        .save = job->upload.save,
-        .show = job->upload.show,
-        .record_last_cast = false,
-        .epd_target = 1,
-        .bin_part = job->upload.bin_part,
-        .image_part = job->upload.image_part,
-    };
-    strlcpy(item.save_name, job->upload.file_name, sizeof(item.save_name));
-    (void)TdxImageTransfer_ProcessItems(&item, 1, job->base_path, "network upload async", &result);
-    ESP_LOGI(TAG, "upload async process done file=%s result=%d error=%s elapsed_ms=%lu",
-             job->upload.file_name,
-             result.result,
-             result.error[0] ? result.error : "",
-             (unsigned long)elapsed_ms_since(start_us));
-}
-
-static void upload_async_cleanup(void *arg)
-{
-    upload_async_job_t *job = (upload_async_job_t *)arg;
-    if (job == NULL) {
-        return;
-    }
-    heap_caps_free(job->body);
-    free(job);
-}
-
-static esp_err_t start_upload_async(char *body,
-                                    size_t body_len,
-                                    const char *base_path,
-                                    const tdx_cast_core_request_t *upload)
-{
-    if (body == NULL || base_path == NULL || upload == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    upload_async_job_t *job = (upload_async_job_t *)calloc(1, sizeof(*job));
-    if (job == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-    job->body = body;
-    job->body_len = body_len;
-    job->upload = *upload;
-    snprintf(job->base_path, sizeof(job->base_path), "%s", base_path);
-
-    esp_err_t submit_ret = ServerNetworkStaDataupAsync_Submit("upload",
-                                                              upload_async_process,
-                                                              upload_async_cleanup,
-                                                              job);
-    if (submit_ret != ESP_OK) {
-        free(job);
-        return submit_ret;
-    }
-
-    ESP_LOGI(TAG, "upload async accepted file=%s body=%u",
-             upload->file_name,
-             (unsigned int)body_len);
-    return ESP_OK;
 }
 
 typedef struct {
@@ -152,12 +65,9 @@ static esp_err_t send_upload_result(httpd_req_t *req, int core_result, bool ok, 
             result = TDX_JSON_RESULT_UPLOAD_SIZE_MISMATCH;
         } else if (strcmp(error_text, "show_failed") == 0 || strcmp(error_text, "display_queue_failed") == 0) {
             result = TDX_JSON_RESULT_DISPLAY_QUEUE_FAILED;
-        } else if (strcmp(error_text, "async_busy") == 0 || strcmp(error_text, "epd_busy") == 0) {
+        } else if (strcmp(error_text, "epd_busy") == 0 ||
+                   strcmp(error_text, "resource_busy") == 0) {
             result = TDX_JSON_RESULT_BUSY;
-        } else if (strcmp(error_text, "async_timeout") == 0) {
-            result = TDX_JSON_RESULT_TIMEOUT;
-        } else if (strcmp(error_text, "async_start_failed") == 0) {
-            result = TDX_JSON_RESULT_NO_MEMORY;
         } else if (strcmp(error_text, "sd_not_ready") == 0) {
             result = TDX_JSON_RESULT_STORAGE_NOT_READY;
         } else if (strcmp(error_text, "storage_not_enough") == 0) {
@@ -209,6 +119,9 @@ esp_err_t ServerNetworkStaUpload_Process(httpd_req_t *req,
     tdx_cast_core_request_t upload = {0};
     tdx_cast_core_result_t result = {0};
     upload_meta_t meta = {0};
+    if (body_taken != NULL) {
+        *body_taken = false;
+    }
 
     esp_err_t parse_ret = TdxImageTransfer_ParseSingle(body,
                                                        body_len,
@@ -230,30 +143,45 @@ esp_err_t ServerNetworkStaUpload_Process(httpd_req_t *req,
 
     if (parse_ret == ESP_OK) {
         if (upload.show) {
-            esp_err_t async_ret = start_upload_async(body, body_len, base_path, &upload);
-            if (async_ret != ESP_OK) {
-                ESP_LOGW(TAG, "upload async start failed file=%s ret=%s",
-                         upload.file_name, esp_err_to_name(async_ret));
-                return send_upload_result(req,
-                                          async_ret == ESP_ERR_TIMEOUT ? TDX_JSON_RESULT_TIMEOUT :
-                                          async_ret == ESP_ERR_INVALID_STATE ? TDX_JSON_RESULT_BUSY :
-                                          TDX_JSON_RESULT_NO_MEMORY,
-                                          false,
-                                          "upload failed",
-                                          async_ret == ESP_ERR_TIMEOUT ? "async_timeout" :
-                                          async_ret == ESP_ERR_INVALID_STATE ? "async_busy" :
-                                          "async_start_failed",
-                                          &meta);
-            }
-            if (body_taken != NULL) {
-                *body_taken = true;
-            }
-            esp_err_t resp_ret = send_upload_result(req, TDX_JSON_RESULT_OK, true, "upload accepted", "", &meta);
-            ESP_LOGI(TAG, "upload async response done file=%s ret=%s",
-                     upload.file_name, esp_err_to_name(resp_ret));
-            return resp_ret;
+            ESP_LOGW(TAG, "upload rejected file=%s reason=show_not_supported",
+                     upload.file_name);
+            return send_upload_result(req,
+                                      TDX_JSON_RESULT_UPLOAD_INVALID,
+                                      false,
+                                      "upload failed",
+                                      "show_not_supported",
+                                      &meta);
+        }
+        if (!upload.save) {
+            ESP_LOGW(TAG, "upload rejected file=%s reason=save_required",
+                     upload.file_name);
+            return send_upload_result(req,
+                                      TDX_JSON_RESULT_UPLOAD_INVALID,
+                                      false,
+                                      "upload failed",
+                                      "save_required",
+                                      &meta);
         }
 
+        server_network_sta_upload_reservation_t reservation = {0};
+        const char *busy_reason = NULL;
+        esp_err_t reserve_ret = ServerNetworkStaUploadGate_TryReserve(
+            &reservation, &busy_reason);
+        if (reserve_ret != ESP_OK) {
+            ESP_LOGW(TAG, "upload rejected file=%s reason=%s",
+                     upload.file_name,
+                     busy_reason != NULL ? busy_reason : "resource_busy");
+            return send_upload_result(req,
+                                      TDX_JSON_RESULT_BUSY,
+                                      false,
+                                      "upload failed",
+                                      busy_reason != NULL ? busy_reason : "resource_busy",
+                                      &meta);
+        }
+
+        ESP_LOGI(TAG, "upload save start file=%s bytes=%u",
+                 upload.file_name,
+                 (unsigned int)body_len);
         tdx_image_transfer_item_t item = {
             .save = upload.save,
             .show = upload.show,
@@ -264,6 +192,11 @@ esp_err_t ServerNetworkStaUpload_Process(httpd_req_t *req,
         };
         strlcpy(item.save_name, upload.file_name, sizeof(item.save_name));
         (void)TdxImageTransfer_ProcessItems(&item, 1, base_path, "network upload", &result);
+        ServerNetworkStaUploadGate_Release(&reservation);
+        ESP_LOGI(TAG, "upload save done file=%s bytes=%u result=%d",
+                 upload.file_name,
+                 (unsigned int)body_len,
+                 result.result);
         log_heap_watermark("save_done");
     }
 

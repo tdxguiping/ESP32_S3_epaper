@@ -31,6 +31,10 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueReservedToScreenAndWait(
     const uint8_t *display_buf,
     size_t display_size,
     uint8_t epd_which_one);
+esp_err_t ServerNetworkStaEpdDisplay_QueueReservedSolidColorAndWait(
+    epd_display_reservation_t *reservation,
+    uint8_t color,
+    uint8_t epd_which_one);
 void ServerNetworkStaEpdDisplay_ReleaseReservation(epd_display_reservation_t *reservation);
 bool ServerNetworkStaEpdDisplay_IsBusy(void);
 esp_err_t test_epd_display_and_wait(void);

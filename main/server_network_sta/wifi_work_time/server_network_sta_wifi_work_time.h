@@ -25,11 +25,14 @@ void ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(bool active);
 void ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle(uint32_t wake_seconds);
 void ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(bool in_progress);
 bool ServerNetworkStaWifiWorkTime_IsImageSaveInProgress(void);
+void ServerNetworkStaWifiWorkTime_ImageTransferBegin(void);
+void ServerNetworkStaWifiWorkTime_ImageTransferEnd(void);
 void ServerNetworkStaWifiWorkTime_SetDailyImageInProgress(bool in_progress);
 bool ServerNetworkStaWifiWorkTime_IsDailyImageInProgress(void);
 void ServerNetworkStaWifiWorkTime_SetOtaWriteInProgress(bool in_progress);
 void ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress(bool in_progress);
 void ServerNetworkStaWifiWorkTime_SetOtaPendingVerify(bool pending);
+bool ServerNetworkStaWifiWorkTime_IsOtaBusy(void);
 // Hold CH583 power-off while one BLE/CH583 WiFi request is still within its absolute deadline.
 void ServerNetworkStaWifiWorkTime_StartWifiConnectGuard(uint32_t timeout_ms);
 // Start the guard only when no valid guard exists; an active deadline is never refreshed.

@@ -72,7 +72,7 @@
 | WiFi 配网 NVS | `wifi:ssid/password`，`nvs.net80211:sta.ssid/sta.pswd` | USB、BLE、CH583 配网都要求 `func=wifi`、`ssid` 可解析且长度 1..32、`key` 可解析且长度小于 65；两个 namespace 都写入成功后才提交 worker 连接 | STA 启动时从保存的 WiFi 配置恢复连接；请求侧只负责保存和提交 worker，真正连接在 `User_Network_mode_app_init()` / `server_network_sta.c` |
 | `cast` 图片保存 | `/data/cast_img/<fileName>.bin`、`/data/cast_img/<fileName>.jpg`；最后投图名保存到默认 NVS `image_state:last_cast` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；zlib模式下`bin_size`是压缩后的实际传输长度，不要求等于屏幕原始长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename；新 bin/jpg 和 NVS last-cast 记录成功后，清理 `/data/cast_img` 中非本次文件名的旧 `.bin/.jpg` | `show=true && save=true` 时先成功停止轮播，再显示、保存并记录 last cast；启动时不读取或显示 last_cast |
 | `cast2pic` 数据接收 | 一次接收一组 `fileName/bin_size/image_size/bin/image` | 网络和 USB 只接受 `screen=a/b`；`ab` 和缺少 `screen` 返回 `1617`；字段完整、文件名安全且实际传输长度等于声明长度后返回 `result=0`；zlib模式不把压缩BIN长度与屏幕原始长度比较 | `result=0` 只表示数据接收校验成功；显示和保存由后台处理，结果只写日志 |
-| `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | 字段、文件名安全、实际传输长度等于声明长度、目录和剩余空间条件与cast类似；zlib模式不要求压缩BIN等于屏幕原始长度；主要用于保存，`show=true` 时也可显示 | `show=true && save=true` 时先等待 EPD 显示任务完成，再保存；图片列表、轮播、快照从 jpg/bin 目录取数据 |
+| `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | network upload只接受 `show=false && save=true`；字段、文件名安全、实际传输长度等于声明长度、目录和剩余空间条件与cast类似；zlib模式不要求压缩BIN等于屏幕原始长度 | 资源空闲并取得零等待EPD/Shared SPI预约后，在HTTP当前上下文同步保存；`show=true` 或 `save=false` 拒绝；图片列表、轮播、快照从 jpg/bin 目录取数据 |
 | `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `TDX_DELETE_MAX_FILES=50` 限制；超过上限返回 `1514`，文件名非法返回 `1502`；网络与 USB 入口都先完整校验，校验失败不执行删除；只删除匹配的 bin/jpg；不清理、不修改 NVS `last_cast`、`slide_cfg`、`slide_ctl` 或轮播进度 | 从 JSON `fileNames` 取删除列表；校验通过后按文件名拼路径并删除 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从 NVS `slide_cfg` / `slide_ctl` 读取轮播状态 |
 | `slideshow` | 默认 NVS `image_state:slide_cfg`、`image_state:slide_ctl`，以及 `PhotoPainter:slide_progress` | 最终 `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=150` 限制，允许重复，且全部 bin 文件必须存在、是普通文件并且非空；APP 在 `random=true` 时负责将每个原始文件复制 3 次并打乱，设备按收到的最终顺序播放；列表校验失败不改动现有轮播状态；`startIndex` 必填且满足 `0 <= startIndex < file_count`；业务基础文件名为 1..16 个安全 ASCII 字节、不带扩展名，内部缓冲区为 17 字节（含 `\0`）；`interval` 限制在 `60..604800` 秒；设备保存的 `random` 永久强制为 `false`；config/control 使用 version、CRC 和 generation 校验 | 不兼容缺少 `startIndex` 的旧轮播协议/配置；启动时已有 SNTP 或运行中首次取得 SNTP 后，按最终 `fileNames + startIndex + anchor_epoch + interval` 使用绝对时间槽 |
@@ -81,7 +81,7 @@
 | EPD 类型 | `PhotoPainter:epd_type` | 只允许保存 `EpdType_GetConfig(type)` 能找到的合法type；未变化时跳过写入；非法type返回 `ESP_ERR_INVALID_ARG` | 启动优先读取 `epd_type`；不存在或无效时回退 `USER_EPD_TYPE_DEFAULT`；DEVICE_INFO上报类型只保存供下次启动使用，不切换本次运行的显示驱动 |
 | EPD 显示队列 | RAM 队列 `s_epd_display_queue` | 队列长度受 `USER_EPD_DISPLAY_QUEUE_LENGTH=2` 限制；入队前需要分配/复制 display buffer；显示数据大小应匹配当前屏幕 `display_size`；队列满或内存不足则失败 | `ServerNetworkStaEpdDisplay_Task()` 从队列取 buffer，根据 EPD type 调用具体驱动 |
 | CH583 DEVICE_INFO | `PhotoPainter:ch583_ble_mac`、`PhotoPainter:ch583_ble_ver`、`PhotoPainter:epd_type` | 收到合法 `DEVICE_INFO` 后解析并保存MAC、CH583版本和映射后的EPD类型；EPD类型通过 `EpdType_SaveForNextBoot()` 保存，全部成功后回复ACK；首次ACK后 `KEY_PB2` 浏览本地图片、`KEY_PB1` 请求恢复出厂 | 本次启动的EPD驱动始终采用启动时NVS合法值或默认值，迟到DEVICE_INFO不在运行中切换驱动；重复DEVICE_INFO只重发ACK，不重复按键业务。合法KEY_EVENT不依赖DEVICE_INFO；启动依赖未就绪时PB2进入本地浏览FIFO，PB1进入Factory Reset单请求状态。完整通信规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image) |
-| USB 请求 / worker | RAM request buffer、response buffer、worker queue | 请求头/body 受 `USB_CONSOLE_HTTP_HEADER_MAX`、`USB_CONSOLE_HTTP_BODY_MAX` 限制；worker queue 长度受 `USB_CONSOLE_WORKER_QUEUE_LENGTH=4` 限制 | `UsbConsoleEcho_Task()` 读取 USB Serial/JTAG 数据，router/worker 取任务执行 |
+| USB请求 | RAM request buffer、response buffer；无独立worker queue | 请求头/body受 `USB_CONSOLE_HTTP_HEADER_MAX`、`USB_CONSOLE_HTTP_BODY_MAX` 限制；普通handler在USB接收任务当前上下文执行，投屏提交统一图片任务 | `UsbConsoleEcho_Task()` 读取USB Serial/JTAG数据并由router分发 |
 
 图片显示与保存说明：
 
@@ -90,9 +90,9 @@ cast、cast2pic、upload 中的 show 和 save 是两个动作。
 存文件是把 bin/jpg 写到 SD 卡；SD 卡文件保存与 EPD 显示使用同一组 SPI，所以 show=true && save=true 时整体流程仍按显示、保存分先后处理。
 当前源码通过 TdxSharedSpi 全局递归 mutex 保护 SD/EPD 共用 SPI：EPD SPI 传输、SDSPI mount、/data 文件读写/删除/扫描、缩略图读取、轮播读取与保存等路径都应先取得该锁；各 EPD 驱动的 BUSY GPIO 等待函数在所有 EPD CS 均为 HIGH 时会临时释放 SPI 锁给 SD 使用，13.3 兴泰、13.3 DKE 和 7.9 兴泰驱动在 PON/DRF/POF 等已知安全等待点会先拉高 CS 再释放 SPI，返回 EPD SPI 操作前最多等待 10 秒重新取得锁，超时重启；`R40_TSC -> BUSY -> spiReceiveData()` 等 CS 为 LOW 且后面还要继续收数据的事务中等待仍走旧路径，不释放 SPI 锁。
 这样即使不是同一次 cast/upload 请求，也避免 SD 文件 I/O 与 EPD 刷新同时占用共用 SPI。
-网络 /dataUP 的 multipart 入口在 EPD 正忙或已有 show=true 后台投图任务未完成时，会在读取大 body 和分配 PSRAM 前直接返回 busy/timeout JSON，并关闭本次 HTTP 连接；后台任务 busy 超过 50 秒时返回 `dataup_result/1008 async_timeout`。
+网络 `/dataUP` 的 multipart入口在EPD、network CAST/CAST2PIC或另一个UPLOAD预约正忙时，会在读取大body和分配PSRAM前直接返回1007 busy JSON并关闭连接。network upload解析后还会通过公共UploadGate进行最终零等待预约；即使APP先前ping得到IDLE，只要到达ESP32时资源已忙，本次也不执行保存并返回1007。
 由于 EPD 显示是重点，处理顺序固定为：先处理 EPD 显示，等待本次 EPD 显示任务完成之后，再去存文件到 SD 卡。
-网络 cast/cast2pic/upload 请求解析校验通过且存在 show=true 时，HTTP handler 只返回接收成功 JSON 后立即结束；EPD 显示、SD 保存、NVS last-cast 状态和旧图片清理由固定的 `dataup_async_worker` 队列任务继续执行，同一时刻只允许一个网络 show=true 后台任务，不再返回第二个最终结果 JSON。后台任务先把 NVS `slide_ctl.enabled` 写为 `false`、停止轮播 task，并读回确认，再进入 EPD 显示和保存流程。
+网络 cast/cast2pic 请求解析校验通过且存在 show=true 时，HTTP handler 只返回接收成功 JSON 后立即结束；EPD 显示、SD同步保存、NVS last-cast 状态和旧图片清理由永久常驻 `image_business_worker` 的 CAST/CAST2PIC owner继续执行。network upload固定 `show=false && save=true`，不进入统一任务或后台task，取得UploadGate后在HTTP当前上下文同步保存。同一时刻只允许一个网络投屏后台事务。
 同步等待受 USER_EPD_DISPLAY_WAIT_TIMEOUT_MS 限制；调用方超时后 completion 仍由 EPD 任务持有，任务完成后再安全释放。
 显示驱动的尺寸错误、buffer 分配失败、SPI 帧写入失败或 BUSY 超时会返回失败，不再把“驱动函数已经返回”等同于显示成功。
 save=true 表示把 bin/jpg 保存到 SD。
@@ -130,7 +130,7 @@ sequenceDiagram
     APP->>SYS: TdxCastCore_Init()
     APP->>WORK: ServerNetworkStaWifiWorkTime_Init()
     APP->>SYS: EpdDisplayMode_Init()
-    APP->>SYS: ImageBusinessWorker_Init() / 创建9KB统一常驻静态worker
+    APP->>SYS: ImageBusinessWorker_Init() / 创建12KB统一常驻静态worker
     APP->>SYS: ServerNetworkStaDailyImage_Init("/data")
     APP->>SYS: print_base_info()
     APP->>SYS: GpioTest_Init()
@@ -143,7 +143,7 @@ sequenceDiagram
     opt USER_BLE_ENABLE
         APP->>BLE: Init_Bl()
     end
-    APP->>EPD: ServerNetworkStaEpdDisplay_Init() / GPIO4 EPD-SD power HIGH
+    APP->>EPD: ServerNetworkStaEpdDisplay_Init() / EPD-SD共享电源启动复位
     APP->>SD: example_mount_storage("/data")
     opt storage mount ok
         APP->>SD: FactoryReset_Init("/data")
@@ -194,7 +194,7 @@ main/main.c
    │     └─ work_state_task()
    ├─ EpdDisplayMode_Init()
    ├─ ImageBusinessWorker_Init()
-   │  └─ 创建9KB统一静态worker，串行执行DAILY、SLIDESHOW、轮播启动延迟和LOCAL_IMAGE
+   │  └─ 创建12KB统一静态worker，串行执行DAILY、SLIDESHOW、LOCAL_IMAGE、CAST和CAST2PIC
    ├─ ServerNetworkStaDailyImage_Init("/data")
    │  └─ 初始化daily配置mutex和基础状态，不再创建独立任务
    ├─ print_base_info()
@@ -301,14 +301,14 @@ EPD 显示期间会临时把 WiFi PS 切到 WIFI_PS_MAX_MODEM，以降低 EPD �
 
 ## 2. 永久常驻统一图片业务任务 <span id="sec-02-image-business-worker"></span>
 
-`image_business_worker` 是每日一图、轮播和Local Image Browsing共同依赖的核心业务任务。它在每次开机早期创建一次，使用固定静态资源，创建后永久常驻且不删除。每日一图、轮播主runtime、轮播开机启动延迟和本地图片浏览不得再各自创建独立worker；三种owner的工作统一提交给该任务串行执行，任何时刻最多只有一个图片业务owner正在运行。
+`image_business_worker` 是每日一图、轮播、Local Image Browsing、cast和cast2pic共同依赖的核心业务任务。它在每次开机早期创建一次，使用固定静态资源，创建后永久常驻且不删除。每日一图、轮播主runtime、轮播开机启动延迟、本地图片浏览和投屏后台显示/保存不得再各自创建独立worker；所有owner的工作统一提交给该任务串行执行，任何时刻最多只有一个图片业务owner正在运行。
 
-该任务只统一DAILY、SLIDESHOW和LOCAL_IMAGE的业务调度，不替代公共EPD显示任务、cast保存任务、HTTP/USB worker或WiFi管理任务。已经提交给EPD硬件的刷新不由统一任务强制中断；模式切换只用generation、stop和pending替换进行非阻塞协调，当前EPD安全结束后统一任务自动接续更新owner。
+该任务统一DAILY、SLIDESHOW、LOCAL_IMAGE、网络CAST/CAST2PIC以及低优先级USB投屏的业务调度，不替代公共EPD显示任务、HTTP服务、USB接收任务或WiFi管理任务。network upload不作为owner排队；它使用公共UploadGate做零等待准入并在HTTP当前上下文保存。原12KB `dataup_async_worker`、8KB `cast_save` 和8KB `UsbConsoleWorker` 已删除。已经提交给EPD硬件的刷新不由统一任务强制中断。
 
 ### 2.1 定位、范围与重要规则 <span id="sec-02-1"></span>
 
 ```text
-image_business_worker（永久常驻、固定9KB静态栈）
+image_business_worker（永久常驻、固定12KB静态栈）
 ├─ owner=DAILY
 │  └─ daily_run_command()
 ├─ owner=SLIDESHOW
@@ -316,14 +316,20 @@ image_business_worker（永久常驻、固定9KB静态栈）
 │  └─ slideshow_startup_delay_run()   开机轮播启动延迟
 ├─ owner=LOCAL_IMAGE
 │  └─ local_image_run_command()        PB2本地图片浏览
+├─ owner=CAST / CAST2PIC
+│  └─ 网络投屏显示、同步SD保存和清理；网络优先
+├─ owner=USB_CAST / USB_CAST2PIC
+│  └─ USB投屏后台业务；pending时允许被网络投屏替换
+├─ owner=FACTORY_RESET
+│  └─ 恢复出厂清理、NVS复位、欢迎图待显示标志和白屏显示；最高优先级且不可被普通图片业务覆盖
 └─ idle
    └─ 没有业务命令时阻塞等待task notification，不轮询、不重复打印
 ```
 
 必须保持的功能规则：
 
-- DAILY、SLIDESHOW、轮播启动延迟和LOCAL_IMAGE只能使用这一个统一任务，不得恢复旧daily queue、旧7KB daily任务、旧6KB轮播任务、6KB动态启动延迟任务或旧8KB Local任务。
-- DAILY、SLIDESHOW与LOCAL_IMAGE是互斥业务。同一时间只能运行一个owner；新的模式请求用generation和stop使旧owner失效，并原子安装更新pending命令，不在请求入口等待旧owner退出。
+- DAILY、SLIDESHOW、轮播启动延迟、LOCAL_IMAGE、cast/cast2pic后台业务以及Factory Reset执行流程只能使用这一个统一任务，不得恢复旧daily queue、旧7KB daily任务、旧6KB轮播任务、6KB动态启动延迟任务、旧8KB Local任务、旧8KB cast保存任务或旧8KB USB worker。Factory Reset原5KB任务暂时保留，但只负责GPIO28/PB1检测和提交，不执行文件、NVS或EPD业务。
+- 所有图片业务owner互斥。同一时间只能运行一个owner；新的模式请求用generation和stop使旧owner失效，并原子安装更新pending命令，不在请求入口等待旧owner退出。已经成为current的投屏事务不强制中断，必须完成显示、保存、状态清理和资源释放。
 - 统一任务永久常驻只是保留任务栈和控制状态，不代表开机一定执行图片业务。`NORMAL`、`LOCAL_IMAGE_BROWSING`等模式下没有有效命令时，任务保持阻塞空闲。
 - 统一任务不能承载无关的永久循环、HTTP服务、WiFi管理或EPD底层任务，避免长业务相互阻塞并扩大核心任务风险范围。
 - callback执行结束或被取消后必须返回统一循环；单次业务失败不得删除或停止统一任务。
@@ -337,32 +343,34 @@ app_main()
 ├─ EpdDisplayMode_Init()
 ├─ ImageBusinessWorker_Init()
 │  ├─ 创建静态state mutex
-│  ├─ 使用静态TCB和固定9KB内部RAM栈创建image_worker
+│  ├─ 使用静态TCB和固定12KB内部RAM栈创建image_worker
 │  └─ worker永久循环；空闲时阻塞等待notification
 ├─ ServerNetworkStaDailyImage_Init("/data")
 ├─ 初始化存储、网络、HTTP、SNTP等模块
 ├─ LocalImageBrowsing_Init("/data")
 │  └─ 只读取状态和排放启动PB2 FIFO，不创建任务或FreeRTOS queue
+├─ FactoryReset_Init("/data")
+│  └─ 保留原5KB检测任务和300ms/5秒判定；正式执行提交给image_worker
 ├─ ServerNetworkStaDailyImage_StartSaved()
 │  └─ 仅mode=DAILY且配置有效时提交DAILY命令
 └─ ServerNetworkStaSlideshow_StartSavedDelayed("/data")
    └─ 仅mode=SLIDESHOW且存储可用时提交SLIDESHOW启动延迟命令
 ```
 
-`ImageBusinessWorker_Init()` 放在WiFi、HTTP等可选服务之前，并由启动主流程用 `ESP_ERROR_CHECK()` 检查。统一任务是DAILY、SLIDESHOW和LOCAL_IMAGE的基础设施；静态任务创建失败时不能继续假装相关功能可用。后续模块可以再次调用Init，但初始化必须保持幂等，不得创建第二个任务。
+`ImageBusinessWorker_Init()` 放在WiFi、HTTP和USB等可选服务之前，并由启动主流程用 `ESP_ERROR_CHECK()` 检查。统一任务是DAILY、SLIDESHOW、LOCAL_IMAGE、CAST、CAST2PIC和Factory Reset执行流程的基础设施；静态任务创建失败时不能继续假装相关功能可用。后续模块可以再次调用Init，但初始化必须保持幂等，不得创建第二个任务。
 
 固定资源如下：
 
 | 资源 | 当前规则 |
 |---|---|
-| worker任务栈 | `USER_IMAGE_BUSINESS_WORKER_STACK_SIZE=9*1024`，内部RAM静态栈 |
+| worker任务栈 | `USER_IMAGE_BUSINESS_WORKER_STACK_SIZE=12*1024`，内部RAM静态栈 |
 | worker优先级 | `USER_IMAGE_BUSINESS_WORKER_PRIORITY=4` |
 | pending命令 | 一个静态命令槽；inline payload上限 `USER_IMAGE_BUSINESS_WORKER_PAYLOAD_SIZE=640` 字节 |
 | 控制锁 | 一个静态mutex，保护current owner和pending命令 |
 | TCB | 一个静态TCB |
 | 生命周期 | 开机创建一次，永久常驻，不调用 `vTaskDelete()` |
 
-当前ESP32-C5 / ESP-IDF v5.5.3测试构建打印：栈9216字节、TCB336字节、命令槽664字节、mutex控制块84字节，合计固定核心资源约10300字节，另有少量句柄和状态变量。callback中的局部命令副本计入9KB任务栈，不是第二份独立任务栈。删除Local原8KB动态任务和长度1的FreeRTOS queue后，预计额外减少约8.5KB内部RAM；启动PB2静态FIFO和状态mutex保留。栈大小按DAILY、SLIDESHOW、LOCAL_IMAGE三条完整路径的最低余量共同决定。
+当前配置栈为12288字节，另有静态TCB、664字节单pending命令槽、静态mutex和少量状态变量。callback中的局部命令副本计入12KB任务栈，不是第二份独立任务栈。除已经删除的Local原8KB任务外，本次删除 `cast_save` 8KB任务/queue/semaphore和 `UsbConsoleWorker` 8KB任务/queue；统一栈由9KB增加到12KB后，预计仍净减少约13KB以上永久内部RAM。Factory Reset原5KB任务在本阶段仍保留原栈大小，仅卸下清理和显示执行职责，因此不把它计入本阶段内存节省。实际数值和12KB是否足够必须以设备启动资源日志及所有owner的栈水位为准。
 
 ### 2.3 命令模型与串行规则 <span id="sec-02-3"></span>
 
@@ -373,11 +381,17 @@ stateDiagram-v2
     IDLE --> SLIDESHOW_DELAY: Submit startup delay
     IDLE --> SLIDESHOW_RUNTIME: Submit slideshow runtime
     IDLE --> LOCAL_IMAGE: Submit PB2 local image
+    IDLE --> CAST: Submit network cast
+    IDLE --> CAST2PIC: Submit network cast2pic
+    IDLE --> FACTORY_RESET: GPIO28/PB1确认后提交
     DAILY --> IDLE: 完成 / 失败 / generation失效
     SLIDESHOW_DELAY --> SLIDESHOW_RUNTIME: 延迟结束且模式仍为SLIDESHOW
     SLIDESHOW_DELAY --> IDLE: 模式切换 / control关闭 / generation失效
     SLIDESHOW_RUNTIME --> IDLE: 停止 / 失败
     LOCAL_IMAGE --> IDLE: 显示完成 / 失败 / generation失效
+    CAST --> IDLE: 显示、保存和cleanup完成 / 失败
+    CAST2PIC --> IDLE: 显示、保存和cleanup完成 / 失败
+    FACTORY_RESET --> IDLE: 清理和白屏完成 / 失败
 ```
 
 统一任务维持“一个current命令 + 一个pending命令槽”，不是多项FreeRTOS queue：
@@ -388,6 +402,9 @@ stateDiagram-v2
 - 模式切换使用 `ImageBusinessWorker_SubmitReplacingPending()` 在同一state mutex内取消允许替换的旧pending并安装新命令，禁止分开的Cancel/Submit留下竞态窗口。
 - DAILY重新提交前只取消旧的pending DAILY；SLIDESHOW启动不能删除同时刚提交、且代表更新模式的DAILY命令。
 - LOCAL_IMAGE可替换旧pending DAILY/SLIDESHOW；新的DAILY/SLIDESHOW可替换pending LOCAL_IMAGE；第二个LOCAL_IMAGE不能覆盖第一个，继续由EPD reservation和单pending规则拒绝。
+- network CAST/CAST2PIC可替换pending DAILY、SLIDESHOW、LOCAL_IMAGE和低优先级USB投屏；已有network CAST/CAST2PIC为current或pending时拒绝第二个网络投屏，不静默覆盖请求。
+- FACTORY_RESET可替换所有尚未开始的普通图片owner；成为pending或current后，其他owner提交必须返回 `ESP_ERR_INVALID_STATE`，不得覆盖恢复出厂。检测任务不等待current owner，使用现有stop/generation使DAILY、SLIDESHOW和LOCAL_IMAGE安全退出；已经开始的EPD或投屏事务不强制中断。
+- USB_CAST/USB_CAST2PIC只有在不存在任何投屏owner时才能提交；普通USB命令在USB接收任务当前上下文执行，不再创建独立USB worker。网络投屏替换pending USB_CAST时必须返回一次 `network_priority` 失败并只释放一次USB body。
 - payload由提交函数按值复制到固定inline区域，禁止提交超过640字节的结构；DAILY、轮播runtime、启动延迟和LOCAL_IMAGE payload必须保留 `_Static_assert` 上限检查。
 - task notification只用于唤醒统一任务和实现可中断等待；新增业务不能擅自占用同一个任务notification做无关协议，否则会破坏提交和停止语义。
 
@@ -417,19 +434,23 @@ stateDiagram-v2
 - 已经开始的EPD刷新不强制中断。停止请求先阻止旧业务继续下一张或下一阶段，当前EPD结束后释放业务资源并返回统一任务。
 - DAILY job和轮播启动延迟payload按值保存在pending命令中，不需要独立heap节点。
 - LOCAL_IMAGE request也按值保存；pending取消、提交失败或run callback结束时必须且只能释放一次EPD reservation。
+- CAST/CAST2PIC的图片数据不复制到640字节payload；payload只保存heap job指针。network body在提交成功后转移给统一任务，提交失败由入口释放，pending取消由cancel callback释放，current结束由run cleanup释放，三条路径互斥。
+- 投屏请求从提交成功到run/cancel终点维持图片传输引用计数；关机检查把非零引用计入现有image-save busy保护，禁止HTTP已经返回但pending尚未启动时提前断电。
+- `cast_save` queue和完成semaphore已删除；`TdxImageTransfer_ProcessItems()` 保持原保存代码，在当前执行上下文内同步取得Shared SPI并完成临时文件写入、校验和rename。network upload同样调用该同步保存代码，但不再创建或使用 `dataup_async_worker`。
 - 轮播runtime优先从PSRAM分配；pending阶段取消由cancel callback释放，进入run callback后由runtime退出路径释放。两条路径互斥，必须保证只释放一次。
 - DAILY下载缓冲、TLS资源、轮播预加载缓冲仍由各业务原有路径申请和释放，不因合并任务改变所有权。
 - worker完成命令后清除current owner并继续永久循环；不得因为callback返回 `ESP_ERR_INVALID_STATE`、网络失败或正常停止而删除任务。
+- Factory Reset提交失败必须把RAM状态从RUNNING恢复为PENDING并保留guard，由原300ms检测任务重试；只打印首次延迟警告，禁止丢请求、永久RUNNING或每300ms刷屏。
 
 ### 2.6 关键日志、异常和修改约束 <span id="sec-02-6"></span>
 
 正常情况下只保留以下关键日志：
 
 ```text
-image_worker: static resources ... stack=9216 tcb=... command=... mutex=...
-image_worker: started stack=9216 priority=4
-image_worker: job start owner=DAILY|SLIDESHOW|LOCAL_IMAGE generation=N
-image_worker: job done owner=... generation=N ret=... min_free=... peak_used=... configured=9216
+image_worker: static resources ... stack=12288 tcb=... command=... mutex=...
+image_worker: started stack=12288 priority=4
+image_worker: job start owner=DAILY|SLIDESHOW|LOCAL_IMAGE|CAST|CAST2PIC|USB_CAST|USB_CAST2PIC|FACTORY_RESET generation=N
+image_worker: job done owner=... generation=N ret=... min_free=... peak_used=... configured=12288
 ```
 
 异常或切换时按需打印：
@@ -439,16 +460,16 @@ image_worker: job done owner=... generation=N ret=... min_free=... peak_used=...
 - 过期命令：业务模块打印generation、当前模式和取消原因。
 - 正常空闲不周期打印；等待循环不每秒打印；统一任务不得增加大量调试日志。
 
-修改DAILY、SLIDESHOW或启动延迟时必须同时检查：
+修改统一worker、DAILY、SLIDESHOW、启动延迟或Factory Reset执行载体时必须同时检查：
 
-1. 是否仍只创建一个统一静态任务，daily、slideshow和local_image_browsing目录中不得新增独立 `xTaskCreate()` / `xTaskCreateStatic()`。
+1. 是否仍只创建一个统一静态任务，daily、slideshow、local_image_browsing、cast和cast2pic不得新增独立 `xTaskCreate()` / `xTaskCreateStatic()`；不得恢复 `cast_save` 或 `UsbConsoleWorker`。
 2. callback是否能在模式切换和generation失效后于安全检查点退出。
 3. 是否可能在统一worker内部调用 `WaitOwnerIdle()` 等待自己，造成死锁。
 4. pending取消、提交失败、过期命令和正常完成是否各自只释放一次heap资源。
 5. payload是否不超过640字节，并保持编译期 `_Static_assert`。
-6. 完整DAILY、SLIDESHOW和LOCAL_IMAGE路径的 `min_free` 是否不少于2048字节；低于警戒线时优先增加统一栈，不得为了节省内存冒栈溢出风险。
+6. 完整DAILY、SLIDESHOW、LOCAL_IMAGE、CAST、CAST2PIC、USB投屏和FACTORY_RESET路径的 `min_free` 是否不少于2048字节；低于警戒线时优先增加统一栈，不得为了节省内存冒栈溢出风险。
 7. 是否保持“当前EPD不强制中断、旧业务不继续下一阶段、更新模式请求优先”的状态规则。
-8. 若修改代码，必须同步本章、7.8轮播章节、7.15每日一图章节和 `README_Test.md` 对应测试。
+8. 若修改代码，必须同步本章、7.8轮播章节、7.14恢复出厂章节、7.15每日一图章节和 `README_Test.md` 对应测试。
 
 相关源码：
 
@@ -457,6 +478,12 @@ main/image_business_worker/image_business_worker.c/.h
 main/server_network_sta/daily_image/server_network_sta_daily_image.c
 main/server_network_sta/slideshow/server_network_sta_slideshow.c
 main/local_image_browsing/local_image_browsing.c
+main/server_network_sta/cast/server_network_sta_cast.c
+main/server_network_sta/cast2pic/server_network_sta_cast2pic.c
+main/cast_core/cast_core.c
+main/factory_reset/factory_reset.c
+main/usb_console_echo/cast/usb_console_cast_worker.c
+main/usb_console_echo/cast2pic/usb_console_cast2pic.c
 main/main.c
 main/tdx_cfg.h
 ```
@@ -552,7 +579,7 @@ Mermaid 流程图：
 
 ```mermaid
 flowchart TD
-    P[EPD-SD shared power GPIO4 HIGH] --> A[example_mount_storage /data]
+    P[EPD-SD shared rail startup reset] --> A[example_mount_storage /data]
     A --> B{CONFIG_EXAMPLE_MOUNT_SD_CARD}
     B -- false --> C[mount_spiffs_storage]
     B -- true --> D{CONFIG_EXAMPLE_USE_SDMMC_HOST}
@@ -574,7 +601,10 @@ flowchart TD
 main/main.c
 └─ app_main()
    ├─ ServerNetworkStaEpdDisplay_Init()
-   │  └─ Set_Power(1)：GPIO4 HIGH
+   │  ├─ 释放共享SPI并将相关IO设为高阻
+   │  ├─ GPIO4 LOW保持2000ms
+   │  ├─ GPIO4 HIGH后等待100ms
+   │  └─ 恢复安全CS电平和共享SPI
    └─ example_mount_storage("/data")
       └─ mount.c
          ├─ CONFIG_EXAMPLE_MOUNT_SD_CARD disabled
@@ -635,7 +665,7 @@ mount.c
 - example_print_storage_info() 读取挂载状态、容量、目录树、txt 文件内容。
 - list_storage_tree() 扫描并打印 /data 下文件。
 - SD 挂载参数：上电等待 1000ms；单次启动内最多重试 3 次；重试间隔 300ms。失败计数未超过阈值时不进入 SPIFFS，而是软件复位后重试 SD。
-- GPIO4 是 EPD 与外部 SD 卡公共电源开关；`ServerNetworkStaEpdDisplay_Init()` 在首次 SD 挂载前调用 `Set_Power(1)`。EPD refresh/sleep 本身不得直接拉低 GPIO4；只有独立 EPD/SD 电源测试在确认 EPD、外部 SD、SPI 和业务请求全部空闲后可以临时拉低。CH583 整机关机提交路径仍不调用 `Set_Power(0)`。
+- GPIO4 是 EPD 与外部 SD 卡公共电源开关；`ServerNetworkStaEpdDisplay_Init()` 在首次 SD 挂载前复用现有IO隔离接口执行一次启动电源复位：释放共享SPI、相关IO高阻、GPIO4拉低2000ms、重新拉高并稳定100ms，再恢复安全CS电平和共享SPI。这样USB或软件复位后遗留的SD状态不会进入首次挂载。EPD refresh/sleep 本身不得直接拉低 GPIO4；运行期仍只有独立 EPD/SD 电源测试在确认全部安全条件后可以临时拉低。CH583 整机关机提交路径仍不调用 `Set_Power(0)`。
 
 日志：
 - 保留关键节点：SD mount start、SDSPI pins、bus reuse、SD ready、SPIFFS fallback、storage ready、mount failed。
@@ -789,19 +819,19 @@ sequenceDiagram
     participant DATAUP as POST /dataUP
     participant CAST as ServerNetworkStaCast_Process
     participant CORE as TdxCastCore
-    participant SAVE as CastSaveTask
+    participant WORKER as image_business_worker/CAST
     participant EPD as EPD Display Queue
     APP->>DATAUP: multipart func=cast
     DATAUP->>CAST: receive_data_redirect_handler route
     CAST->>CORE: parse multipart and validate fields
     CAST-->>APP: {func:cast_received,result:0,fileName}
+    CAST->>WORKER: submit owner=CAST and transfer body ownership
     CAST-->>DATAUP: HTTP handler done
     alt show=true
-        CORE->>CORE: stop_slideshow_for_cast() and confirm sw=0
+        WORKER->>CORE: stop_slideshow_for_cast() and confirm sw=0
         CORE->>EPD: ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
     end
-    CORE->>SAVE: submit save task and wait result
-    SAVE->>SAVE: write bin/jpg and record last_cast
+    WORKER->>CORE: synchronously write bin/jpg and record last_cast
 ```
 
 树状时序：
@@ -817,20 +847,19 @@ HTTP multipart /dataUP
       │  └─ validate bin_size/image_size/save/show
       ├─ send cast_received chunk
       ├─ finish HTTP response
-      └─ dataup_async_worker
+      └─ image_business_worker owner=CAST
          └─ TdxCastCore_ProcessValidatedCastDir()
             ├─ show=true
             │  ├─ stop_slideshow_for_cast() 并确认 sw=0
             │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
-            └─ save=true
-               └─ CastSaveTask
-                  ├─ check_save_space()
-                  ├─ save /data/cast_img/<fileName>.bin
-                  ├─ save /data/cast_img/<fileName>.jpg
-                  └─ record default NVS image_state:last_cast
+            └─ save=true（当前统一任务内同步保存）
+               ├─ check_save_space()
+               ├─ save /data/cast_img/<fileName>.bin
+               ├─ save /data/cast_img/<fileName>.jpg
+               └─ record default NVS image_state:last_cast
 ```
 
-说明：network cast 和 USB cast 都复用 `cast_core`，并通过 `TdxCastCore_ProcessValidatedCastDir()` 指定保存到 `/data/cast_img`。EPD 显示使用已有的 `ServerNetworkStaEpdDisplay` task，保存使用统一的 `CastSaveTask`。network cast 在 `show=true` 时解析和字段校验通过后只返回 `cast_received`，随后结束 HTTP handler；EPD 显示、bin/jpg 保存和 NVS last-cast 记录由固定的 `dataup_async_worker` 调用 `cast_async_process()` 后台执行，不再返回 `cast_result` 第二个 JSON。`show=true && save=true` 时后台先调用 `stop_slideshow_for_cast()` 停止轮播、写 NVS `slide_ctl.enabled=false` 并读回确认，同时同步 `epd_mode=0(NORMAL)`，再通过 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait()` 等待 EPD 显示任务完成，最后提交保存任务。`show=false` 的 network cast 仍可走同步处理并返回最终结果。
+说明：network cast 和 USB cast 都复用 `cast_core`，并通过 `TdxCastCore_ProcessValidatedCastDir()` 指定保存到 `/data/cast_img`。EPD显示仍使用已有的 `ServerNetworkStaEpdDisplay` task；原 `CastSaveTask` 已删除，保存改为调用方当前上下文同步执行。network cast 在 `show=true` 时解析和字段校验通过后只返回 `cast_received`，随后结束HTTP handler；EPD显示、bin/jpg保存和NVS last-cast记录由永久统一任务 `owner=CAST` 调用原 `cast_async_process()` 执行，不再返回第二个 `cast_result` JSON。`show=true && save=true` 的显示、保存、状态和cleanup顺序不变。`show=false` 的network cast仍走原同步处理并返回最终结果，不创建额外任务。
 
 V2 协议资料拆分：
 
@@ -890,12 +919,12 @@ show/save 顺序：
 
 ```text
 存：
-- show=true 时 dataup_async_worker 调用 cast_async_process()，后台先等待 EPD 显示任务完成，再提交 CastSaveTask。
+- show=true 时 `image_business_worker owner=CAST` 调用 `cast_async_process()`，后台先等待EPD显示完成，再在相同业务上下文同步保存。
 - show=true 停止轮播并写入 NVS `slide_ctl.enabled=false` 后，同步写 `PhotoPainter:epd_mode=0`。
-- CastSaveTask 写入：/data/cast_img/<fileName>.bin。
-- CastSaveTask 写入：/data/cast_img/<fileName>.jpg。
-- CastSaveTask 使用 <fileName>.<ext>.tmp 临时文件，写完校验大小后 rename 成正式文件。
-- CastSaveTask 写入 last cast 记录文件，路径在 /data/cast_img/ 下。
+- 同步保存函数写入：/data/cast_img/<fileName>.bin。
+- 同步保存函数写入：/data/cast_img/<fileName>.jpg。
+- 同步保存仍使用 <fileName>.<ext>.tmp 临时文件，写完校验大小后 rename 成正式文件。
+- 同步保存写入 last cast 记录，路径仍在 /data/cast_img/ 下。
 - 保存和 NVS last-cast 全部成功后，扫描 `/data/cast_img`，删除非本次 `<fileName>` 的旧 `.bin/.jpg`；NVS `last_cast` 保留。
 
 取：
@@ -924,20 +953,20 @@ sequenceDiagram
     participant DATAUP as POST /dataUP
     participant C2P as ServerNetworkStaCast2Pic_Process
     participant CORE as TdxImageTransfer
-    participant SAVE as CastSaveTask
+    participant WORKER as image_business_worker/CAST2PIC
     participant EPD as Screen A/B
     APP->>DATAUP: multipart func=cast2pic screen=a/b
     DATAUP->>C2P: route by func
     C2P->>C2P: validate one fileName/bin/image group
     C2P-->>APP: {func:cast2pic_result,result:0}
+    C2P->>WORKER: submit owner=CAST2PIC and transfer body ownership
     C2P-->>DATAUP: HTTP handler done
-    C2P->>CORE: background image transfer
+    WORKER->>CORE: background image transfer
     alt show=true
         CORE->>EPD: ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
     end
     alt save=true
-        CORE->>SAVE: submit save task and wait result
-        SAVE->>SAVE: save screen_a/screen_b bin and jpg
+        CORE->>CORE: synchronously save screen_a/screen_b bin and jpg
     end
 ```
 
@@ -954,14 +983,13 @@ HTTP multipart /dataUP
       ├─ validate_cast2pic_meta()
       ├─ screen_to_epd_number()
       ├─ send_cast2pic_result()
-      └─ dataup_async_worker
+      └─ image_business_worker owner=CAST2PIC
          ├─ build tdx_image_transfer_item_t
          └─ TdxImageTransfer_ProcessItems()
             ├─ show=true
             │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
-            └─ save=true
-               └─ CastSaveTask
-                  └─ save /data/cast_img/screen_a/screen_b .bin and .jpg
+            └─ save=true（当前统一任务内同步保存）
+               └─ save /data/cast_img/screen_a/screen_b .bin and .jpg
 ```
 
 说明：network cast2pic 和 USB cast2pic 校验完整请求后立即返回 `cast2pic_result=0`。`result=0` 只表示接收成功，不表示 EPD 显示或保存成功；后续动作在后台执行，失败只记录日志，不返回第二个结果。`show=false && save=false` 时不提交后台任务。
@@ -1292,10 +1320,10 @@ OTA 首次启动时，独立的 GPIO test 和 factory-reset task 初始化失败
 ```text
 网络 HTTP：main/server_network_sta/ping/server_network_sta_ping.c
 USB HTTP-like：main/usb_console_echo/ping/usb_console_ping.c
-EPD BUSY 判定：main/epd_display/epd_display_app.cpp
+统一UPLOAD资源判定：main/server_network_sta/upload/server_network_sta_upload_gate.c
 ```
 
-功能说明：用于 App/PC 判断设备 HTTP 服务是否可用，通过 `Ble_MAC` 防止缓存 IP 指向错误设备，并通过 `EPD` 字段告知当前 EPD display task 是忙碌还是空闲。网络 ping 匹配 `/ping` 路径，并允许携带 query/hash 后缀，例如 `/ping?t=123`。每次有效网络 `/ping` 都调用 `ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()`，从当前时刻重新产生 20 秒 HTTP 关机保护，但不重置完整 `wifi_work_time`、不写 NVS。网络 ping 响应会设置 `Connection: close`，避免 App/PC 的 keep-alive 长时间占用 HTTP socket。
+功能说明：用于App/PC判断设备服务是否可用，通过 `Ble_MAC` 防止缓存IP指向错误设备，并通过 `EPD` 字段告知当前是否允许尝试network upload。网络和USB ping使用同一个UploadGate规则，不再各自判断；字段名为兼容现有APP保持 `EPD` 不变。网络ping匹配 `/ping` 路径并允许query/hash后缀。每次有效网络ping仍刷新20秒HTTP关机保护并设置 `Connection: close`。
 
 Mermaid 时序图：
 
@@ -1309,7 +1337,7 @@ sequenceDiagram
     HTTP->>PING: route ping request
     PING->>PING: ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()
     PING->>MAC: get_ble_mac_no_colon()
-    PING->>PING: ServerNetworkStaEpdDisplay_IsBusy()
+    PING->>PING: ServerNetworkStaUploadGate_IsBusy()
     PING-->>APP: ping_result + EPD + Ble_MAC
 ```
 
@@ -1320,7 +1348,7 @@ HTTP GET /ping
 └─ ServerNetworkStaPing_ProcessGet()
    ├─ ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()
    ├─ get_ble_mac_no_colon()
-   ├─ ServerNetworkStaEpdDisplay_IsBusy()
+   ├─ ServerNetworkStaUploadGate_IsBusy()
    ├─ httpd_resp_set_hdr(Connection: close)
    └─ httpd_resp_sendstr()
 ```
@@ -1353,8 +1381,8 @@ GET /ping#check HTTP/1.1
 `EPD` 字段取值：
 
 ```text
-BUSY  EPD display task 正在执行、已有 pending job 或队列仍有任务
-IDLE  EPD display task 空闲
+BUSY  当前不能安全开始network upload
+IDLE  当前允许尝试network upload；upload入口仍做最终零等待预约
 ```
 
 BLE MAC 尚未取得时仍返回完整字段：
@@ -1369,7 +1397,7 @@ BLE MAC 尚未取得时仍返回完整字段：
 }
 ```
 
-网络和 USB 当前都固定输出字段名 `Ble_MAC`，不输出小写 `ble_mac`。前端可以兼容旧资料中的小写写法，但当前设备协议和文档统一使用 `Ble_MAC`。前端写操作前应访问目标设备的 `/ping`，并校验非空 `Ble_MAC` 与目标设备一致。
+网络和USB固定输出字段名 `Ble_MAC`，并使用完全相同的UploadGate BUSY/IDLE规则。前端写操作前应访问目标设备的 `/ping`；ping与后续upload之间可能发生状态变化，因此ESP32 upload入口会再次检查，BUSY时返回1007且不保存。
 
 
 
@@ -1383,7 +1411,8 @@ BLE MAC 尚未取得时仍返回完整字段：
 取：
 - 读取 CH583 BLE MAC 字符串，用于返回 Ble_MAC。
 - BLE MAC 来源可能是 CH583 模块上报后保存在 PhotoPainter NVS 的值。
-- 读取 EPD display task 状态，用于返回 `EPD=BUSY/IDLE`。
+- 读取统一任务关键阶段/pending、EPD预约和队列、Shared SPI、图片保存、EPD/SD电源切换、Factory Reset、OTA及UPLOAD预约状态。
+- DAILY/SLIDESHOW只在等待下一时间点且EPD/SD/SPI实际空闲时允许IDLE；完全掉电但可由下一请求恢复的稳定状态不形成永久BUSY。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -1566,13 +1595,13 @@ startIndex 必填；从 0 开始，必须小于 APP 最终发送的 fileNames �
 - `ServerNetworkStaSlideshow_GetScheduleTiming()` 可读取 RTC 轮播的 now / next / remain；`ServerNetworkStaSlideshow_GetRuntimeTiming()` 只作为非 RTC 兼容状态读取。
 - slideshow_run_runtime() 在 EPD 显示成功且下一进度保存成功后，SNTP 模式按绝对槽计算下一目标；其他时间源继续使用原 RTC 进度逻辑。
 - slideshow_run_runtime() 在上一张 EPD 显示完成并保存下一进度后，会在剩余 interval 时间内用 PSRAM 预加载下一张 bin 并做 SHA-256 文件名校验；RTC 真实目标时间保持 `next_epoch` 不变，但设备内部会在 `next_epoch - lead_seconds` 时进入 EPD 显示流程，用于抵消 SD / 调度 / EPD 调用链路开销。`lead_seconds` 按当前 EPD type 选择：`EPD_TYPE_1600_1200_133_DKE` 为 1 秒，`EPD_TYPE_1600_1200_133` 为 3 秒，其它屏型使用默认 `TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS=2` 秒。若 PSRAM 预加载失败，已保存的下一进度不变，下一轮会重新读取该图片，不长时间占用内部 RAM，不影响停止和失败不推进的规则。
-- 业务基础文件名缓冲从 48 字节缩为 17 字节后，150 项轮播列表由 7200 字节降为 2550 字节，轮播 runtime 由约 7.5 KB 降到约 2.9 KB；runtime 仍优先从 PSRAM 分配，失败时兼容回退内部 RAM。轮播主循环、每日一图和开机轮播启动延迟统一提交给启动早期创建的9KB静态 `image_business_worker`，旧6KB轮播静态栈、旧7KB daily静态栈、两个旧TCB以及轮播启动延迟的6KB动态任务全部取消。统一worker同一时间只执行一个owner，轮播停止使用generation和可中断等待唤醒，runtime结束后释放并返回统一worker空闲状态。新命令的runtime启动失败仍禁用NVS `slide_ctl`、恢复NORMAL并返回1506；开机自动恢复临时失败仍保留控制、模式和进度等待下次唤醒。
+- 业务基础文件名缓冲从 48 字节缩为 17 字节后，150 项轮播列表由 7200 字节降为 2550 字节，轮播 runtime 由约 7.5 KB 降到约 2.9 KB；runtime 仍优先从 PSRAM 分配，失败时兼容回退内部 RAM。轮播主循环、每日一图、开机轮播启动延迟、Local Image Browsing及cast/cast2pic后台业务统一提交给启动早期创建的12KB静态 `image_business_worker`；旧轮播、daily、Local、cast保存和USB worker任务均已取消。统一worker同一时间只执行一个owner，轮播停止使用generation和可中断等待唤醒，runtime结束后释放并返回统一worker空闲状态。新命令的runtime启动失败仍禁用NVS `slide_ctl`、恢复NORMAL并返回1506；开机自动恢复临时失败仍保留控制、模式和进度等待下次唤醒。
 - RTC 轮播显示失败时不立即重试；当前失败图片视为跳过，先保存并切换到下一张 pending_file，再排到下一次 RTC 播放点，等待下一次轮播到来后显示下一张图片。若跳过进度保存失败，则不推进当前 progress，但仍排到下一次 RTC 播放点，避免立即重试。
 - `lead_seconds` 只用于提前进入 EPD 硬件刷新，目标图片仍按逻辑播放点的绝对槽选择，不使用提前后的时间改变图片索引。
 - 相同文件名出现在不同列表索引时，按不同播放事件处理；如果随机后的最终列表包含相邻相同名称，设备会在相邻两个 RTC 播放点分别调用 EPD 显示同一文件，这是当前产品策略的预期行为。
 
 取：
-- ServerNetworkStaSlideshow_StartSavedDelayed() 只用于开机自动恢复轮播：启动位置仍保持在网络初始化之后，但先等待 `TDX_SLIDESHOW_STARTUP_DELAY_MS=10000` 毫秒；等待期间手机 APP 或 USB Serial 的 cast/cast2pic/upload `show=true` 请求优先进入 EPD 显示；延迟结束时如果 EPD task 仍忙，则继续推迟启动。
+- ServerNetworkStaSlideshow_StartSavedDelayed() 只用于开机自动恢复轮播：启动位置仍保持在网络初始化之后，但先等待 `TDX_SLIDESHOW_STARTUP_DELAY_MS=10000` 毫秒；等待期间cast/cast2pic仍按原规则处理，network upload仅能以 `show=false && save=true` 在UploadGate空闲时同步保存；延迟结束时如果EPD或SD资源仍忙，则继续推迟启动。
 - 延迟结束后先重新读取 control；如果 `show=true` 已把 control 写成 `sw=0`，则跳过自动恢复；EPD 忙时继续推迟。启动时没有 SNTP 就按原 CH583/CH585、anchor fallback 和 pending_file 逻辑运行，不等待网络时间；运行中首次取得 SNTP 时，等待当前 EPD 操作结束后一次性切换到绝对时间槽。若本次 runtime 已消费过播放事件，且此时 progress 的列表索引和文件名已经共同指向当前绝对槽的下一项，则认为当前槽已经消费，直接等待下一绝对播放点，不重复调用 EPD；否则显示 SNTP 计算出的当前槽。
 - 读取 NVS control 时严格校验 magic、version、size、CRC、interval、timestamp 和 anchor_epoch；enabled control 还必须与 config generation 相同，否则不启动轮播，也不回退到 task tick 计时。
 - ServerNetworkStaSlideshow_StartSaved() 仍用于立即启动已保存轮播，不带开机 10 秒延迟。
@@ -1803,7 +1832,7 @@ startIndex    start_slideshow 保存的起始图片索引；缺少或非法配�
 
 结果码以 [README_Result_Code.md](README_Result_Code.md) 为准。
 
-功能说明：网页端或 App 上传图片到设备 SD 卡；字段与 `cast` 基本一致，主要用于保存图片，也可在 `show=true` 时立即显示。
+功能说明：网页端或App上传图片到设备SD卡。network upload固定只接受 `show=false && save=true`；`show=true` 或 `save=false` 由ESP32直接返回错误，不显示也不保存。
 
 Mermaid 时序图：
 
@@ -1813,19 +1842,18 @@ sequenceDiagram
     participant DATAUP as POST /dataUP
     participant UP as ServerNetworkStaUpload_Process
     participant CORE as TdxImageTransfer
-    participant SAVE as CastSaveTask
-    participant EPD as EPD Display Queue
+    participant SAVE as cast_core同步保存
+    participant GATE as UploadGate/EPD/SPI预约
     APP->>DATAUP: multipart func=upload
     DATAUP->>UP: route by func
-    UP->>CORE: parse and validate fields/file sizes
-    UP-->>APP: upload result
-    UP-->>DATAUP: HTTP handler done
-    alt show=true
-        CORE->>EPD: ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
-    end
-    alt save=true
-        CORE->>SAVE: submit save task and wait result
-        SAVE->>SAVE: save bin and jpg
+    UP->>CORE: parse and validate show=false/save=true/fields/file sizes
+    UP->>GATE: zero-wait TryReserve
+    alt resource BUSY
+        UP-->>APP: upload_result result=1007
+    else reserved
+        CORE->>SAVE: save bin and jpg synchronously
+        UP->>GATE: Release on every exit
+        UP-->>APP: final upload_result
     end
 ```
 
@@ -1839,18 +1867,19 @@ HTTP multipart /dataUP
       │  ├─ UsbConsoleCommon_ExtractBoundary()
       │  ├─ UsbConsoleCommon_MultipartParts()
       │  └─ UsbConsoleCommon_FileNameIsSafe()
-      ├─ httpd_resp_sendstr()
-      └─ dataup_async_worker
-         └─ TdxImageTransfer_ProcessItems()
-            ├─ show=true
-            │  └─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
-            └─ save=true
-               └─ CastSaveTask
-                  ├─ save /data/bin_img/<fileName>.bin
-                  └─ save /data/jpg_img/<fileName>.jpg
+      ├─ 校验 show=false && save=true
+      ├─ ServerNetworkStaUploadGate_TryReserve()
+      │  ├─ EPD idle reservation
+      │  └─ TdxSharedSpi_Lock(0)
+      ├─ TdxImageTransfer_ProcessItems()
+      │  └─ cast_core同步保存
+      │     ├─ save /data/bin_img/<fileName>.bin
+      │     └─ save /data/jpg_img/<fileName>.jpg
+      ├─ ServerNetworkStaUploadGate_Release()
+      └─ httpd_resp_sendstr(final result)
 ```
 
-说明：network upload 与 USB upload 共享 `TdxImageTransfer_ParseSingle()`、`TdxImageTransfer_ProcessItems()` 和 `CastSaveTask`。network upload 在 `show=true` 时解析和字段校验通过后先返回 `upload_result=0` 并结束 HTTP handler；EPD 显示和保存由固定的 `dataup_async_worker` 调用 `upload_async_process()` 后台执行。后台存在 `show=true` 时先停止轮播、写 NVS `slide_ctl.enabled=false` 并读回确认，再等待 EPD 显示任务完成；`save=true` 时再提交保存任务。`show=false` 的 network upload 仍同步返回最终结果。
+说明：network upload与USB upload继续共享 `TdxImageTransfer_ParseSingle()` 和 `TdxImageTransfer_ProcessItems()` 的解析及保存实现；USB upload自身协议不变。network upload不再存在异步显示路径，也不创建 `dataup_async_worker`。网络与USB ping统一通过UploadGate返回UPLOAD资源的BUSY/IDLE；SLIDESHOW或DAILY仅在等待下一时间点且EPD/SD/SPI实际空闲时允许IDLE，一次性owner运行、pending、EPD、Shared SPI、SD电源切换、Factory Reset、OTA或另一个UPLOAD预约均返回BUSY。ping只是预检查，network upload入口仍必须再次零等待预约。
 
 成功或失败返回 JSON 会包含 `fileName`、`bin_file`、`image_file`、`save`、`show`、`error` 字段；成功时 `message="upload success"` 且 `error="no error"`。
 
@@ -1904,7 +1933,9 @@ image=@67890.jpg
 取：
 - 读取 multipart 字段 func/fileName/bin_size/image_size/save/show/bin/image。
 - 写入前读取存储剩余空间。
-- show=true 时读取上传数据后先返回 upload_result，后台再等待 EPD 显示任务完成并保存。
+- network upload只接受show=false、save=true；资源忙返回1007且不保存。
+- ESP32收到show=true或save=false时返回1603上传无效错误，不静默改写字段。
+- 保存采用临时文件、长度校验和rename原流程；所有成功/失败出口都释放Shared SPI、EPD reservation和UploadGate。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -2217,7 +2248,7 @@ SNTP 同步成功响应示例：
 
 ### 7.14 factory_reset：GPIO28/PB1 恢复出厂 <span id="sec-07-14"></span>
 
-功能说明：GPIO28继续作为本地恢复出厂按键，默认高电平、按下为低电平，每300ms检测并要求连续低电平达到 `TDX_FACTORY_RESET_HOLD_MS=5000` ms。CH583的PB1通过首次 `DEVICE_INFO.wake_reason=KEY_PB1` 或合法的 `KEY_EVENT ARG=PB1,PRESS` 提交同一恢复出厂逻辑；KEY_EVENT不依赖DEVICE_INFO状态，UART任务只保存RAM请求，由原有Factory Reset任务执行。帧格式及USB独立重启规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
+功能说明：GPIO28继续作为本地恢复出厂按键，默认高电平、按下为低电平，每300ms检测并要求连续低电平达到 `TDX_FACTORY_RESET_HOLD_MS=5000` ms。CH583的PB1通过首次 `DEVICE_INFO.wake_reason=KEY_PB1` 或合法的 `KEY_EVENT ARG=PB1,PRESS` 提交同一恢复出厂逻辑；KEY_EVENT不依赖DEVICE_INFO状态，UART任务只保存RAM请求。原5KB Factory Reset任务继续负责GPIO28/PB1检测和请求状态，确认执行后把小型trigger/seq payload提交给永久常驻统一任务 `owner=FACTORY_RESET`；文件、NVS和EPD逻辑不再在检测任务中执行。帧格式及USB独立重启规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 
 安全边界：
 
@@ -2252,16 +2283,18 @@ EPD busy 时不检测 GPIO28，不累计按键时间。
 只有 EPD IDLE 时，GPIO28 task 才读取按键。
 短按或误按不设置关机保护；只有连续低电平达到 5000 ms、正式确认执行恢复出厂后，才在删除文件和修改 NVS 前设置 Factory Reset guard，阻止普通 work_state_task 抢先关机。
 PB1请求使用IDLE/PENDING/RUNNING/COMPLETED RAM状态合并重复帧；请求早于Factory Reset初始化时先保留PENDING，任务创建成功后补设guard，任务已就绪时接受请求后立即设guard并等待EPD空闲。
+确认执行时不在检测任务中等待其他图片owner：FACTORY_RESET可替换普通pending图片命令，并非阻塞停止DAILY、SLIDESHOW和LOCAL_IMAGE；当前EPD或已经成为current的投屏事务安全结束后，由统一任务串行执行FACTORY_RESET。FACTORY_RESET一旦pending/current，其他图片owner不得覆盖。
+统一任务提交临时失败时把RUNNING恢复为PENDING并保留guard，由300ms检测周期继续提交；成功提交前不得删除文件或修改NVS。
 触发后先停止轮播，再删除 upload/slideshow 图片、cast/cast2pic 缓存图片和轮播配置。
 先把 `epd_mode` 强制保存为 `USER_EPD_DISPLAY_MODE_DEFAULT`；即使当前已经是默认模式也重新写入并读回校验。只有保存成功后才删除 `daily_cfg`，避免运行中的 daily worker 恢复已清除配置。
-文件不存在按无需删除处理；实际文件删除失败、路径过长或目录读取错误进入最终 `ret`，恢复失败时不显示欢迎图，也不提交 CH583 关机请求。
-全部清理成功后，使用固件内置的 `DOC/welcome.bin` zlib 常量显示欢迎图，并同步等待 EPD 实际完成。当前同步等待上限为5分钟，可覆盖约40～50秒的正常刷新时间；不使用固定延时推测显示完成。
-欢迎图显示成功后发送未配网 WIFI_PROVISION，并向 work_state_task 提交 Factory Reset 专用关机请求；尺寸不匹配、解压、入队或显示失败时记录关键错误且不提交该请求。
-成功时先发布专用关机请求再清除 Factory Reset guard；失败时不发布专用请求并清除 guard。无论成功或失败 guard 都必须清除。
-只有欢迎图显示完成后，work_state_task 才固定发送 WAKE_TIMER ON,10，再沿用 LED、SPI 和 busy 复检发送 POWER_OFF；CH583关闭ESP32电源并计时10秒后重新供电，随后以 `DEVICE_INFO.wake_reason=TIMER` 完成新一轮冷启动握手，不得继续上报KEY_PB1。
-Factory Reset 专用请求不写工作时间 NVS，不修改普通 wifi_work_time、轮播或 DAILY 关机规则。
+文件不存在按无需删除处理；实际文件删除失败、路径过长或目录读取错误进入最终 `ret`，恢复失败时不设置欢迎图待显示标志，也不显示白屏。
+全部清理成功后，把 `PhotoPainter:fr_welcome` 写入并读回校验为1，再按 `WHITE=0x11` 填充当前屏幕大小的一份PSRAM缓冲区并同步等待白屏实际显示完成。白屏不新增固件图片常量，显示完成后释放缓冲区。
+白屏显示成功后发送未配网 WIFI_PROVISION 并结束本次 Factory Reset；不向 work_state_task 提交专用关机请求，不发送 Factory Reset 专用 `WAKE_TIMER` 或 `POWER_OFF`，ESP32保持运行和白屏状态。标志保存、内存分配、入队或白屏显示失败时记录关键错误；已经成功保存的标志仍保留供以后冷启动恢复。
+成功或失败都必须清除 Factory Reset guard，避免影响之后的普通关机；清除guard不会触发Factory Reset专用重启。
+`fr_welcome`一直保留到客人以后真正开机。该次冷启动先完成EPD初始化、存储挂载和Factory Reset初始化，再在网络业务启动前检查标志；值为1时显示固件内置的 `DOC/welcome.bin` zlib欢迎图，显示成功后删除标志并完成整个Factory Reset流程，失败则保留标志供下次冷启动重试。存储未就绪时不显示且不清除标志。
+取消Factory Reset专用断电重启不修改普通 wifi_work_time、轮播或 DAILY 的既有关机规则。
 长按触发后进入等待松手状态；GPIO28 恢复高电平前不会再次触发。
-TDX_FACTORY_RESET_RESTART_AFTER_DONE 保持为 0；重新上电由 CH583 WAKE_TIMER 完成。
+Factory Reset代码不再保留完成后调用 `esp_restart()` 的条件分支；ESP32和CH583都不执行专用重启，欢迎图等待客人以后开机时显示。
 ```
 
 关键日志：
@@ -2269,8 +2302,14 @@ TDX_FACTORY_RESET_RESTART_AFTER_DONE 保持为 0；重新上电由 CH583 WAKE_TI
 ```text
 factory reset gpio init pin=28 active=0 check_ms=300 hold_ms=5000
 factory reset button held gpio=28 hold_ms=5100, start clear images
-factory reset welcome display completed compressed_size=278250
-factory reset done source=GPIO28 seq=0 ret=ESP_OK upload_bin_deleted=... upload_jpg_deleted=... cast_bin_deleted=... cast_jpg_deleted=... cfg_deleted=... file_delete_failed=0 file_ret=ESP_OK nvs_ret=ESP_OK welcome_display_ret=ESP_OK
+factory reset worker submitted source=GPIO28 seq=0 generation=...
+image_worker: job start owner=FACTORY_RESET generation=...
+factory reset welcome pending saved
+factory reset white display completed color=0x11
+factory reset done source=GPIO28 seq=0 ret=ESP_OK upload_bin_deleted=... upload_jpg_deleted=... cast_bin_deleted=... cast_jpg_deleted=... cfg_deleted=... file_delete_failed=0 file_ret=ESP_OK nvs_ret=ESP_OK welcome_pending_ret=ESP_OK white_display_ret=ESP_OK
+image_worker: job done owner=FACTORY_RESET generation=... ret=ESP_OK min_free=... peak_used=... configured=12288
+factory reset startup welcome begin
+factory reset startup welcome completed, pending flag cleared
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -2341,7 +2380,7 @@ main/tdx_cfg.h                           DAILY标志和限制
 ```text
 app_main
 ├─ EpdDisplayMode_Init()读取PhotoPainter:epd_mode
-├─ ImageBusinessWorker_Init()创建9KB统一静态worker和单pending命令槽
+├─ ImageBusinessWorker_Init()创建12KB统一静态worker和单pending命令槽
 ├─ ServerNetworkStaDailyImage_Init()初始化daily配置mutex和基础状态
 ├─ 启动WiFi、HTTP和SNTP
 └─ ServerNetworkStaDailyImage_StartSaved()
@@ -2401,7 +2440,7 @@ daily_download_file
 - daily重复检查关机时保留已激活的一次性截止时间，不重新开始倒计时。
 - daily申请一次性关机时记录DAILY owner；模式切换只取消DAILY拥有的一次性关机，不取消其他功能新建的倒计时。
 - daily one-shot激活后若cast/cast2pic/slideshow把模式切离DAILY，恢复原工作时间并取消旧daily关机。
-- daily与slideshow共用9KB内部RAM静态 `image_business_worker`、一个静态TCB、一个静态状态mutex和一个640字节单pending命令槽；统一worker在WiFi、HTTP等可选服务之前创建并永久常驻。旧daily queue、独立daily/轮播任务栈以及轮播启动延迟任务已取消。启动打印一次统一静态资源，命令完成时打印owner、返回值、最小栈余量和峰值，正常空闲不重复打印。
+- daily、slideshow、Local Image Browsing、cast和cast2pic共用12KB内部RAM静态 `image_business_worker`、一个静态TCB、一个静态状态mutex和一个640字节单pending命令槽；统一worker在WiFi、HTTP和USB等可选服务之前创建并永久常驻。旧daily queue、独立daily/轮播/Local/cast保存/USB worker任务均已取消。启动打印一次统一静态资源，命令完成时打印owner、返回值、最小栈余量和峰值，正常空闲不重复打印。
 - 新配置保存后若停止轮播、模式或任务提交失败，恢复旧daily_cfg；不自动恢复轮播，模式保持NORMAL。
 - 新配置首次保存失败时尚未停止轮播：恢复旧daily_cfg并保留原NORMAL/SLIDESHOW；旧模式为DAILY时回到NORMAL。
 ```
@@ -2465,7 +2504,7 @@ flowchart TD
 | Factory Reset 清理中 | 快闪 | 常亮 | 绿灯亮 600 ms、灭 600 ms | 正在清除图片、播放状态和 WiFi 配网 |
 | 准备关机、倒计时中 | 常亮 | 关闭 | 倒计时期间持续 | EPD 工作完成，等待发送 POWER_OFF |
 | 严重系统错误 | 关闭 | 常亮 | 持续 | 关键模块不可恢复错误 |
-| 即将软件重启 | 关闭 | 常亮 | 保持到重启 | OTA 或 Factory Reset 完成并准备重启 |
+| 即将软件重启 | 关闭 | 常亮 | 保持到重启 | OTA 完成并准备重启 |
 
 ### 13.2 状态优先级 <span id="sec-13-2"></span>
 
@@ -2595,8 +2634,8 @@ HTTP POST /dataUP
 存：
 - network/USB cast 使用 TdxCastCore_ProcessValidatedCastDir()。
 - show=true 时先等待 ServerNetworkStaEpdDisplay_QueueToScreenAndWait() 完成。
-- network/USB cast/cast2pic save=true 时提交 CastSaveTask 保存到 /data/cast_img；network/USB upload 仍保存到 /data/bin_img 与 /data/jpg_img。
-- CastSaveTask 使用 <fileName>.<ext>.tmp 临时文件，写完校验大小后 rename 成正式文件。
+- network/USB cast/cast2pic save=true 时在统一业务上下文同步保存到 /data/cast_img；network/USB upload仍保存到 /data/bin_img 与 /data/jpg_img。
+- 同步保存函数使用 <fileName>.<ext>.tmp 临时文件，写完校验大小后 rename 成正式文件。
 - network/USB cast 的 last cast 文件名写入默认 NVS `image_state:last_cast` Blob。
 
 取：
@@ -2633,7 +2672,7 @@ USB Serial/JTAG
    ├─ UsbConsoleCast_Process()
    ├─ TdxCastCore_ProcessValidatedCastDir()
    ├─ ServerNetworkStaEpdDisplay_QueueToScreenAndWait()
-   └─ CastSaveTask save /data/cast_img
+   └─ image_business_worker内同步保存 /data/cast_img
 ```
 
 
@@ -2643,11 +2682,11 @@ USB Serial/JTAG
 
 ```text
 存：
-- USB cast 在 save=true 时通过 TdxCastCore_ProcessValidatedCastDir() 提交 CastSaveTask。
-- CastSaveTask 写入：/data/cast_img/<fileName>.bin。
-- CastSaveTask 写入：/data/cast_img/<fileName>.jpg。
-- CastSaveTask 使用临时文件写入并 rename 成正式文件。
-- func=cast 且 save=true 时，CastSaveTask 写入 last cast 记录文件。
+- USB cast 在 save=true 时通过统一任务调用 TdxCastCore_ProcessValidatedCastDir() 同步保存。
+- 同步保存写入：/data/cast_img/<fileName>.bin。
+- 同步保存写入：/data/cast_img/<fileName>.jpg。
+- 同步保存使用临时文件写入并 rename 成正式文件。
+- func=cast 且 save=true 时，同步保存写入 last cast 记录。
 - 保存和 last cast 记录全部成功后，清理 /data/cast_img 中非本次 <fileName> 的旧 .bin/.jpg。
 
 取：
@@ -2807,7 +2846,7 @@ main/data_compression/
 
 `epd_mode=3(LOCAL_IMAGE_BROWSING)` 是独立持久模式。功能代码只位于 `main/local_image_browsing/`，专用宏统一定义在 `local_image_browsing.h`。启动读到模式3时恢复浏览游标，不启动 DAILY 或 SLIDESHOW，也不自动换图；首次 `DEVICE_INFO.wake_reason=KEY_PB2` 或合法的 `KEY_EVENT ARG=PB2,PRESS` 都可触发，KEY_EVENT不依赖DEVICE_INFO状态。UART早于本模块初始化收到的PB2事件进入长度为10的启动FIFO，初始化阶段按到达顺序逐个尝试；第一项预约EPD后，其余项仍按EPD BUSY规则拒绝，不合并也不丢失初始化交界点事件。帧格式及来源互斥规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 
-BIN目录扫描不建立RAM或SD索引文件，只保留本次候选、候选后继和循环首项等少量17字节名称缓冲。原来的150项RAM列表已删除，静态内部RAM减少2556字节。Local独立8KB任务和长度1的FreeRTOS queue也已删除；请求作为 `owner=LOCAL_IMAGE` 提交给9KB永久常驻统一任务，栈余量由统一 `job done` 日志统计。
+BIN目录扫描不建立RAM或SD索引文件，只保留本次候选、候选后继和循环首项等少量17字节名称缓冲。原来的150项RAM列表已删除，静态内部RAM减少2556字节。Local独立8KB任务和长度1的FreeRTOS queue也已删除；请求作为 `owner=LOCAL_IMAGE` 提交给12KB永久常驻统一任务，栈余量由统一 `job done` 日志统计。
 
 每个新的、合法且 ACK 成功的 PB2 事件尝试一次换图；相同KEY_EVENT SEQ或重复DEVICE_INFO不重复执行业务。先通过 EPD 专用空闲预留原子判断 BUSY/IDLE：BUSY 时本次事件立即结束，不排队、不切模式、不推进游标；IDLE 时预留 EPD，原子安装pending LOCAL_IMAGE并非阻塞使DAILY/SLIDESHOW失效，旧owner返回后由统一任务保存模式3并扫描 `/data/bin_img`。切换入口不使用 `StopAndWait()`。
 

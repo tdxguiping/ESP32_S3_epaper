@@ -2,7 +2,7 @@
 
 本文件集中保存开发阶段的测试方法和命令。测试前先确认设备已联网，并把示例 IP、文件路径改为实际值。接口协议见 [README_Protocol.md](README_Protocol.md)，预期业务行为见 [README_Fun.md](README_Fun.md)，结果码见 [README_Result_Code.md](README_Result_Code.md)。
 
-持久状态专项检查：启动日志应出现 `persistent image-state ready partition=default namespace=image_state`。完整烧录和应用程序 OTA 前后都必须读取同一默认 NVS 分区；SD 中不得建立或读取轮播配置、轮播控制和 last-cast `.txt`。测试 `start_slideshow` 后重启应恢复同一列表、startIndex 和 RTC anchor；`set_slideshow sw=0/1`、daily、本地浏览以及 show=true cast/upload 应只更新 NVS control；cast 成功应打印 `last cast saved`，cast2pic 清理时应打印 `last cast state cleared`。启动时 CH583 UART 必须先于轮播模式协调和 USB 入口就绪；control/config generation 不一致或 control 无效必须禁用轮播并把 SLIDESHOW mode 协调为 NORMAL；DAILY 和 LOCAL_IMAGE_BROWSING mode 优先，不能被旧轮播 control 覆盖。独立的 `slide_random` key 不应再读写。NVS 写入、读回、CRC、generation 或容量异常使用 `ESP_LOGE`，状态协调使用必要的 `ESP_LOGW/ESP_LOGI`，不得为正常读取或未变化 control 逐条刷日志。
+持久状态专项检查：启动日志应出现 `persistent image-state ready partition=default namespace=image_state`。完整烧录和应用程序 OTA 前后都必须读取同一默认 NVS 分区；SD 中不得建立或读取轮播配置、轮播控制和 last-cast `.txt`。测试 `start_slideshow` 后重启应恢复同一列表、startIndex 和 RTC anchor；`set_slideshow sw=0/1`、daily、本地浏览以及show=true cast应只更新NVS control；network upload固定show=false/save=true且不修改显示模式。cast成功应打印 `last cast saved`，cast2pic清理时应打印 `last cast state cleared`。启动时 CH583 UART 必须先于轮播模式协调和 USB 入口就绪；control/config generation 不一致或 control 无效必须禁用轮播并把 SLIDESHOW mode 协调为 NORMAL；DAILY 和 LOCAL_IMAGE_BROWSING mode 优先，不能被旧轮播 control 覆盖。独立的 `slide_random` key 不应再读写。NVS 写入、读回、CRC、generation 或容量异常使用 `ESP_LOGE`，状态协调使用必要的 `ESP_LOGW/ESP_LOGI`，不得为正常读取或未变化 control 逐条刷日志。
 
 ## 目录 <span id="toc"></span>
 
@@ -87,6 +87,8 @@ curl.exe -X POST "$esp/dataUP" `
 
 预期：`show=true` 时设备返回 `cast_received` 后立即结束 HTTP 响应，EPD 显示和保存由后台继续执行；`save=false` 会返回失败，不作为“只显示不保存”的 cast 用法。
 
+统一任务与内存检查：请求成功后应出现 `image_worker: job start owner=CAST`，最终出现 `job done owner=CAST ... configured=12288`；不得出现 `cast_core: save task started`、`CastSaveTask`、`save_queue_full` 或保存等待semaphore相关日志。显示、保存BIN、保存JPG、写 `last_cast` 和清理旧文件的先后顺序必须与修改前一致。第二个network cast/cast2pic在第一个仍为current或pending时应返回BUSY，不得覆盖第一个body。投屏pending期间即使工作时间到期也不得关机，结束后 `image transfer pending count` 必须回到0。
+
 ---
 
 ### 2.3 cast2pic：投屏转图片缓存 / 显示 <span id="sec-02-3"></span>
@@ -115,6 +117,12 @@ curl.exe -X POST "$esp/dataUP" `
 ```
 
 预期：完整接收并校验后返回 `{"func":"cast2pic_result","result":0}`；显示和保存结果只写日志。
+
+统一任务检查：请求成功后应出现 `image_worker: job start owner=CAST2PIC`；`screen=a -> EPD2 -> screen_b.bin/.jpg` 和 `screen=b -> EPD1 -> screen_a.bin/.jpg` 的映射不得变化。分别覆盖 `show/save=true/false` 原有组合，确认返回时机、返回码、显示顺序、临时文件rename及旧cast目录清理均不变化。
+
+切换测试：分别让DAILY处于等待/下载、SLIDESHOW处于10秒启动延迟/运行、LOCAL_IMAGE处于pending/EPD已开始，然后发送network cast或cast2pic。pending旧owner应被原子替换；current旧owner只在安全点退出；已经开始的EPD不得强制中断。旧owner结束后只允许一个CAST/CAST2PIC运行，不得出现两个current owner、body重复释放、传输引用计数下溢或WiFi提前断电。
+
+USB降级与网络优先测试：启动日志应出现 `usb_console_worker: inline mode enabled, no worker task or queue`，不得出现 `UsbConsoleWorker`任务创建日志。普通USB命令在USB接收任务当前上下文完成；USB cast/cast2pic分别提交 `owner=USB_CAST/USB_CAST2PIC`。在USB投屏仍为pending时发送network cast，网络owner应替换USB pending，USB cast收到一次 `network_priority` 失败；若USB EPD已经开始，不强制中断，网络请求按现有EPD BUSY规则处理。USB测试失败不得影响随后network cast/cast2pic成功。
 
 ---
 
@@ -356,9 +364,11 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 运行中首次取得 SNTP 的防重复测试：使用 A、B、C 三个不同文件并设置 `interval=300`，启动时暂时阻止 SNTP、保留 CH583/RTC 可用，让 A 完成一次 EPD 显示，再于完成后 10～30 秒恢复 SNTP。预期切换日志包含 `current_consumed=1 action=wait_next`，A 不再次进入 EPD，B 等待下一个绝对播放点。反向测试应在 A 尚未显示前恢复 SNTP，预期日志包含 `current_consumed=0 action=display_current`，当前绝对槽仍正常显示。
 
-轮播 runtime 内存测试：16 字节基础名规则下，150 项名称数组应为2550字节，runtime约2.9KB并优先使用PSRAM。启动早期只应打印一次 `image_worker: static resources ... stack=9216` 和 `image_worker: started stack=9216`；不得再出现 `slideshow static worker started`、独立daily/local worker或 `slide_start_delay` 任务创建日志。轮播、每日一图、轮播启动延迟和本地浏览分别执行后，应出现对应 `image_worker: job done owner=SLIDESHOW/DAILY/LOCAL_IMAGE ... min_free=... peak_used=... configured=9216`。连续启动/停止至少100次，确认统一worker始终常驻、没有堆持续下降、没有queue永久BUSY、reservation泄漏或重复释放runtime。新命令runtime失败仍返回1506并回滚控制及模式；开机恢复临时失败仍保留 `slide_ctl.enabled=true`、`epd_mode=SLIDESHOW` 和原进度。
+轮播 runtime 内存测试：16 字节基础名规则下，150 项名称数组应为2550字节，runtime约2.9KB并优先使用PSRAM。启动早期只应打印一次 `image_worker: static resources ... stack=12288` 和 `image_worker: started stack=12288`；不得再出现 `slideshow static worker started`、独立daily/local/cast保存/USB worker或 `slide_start_delay` 任务创建日志。轮播、每日一图、轮播启动延迟、本地浏览、投屏及恢复出厂执行分别完成后，应出现对应 `image_worker: job done owner=SLIDESHOW/DAILY/LOCAL_IMAGE/CAST/CAST2PIC/FACTORY_RESET ... min_free=... peak_used=... configured=12288`。Factory Reset原5KB检测任务本阶段仍应存在，且只做GPIO28/PB1检测和统一任务提交。每条完整路径 `min_free` 必须不少于2048字节。连续启动/停止至少100次，确认统一worker始终常驻、没有堆持续下降、没有queue永久BUSY、reservation泄漏、投屏body泄漏或重复释放runtime。新命令runtime失败仍返回1506并回滚控制及模式；开机恢复临时失败仍保留 `slide_ctl.enabled=true`、`epd_mode=SLIDESHOW` 和原进度。
 
 统一worker启动延迟抢占测试：保存SLIDESHOW模式后重启，在 `slideshow startup delay 10000 ms` 出现后的10秒内下发合法daily命令或在EPD IDLE时触发PB2。预期旧轮播generation立即失效，延迟等待被唤醒并打印取消，更新的DAILY或LOCAL_IMAGE命令随后由同一 `image_worker` 执行；10秒到点后不得再启动旧轮播runtime。反向切换时使用非阻塞stop和pending接续，任何时刻不得同时存在两个current owner。
+
+统一worker恢复出厂优先级测试：分别在DAILY等待/下载、SLIDESHOW等待/刷新、LOCAL_IMAGE pending/current、CAST/CAST2PIC pending/current时触发PB1。请求入口不得等待current owner；尚未运行的普通pending命令应被FACTORY_RESET替换并正确执行cancel callback，DAILY/SLIDESHOW/LOCAL_IMAGE应由原stop/generation机制退出，已经开始的EPD或投屏事务安全结束后必须紧接 `job start owner=FACTORY_RESET`。FACTORY_RESET pending/current期间再次提交任一普通图片owner必须返回BUSY且不能覆盖恢复出厂；重复PB1仍只保留一个请求。模拟统一任务提交临时失败，确认状态由RUNNING恢复PENDING、guard保持、只打印一次deferred警告并由300ms检测周期重试。
 
 轮播停止与预加载竞争测试：在 `slideshow preload start` 后立即发送 `set_slideshow sw=0`。允许出现 `preload skipped ... because stop requested` 的普通信息，但不得再出现 `slideshow preload initial/next failed ... ESP_ERR_INVALID_STATE` 警告；真实预加载失败仍必须保留警告。
 
@@ -462,7 +472,22 @@ curl.exe -X POST "$esp/dataUP" `
   -F "image=@$jpg;type=image/jpeg"
 ```
 
-预期：设备返回上传成功结果；`show=false` 时只保存，不进入 EPD 显示队列。
+预期：资源空闲时设备返回上传成功结果；network upload只接受 `show=false && save=true`，只保存、不进入EPD显示队列。`show=true`或`save=false`必须返回错误且不得产生文件。
+
+UPLOAD Gate与ping回归：
+
+```text
+1. 网络/USB ping必须对同一设备状态返回相同EPD值。
+2. NORMAL且无pending、EPD/SD/SPI空闲时返回IDLE。
+3. DAILY或SLIDESHOW等待下一时间点且实际资源空闲时允许IDLE，不能因长期current owner永久BUSY。
+4. DAILY下载/保存/显示、SLIDESHOW读图/显示、LOCAL_IMAGE、CAST、CAST2PIC、USB投屏、pending命令、EPD队列、Shared SPI、SD电源切换、Factory Reset、OTA及另一个UPLOAD预约期间返回BUSY。
+5. EPD/SD稳定掉电且可由下一网络/USB请求恢复时不得永久BUSY；电源PREPARING/RESTORING期间必须BUSY。
+6. 先ping得到IDLE，再在upload到达前启动图片业务，ESP32最终预约必须返回1007且不保存。
+7. 不先ping直接在BUSY期间发送upload，同样返回1007且不保存。
+8. 两个network upload并发时只能一个预约成功，另一个立即1007，不等待。
+9. 注入SD满、写入、校验、rename及HTTP断开失败；临时文件按原规则清理，随后ping必须恢复IDLE。
+10. 启动日志和任务列表不得再出现dataup_async_worker；内部RAM不再分配其12KB栈和队列。
+```
 
 文件保存 16 KiB stdio 缓冲回归测试：
 
@@ -525,23 +550,24 @@ USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 默认 60 秒。
 
 普通EPD完成自动倒计时默认关闭；开启后只修改RAM计时，不写NVS。每日一图独立请求one-shot，不受该开关控制；DAILY创建的one-shot在模式切离DAILY后恢复原工作时间并取消。
 
-Factory Reset 断电重启测试：
+Factory Reset 白屏保持及客户下次开机测试：
 
 ```text
 1. 通过 USB 或 BLE 保存有效 WiFi，准备 upload、cast、轮播和 daily 数据。
 2. 把 epd_mode 设为 SLIDESHOW 或 DAILY，长按 GPIO28 约 5.1 秒。
 3. 确认图片、轮播配置、daily_cfg、wifi namespace 和 nvs.net80211 的 sta.ssid/sta.pswd 均被清除。
 4. 确认 PhotoPainter:epd_mode 已写入 USER_EPD_DISPLAY_MODE_DEFAULT，并能读回相同值。
-5. 确认清理成功后显示固件内置欢迎图，约40～50秒刷新期间不得出现未配网 WIFI_PROVISION、WAKE_TIMER ON,10或POWER_OFF；EPD完成日志之后，UART顺序才包含未配网 WIFI_PROVISION、WAKE_TIMER ON,10、关机前 WIFI_PROVISION 4F、POWER_OFF。
-6. 确认 CH583 关闭 ESP32/WiFi 电源，断电约 10 秒后重新上电。
-7. 重启后应为默认显示模式且没有可用 WiFi 配置；EPD type、WiFi 工作时间、BLE MAC 和 OTA 状态保持不变。
-8. 分别使用首次 DEVICE_INFO(KEY_PB1) 和合法 KEY_EVENT(PB1,PRESS) 重复以上测试，确认与 GPIO28 使用同一清理及关机流程；KEY_EVENT应分别覆盖DEVICE_INFO之前和之后。
-9. 10 秒后重新上电的 DEVICE_INFO 必须是 TIMER；如果仍是 KEY_PB1 应判定 CH583 唤醒原因错误，防止循环恢复出厂。
+5. 确认清理成功后先写入并读回 `PhotoPainter:fr_welcome=1`，再使用 `WHITE=0x11` 显示白屏并等待实际完成。
+6. 白屏完成后确认ESP32继续运行并保持白屏，不得出现 `factory reset CH583 power cycle requested`、Factory Reset专用 `WAKE_TIMER ON,10`、`POWER_OFF` 或新的 `app start`。
+7. 由客人正常关机后再次开机。启动时应先出现共享电源复位日志：IO隔离、GPIO4 LOW、约2000ms后GPIO4 HIGH、稳定100ms、IO/SPI恢复完成；随后完成SD/SPIFFS存储挂载和Factory Reset初始化，再在网络业务启动前读取标志、解压并显示固件内置欢迎图。约40～50秒显示成功后删除 `fr_welcome`，随后继续默认显示模式和未配网启动。正常SD卡首次挂载必须成功；存储未就绪时不得显示欢迎图或清除标志。EPD type、WiFi工作时间、BLE MAC和OTA状态保持不变。
+8. 分别使用首次 DEVICE_INFO(KEY_PB1) 和合法 KEY_EVENT(PB1,PRESS) 重复以上测试，确认与 GPIO28 使用同一清理、白屏保持和下次开机欢迎图流程；KEY_EVENT应分别覆盖DEVICE_INFO之前和之后。
+9. 客人下次开机的 DEVICE_INFO 按实际硬件唤醒原因上报，Factory Reset不再要求固定为TIMER，也不得因为旧KEY_PB1重复执行恢复出厂。
+10. 确认正式执行依次出现 `factory reset worker submitted`、`image_worker: job start owner=FACTORY_RESET`、标志保存/白屏日志和 `job done owner=FACTORY_RESET ... configured=12288`；`min_free` 必须不少于2048字节。客人下次开机还应出现startup welcome开始及标志清除日志。
 ```
 
-短按GPIO28后松开不得设置Factory Reset guard，也不得影响普通关机。连续低电平达到5秒后，应先设置guard再开始删除；把普通 `wifi_work_time`设置到即将超时时，恢复出厂清理期间不得出现普通 `WAKE_TIMER OFF,0` 或 `POWER_OFF`。成功时先提交10秒专用请求再清除guard；失败时不提交专用请求并清除guard，无论哪种结果普通关机都不能因guard永久失效。
+短按GPIO28后松开不得设置Factory Reset guard，也不得影响普通关机。连续低电平达到5秒后，应先设置guard再开始删除；把普通 `wifi_work_time`设置到即将超时时，恢复出厂清理及白屏期间不得出现普通 `WAKE_TIMER` 或 `POWER_OFF`。成功或失败后都必须清除guard，但成功后也不得提交Factory Reset专用关机请求；普通关机不能因guard永久失效。
 
-恢复出厂任一必要 NVS 操作、实际文件删除或欢迎图显示失败时不得提交 Factory Reset 关机请求。通过测试钩子模拟一个 `unlink()`失败时，应继续尝试剩余文件，最终看到 `file_delete_failed>0`、`file_ret!=ESP_OK`、总 `ret!=ESP_OK`，且不显示欢迎图、不发送 `WAKE_TIMER ON,10` 和 `POWER_OFF`。再分别模拟欢迎图尺寸不匹配、zlib解压失败和EPD显示失败，确认 `welcome_display_ret!=ESP_OK`、不发送上述关机命令且guard仍被清除。文件原本不存在不算失败。Factory Reset 专用请求不使用普通 one-shot，不写工作时间 NVS；OTA、EPD、图片保存、daily 或 SPI busy 时仍由 `work_state_task()`推迟关机。
+恢复出厂无论成功或失败都不得提交Factory Reset专用关机请求。模拟文件删除失败时，应继续尝试剩余文件，最终 `file_delete_failed>0`、总 `ret!=ESP_OK`，且不设置新标志、不显示白屏。再分别模拟标志读回不一致、PSRAM不足和白屏显示失败，确认 `welcome_pending_ret`或`white_display_ret`失败且guard仍被清除；标志已保存后发生的失败必须保留标志。客户下一次开机模拟欢迎图尺寸、解压或显示失败时，标志不得删除；显示成功但删除标志失败时，下次启动允许重复显示。文件原本不存在不算失败。普通one-shot、wifi_work_time、OTA、daily和其他既有关机规则不变。
 
 ---
 
@@ -585,7 +611,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 边界测试：将 `$future` 改为当前时间加100秒。预期首次仍立即执行；该timestamp对应的正式时间槽因距离首次EPD调用不足300秒，被推迟到首次EPD调用满300秒后执行。失败后的重试时间仍为1小时。
 
-内存诊断：确认生成配置中 `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304`、`CONFIG_MBEDTLS_AES_C=y`，并且 `CONFIG_MBEDTLS_HARDWARE_AES` 与 `CONFIG_MBEDTLS_AES_USE_INTERRUPT` 均未设置；硬件SHA、MPI和ECC仍为开启。启动早期应打印一次 `image_worker: static resources`，确认 `stack=9216`，并列出统一TCB、单pending命令槽、状态mutex和内部RAM；随后打印 `image_worker: started stack=9216` 和 `daily_image: base initialized ... shared_worker=resident`。每次DAILY HTTPS POST/GET前的原有 `TLS heap before` 日志必须包含 `internal_free/internal_largest`、`dma_free/dma_largest`、`psram_free/psram_largest` 和 `aes=software`。先完成一次“LOCAL_IMAGE显示→EPD/SD断电测试→SD重新挂载→立即DAILY”的复现顺序，再至少连续执行20次完整DAILY下载；即使 `dma_largest` 降到3968字节附近，也不得出现 `esp-aes: Failed to allocate memory`、普通malloc失败、WiFi异常或PSRAM持续下降。另需回归OTA HTTPS和WiFi重连，并记录软件AES下的下载时间及CPU看门狗状态。完整daily周期后检查 `image_worker: job done owner=DAILY` 的 `min_free/peak_used`：`min_free>=2048` 可保留9KB，`1024..2047` 建议增加到10KB，`min_free<1024` 或出现Canary/重启时至少增加2KB。
+内存诊断：确认生成配置中 `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304`、`CONFIG_MBEDTLS_AES_C=y`，并且 `CONFIG_MBEDTLS_HARDWARE_AES` 与 `CONFIG_MBEDTLS_AES_USE_INTERRUPT` 均未设置；硬件SHA、MPI和ECC仍为开启。启动早期应打印一次 `image_worker: static resources`，确认 `stack=12288`，并列出统一TCB、单pending命令槽、状态mutex和内部RAM；随后打印 `image_worker: started stack=12288` 和 `daily_image: base initialized ... shared_worker=resident`。不得再有8KB `cast_save` 或8KB `UsbConsoleWorker`任务资源。每次DAILY HTTPS POST/GET前的原有 `TLS heap before` 日志必须包含 `internal_free/internal_largest`、`dma_free/dma_largest`、`psram_free/psram_largest` 和 `aes=software`。先完成一次“LOCAL_IMAGE显示→EPD/SD断电测试→SD重新挂载→立即DAILY”的复现顺序，再至少连续执行20次完整DAILY下载；即使 `dma_largest` 降到3968字节附近，也不得出现 `esp-aes: Failed to allocate memory`、普通malloc失败、WiFi异常或PSRAM持续下降。另需回归CAST、CAST2PIC、network upload、OTA HTTPS和WiFi重连，并记录软件AES下的下载时间及CPU看门狗状态。所有owner完整周期的 `min_free>=2048` 才可保留12KB；低于2048时继续增加统一栈，不得先压缩任务栈。
 
 关闭请求：
 
@@ -597,7 +623,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
   -Body $body
 ```
 
-关闭成功后 `epd_mode=0(NORMAL)`，旧 `daily_cfg` 保留，daily命令被取消；9KB统一静态worker永久常驻并重新进入空闲等待。
+关闭成功后 `epd_mode=0(NORMAL)`，旧 `daily_cfg` 保留，daily命令被取消；12KB统一静态worker永久常驻并重新进入空闲等待。
 
 ---
 

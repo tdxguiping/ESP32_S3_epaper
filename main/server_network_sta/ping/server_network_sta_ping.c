@@ -4,7 +4,7 @@
 #include <string.h>
 
 #include "esp_log.h"
-#include "epd_display_app.h"
+#include "server_network_sta_upload_gate.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "user_app.h"
@@ -35,7 +35,7 @@ esp_err_t ServerNetworkStaPing_ProcessGet(httpd_req_t *req)
     char json[160] = {0};
 
     get_ble_mac_no_colon(ble_mac, sizeof(ble_mac));
-    const char *epd_state = ServerNetworkStaEpdDisplay_IsBusy() ? "BUSY" : "IDLE";
+    const char *epd_state = ServerNetworkStaUploadGate_IsBusy() ? "BUSY" : "IDLE";
     if (ble_mac[0] == '\0') {
         ESP_LOGW(TAG, "ping Ble_MAC empty, CH583 BLE_MAC not received yet");
         snprintf(json, sizeof(json),

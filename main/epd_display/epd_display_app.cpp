@@ -98,6 +98,51 @@ esp_err_t ServerNetworkStaEpdDisplay_RestoreRailIoAfterPowerTestOn(void)
     return ePaperDisplay.RestoreRailIoAfterPowerTestOn();
 }
 
+#if USER_EPD_ENABLE
+static esp_err_t reset_shared_rail_before_storage_mount(void)
+{
+    esp_err_t ret = TdxSharedSpi_LockForEpdSdPowerTest(portMAX_DELAY);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "EPD/SD startup rail reset lock failed ret=%s",
+                 esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = ServerNetworkStaEpdDisplay_PrepareRailIoForPowerTestOff();
+    if (ret == ESP_OK) {
+        ret = ServerNetworkStaEpdDisplay_SetPower(false);
+        if (ret != ESP_OK) {
+            esp_err_t restore_ret =
+                ServerNetworkStaEpdDisplay_RestoreRailIoAfterPowerTestOn();
+            if (restore_ret != ESP_OK) {
+                ESP_LOGE(TAG,
+                         "EPD/SD startup rail reset rollback failed ret=%s",
+                         esp_err_to_name(restore_ret));
+            }
+        }
+    }
+    if (ret == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(USER_EPD_SD_POWER_TEST_OFF_TIME_MS));
+        ret = ServerNetworkStaEpdDisplay_SetPower(true);
+        if (ret == ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(USER_EPD_SD_POWER_TEST_POWER_STABLE_MS));
+            ret = ServerNetworkStaEpdDisplay_RestoreRailIoAfterPowerTestOn();
+        }
+    }
+
+    TdxSharedSpi_UnlockForEpdSdPowerTest();
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "EPD/SD startup rail reset completed off_ms=%u stable_ms=%u",
+                 (unsigned int)USER_EPD_SD_POWER_TEST_OFF_TIME_MS,
+                 (unsigned int)USER_EPD_SD_POWER_TEST_POWER_STABLE_MS);
+    } else {
+        ESP_LOGE(TAG, "EPD/SD startup rail reset failed ret=%s",
+                 esp_err_to_name(ret));
+    }
+    return ret;
+}
+#endif
+
 static void release_epd_job(epd_display_job_t *job)
 {
     if (job != NULL && job->data != NULL) {
@@ -322,6 +367,11 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
 esp_err_t ServerNetworkStaEpdDisplay_Init(void)
 {
 #if USER_EPD_ENABLE
+    esp_err_t rail_reset_ret = reset_shared_rail_before_storage_mount();
+    if (rail_reset_ret != ESP_OK) {
+        return rail_reset_ret;
+    }
+
     esp_err_t power_ret = ServerNetworkStaEpdDisplay_SetPower(true);
     if (power_ret != ESP_OK) {
         ESP_LOGE(TAG, "EPD/SD startup power on failed ret=%s", esp_err_to_name(power_ret));
@@ -638,6 +688,91 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueReservedToScreenAndWait(
     (void)reservation;
     (void)display_buf;
     (void)display_size;
+    (void)epd_which_one;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
+esp_err_t ServerNetworkStaEpdDisplay_QueueReservedSolidColorAndWait(
+    epd_display_reservation_t *reservation,
+    uint8_t color,
+    uint8_t epd_which_one)
+{
+#if USER_EPD_ENABLE
+    if (reservation == NULL || !reservation->valid ||
+        s_epd_display_queue == NULL ||
+        s_epd_display_admission_mutex == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const epd_type_config_t *config = EpdType_GetCurrentConfig();
+    if (config == NULL || config->display_size == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    EpdSdPowerTest_OnEpdTaskRequested();
+    epd_display_completion_t *completion = create_completion();
+    if (completion == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    epd_display_job_t job = {};
+    job.data = allocate_display_buffer(config->display_size);
+    if (job.data == NULL) {
+        release_completion(completion);
+        release_completion(completion);
+        return ESP_ERR_NO_MEM;
+    }
+    memset(job.data, color, config->display_size);
+    job.size = config->display_size;
+    job.epd_which_one = epd_which_one == 2 ? 2 : 1;
+    job.completion = completion;
+    job.pending_counted = true;
+
+    if (xSemaphoreTake(s_epd_display_admission_mutex, portMAX_DELAY) != pdTRUE) {
+        release_epd_job(&job);
+        release_completion(completion);
+        release_completion(completion);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!reservation->valid ||
+        !__atomic_load_n(&s_epd_display_idle_reserved, __ATOMIC_ACQUIRE)) {
+        xSemaphoreGive(s_epd_display_admission_mutex);
+        release_epd_job(&job);
+        release_completion(completion);
+        release_completion(completion);
+        return ESP_ERR_INVALID_STATE;
+    }
+    __atomic_add_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
+    BaseType_t queue_ret = xQueueSend(s_epd_display_queue, &job, 0);
+    if (queue_ret == pdTRUE) {
+        __atomic_store_n(&s_epd_display_idle_reserved, false, __ATOMIC_RELEASE);
+        reservation->valid = false;
+    }
+    xSemaphoreGive(s_epd_display_admission_mutex);
+    if (queue_ret != pdTRUE) {
+        __atomic_sub_fetch(&s_epd_display_pending_jobs, 1U, __ATOMIC_ACQ_REL);
+        release_epd_job(&job);
+        release_completion(completion);
+        release_completion(completion);
+        return ESP_ERR_NOT_FINISHED;
+    }
+
+    ESP_LOGI(TAG,
+             "reserved EPD solid queued wait target=%u color=0x%02x size=%u",
+             (unsigned int)job.epd_which_one,
+             (unsigned int)color,
+             (unsigned int)job.size);
+    if (xSemaphoreTake(completion->done,
+                       pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS)) != pdTRUE) {
+        release_completion(completion);
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t ret = completion->result;
+    release_completion(completion);
+    return ret;
+#else
+    (void)reservation;
+    (void)color;
     (void)epd_which_one;
     return ESP_ERR_NOT_SUPPORTED;
 #endif

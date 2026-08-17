@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -8,6 +10,8 @@ extern "C" {
 
 esp_err_t EpdSdPowerTest_Init(void);
 esp_err_t EpdSdPowerTest_PrepareForSharedSpi(void);
+bool EpdSdPowerTest_IsReadyForImmediateSharedSpi(void);
+bool EpdSdPowerTest_IsTransitionBusy(void);
 void EpdSdPowerTest_NetworkBegin(void);
 void EpdSdPowerTest_NetworkEnd(void);
 void EpdSdPowerTest_OnCh583BleDataReceived(void);

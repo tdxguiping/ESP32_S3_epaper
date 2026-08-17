@@ -4,7 +4,7 @@ idf_component_register(SRCS "tdx_shared_spi.c" "main.c" "app_nvs.c" "file_server
                     EMBED_FILES "favicon.ico" "upload_script.html" "../DOC/welcome.bin")
 
 target_sources(${COMPONENT_LIB} PRIVATE "epd_display/epd_display_mode.c")
-target_sources(${COMPONENT_LIB} PRIVATE "server_network_sta/net_data/server_network_sta_dataup_async.c")
+target_sources(${COMPONENT_LIB} PRIVATE "server_network_sta/upload/server_network_sta_upload_gate.c")
 target_sources(${COMPONENT_LIB} PRIVATE "epd_display/epd_type_1600_1200_133_DKE.cpp")
 target_sources(${COMPONENT_LIB} PRIVATE "epd_sd_power_test/epd_sd_power_test.c")
 target_include_directories(${COMPONENT_LIB} PRIVATE "epd_sd_power_test")

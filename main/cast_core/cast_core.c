@@ -17,9 +17,6 @@
 #include "esp_timer.h"
 #include "file_serving_example_common.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
-#include "freertos/semphr.h"
-#include "freertos/task.h"
 #include "led_status.h"
 #include "local_image_browsing.h"
 #include "server_network_sta_wifi_work_time.h"
@@ -27,25 +24,7 @@
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 
-typedef struct {
-    char file_name[TDX_IMAGE_BASE_NAME_BUFFER_SIZE];
-    char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
-    const char *bin_data;
-    size_t bin_len;
-    const char *image_data;
-    size_t image_len;
-    bool record_last_cast;
-    tdx_image_transfer_storage_t storage;
-    SemaphoreHandle_t done;
-    esp_err_t *ret_out;
-    int *result_out;
-    char *error_out;
-    size_t error_out_size;
-} cast_save_job_t;
-
 static const char *TAG = "cast_core";
-static QueueHandle_t s_cast_save_queue;
-static TaskHandle_t s_cast_save_task;
 
 static void log_file_write_memory(const char *point)
 {
@@ -384,152 +363,60 @@ static esp_err_t record_last_cast(const char *base_path,
     return ret;
 }
 
-static void save_task_set_error(cast_save_job_t *job, esp_err_t ret, int result_code, const char *error)
+static esp_err_t save_item_direct(const tdx_image_transfer_item_t *item,
+                                  const char *base_path,
+                                  tdx_cast_core_result_t *result)
 {
-    if (job->ret_out != NULL) {
-        *job->ret_out = ret;
+    if (item == NULL || base_path == NULL || result == NULL) {
+        return ESP_ERR_INVALID_ARG;
     }
-    if (job->result_out != NULL) {
-        *job->result_out = result_code;
+    int64_t start_us = esp_timer_get_time();
+    char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
+    char jpg_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
+    snprintf(bin_dir, sizeof(bin_dir), "%s/%s", base_path,
+             storage_bin_dir_name(item->storage));
+    snprintf(jpg_dir, sizeof(jpg_dir), "%s/%s", base_path,
+             storage_jpg_dir_name(item->storage));
+
+    ESP_LOGI(TAG, "save start file=%s bin=%u image=%u",
+             item->save_name,
+             (unsigned int)item->bin_part.len,
+             (unsigned int)item->image_part.len);
+
+    esp_err_t ret = TdxSharedSpi_Lock(portMAX_DELAY);
+    bool spi_locked = ret == ESP_OK;
+    if (ret != ESP_OK) {
+        set_result(result, TDX_JSON_RESULT_TIMEOUT, "cast failed", "shared_spi_lock_failed");
+    } else if (ensure_dir(bin_dir) != ESP_OK || ensure_dir(jpg_dir) != ESP_OK) {
+        ret = ESP_ERR_NOT_FOUND;
+        set_result(result, TDX_JSON_RESULT_STORAGE_NOT_READY, "cast failed", "sd_not_ready");
+    } else if (check_save_space(base_path, item->bin_part.len, item->image_part.len) != ESP_OK) {
+        ret = ESP_ERR_NO_MEM;
+        set_result(result, TDX_JSON_RESULT_STORAGE_NO_SPACE, "cast failed", "storage_not_enough");
+    } else if (save_one_file(bin_dir, item->save_name, ".bin",
+                             item->bin_part.data, item->bin_part.len) != ESP_OK) {
+        ret = ESP_FAIL;
+        set_result(result, TDX_JSON_RESULT_SAVE_BIN_FAILED, "cast failed", "save_bin_failed");
+    } else if (save_one_file(jpg_dir, item->save_name, ".jpg",
+                             item->image_part.data, item->image_part.len) != ESP_OK) {
+        ret = ESP_FAIL;
+        set_result(result, TDX_JSON_RESULT_SAVE_IMAGE_FAILED, "cast failed", "save_image_failed");
+    } else if (item->record_last_cast &&
+               record_last_cast(base_path, item->storage, item->save_name) != ESP_OK) {
+        ret = ESP_FAIL;
+        set_result(result, TDX_JSON_RESULT_LAST_CAST_SAVE_FAILED, "cast failed", "last_cast_failed");
+    } else {
+        ret = ESP_OK;
     }
-    if (job->error_out != NULL && job->error_out_size > 0) {
-        snprintf(job->error_out, job->error_out_size, "%s", error != NULL ? error : "");
-    }
-}
-
-static void CastSaveTask(void *arg)
-{
-    (void)arg;
-    cast_save_job_t job = {0};
-
-    for (;;) {
-        if (xQueueReceive(s_cast_save_queue, &job, portMAX_DELAY) != pdTRUE) {
-            continue;
-        }
-
-        int64_t start_us = esp_timer_get_time();
-        char bin_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
-        char jpg_dir[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX + 16];
-        snprintf(bin_dir, sizeof(bin_dir), "%s/%s", job.base_path, storage_bin_dir_name(job.storage));
-        snprintf(jpg_dir, sizeof(jpg_dir), "%s/%s", job.base_path, storage_jpg_dir_name(job.storage));
-
-        ESP_LOGI(TAG, "save task start file=%s bin=%u image=%u",
-                 job.file_name, (unsigned int)job.bin_len, (unsigned int)job.image_len);
-
-        esp_err_t lock_ret = TdxSharedSpi_Lock(portMAX_DELAY);
-        if (lock_ret != ESP_OK) {
-            save_task_set_error(&job, lock_ret, TDX_JSON_RESULT_TIMEOUT, "shared_spi_lock_failed");
-        } else if (ensure_dir(bin_dir) != ESP_OK || ensure_dir(jpg_dir) != ESP_OK) {
-            save_task_set_error(&job, ESP_ERR_NOT_FOUND, TDX_JSON_RESULT_STORAGE_NOT_READY, "sd_not_ready");
-        } else if (check_save_space(job.base_path, job.bin_len, job.image_len) != ESP_OK) {
-            save_task_set_error(&job, ESP_ERR_NO_MEM, TDX_JSON_RESULT_STORAGE_NO_SPACE, "storage_not_enough");
-        } else if (save_one_file(bin_dir, job.file_name, ".bin", job.bin_data, job.bin_len) != ESP_OK) {
-            save_task_set_error(&job, ESP_FAIL, TDX_JSON_RESULT_SAVE_BIN_FAILED, "save_bin_failed");
-        } else if (save_one_file(jpg_dir, job.file_name, ".jpg", job.image_data, job.image_len) != ESP_OK) {
-            save_task_set_error(&job, ESP_FAIL, TDX_JSON_RESULT_SAVE_IMAGE_FAILED, "save_image_failed");
-        } else if (job.record_last_cast && record_last_cast(job.base_path, job.storage, job.file_name) != ESP_OK) {
-            save_task_set_error(&job, ESP_FAIL, TDX_JSON_RESULT_LAST_CAST_SAVE_FAILED, "last_cast_failed");
-        } else {
-            save_task_set_error(&job, ESP_OK, TDX_JSON_RESULT_OK, "");
-        }
-        if (lock_ret == ESP_OK) {
-            TdxSharedSpi_Unlock();
-        }
-
-        ESP_LOGI(TAG, "save task done file=%s ret=%s total_ms=%lu",
-                 job.file_name,
-                 job.ret_out != NULL ? esp_err_to_name(*job.ret_out) : "unknown",
-                 (unsigned long)elapsed_ms_since(start_us));
-        if (job.done != NULL) {
-            xSemaphoreGive(job.done);
-        }
-    }
-}
-
-esp_err_t TdxCastCore_Init(void)
-{
-    if (s_cast_save_task != NULL) {
-        return ESP_OK;
-    }
-    if (s_cast_save_queue == NULL) {
-        s_cast_save_queue = xQueueCreate(CAST_SAVE_TASK_QUEUE_LENGTH, sizeof(cast_save_job_t));
-        if (s_cast_save_queue == NULL) {
-            ESP_LOGE(TAG, "create save queue failed");
-            return ESP_ERR_NO_MEM;
-        }
-    }
-    BaseType_t ret = xTaskCreate(CastSaveTask,
-                                 "cast_save",
-                                 CAST_SAVE_TASK_STACK_SIZE,
-                                 NULL,
-                                 CAST_SAVE_TASK_PRIORITY,
-                                 &s_cast_save_task);
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG, "create save task failed");
-        return ESP_ERR_NO_MEM;
-    }
-    ESP_LOGI(TAG, "save task started stack=%u priority=%u queue=%u",
-             (unsigned int)CAST_SAVE_TASK_STACK_SIZE,
-             (unsigned int)CAST_SAVE_TASK_PRIORITY,
-             (unsigned int)CAST_SAVE_TASK_QUEUE_LENGTH);
-    return ESP_OK;
-}
-
-static esp_err_t submit_save_item_and_wait(const tdx_image_transfer_item_t *item,
-                                      const char *base_path,
-                                      tdx_cast_core_result_t *result)
-{
-    esp_err_t save_ret = ESP_FAIL;
-    int save_result = TDX_JSON_RESULT_SAVE_BIN_FAILED;
-    char save_error[64] = {0};
-    SemaphoreHandle_t done = NULL;
-
-    esp_err_t init_ret = TdxCastCore_Init();
-    if (init_ret != ESP_OK) {
-        set_result(result, TDX_JSON_RESULT_QUEUE_FAILED, "cast failed", "save_queue_failed");
-        return init_ret;
+    if (spi_locked) {
+        TdxSharedSpi_Unlock();
     }
 
-    done = xSemaphoreCreateBinary();
-    if (done == NULL) {
-        set_result(result, TDX_JSON_RESULT_NO_MEMORY, "cast failed", "save_wait_alloc_failed");
-        return ESP_ERR_NO_MEM;
-    }
-
-    cast_save_job_t job = {
-        .bin_data = item->bin_part.data,
-        .bin_len = item->bin_part.len,
-        .image_data = item->image_part.data,
-        .image_len = item->image_part.len,
-        .record_last_cast = item->record_last_cast,
-        .storage = item->storage,
-        .done = done,
-        .ret_out = &save_ret,
-        .result_out = &save_result,
-        .error_out = save_error,
-        .error_out_size = sizeof(save_error),
-    };
-    strlcpy(job.file_name, item->save_name, sizeof(job.file_name));
-    snprintf(job.base_path, sizeof(job.base_path), "%s", base_path);
-
-    if (xQueueSend(s_cast_save_queue, &job, 0) != pdTRUE) {
-        vSemaphoreDelete(done);
-        set_result(result, TDX_JSON_RESULT_QUEUE_FAILED, "cast failed", "save_queue_full");
-        return ESP_ERR_NO_MEM;
-    }
-
-    if (xSemaphoreTake(done, portMAX_DELAY) != pdTRUE) {
-        vSemaphoreDelete(done);
-        set_result(result, TDX_JSON_RESULT_TIMEOUT, "cast failed", "save_wait_failed");
-        return ESP_ERR_TIMEOUT;
-    }
-    vSemaphoreDelete(done);
-
-    if (save_ret != ESP_OK) {
-        set_result(result, save_result, "cast failed", save_error);
-        return save_ret;
-    }
-    return ESP_OK;
+    ESP_LOGI(TAG, "save done file=%s ret=%s total_ms=%lu",
+             item->save_name,
+             esp_err_to_name(ret),
+             (unsigned long)elapsed_ms_since(start_us));
+    return ret;
 }
 
 esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
@@ -624,7 +511,7 @@ esp_err_t TdxImageTransfer_ProcessItems(const tdx_image_transfer_item_t *items,
             continue;
         }
         int64_t stage_start_us = esp_timer_get_time();
-        esp_err_t save_ret = submit_save_item_and_wait(item, base_path, result);
+        esp_err_t save_ret = save_item_direct(item, base_path, result);
         ESP_LOGI(TAG, "%s save item=%u name=%s ret=%s elapsed_ms=%lu total_ms=%lu",
                  log_prefix != NULL ? log_prefix : "image",
                  (unsigned int)i,

@@ -150,7 +150,7 @@ default NVS partition / image_state namespace / last_cast
 
 合法KEY_EVENT不依赖DEVICE_INFO状态，ESP32独立重启后提前到达也正常ACK并执行业务，不使用UART帧级 `ERR,DEVICE_INFO_REQUIRED`。启动依赖未就绪属于ESP32内部FIFO或单请求RAM状态调度，不新增正式JSON result code。BLE_DATA队列无法接收时使用UART帧级`ERR,BUSY`，内存申请失败时使用UART帧级`ERR,NO_MEM`；这些都不是BLE/WiFi JSON正式返回码。完整通信规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 
-GPIO28、`DEVICE_INFO(KEY_PB1)` 和 `KEY_EVENT(PB1,PRESS)` 共用同一个Factory Reset执行逻辑，不返回JSON，也不新增result code。文件和NVS清理成功后先显示固件内置欢迎图并等待EPD完成，随后使用现有 `WIFI_PROVISION`、`WAKE_TIMER ON,10` 和 `POWER_OFF` 命令完成未配网状态同步及CH583断电10秒重启。实际文件删除、必要NVS操作或欢迎图显示失败只记录本地错误并禁止本次专用关机，不映射新的正式result code。
+GPIO28、`DEVICE_INFO(KEY_PB1)` 和 `KEY_EVENT(PB1,PRESS)` 共用同一个Factory Reset执行逻辑，不返回JSON，也不新增result code。文件和NVS清理成功后保存欢迎图待显示标志、显示白屏并上报未配网 `WIFI_PROVISION 40`；ESP32继续运行，不发送Factory Reset专用 `WAKE_TIMER`、`POWER_OFF`，也不自动重启。客人以后正常开机时显示固件内置欢迎图，成功后删除标志。实际文件删除、必要NVS操作、标志保存、白屏或启动欢迎图显示失败只记录本地错误，不映射新的正式result code。
 
 [⬆ 返回目录](#toc)
 
@@ -187,8 +187,8 @@ ping_result
 `EPD` 字段固定返回字符串：
 
 ```text
-BUSY  EPD display task 正在执行、已有 pending job 或队列仍有任务
-IDLE  EPD display task 空闲
+BUSY  当前统一UPLOAD资源门不允许安全开始network upload
+IDLE  当前允许尝试network upload；ESP32收到upload时仍进行最终零等待预约
 ```
 
 实际构造响应的代码：
@@ -196,10 +196,10 @@ IDLE  EPD display task 空闲
 ```text
 网络 HTTP：main/server_network_sta/ping/server_network_sta_ping.c
 USB HTTP-like：main/usb_console_echo/ping/usb_console_ping.c
-状态判定：main/epd_display/epd_display_app.cpp -> ServerNetworkStaEpdDisplay_IsBusy()
+状态判定：main/server_network_sta/upload/server_network_sta_upload_gate.c -> ServerNetworkStaUploadGate_IsBusy()
 ```
 
-网络和 USB 都固定返回 `func/result/message/EPD/Ble_MAC`，正式字段名是 `Ble_MAC`。`result=0` 和 `result=1405` 都保留 `EPD`；`1405` 是 JSON 业务结果码，网络 HTTP 仍返回正常 JSON 响应。
+网络和USB固定返回 `func/result/message/EPD/Ble_MAC`，并共用同一个UploadGate BUSY/IDLE规则。`EPD`字段名为兼容现有客户端保持不变，但含义扩展为UPLOAD资源可用性。`result=0` 和 `result=1405` 都保留 `EPD`。
 
 当 `Ble_MAC` 尚未获取时，仍返回 `EPD` 字段，并使用 `result=1405`：
 
@@ -377,6 +377,8 @@ upload_raw_result
 
 `upload` 使用 `1601~1615` 图片上传类 result，详见 [6.7](#sec-06-7)。
 
+network upload只接受 `show=false && save=true`；`show=true` 或 `save=false` 返回 `1603/TDX_JSON_RESULT_UPLOAD_INVALID` 且不执行。ping后资源变忙或最终零等待预约失败时返回 `1007/TDX_JSON_RESULT_BUSY`，不保存文件。
+
 [⬆ 返回目录](#toc)
 
 ### 2.11 cast2pic：双屏投图 / 缓存 <span id="sec-02-11"></span>
@@ -485,6 +487,8 @@ dataup_result
 | `1011` | `TDX_JSON_RESULT_NO_MEMORY`，请求体内存分配失败 |
 
 OTA 请求返回 `ota_event` / `ota_result`，不使用 `dataup_result`。
+
+USB cast已经提交但尚未开始时，如被更高优先级network CAST/CAST2PIC替换，USB端使用现有 `1007/TDX_JSON_RESULT_BUSY`，`error=network_priority`；不新增正式返回码。已经开始的USB EPD或SD事务不强制中断。
 
 [⬆ 返回目录](#toc)
 
@@ -940,7 +944,7 @@ PhotoPainter:epd_mode
 |---:|---|---|
 | `1601` | `TDX_JSON_RESULT_UPLOAD_BOUNDARY_MISSING` | multipart boundary 缺失 |
 | `1602` | `TDX_JSON_RESULT_UPLOAD_FUNC_MISSING` | multipart `func` 缺失 |
-| `1603` | `TDX_JSON_RESULT_UPLOAD_INVALID` | 上传内容格式非法 |
+| `1603` | `TDX_JSON_RESULT_UPLOAD_INVALID` | 上传内容格式非法；network upload收到 `show=true` 或 `save=false` 也使用此码 |
 | `1604` | `TDX_JSON_RESULT_UPLOAD_BIN_MISSING` | `bin` 缺失 |
 | `1605` | `TDX_JSON_RESULT_UPLOAD_IMAGE_MISSING` | `image` 缺失 |
 | `1606` | `TDX_JSON_RESULT_UPLOAD_SIZE_MISMATCH` | 声明大小和实际大小不一致 |

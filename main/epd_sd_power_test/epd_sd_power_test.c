@@ -336,6 +336,34 @@ esp_err_t EpdSdPowerTest_PrepareForSharedSpi(void)
     return ESP_OK;
 }
 
+bool EpdSdPowerTest_IsReadyForImmediateSharedSpi(void)
+{
+#if USER_EPD_SD_POWER_TEST_ENABLE
+    if (!__atomic_load_n(&s_initialized, __ATOMIC_ACQUIRE)) {
+        return true;
+    }
+    uint32_t state = __atomic_load_n(&s_state, __ATOMIC_ACQUIRE);
+    return state == USER_EPD_SD_POWER_TEST_STATE_IDLE ||
+           state == USER_EPD_SD_POWER_TEST_STATE_ARMED;
+#else
+    return true;
+#endif
+}
+
+bool EpdSdPowerTest_IsTransitionBusy(void)
+{
+#if USER_EPD_SD_POWER_TEST_ENABLE
+    if (!__atomic_load_n(&s_initialized, __ATOMIC_ACQUIRE)) {
+        return false;
+    }
+    uint32_t state = __atomic_load_n(&s_state, __ATOMIC_ACQUIRE);
+    return state == USER_EPD_SD_POWER_TEST_STATE_PREPARING ||
+           state == USER_EPD_SD_POWER_TEST_STATE_RESTORING;
+#else
+    return false;
+#endif
+}
+
 void EpdSdPowerTest_NetworkBegin(void)
 {
 #if USER_EPD_SD_POWER_TEST_ENABLE

@@ -734,7 +734,7 @@ EPD / SD 公共电源规则：
 
 ```text
 - EPD_SD_Power_PIN 固定为 GPIO_NUM_4，并配置为 GPIO_MODE_OUTPUT。
-- ePaperPort 构造先调用 Set_Power(1)，再配置 EPD 控制脚和共享 SPI；ServerNetworkStaEpdDisplay_Init() 会再次确认 GPIO4 为 HIGH，避免冷启动时由未供电外设的信号脚产生瞬时反向供电。
+- ePaperPort 构造先调用 Set_Power(1)，再配置 EPD 控制脚和共享 SPI；`ServerNetworkStaEpdDisplay_Init()` 在首次存储挂载前复用现有电源测试底层接口，持有专用共享SPI锁，依次释放SPI、隔离相关IO、GPIO4拉低2000ms、重新拉高并稳定100ms、恢复安全CS电平和SPI。该启动复位用于清除USB或软件复位后SD控制器遗留状态，任一步失败都会使EPD初始化失败并阻止进入不可靠的存储挂载。
 - EPD_Reset() 再次调用 Set_Power(1)；EPD refresh/sleep 本身不调用 Set_Power(0)。独立 EPD/SD 电源测试会在 EPD 完成后等待所有安全条件满足，并先卸载外部 SD，之后才临时关闭 GPIO4。
 - 当前 `USER_POWER_OFF_LOCAL_EPD_SD_CUTOFF_ENABLE=0`，work_state_task() 发送 CH583 POWER_OFF 后不调用 Set_Power(0)，GPIO4 持续保持 HIGH。
 - work_state_task() 在共用 SPI 锁内复检所有 guard，再发送 POWER_OFF；无论 UART 写入成功或失败，GPIO4 都保持 HIGH。
@@ -1728,7 +1728,7 @@ main/server_network_sta/slideshow/server_network_sta_slideshow.c
 
 该功能是 GPIO4 EPD/SD 共用电源的独立测试状态机，不复用 `wifi_work_time`，也不发送 CH583 `POWER_OFF`。只有实际 EPD 显示任务完成后才 armed；启动后未发生 EPD 显示时不执行测试。EPD 队列仍有任务、HTTP 请求未结束、图片 show/save 事务未结束、轮播显示后的进度保存或下一张 SD 预读未结束、普通共享 SPI 请求正在执行或等待时均不关电。启动存储类型未知时测试不启动，原有业务继续运行。
 
-网络 cast、cast2pic、upload 和 USB 共用的 `TdxImageTransfer_ProcessItems()` 使用独立引用计数覆盖完整的“先 show、后 save”事务，避免 EPD 完成与保存任务投递之间的短暂空闲被误判。轮播没有请求字段 `show=true/save=true`，使用单独的 slideshow follow-up 引用计数：在同步 EPD 显示前登记，在显示完成后的进度保存和下一张 SD BIN 预读结束后释放，避免轮播任务调度空隙产生约几十毫秒的无效短促断电；释放后若其他安全条件均满足，独立状态机再执行完整的 2 秒断电测试。
+网络cast/cast2pic、network upload和USB图片业务共用 `TdxImageTransfer_ProcessItems()` 的保存实现，并使用独立引用计数覆盖完整事务，避免保存间隙被误判。network upload固定 `show=false && save=true`，不再进入“先show、后save”路径。轮播使用单独的slideshow follow-up引用计数，在同步EPD显示前登记，在显示完成后的进度保存和下一张SD BIN预读结束后释放。
 
 安全断电流程：
 
@@ -2025,7 +2025,7 @@ server_network_sta_cast.c
 cast_core.c
 ├─ TdxCastCore_ParseAndValidate()
 ├─ TdxCastCore_ProcessValidatedCastDir()
-├─ CastSaveTask()
+├─ save_item_direct()（当前业务上下文同步保存，不创建任务）
 ├─ stop_slideshow_for_cast()
 └─ record_last_cast()
 ```
@@ -2063,7 +2063,7 @@ server_network_sta_cast2pic.c
 
 cast_core.c
 ├─ TdxImageTransfer_ProcessItems()
-└─ CastSaveTask()
+└─ save_item_direct()
 ```
 
 ---
@@ -2256,13 +2256,15 @@ server_network_sta_slideshow.c
 ├─ ServerNetworkStaSlideshow_StartSavedDelayed()
 ├─ ServerNetworkStaSlideshow_GetRuntimeTiming()
 ├─ ServerNetworkStaSlideshow_Stop()
-├─ ImageBusinessWorker_Submit(SLIDESHOW)（提交给9KB统一常驻worker）
+├─ ImageBusinessWorker_Submit(SLIDESHOW)（提交给12KB统一常驻worker）
 └─ slideshow_run_runtime()（由统一worker串行执行，结束后释放 runtime）
 ```
 
-`main/image_business_worker/` 提供一个固定9KB内部RAM静态栈、一个静态TCB、一个静态状态mutex和一个640字节单pending命令槽。该worker在读取 `epd_mode` 后立即创建并永久常驻，串行执行每日一图、轮播runtime、轮播启动延迟和Local Image Browsing；旧6KB轮播静态任务、旧7KB daily静态任务、6KB动态启动延迟任务及旧8KB Local动态任务均已取消。LOCAL_IMAGE相关模式切换通过generation、非阻塞stop和mutex内原子pending替换完成，不在PB2/UART请求入口等待旧owner或当前EPD；原有DAILY/SLIDESHOW内部重启保护保持不变。轮播runtime仍优先从PSRAM分配约2.9KB；pending runtime和LOCAL reservation均由cancel callback或run cleanup互斥释放一次。cancel callback只做有界资源释放且不得反向调用统一worker API。启动延迟使用统一worker的task notification进行可中断等待，禁止过期延迟在10秒后重新启动旧轮播。
+`main/image_business_worker/` 提供一个固定12KB内部RAM静态栈、一个静态TCB、一个静态状态mutex和一个640字节单pending命令槽。该worker在读取 `epd_mode` 后立即创建并永久常驻，串行执行每日一图、轮播runtime、轮播启动延迟、Local Image Browsing、network CAST/CAST2PIC和低优先级USB投屏；旧轮播、daily、启动延迟、Local、12KB dataup_async、8KB cast保存及8KB USB worker任务均已取消。network upload不作为owner排队，只在HTTP当前上下文进行零等待预约和同步SD保存。
 
-DAILY HTTPS内存诊断位于 `main/server_network_sta/daily_image/daily_image_http.c`。POST和GET前各保留一条 `TLS heap before` 日志，分别报告internal、`MALLOC_CAP_DMA`和PSRAM的free/largest block，并在同一行打印 `aes=software`。ESP-IDF v5.5.3的ESP32-C5硬件AES实现会在处理过程中通过 `heap_caps_aligned_alloc()` 或 `heap_caps_aligned_calloc(..., MALLOC_CAP_DMA)` 动态申请临时缓冲和DMA描述符；96KB reserve不能保证运行期始终存在所需连续DMA块。工程因此在 `sdkconfig.defaults` 和当前 `sdkconfig` 中关闭 `CONFIG_MBEDTLS_HARDWARE_AES`，保留 `CONFIG_MBEDTLS_AES_C=y`，由SDK取消 `MBEDTLS_AES_ALT` 并回到mbedTLS内置软件AES。`CONFIG_MBEDTLS_HARDWARE_SHA`、MPI和ECC保持开启；GCM/CCM及TLS安全算法不变。`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304` 继续保留给WiFi和SPI等显式internal/DMA用户，统一worker栈仍为9KB。
+`main/server_network_sta/upload/server_network_sta_upload_gate.c` 是网络/USB ping共用的UPLOAD可用性判定和network upload最终准入。ping只读取状态；最终 `TryReserve()` 使用原子UPLOAD标志、EPD idle reservation、EPD/SD power image-transfer guard和 `TdxSharedSpi_Lock(0)`，任一步失败立即释放并返回BUSY。DAILY通过现有in-progress标志区分下载/执行与等待下一槽；SLIDESHOW通过EPD/Shared SPI实际状态区分一张图片事务与长期interval等待，所以两种长期owner不会让ping永久BUSY。稳定POWER_OFF可由下一请求现有恢复流程唤醒，只有PREPARING/RESTORING作为BUSY。
+
+DAILY HTTPS内存诊断位于 `main/server_network_sta/daily_image/daily_image_http.c`。POST和GET前各保留一条 `TLS heap before` 日志，分别报告internal、`MALLOC_CAP_DMA`和PSRAM的free/largest block，并在同一行打印 `aes=software`。ESP-IDF v5.5.3的ESP32-C5硬件AES实现会在处理过程中通过 `heap_caps_aligned_alloc()` 或 `heap_caps_aligned_calloc(..., MALLOC_CAP_DMA)` 动态申请临时缓冲和DMA描述符；96KB reserve不能保证运行期始终存在所需连续DMA块。工程因此在 `sdkconfig.defaults` 和当前 `sdkconfig` 中关闭 `CONFIG_MBEDTLS_HARDWARE_AES`，保留 `CONFIG_MBEDTLS_AES_C=y`，由SDK取消 `MBEDTLS_AES_ALT` 并回到mbedTLS内置软件AES。`CONFIG_MBEDTLS_HARDWARE_SHA`、MPI和ECC保持开启；GCM/CCM及TLS安全算法不变。`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304` 继续保留给WiFi和SPI等显式internal/DMA用户，统一worker栈现为12KB。
 
 该AES选择是全局mbedTLS配置，不只作用于DAILY；OTA等HTTPS路径也会使用软件AES。SDK中的软件AES表由 `MBEDTLS_AES_ROM_TABLES` 放在ROM，不新增大型运行期DMA缓冲。关闭 `CONFIG_MBEDTLS_AES_USE_INTERRUPT` 是硬件AES关闭后的依赖结果，单独关闭中断不能解决DMA申请失败。不得直接修改 `C:\esp\v5.5.3\esp-idf` 的AES驱动，也不通过继续增加reserve、缩小TLS入站记录或私有静态DMA池掩盖问题。
 
@@ -2329,6 +2331,8 @@ server_network_sta_snapshot.c
 ```text
 main/server_network_sta/upload/server_network_sta_upload.c
 main/server_network_sta/upload/server_network_sta_upload.h
+main/server_network_sta/upload/server_network_sta_upload_gate.c
+main/server_network_sta/upload/server_network_sta_upload_gate.h
 main/cast_core/cast_core.c
 main/cast_core/cast_core.h
 ```
@@ -2342,13 +2346,17 @@ main/cast_core/cast_core.h
 ```text
 server_network_sta_upload.c
 ├─ send_upload_result()
-├─ upload_async_process()
 └─ ServerNetworkStaUpload_Process()
+
+server_network_sta_upload_gate.c
+├─ ServerNetworkStaUploadGate_IsBusy()
+├─ ServerNetworkStaUploadGate_TryReserve()
+└─ ServerNetworkStaUploadGate_Release()
 
 cast_core.c
 ├─ TdxImageTransfer_ParseSingle()
 ├─ TdxImageTransfer_ProcessItems()
-└─ CastSaveTask()
+└─ save_item_direct()
 ```
 
 ---
@@ -2471,7 +2479,7 @@ UsbConsoleCommon_MultipartParts()
 UsbConsoleCommon_FileNameIsSafe()
 TdxImageTransfer_ParseSingle()
 TdxImageTransfer_ProcessItems()
-CastSaveTask()
+save_item_direct()
 UsbConsoleCommon_ListSavedImages()
 UsbConsoleCommon_AppendSnapshot()
 UsbConsoleCommon_SetJsonf()
@@ -2625,13 +2633,13 @@ main/server_network_sta/server_network_sta.c
 UsbConsoleWifi_Handle()
 save_wifi_namespace()
 save_net80211_namespace()
-UsbConsoleWorker_SubmitWifiConnect()
+UsbConsoleWorker_SubmitWifiConnect()（当前USB接收任务内同步执行）
 User_Network_mode_app_init()
 ```
 
 ---
 
-### 9.18 worker：USB 后台任务与异步工作队列
+### 9.18 worker：USB无独立任务的inline执行适配层
 
 相关文件：
 
@@ -2641,16 +2649,12 @@ main/usb_console_echo/worker/usb_console_worker.h
 main/usb_console_echo/cast/usb_console_cast_worker.c
 ```
 
----
-
-### 9.18 worker：USB 后台任务与异步工作队列
-
 关键辅助函数：
 
 ```text
 UsbConsoleWorker_Init()
 UsbConsoleWorker_SubmitWifiConnect()
-UsbConsoleWorker_Task()
+UsbConsoleWorker_SubmitJob()（inline，不创建worker任务或queue）
 handle_wifi_connect()
 UsbConsoleCast_SubmitAsync()
 cast_worker_job()
@@ -2911,7 +2915,6 @@ ServerNetworkStaWifiWorkTime_OnNetworkData()
 ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()
 ServerNetworkStaWifiWorkTime_OnCh583Activity()
 ServerNetworkStaWifiWorkTime_SetFactoryResetGuard()
-ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle()
 ServerNetworkStaWifiWorkTime_SetOtaWriteInProgress()
 ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress()
 UserLedStatus_PreparePowerOffSync()
@@ -2920,9 +2923,13 @@ ch583_wifi_uart_send_power_off()
 ch583_wifi_send_frame()
 ```
 
-GPIO28长按达到5秒后、删除任何文件前调用 `ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(true)`；短按不设置。PB1远程请求使用单个RAM状态合并，在Factory Reset任务已就绪时立即设置同一guard，初始化前请求则在任务创建成功后补设。`work_state_task()`在普通入口、LED后和SPI锁内复检该标志，避免普通关机抢占等待、清理或欢迎图显示。欢迎图完成后先调用 `ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle(10)`再清guard；失败时不发布请求并清guard。文件清理按best-effort继续执行，`ENOENT`不算失败，真实unlink、路径长度、目录读取或关闭错误累计到 `file_delete_failed/file_ret`，任一失败都会使总ret失败并禁止关机。
+GPIO28长按达到5秒后、删除任何文件前调用 `ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(true)`；短按不设置。PB1远程请求使用单个RAM状态合并，在Factory Reset任务已就绪时立即设置同一guard，初始化前请求则在任务创建成功后补设。`work_state_task()`在普通入口、LED后和SPI锁内复检该标志，避免普通关机抢占等待、清理或白屏显示。白屏完成后不再调用 `ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle()`，成功和失败都直接清guard；普通关机规则随后继续有效。文件清理按best-effort继续执行，`ENOENT`不算失败，真实unlink、路径长度、目录读取或关闭错误累计到 `file_delete_failed/file_ret`，任一失败都会使总ret失败。
 
-Factory Reset 开始清理前通过统一EPD准入接口预约IDLE状态，并持有预约直到文件和NVS清理完成，避免PB2本地浏览在BUSY检查之后插入。成功后清除 `wifi` namespace 全部键以及 `nvs.net80211:sta.ssid/sta.pswd`，清除本地浏览 `PhotoPainter:local_img_state`，并把 `PhotoPainter:epd_mode` 强制写入并读回校验为 `USER_EPD_DISPLAY_MODE_DEFAULT`。`main/CMakeLists.txt`把 `DOC/welcome.bin`作为二进制常量嵌入固件；Factory Reset校验当前EPD原始显示长度为960000字节后，将该zlib数据通过已有预约提交到1号屏并同步等待完成，等待上限沿用 `USER_EPD_DISPLAY_WAIT_TIMEOUT_MS=5分钟`。只有显示返回 `ESP_OK` 后，`work_state_task()`才强制发送 `WAKE_TIMER ON,10`，再沿用现有LED、SPI和busy复检发送 `WIFI_PROVISION 4F`、`POWER_OFF`；显示失败不提交专用关机请求，但guard仍清除。CH583断电计时10秒后重新上电并以 `DEVICE_INFO.wake_reason=TIMER` 握手。PB1远程请求使用IDLE/PENDING/RUNNING/COMPLETED RAM状态合并重复帧，并复用同一Factory Reset任务；该请求不写工作时间NVS，也不改变普通、轮播、DAILY或LOCAL_IMAGE_BROWSING关机路径。
+Factory Reset原5KB任务继续按300ms检测GPIO28、累计5秒长按并维护PB1的IDLE/PENDING/RUNNING/COMPLETED RAM状态，但不再执行文件、NVS和EPD业务；确认请求后把trigger/seq按值提交到12KB永久常驻统一任务 `owner=FACTORY_RESET`。该owner可替换所有普通pending图片命令，pending/current期间统一提交入口拒绝其他图片owner；检测任务使用现有非阻塞stop/generation使DAILY、SLIDESHOW和LOCAL_IMAGE退出，已经开始的EPD或投屏事务不强制中断。提交临时失败时RUNNING回退PENDING并保留guard，由300ms周期重试且只记录一次deferred警告。
+
+Factory Reset统一callback开始清理前仍通过统一EPD准入接口预约IDLE状态，并持有预约直到文件和NVS清理完成，避免PB2本地浏览在BUSY检查之后插入。成功后清除 `wifi` namespace 全部键以及 `nvs.net80211:sta.ssid/sta.pswd`，清除本地浏览状态，并把 `PhotoPainter:epd_mode` 强制写入并读回校验为默认值。随后写入并读回 `PhotoPainter:fr_welcome=1`，通过新增 `ServerNetworkStaEpdDisplay_QueueReservedSolidColorAndWait()`按 `WHITE=0x11`分配、填充并提交一份当前屏幕大小的PSRAM缓冲区；该接口沿用原预约、pending计数、完成信号和5分钟等待上限，不修改已测试的zlib接口。白屏完成后释放缓冲区、发送未配网状态并结束，不提交Factory Reset专用关机或重启请求。
+
+`main/CMakeLists.txt`继续把 `DOC/welcome.bin`作为Flash只读常量嵌入固件。`fr_welcome`在恢复出厂白屏后保持为1，不触发自动重启；客人以后正常开机时，在 `ServerNetworkStaEpdDisplay_Init()`、存储挂载和 `FactoryReset_Init()`完成之后、网络业务启动之前调用 `FactoryReset_HandleStartupWelcome()`，避免EPD传输干扰SD卡首次握手。存储未就绪时不调用且保留标志；值为1时通过原 `ServerNetworkStaEpdDisplay_QueueReservedToScreenAndWait()`解压并显示欢迎图，成功后删除标志，失败或删除失败时保留标志供下次冷启动重试。启动显示期间使用Factory Reset guard，退出前启动现有WiFi连接保护再无条件清guard。该流程不写工作时间NVS，也不改变普通、轮播、DAILY或LOCAL_IMAGE_BROWSING关机路径。
 
 ---
 
@@ -3053,7 +3060,7 @@ main/local_image_browsing/local_image_browsing.c
 
 EPD显示模块增加空闲预留接口。预留建立后 `ServerNetworkStaEpdDisplay_IsBusy()` 返回true，普通显示入口在预留有效时拒绝新任务；本地浏览完成文件准备后消费预留并排队。EPD worker先发布active再减少pending，避免任务从队列取出时出现瞬时IDLE。
 
-本地浏览原8KB动态worker及长度1的FreeRTOS queue已删除，扫描、NVS事务和EPD显示逻辑改由9KB永久常驻 `image_business_worker` 的 `owner=LOCAL_IMAGE` 执行，预计额外减少约8.5KB内部RAM。扫描过程仍不保存完整目录列表，只在统一任务栈中保留全局最小两项、游标之后最小两项和扫描结果等少量17字节缓冲；模块级150项 `s_list` 已删除，静态内部RAM减少2556字节。算法保持原有稳定顺序。pending LOCAL_IMAGE被更新模式替换时由cancel callback释放EPD reservation，进入run callback后由统一cleanup释放，两条路径互斥。栈余量统一通过 `image_worker: job done owner=LOCAL_IMAGE ... min_free=...` 检查。
+本地浏览原8KB动态worker及长度1的FreeRTOS queue已删除，扫描、NVS事务和EPD显示逻辑改由12KB永久常驻 `image_business_worker` 的 `owner=LOCAL_IMAGE` 执行，预计额外减少约8.5KB内部RAM。扫描过程仍不保存完整目录列表，只在统一任务栈中保留全局最小两项、游标之后最小两项和扫描结果等少量17字节缓冲；模块级150项 `s_list` 已删除，静态内部RAM减少2556字节。算法保持原有稳定顺序。pending LOCAL_IMAGE被更新模式替换时由cancel callback释放EPD reservation，进入run callback后由统一cleanup释放，两条路径互斥。栈余量统一通过 `image_worker: job done owner=LOCAL_IMAGE ... min_free=...` 检查。
 
 `ch583_wifi_uart_protocol.c` 仍拥有DEVICE_INFO保存和协议ACK/ERR，并通过一个统一按键分发函数保持两种来源的映射一致：PB2交给本地浏览模块，PB1交给Factory Reset异步请求。DEVICE_INFO严格解析五字段，首次成功ACK才执行该帧的wake_reason业务，重发只重ACK；合法KEY_EVENT不依赖DEVICE_INFO状态，相同SEQ只重ACK。PB3/PB4在业务未定义前返回BAD_ARG。完整通信规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 
@@ -3131,7 +3138,7 @@ USER_ZLIB_TEST_DECOMPRESSED_RELATIVE_PATH
 
 cast、cast2pic和upload入口只校验 `bin_size` 是否等于实际收到的 `bin` part长度，不把压缩输入长度与屏幕原始 `display_size` 比较。宏为 `1` 时由公共EPD入口解压并校验输出长度；宏为 `0` 时继续把raw数据交给原有EPD长度检查。
 
-每日一图下载接口增加 `exact_size_required` 参数：非压缩模式维持严格原始长度，压缩模式使用 `TdxZlibBuffer_GetCompressBound()` 作为容量并接受实际压缩长度。轮播在压缩模式下跳过旧的原始BIN文件名SHA诊断，避免对压缩字节产生误报；非压缩模式保留原诊断。ESP32-C5使用 ESP-IDF 5.5.3 FreeRTOS `xTaskCreateStatic()`：daily、slideshow、轮播启动延迟及Local Image Browsing共用9216字节内部RAM统一静态栈和一个静态TCB，通过按值复制的小型pending命令、generation取消及原子owner替换机制串行运行，不依赖运行期heap最大连续块。
+每日一图下载接口增加 `exact_size_required` 参数：非压缩模式维持严格原始长度，压缩模式使用 `TdxZlibBuffer_GetCompressBound()` 作为容量并接受实际压缩长度。轮播在压缩模式下跳过旧的原始BIN文件名SHA诊断，避免对压缩字节产生误报；非压缩模式保留原诊断。ESP32-C5使用 ESP-IDF 5.5.3 FreeRTOS `xTaskCreateStatic()`：daily、slideshow、轮播启动延迟、Local Image Browsing、CAST、CAST2PIC和Factory Reset执行流程共用12288字节内部RAM统一静态栈和一个静态TCB，通过按值复制的小型pending命令、generation取消及原子owner替换机制串行运行，不依赖运行期heap最大连续块。投屏大body只通过heap job指针转移所有权，不复制到640字节pending payload；Factory Reset原5KB任务本阶段只保留GPIO28/PB1检测和提交职责，栈大小暂不调整。
 
 `main/main.c` 完整保留 `TdxZlibEpdTest_Run()` 的启动调用代码，当前使用局部 `#if 0` 关闭，没有增加临时测试宏；以后需要诊断时可临时改为 `#if 1`。该函数读取已生成的 `.bin.zlib` 并提交公共EPD入口；读取期间持有 `TdxSharedSpi`，提交显示前释放锁，避免同步等待EPD任务时死锁。
 
