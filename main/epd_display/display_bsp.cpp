@@ -5,12 +5,14 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_err.h>
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <esp_rom_sys.h>
 #include <freertos/event_groups.h>
+#include <freertos/semphr.h>
 #include "debug_output.h"
 #include "display_bsp.h"
 #include "tdx_shared_spi.h"
@@ -26,6 +28,11 @@ bool isEPDInit = false;
 
 #define BLOCK_SIZE 256
 static ePaperPort *s_global_epaper_instance = nullptr;
+static_assert((USER_EPD_SPI_SAFE_DMA_TX_CHUNK % 4U) == 0U,
+              "EPD DMA TX chunk must be 4-byte aligned");
+DMA_ATTR static uint8_t s_epd_spi_dma_tx_buffer[USER_EPD_SPI_SAFE_DMA_TX_CHUNK];
+static StaticSemaphore_t s_epd_spi_dma_mutex_buffer;
+static SemaphoreHandle_t s_epd_spi_dma_mutex;
 void SetGlobalEPaperInstance(ePaperPort *instance) {
     s_global_epaper_instance = instance;
 }
@@ -187,6 +194,17 @@ void ePaperPort::ReleaseRotationBuffer() {
 
 esp_err_t ePaperPort::InitializeSharedSpi()
 {
+    if (s_epd_spi_dma_mutex == nullptr) {
+        s_epd_spi_dma_mutex = xSemaphoreCreateMutexStatic(&s_epd_spi_dma_mutex_buffer);
+        if (s_epd_spi_dma_mutex == nullptr) {
+            ESP_LOGE(TAG, "EPD static DMA TX mutex create failed");
+            return ESP_ERR_NO_MEM;
+        }
+        ESP_LOGI(TAG, "EPD static DMA TX ready bytes=%u shared_spi_max=%u",
+                 (unsigned int)sizeof(s_epd_spi_dma_tx_buffer),
+                 (unsigned int)USER_SHARED_SPI_MAX_TRANSFER_SIZE);
+    }
+
     bool bus_initialized_here = false;
     if (!spi_bus_initialized_) {
         spi_bus_config_t buscfg = {};
@@ -195,7 +213,7 @@ esp_err_t ePaperPort::InitializeSharedSpi()
         buscfg.sclk_io_num = scl_;
         buscfg.quadwp_io_num = -1;
         buscfg.quadhd_io_num = -1;
-        buscfg.max_transfer_sz = NT61522_SPI_MAX_BUFFER_SIZE;
+        buscfg.max_transfer_sz = USER_SHARED_SPI_MAX_TRANSFER_SIZE;
 
         esp_err_t ret = spi_bus_initialize(spi_host_, &buscfg, SPI_DMA_CH_AUTO);
         if (ret != ESP_OK) {
@@ -810,38 +828,12 @@ esp_err_t ePaperPort::EPD_Sendbuffera(uint8_t *Data, size_t len) {
     // PSRAM 源数据可能触发 SPI driver 临时申请 DMA TX buffer，这里按安全小包发送。
     Set_DCIOLevel(1);
     Set_CSIOLevel(0);
-
-    uint8_t *ptr = Data;
-    size_t remaining = len;
-    while (remaining > 0) {
-        size_t chunk = remaining > NT61522_SPI_SAFE_DMA_TX_CHUNK ? NT61522_SPI_SAFE_DMA_TX_CHUNK : remaining;
-        spi_transaction_ext_t trans_ext;
-        memset(&trans_ext, 0, sizeof(trans_ext));
-        trans_ext.command_bits = 0;
-        trans_ext.base.length = chunk * 8;
-        trans_ext.base.tx_buffer = ptr;
-        trans_ext.base.rx_buffer = nullptr;
-        trans_ext.base.flags = SPI_TRANS_VARIABLE_CMD;
-
-        esp_err_t ret = spi_device_transmit(spi, &trans_ext.base);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "EPD_Sendbuffera failed chunk=%u remaining=%u ret=%s dma_free=%u dma_largest=%u internal_free=%u",
-                     (unsigned int)chunk,
-                     (unsigned int)remaining,
-                     esp_err_to_name(ret),
-                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
-                     (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
-                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-            EpdType_ReportDisplayFailure(ret);
-            Set_CSIOLevel(1);
-            return ret;
-        }
-        ptr += chunk;
-        remaining -= chunk;
-    }
-
+    esp_err_t ret = spiTransmitData(Data, len);
     Set_CSIOLevel(1);
-    return ESP_OK;
+    if (ret != ESP_OK) {
+        EpdType_ReportDisplayFailure(ret);
+    }
+    return ret;
 }
 
 void ePaperPort::EPD_WriteCMD_ToMaster(uint8_t command) {
@@ -874,38 +866,11 @@ esp_err_t ePaperPort::EPD_WriteMultiData_ToMaster(uint8_t *data, unsigned int le
         return ESP_ERR_INVALID_ARG;
     }
     EPD_Select_Master();
-    Set_DCIOLevel(1);
-    delay_us(1);
-
-    esp_err_t result = ESP_OK;
-    uint8_t *ptr = data;
-    unsigned int remaining = len;
-    while (remaining > 0) {
-        unsigned int chunk = remaining > NT61522_SPI_SAFE_DMA_TX_CHUNK ? NT61522_SPI_SAFE_DMA_TX_CHUNK : remaining;
-        spi_transaction_ext_t trans_ext;
-        memset(&trans_ext, 0, sizeof(trans_ext));
-        trans_ext.command_bits = 0;
-        trans_ext.base.length = chunk * 8;
-        trans_ext.base.tx_buffer = ptr;
-        trans_ext.base.rx_buffer = nullptr;
-        trans_ext.base.flags = SPI_TRANS_VARIABLE_CMD;
-        esp_err_t ret = spi_device_transmit(spi, &trans_ext.base);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "EPD_WriteMultiData_ToMaster failed chunk=%u remaining=%u ret=%s dma_free=%u dma_largest=%u internal_free=%u",
-                     chunk,
-                     remaining,
-                     esp_err_to_name(ret),
-                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
-                     (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
-                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-            EpdType_ReportDisplayFailure(ret);
-            result = ret;
-            break;
-        }
-        ptr += chunk;
-        remaining -= chunk;
-    }
+    esp_err_t result = spiTransmitData(data, len);
     EPD_Select_None();
+    if (result != ESP_OK) {
+        EpdType_ReportDisplayFailure(result);
+    }
     return result;
 }
 
@@ -915,38 +880,11 @@ esp_err_t ePaperPort::EPD_WriteMultiData_ToSlave(uint8_t *data, unsigned int len
         return ESP_ERR_INVALID_ARG;
     }
     EPD_Select_Slave();
-    Set_DCIOLevel(1);
-    delay_us(1);
-
-    esp_err_t result = ESP_OK;
-    uint8_t *ptr = data;
-    unsigned int remaining = len;
-    while (remaining > 0) {
-        unsigned int chunk = remaining > NT61522_SPI_SAFE_DMA_TX_CHUNK ? NT61522_SPI_SAFE_DMA_TX_CHUNK : remaining;
-        spi_transaction_ext_t trans_ext;
-        memset(&trans_ext, 0, sizeof(trans_ext));
-        trans_ext.command_bits = 0;
-        trans_ext.base.length = chunk * 8;
-        trans_ext.base.tx_buffer = ptr;
-        trans_ext.base.rx_buffer = nullptr;
-        trans_ext.base.flags = SPI_TRANS_VARIABLE_CMD;
-        esp_err_t ret = spi_device_transmit(spi, &trans_ext.base);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "EPD_WriteMultiData_ToSlave failed chunk=%u remaining=%u ret=%s dma_free=%u dma_largest=%u internal_free=%u",
-                     chunk,
-                     remaining,
-                     esp_err_to_name(ret),
-                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
-                     (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
-                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-            EpdType_ReportDisplayFailure(ret);
-            result = ret;
-            break;
-        }
-        ptr += chunk;
-        remaining -= chunk;
-    }
+    esp_err_t result = spiTransmitData(data, len);
     EPD_Select_None();
+    if (result != ESP_OK) {
+        EpdType_ReportDisplayFailure(result);
+    }
     return result;
 }
 
@@ -968,38 +906,11 @@ esp_err_t ePaperPort::EPD_WriteMultiData_ToBoth(uint8_t *data, unsigned int len)
         return ESP_ERR_INVALID_ARG;
     }
     EPD_Select_Both();
-    Set_DCIOLevel(1);
-    delay_us(1);
-
-    esp_err_t result = ESP_OK;
-    uint8_t *ptr = data;
-    unsigned int remaining = len;
-    while (remaining > 0) {
-        unsigned int chunk = remaining > NT61522_SPI_SAFE_DMA_TX_CHUNK ? NT61522_SPI_SAFE_DMA_TX_CHUNK : remaining;
-        spi_transaction_ext_t trans_ext;
-        memset(&trans_ext, 0, sizeof(trans_ext));
-        trans_ext.command_bits = 0;
-        trans_ext.base.length = chunk * 8;
-        trans_ext.base.tx_buffer = ptr;
-        trans_ext.base.rx_buffer = nullptr;
-        trans_ext.base.flags = SPI_TRANS_VARIABLE_CMD;
-        esp_err_t ret = spi_device_transmit(spi, &trans_ext.base);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "EPD_WriteMultiData_ToBoth failed chunk=%u remaining=%u ret=%s dma_free=%u dma_largest=%u internal_free=%u",
-                     chunk,
-                     remaining,
-                     esp_err_to_name(ret),
-                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
-                     (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
-                     (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-            EpdType_ReportDisplayFailure(ret);
-            result = ret;
-            break;
-        }
-        ptr += chunk;
-        remaining -= chunk;
-    }
+    esp_err_t result = spiTransmitData(data, len);
     EPD_Select_None();
+    if (result != ESP_OK) {
+        EpdType_ReportDisplayFailure(result);
+    }
     return result;
 }
 
@@ -1357,6 +1268,17 @@ esp_err_t ePaperPort::spiTransmitData(const uint8_t *dataBuffer, size_t dataLeng
 
     if (dataBuffer == nullptr || dataLength == 0) return ESP_OK;
 
+    if (s_epd_spi_dma_mutex == nullptr) {
+        ESP_LOGE(TAG, "spiTransmitData static DMA TX not initialized");
+        EpdType_ReportDisplayFailure(ESP_ERR_INVALID_STATE);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_epd_spi_dma_mutex, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGE(TAG, "spiTransmitData static DMA TX lock failed");
+        EpdType_ReportDisplayFailure(ESP_ERR_TIMEOUT);
+        return ESP_ERR_TIMEOUT;
+    }
+
 
     //LOG_Purple("%s>%d L=%d",__func__,__LINE__,dataLength);
     const uint8_t *ptr = dataBuffer;
@@ -1365,11 +1287,12 @@ esp_err_t ePaperPort::spiTransmitData(const uint8_t *dataBuffer, size_t dataLeng
            size_t chunk = remaining > NT61522_SPI_SAFE_DMA_TX_CHUNK ? NT61522_SPI_SAFE_DMA_TX_CHUNK : remaining;
            spi_transaction_t t;
            memset(&t, 0, sizeof(t));
+           memcpy(s_epd_spi_dma_tx_buffer, ptr, chunk);
            t.length    = 8 * chunk;
-           t.tx_buffer = ptr;
+           t.tx_buffer = s_epd_spi_dma_tx_buffer;
            esp_err_t ret = spi_device_polling_transmit(spi, &t); //Transmit!
            if (ret != ESP_OK) {
-               ESP_LOGE(TAG, "spiTransmitData failed, chunk=%u remaining=%u total=%u err=%s dma_free=%u dma_largest=%u internal_free=%u",
+               ESP_LOGE(TAG, "spiTransmitData static DMA failed chunk=%u remaining=%u total=%u err=%s dma_free=%u dma_largest=%u internal_free=%u",
                         (unsigned int)chunk,
                         (unsigned int)remaining,
                         (unsigned int)dataLength,
@@ -1377,35 +1300,15 @@ esp_err_t ePaperPort::spiTransmitData(const uint8_t *dataBuffer, size_t dataLeng
                         (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
                         (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
                         (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+               EpdType_ReportDisplayFailure(ret);
+               xSemaphoreGive(s_epd_spi_dma_mutex);
                return ret;
            }
            ptr += chunk;
            remaining -= chunk;
     }
+    xSemaphoreGive(s_epd_spi_dma_mutex);
     return ESP_OK;
-
-    // spi_transaction_ext_t trans_ext;
-    // while (dataLength >= NT61522_SPI_MAX_BUFFER_SIZE) {
-    //     memset(&trans_ext, 0, sizeof(trans_ext));
-    //     trans_ext.command_bits = 0;
-    //     trans_ext.base.length = NT61522_SPI_MAX_BUFFER_SIZE * 8;
-    //     trans_ext.base.tx_buffer = dataBuffer;
-    //     trans_ext.base.flags = SPI_TRANS_VARIABLE_CMD;
-    //     esp_err_t status = spi_device_transmit(spi, &trans_ext.base);
-    //     if (status != ESP_OK) return status;
-    //     dataLength -= NT61522_SPI_MAX_BUFFER_SIZE;
-    //     dataBuffer += NT61522_SPI_MAX_BUFFER_SIZE;
-    // }
-
-    // if (dataLength > 0) {
-    //     memset(&trans_ext, 0, sizeof(trans_ext));
-    //     trans_ext.command_bits = 0;
-    //     trans_ext.base.length = dataLength * 8;
-    //     trans_ext.base.tx_buffer = dataBuffer;
-    //     trans_ext.base.flags = SPI_TRANS_VARIABLE_CMD;
-    //     return spi_device_transmit(spi, &trans_ext.base);
-    // }
-    // return ESP_OK;
 }
 
 esp_err_t ePaperPort::spiReceiveData(uint8_t *dataBuffer, size_t dataLength) 
@@ -1427,8 +1330,8 @@ esp_err_t ePaperPort::spiReceiveData(uint8_t *dataBuffer, size_t dataLength)
     while (remain > 0) {
         size_t chunk = remain;
 
-        if (chunk > NT61522_SPI_MAX_BUFFER_SIZE) {
-            chunk = NT61522_SPI_MAX_BUFFER_SIZE;
+        if (chunk > USER_SHARED_SPI_MAX_TRANSFER_SIZE) {
+            chunk = USER_SHARED_SPI_MAX_TRANSFER_SIZE;
         }
 
         spi_transaction_t t;
@@ -1458,8 +1361,8 @@ esp_err_t ePaperPort::spiReceiveData(uint8_t *dataBuffer, size_t dataLength)
     }
 
     ESP_LOGI(TAG, "spiReceiveData: end len=%u, data[0]=0x%02X, data[1]=0x%02X",
-        dataLength > 0 ? dataBuffer[0] : 0,
-        (unsigned int)dataLength,
+             (unsigned int)dataLength,
+             dataLength > 0 ? dataBuffer[0] : 0,
              dataLength > 1 ? dataBuffer[1] : 0);
 
     return ESP_OK;

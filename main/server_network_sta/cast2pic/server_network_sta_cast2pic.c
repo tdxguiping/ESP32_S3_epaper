@@ -10,6 +10,7 @@
 #include "epd_display_mode.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "local_image_browsing.h"
 #include "esp_timer.h"
 #include "server_network_sta_dataup_async.h"
 #include "tdx_cfg.h"
@@ -581,6 +582,7 @@ esp_err_t ServerNetworkStaCast2Pic_Process(httpd_req_t *req,
         return send_cast2pic_result(req, validate_error);
     }
 
+    LocalImageBrowsing_Stop();
     esp_err_t mode_ret = EpdDisplayMode_Set(USER_EPD_DISPLAY_MODE_NORMAL);
     if (mode_ret != ESP_OK) {
         ESP_LOGE(TAG, "cast2pic mode save failed screen=%s ret=%s",

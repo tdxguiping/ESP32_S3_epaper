@@ -17,6 +17,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "image_business_worker.h"
+#include "local_image_browsing.h"
 #include "nvs.h"
 #include "server_network_sta.h"
 #include "server_network_sta_slideshow_control.h"
@@ -168,18 +169,26 @@ static esp_err_t submit_job(const daily_image_config_t *config,
         return ESP_ERR_INVALID_STATE;
     }
 
+    bool replace_local = source == NULL || strcmp(source, "reschedule") != 0;
+    if (replace_local) {
+        LocalImageBrowsing_InvalidateCurrent();
+    }
     daily_image_job_t job = {.config = *config};
     job.generation = __atomic_add_fetch(&s_daily_request_generation,
                                         1U,
                                         __ATOMIC_ACQ_REL);
     strlcpy(job.source, source != NULL ? source : "unknown", sizeof(job.source));
     (void)ImageBusinessWorker_CancelPending(IMAGE_BUSINESS_OWNER_DAILY);
-    esp_err_t ret = ImageBusinessWorker_Submit(IMAGE_BUSINESS_OWNER_DAILY,
-                                               daily_run_command,
-                                               NULL,
-                                               &job,
-                                               sizeof(job),
-                                               job.generation);
+    esp_err_t ret = ImageBusinessWorker_SubmitReplacingPending(
+        IMAGE_BUSINESS_OWNER_DAILY,
+        daily_run_command,
+        NULL,
+        &job,
+        sizeof(job),
+        job.generation,
+        replace_local
+            ? IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_LOCAL_IMAGE)
+            : 0U);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "job submit failed source=%s generation=%lu",
                  job.source, (unsigned long)job.generation);
@@ -945,9 +954,14 @@ static void stop_daily_work(void)
 #endif
 }
 
-esp_err_t ServerNetworkStaDailyImage_StopAndWait(void)
+void ServerNetworkStaDailyImage_Stop(void)
 {
     stop_daily_work();
+}
+
+esp_err_t ServerNetworkStaDailyImage_StopAndWait(void)
+{
+    ServerNetworkStaDailyImage_Stop();
 #if USER_DAILY_IMAGE_ENABLE
     TickType_t timeout_ticks = pdMS_TO_TICKS(USER_EPD_DISPLAY_WAIT_TIMEOUT_MS + 5000U);
     esp_err_t wait_ret = ImageBusinessWorker_WaitOwnerIdle(
@@ -1111,6 +1125,7 @@ esp_err_t ServerNetworkStaDailyImage_ProcessJson(httpd_req_t *req,
         base_path != NULL ? base_path : s_daily_base_path;
     if (sw == 0) {
         ESP_LOGI(TAG, "daily request sw=0 disable");
+        LocalImageBrowsing_Stop();
         ret = stop_slideshow_for_daily(effective_base_path);
         if (ret != ESP_OK) {
             xSemaphoreGive(s_daily_config_mutex);

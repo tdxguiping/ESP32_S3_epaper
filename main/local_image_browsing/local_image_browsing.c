@@ -13,9 +13,8 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
 #include "freertos/semphr.h"
-#include "freertos/task.h"
+#include "image_business_worker.h"
 #include "nvs.h"
 #include "server_network_sta_daily_image.h"
 #include "server_network_sta_slideshow.h"
@@ -45,11 +44,14 @@ typedef struct {
 typedef struct {
     local_image_browsing_trigger_t trigger;
     uint16_t protocol_seq;
+    uint32_t generation;
     epd_display_reservation_t reservation;
 } local_image_browsing_request_t;
 
-static QueueHandle_t s_request_queue;
-static TaskHandle_t s_worker_task;
+_Static_assert(sizeof(local_image_browsing_request_t) <=
+                   USER_IMAGE_BUSINESS_WORKER_PAYLOAD_SIZE,
+               "local image request exceeds shared worker payload");
+
 static SemaphoreHandle_t s_state_mutex;
 static portMUX_TYPE s_startup_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_initialized;
@@ -59,6 +61,7 @@ static size_t s_startup_request_head;
 static size_t s_startup_request_count;
 static char s_base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
 static local_image_browsing_persisted_state_t s_state;
+static volatile uint32_t s_request_generation;
 
 static const char *trigger_to_string(local_image_browsing_trigger_t trigger)
 {
@@ -492,13 +495,9 @@ static esp_err_t stop_scheduled_modes(void)
         return ESP_OK;
     }
 
-    esp_err_t ret = ServerNetworkStaDailyImage_StopAndWait();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "daily stop wait failed ret=%s", esp_err_to_name(ret));
-        return ret;
-    }
+    ServerNetworkStaDailyImage_Stop();
 
-    ret = ESP_OK;
+    esp_err_t ret = ESP_OK;
     if (mode == USER_EPD_DISPLAY_MODE_SLIDESHOW) {
         ret = ServerNetworkStaSlideshowControl_Disable(s_base_path);
         if (ret != ESP_OK) {
@@ -507,12 +506,15 @@ static esp_err_t stop_scheduled_modes(void)
             return ret;
         }
     }
-    ret = ServerNetworkStaSlideshow_StopAndWait();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "slideshow stop wait failed ret=%s", esp_err_to_name(ret));
-        return ret;
-    }
+    ServerNetworkStaSlideshow_Stop();
     return ESP_OK;
+}
+
+static bool request_is_current(const local_image_browsing_request_t *request)
+{
+    return request != NULL &&
+           request->generation ==
+               __atomic_load_n(&s_request_generation, __ATOMIC_ACQUIRE);
 }
 
 static esp_err_t process_request(local_image_browsing_request_t *request)
@@ -520,6 +522,10 @@ static esp_err_t process_request(local_image_browsing_request_t *request)
     esp_err_t ret = stop_scheduled_modes();
     if (ret != ESP_OK) {
         return ret;
+    }
+
+    if (!request_is_current(request)) {
+        return ESP_ERR_INVALID_STATE;
     }
 
     ret = EpdDisplayMode_Set(USER_EPD_DISPLAY_MODE_LOCAL_IMAGE_BROWSING);
@@ -591,6 +597,12 @@ static esp_err_t process_request(local_image_browsing_request_t *request)
             break;
         }
 
+        if (!request_is_current(request)) {
+            heap_caps_free(buffer);
+            ret = ESP_ERR_INVALID_STATE;
+            break;
+        }
+
         ret = ServerNetworkStaEpdDisplay_QueueReservedToScreenAndWait(
             &request->reservation, buffer, size, 1);
         heap_caps_free(buffer);
@@ -618,30 +630,39 @@ static esp_err_t process_request(local_image_browsing_request_t *request)
     return ret;
 }
 
-static void local_image_browsing_worker(void *argument)
+static esp_err_t local_image_run_command(const void *payload,
+                                         size_t payload_size)
 {
-    (void)argument;
+    if (payload == NULL || payload_size != sizeof(local_image_browsing_request_t)) {
+        return ESP_ERR_INVALID_ARG;
+    }
     local_image_browsing_request_t request = {0};
-    for (;;) {
-        if (xQueueReceive(s_request_queue, &request, portMAX_DELAY) != pdTRUE) {
-            continue;
-        }
-        esp_err_t ret = process_request(&request);
-        if (request.reservation.valid) {
-            ServerNetworkStaEpdDisplay_ReleaseReservation(&request.reservation);
-        }
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "request failed trigger=%s seq=%u ret=%s",
-                     trigger_to_string(request.trigger),
-                     (unsigned int)request.protocol_seq,
-                     esp_err_to_name(ret));
-        }
-        UBaseType_t stack_free = uxTaskGetStackHighWaterMark(NULL);
-        if (stack_free < LOCAL_IMAGE_BROWSING_STACK_WARNING_BYTES) {
-            ESP_LOGW(TAG, "worker low stack watermark=%u bytes",
-                     (unsigned int)stack_free);
-        }
-        memset(&request, 0, sizeof(request));
+    memcpy(&request, payload, sizeof(request));
+    esp_err_t ret = request_is_current(&request)
+                        ? process_request(&request)
+                        : ESP_ERR_INVALID_STATE;
+    if (request.reservation.valid) {
+        ServerNetworkStaEpdDisplay_ReleaseReservation(&request.reservation);
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "request failed trigger=%s seq=%u generation=%lu ret=%s",
+                 trigger_to_string(request.trigger),
+                 (unsigned int)request.protocol_seq,
+                 (unsigned long)request.generation,
+                 esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+static void local_image_cancel_pending(const void *payload, size_t payload_size)
+{
+    if (payload == NULL || payload_size != sizeof(local_image_browsing_request_t)) {
+        return;
+    }
+    local_image_browsing_request_t request = {0};
+    memcpy(&request, payload, sizeof(request));
+    if (request.reservation.valid) {
+        ServerNetworkStaEpdDisplay_ReleaseReservation(&request.reservation);
     }
 }
 
@@ -660,14 +681,34 @@ static esp_err_t submit_initialized_request(local_image_browsing_trigger_t trigg
                  esp_err_to_name(ret));
         return ret;
     }
-    if (xQueueSend(s_request_queue, &request, 0) != pdTRUE) {
+    request.generation =
+        __atomic_add_fetch(&s_request_generation, 1U, __ATOMIC_ACQ_REL);
+    uint32_t replace_mask =
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_DAILY) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_SLIDESHOW);
+    ret = ImageBusinessWorker_SubmitReplacingPending(
+        IMAGE_BUSINESS_OWNER_LOCAL_IMAGE,
+        local_image_run_command,
+        local_image_cancel_pending,
+        &request,
+        sizeof(request),
+        request.generation,
+        replace_mask);
+    if (ret != ESP_OK) {
         ServerNetworkStaEpdDisplay_ReleaseReservation(&request.reservation);
-        ESP_LOGE(TAG, "request queue full trigger=%s seq=%u",
-                 trigger_to_string(trigger), (unsigned int)protocol_seq);
-        return ESP_ERR_TIMEOUT;
+        ESP_LOGE(TAG, "request submit failed trigger=%s seq=%u ret=%s",
+                 trigger_to_string(trigger),
+                 (unsigned int)protocol_seq,
+                 esp_err_to_name(ret));
+        return ret;
     }
-    ESP_LOGI(TAG, "request accepted trigger=%s seq=%u",
-             trigger_to_string(trigger), (unsigned int)protocol_seq);
+    ServerNetworkStaDailyImage_Stop();
+    ServerNetworkStaSlideshow_Stop();
+    ImageBusinessWorker_Wake();
+    ESP_LOGI(TAG, "request accepted trigger=%s seq=%u generation=%lu",
+             trigger_to_string(trigger),
+             (unsigned int)protocol_seq,
+             (unsigned long)request.generation);
     return ESP_OK;
 }
 
@@ -685,25 +726,6 @@ esp_err_t LocalImageBrowsing_Init(const char *base_path)
             return ESP_ERR_NO_MEM;
         }
     }
-    if (s_request_queue == NULL) {
-        s_request_queue = xQueueCreate(LOCAL_IMAGE_BROWSING_QUEUE_LENGTH,
-                                       sizeof(local_image_browsing_request_t));
-        if (s_request_queue == NULL) {
-            return ESP_ERR_NO_MEM;
-        }
-    }
-    if (s_worker_task == NULL) {
-        if (xTaskCreate(local_image_browsing_worker,
-                        "local_img",
-                        LOCAL_IMAGE_BROWSING_TASK_STACK_SIZE,
-                        NULL,
-                        LOCAL_IMAGE_BROWSING_TASK_PRIORITY,
-                        &s_worker_task) != pdPASS) {
-            s_worker_task = NULL;
-            return ESP_ERR_NO_MEM;
-        }
-    }
-
     if (xSemaphoreTake(s_state_mutex, portMAX_DELAY) != pdTRUE) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -779,6 +801,19 @@ esp_err_t LocalImageBrowsing_RequestNext(local_image_browsing_trigger_t trigger,
 bool LocalImageBrowsing_IsActive(void)
 {
     return EpdDisplayMode_Get() == USER_EPD_DISPLAY_MODE_LOCAL_IMAGE_BROWSING;
+}
+
+void LocalImageBrowsing_InvalidateCurrent(void)
+{
+    (void)__atomic_add_fetch(&s_request_generation, 1U, __ATOMIC_ACQ_REL);
+}
+
+void LocalImageBrowsing_Stop(void)
+{
+    LocalImageBrowsing_InvalidateCurrent();
+    (void)ImageBusinessWorker_CancelPending(
+        IMAGE_BUSINESS_OWNER_LOCAL_IMAGE);
+    ImageBusinessWorker_Wake();
 }
 
 esp_err_t LocalImageBrowsing_ResetState(void)

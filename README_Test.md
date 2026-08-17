@@ -356,9 +356,9 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 运行中首次取得 SNTP 的防重复测试：使用 A、B、C 三个不同文件并设置 `interval=300`，启动时暂时阻止 SNTP、保留 CH583/RTC 可用，让 A 完成一次 EPD 显示，再于完成后 10～30 秒恢复 SNTP。预期切换日志包含 `current_consumed=1 action=wait_next`，A 不再次进入 EPD，B 等待下一个绝对播放点。反向测试应在 A 尚未显示前恢复 SNTP，预期日志包含 `current_consumed=0 action=display_current`，当前绝对槽仍正常显示。
 
-轮播 runtime 内存测试：16 字节基础名规则下，150 项名称数组应为2550字节，runtime约2.9KB并优先使用PSRAM。启动早期只应打印一次 `image_worker: static resources ... stack=9216` 和 `image_worker: started stack=9216`；不得再出现 `slideshow static worker started`、独立daily worker或 `slide_start_delay` 任务创建日志。轮播、每日一图和轮播启动延迟分别执行后，应出现对应 `image_worker: job done owner=SLIDESHOW/DAILY ... min_free=... peak_used=... configured=9216`。连续启动/停止至少100次，确认统一worker始终常驻、没有堆持续下降、没有queue永久BUSY和重复释放runtime。新命令runtime失败仍返回1506并回滚控制及模式；开机恢复临时失败仍保留 `slide_ctl.enabled=true`、`epd_mode=SLIDESHOW` 和原进度。
+轮播 runtime 内存测试：16 字节基础名规则下，150 项名称数组应为2550字节，runtime约2.9KB并优先使用PSRAM。启动早期只应打印一次 `image_worker: static resources ... stack=9216` 和 `image_worker: started stack=9216`；不得再出现 `slideshow static worker started`、独立daily/local worker或 `slide_start_delay` 任务创建日志。轮播、每日一图、轮播启动延迟和本地浏览分别执行后，应出现对应 `image_worker: job done owner=SLIDESHOW/DAILY/LOCAL_IMAGE ... min_free=... peak_used=... configured=9216`。连续启动/停止至少100次，确认统一worker始终常驻、没有堆持续下降、没有queue永久BUSY、reservation泄漏或重复释放runtime。新命令runtime失败仍返回1506并回滚控制及模式；开机恢复临时失败仍保留 `slide_ctl.enabled=true`、`epd_mode=SLIDESHOW` 和原进度。
 
-统一worker启动延迟抢占测试：保存SLIDESHOW模式后重启，在 `slideshow startup delay 10000 ms` 出现后的10秒内下发合法daily命令。预期旧轮播generation立即失效，延迟等待被唤醒并打印取消，daily命令随后由同一 `image_worker` 执行；10秒到点后不得再启动旧轮播runtime。反向从运行中的daily切换轮播时，应先看到daily停止完成，再看到 `owner=SLIDESHOW`，任何时刻不得同时存在两个active owner。
+统一worker启动延迟抢占测试：保存SLIDESHOW模式后重启，在 `slideshow startup delay 10000 ms` 出现后的10秒内下发合法daily命令或在EPD IDLE时触发PB2。预期旧轮播generation立即失效，延迟等待被唤醒并打印取消，更新的DAILY或LOCAL_IMAGE命令随后由同一 `image_worker` 执行；10秒到点后不得再启动旧轮播runtime。反向切换时使用非阻塞stop和pending接续，任何时刻不得同时存在两个current owner。
 
 轮播停止与预加载竞争测试：在 `slideshow preload start` 后立即发送 `set_slideshow sw=0`。允许出现 `preload skipped ... because stop requested` 的普通信息，但不得再出现 `slideshow preload initial/next failed ... ESP_ERR_INVALID_STATE` 警告；真实预加载失败仍必须保留警告。
 
@@ -585,7 +585,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 边界测试：将 `$future` 改为当前时间加100秒。预期首次仍立即执行；该timestamp对应的正式时间槽因距离首次EPD调用不足300秒，被推迟到首次EPD调用满300秒后执行。失败后的重试时间仍为1小时。
 
-内存诊断：启动早期应打印一次 `image_worker: static resources`，确认 `stack=9216`，并列出统一TCB、单pending命令槽、状态mutex和内部RAM；随后打印 `image_worker: started stack=9216` 和 `daily_image: base initialized ... shared_worker=resident`。完整daily周期后检查 `image_worker: job done owner=DAILY` 的 `min_free/peak_used`：`min_free>=2048` 可保留9KB，`1024..2047` 建议增加到10KB，`min_free<1024` 或出现Canary/重启时至少增加2KB。
+内存诊断：确认生成配置中 `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304`、`CONFIG_MBEDTLS_AES_C=y`，并且 `CONFIG_MBEDTLS_HARDWARE_AES` 与 `CONFIG_MBEDTLS_AES_USE_INTERRUPT` 均未设置；硬件SHA、MPI和ECC仍为开启。启动早期应打印一次 `image_worker: static resources`，确认 `stack=9216`，并列出统一TCB、单pending命令槽、状态mutex和内部RAM；随后打印 `image_worker: started stack=9216` 和 `daily_image: base initialized ... shared_worker=resident`。每次DAILY HTTPS POST/GET前的原有 `TLS heap before` 日志必须包含 `internal_free/internal_largest`、`dma_free/dma_largest`、`psram_free/psram_largest` 和 `aes=software`。先完成一次“LOCAL_IMAGE显示→EPD/SD断电测试→SD重新挂载→立即DAILY”的复现顺序，再至少连续执行20次完整DAILY下载；即使 `dma_largest` 降到3968字节附近，也不得出现 `esp-aes: Failed to allocate memory`、普通malloc失败、WiFi异常或PSRAM持续下降。另需回归OTA HTTPS和WiFi重连，并记录软件AES下的下载时间及CPU看门狗状态。完整daily周期后检查 `image_worker: job done owner=DAILY` 的 `min_free/peak_used`：`min_free>=2048` 可保留9KB，`1024..2047` 建议增加到10KB，`min_free<1024` 或出现Canary/重启时至少增加2KB。
 
 关闭请求：
 
@@ -678,6 +678,8 @@ KEY_EVENT测试：无论DEVICE_INFO是否完成，分别发送 `PB2,PRESS` 和 `
 
 模式互斥测试：分别从NORMAL、SLIDESHOW和DAILY触发PB2。EPD IDLE时最终 `epd_mode=3` 并读回一致；SLIDESHOW任务退出、show_control sw=0，DAILY generation失效且不再提交EPD。EPD BUSY时触发不得停止旧模式或保存模式3。
 
+统一worker切换测试：PB2成功预约EPD后应出现 `image_worker: job start owner=LOCAL_IMAGE`，不得出现 `local_img`任务创建日志。PB2切换到LOCAL_IMAGE的请求入口不得调用 `StopAndWait()`；反向切换不得等待LOCAL_IMAGE owner或当前EPD刷新，旧owner通过generation/stop退出，统一worker随后串行执行pending新owner，任何时刻不得同时出现两个current owner。轮播内部原有的DAILY/SLIDESHOW重启保护不属于LOCAL_IMAGE等待，不在本次改动范围内。
+
 启动交界测试：在CH583 UART已经启动、LocalImageBrowsing初始化尚未完成时发送合法KEY_PB2 DEVICE_INFO，确认日志显示deferred，初始化后尝试一次；不得出现永久pending。相同DEVICE_INFO重发不得在启动FIFO中增加第二项。
 
 恢复出厂互斥测试：PB2显示期间发送PB1恢复请求，确认PB1协议帧先ACK、请求保持PENDING，EPD空闲后Factory Reset取得预约并执行；不能与BIN文件读取、显示或本地浏览NVS更新并行。清理期间重复PB1必须合并。
@@ -692,10 +694,14 @@ KEY_EVENT测试：无论DEVICE_INFO是否完成，分别发送 `PB2,PRESS` 和 `
 
 独立重启兼容测试：本轮不发送DEVICE_INFO，分别发送 `PB2,PRESS` 和 `PB1,PRESS`，必须正常ACK并分别执行一次本地浏览和恢复出厂，不得返回 `DEVICE_INFO_REQUIRED`。再在DEVICE_INFO完成后重复两条新SEQ事件，确认处理规则一致；BLE_DATA、PING等既有专项测试保持各自规则。详细协议预期见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 
-常量内存目录扫描测试：分别在 `/data/bin_img` 放入1个、150个以及超过150个合法文件后发送 `KEY_EVENT ARG=PB2,PRESS`，确认出现request accepted、BIN scan completed、selected及显示结果日志，顺序稳定并可从末项循环到首项。目录项数量增加不得重新引入名称数组、导致ESP32重启或出现worker low stack watermark；若出现栈警告，应记录余量并停止继续增加worker栈内局部变量。
+常量内存目录扫描测试：分别在 `/data/bin_img` 放入1个、150个以及超过150个合法文件后发送 `KEY_EVENT ARG=PB2,PRESS`，确认出现request accepted、BIN scan completed、selected及显示结果日志，顺序稳定并可从末项循环到首项。目录项数量增加不得重新引入名称数组或导致ESP32重启；检查 `image_worker: job done owner=LOCAL_IMAGE`，要求 `min_free>=2048`，不足时先把统一栈增加到10KB并检查大型局部变量。
+
+reservation释放测试：制造LOCAL_IMAGE pending后分别用DAILY、SLIDESHOW和cast替换，确认打印一次pending取消/替换，旧LOCAL_IMAGE不得执行，下一次EPD预约必须成功。提交失败、pending取消、run失败和run成功四条路径均不得出现reservation永久BUSY或重复释放。
 
 目录限制和Factory Reset测试：确认功能从不读取 `/data/cast_img`、`/data/jpg_img` 或子目录。执行Factory Reset后确认local_img_state清除、epd_mode恢复默认，重启不进入本地浏览。
 
-SPI DMA回归测试：分别用已支持的800x480、1024x600、1600x1200 7.9/13.3、1360x480及4色/DKE/mofang屏型显示PSRAM数据。确认大块发送使用3072 bytes，不再出现 `chunk=4092`；正常场景不得出现 `ESP_ERR_NO_MEM`。注入首个SPI发送失败时，必须出现包含错误码和DMA余量的关键日志，当前数据装载立即停止，EPD最终结果必须非ESP_OK，不得继续update/refresh。由本地图片浏览触发时不得出现display completed，NVS保持PREPARED且游标不前进，下次PB2重试同一文件。
+SPI DMA回归测试：启动时应只出现一次 `EPD static DMA TX ready bytes=1024 shared_spi_max=1024`。分别用已支持的800x480、1024x600、1600x1200 7.9/13.3、1360x480及4色/DKE/mofang屏型显示PSRAM数据，确认所有大块发送经过固定1024字节静态DMA缓冲，不再出现 `chunk=3072/4092` 或运行期DMA TX分配；正常场景不得出现 `ESP_ERR_NO_MEM`。注入首个SPI发送失败时，必须出现包含错误码和DMA余量的关键日志，EPD最终结果必须非ESP_OK，不得被误报为成功。由本地图片浏览触发时不得出现display completed，NVS保持PREPARED且游标不前进，下次PB2重试同一文件。
 
-SPI命令错误测试：注入一次 `spiTransmitCommand()` 失败，确认只打印包含command和ret的关键ESP_LOGE，不触发assert、Guru Meditation或自动重启；EPD最终结果必须非ESP_OK，本地图片浏览不得推进游标。将 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK` 临时设为0时，构建必须被编译期检查拒绝；正式值保持3072。
+SPI命令错误测试：注入一次 `spiTransmitCommand()` 失败，确认只打印包含command和ret的关键ESP_LOGE，不触发assert、Guru Meditation或自动重启；EPD最终结果必须非ESP_OK，本地图片浏览不得推进游标。将 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK` 临时设为0，或将 `USER_SHARED_SPI_MAX_TRANSFER_SIZE` 设为小于516时，构建必须被编译期检查拒绝；正式值保持1024。
+
+SD共享SPI回归测试：确认SDSPI mount和掉电测试remount正常，连续执行大文件读、写、删除、轮播读取及本地图片读取；同时让EPD在BUSY安全点释放共享锁给SD。不得出现大于1024字节的SPI事务、`ESP_ERR_NO_MEM`、文件损坏、锁超时或EPD/SD同时选中。SDSPI仍使用ESP-IDF原生512字节数据块和516字节常驻DMA块，不增加项目自定义SD协议。

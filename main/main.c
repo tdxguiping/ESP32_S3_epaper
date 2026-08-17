@@ -451,7 +451,7 @@ void app_main(void)
     }
 #endif
 
-    /* The resident DAILY worker was created before other optional services. */
+    /* The unified image business worker was created before optional services. */
     esp_err_t local_browsing_ret = LocalImageBrowsing_Init(base_path);
     if (local_browsing_ret != ESP_OK) {
         ESP_LOGE(TAG, "local image browsing init failed ret=%s",

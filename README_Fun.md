@@ -194,7 +194,7 @@ main/main.c
    │     └─ work_state_task()
    ├─ EpdDisplayMode_Init()
    ├─ ImageBusinessWorker_Init()
-   │  └─ 创建9KB统一静态worker，串行执行DAILY、SLIDESHOW和轮播启动延迟
+   │  └─ 创建9KB统一静态worker，串行执行DAILY、SLIDESHOW、轮播启动延迟和LOCAL_IMAGE
    ├─ ServerNetworkStaDailyImage_Init("/data")
    │  └─ 初始化daily配置mutex和基础状态，不再创建独立任务
    ├─ print_base_info()
@@ -301,9 +301,9 @@ EPD 显示期间会临时把 WiFi PS 切到 WIFI_PS_MAX_MODEM，以降低 EPD �
 
 ## 2. 永久常驻统一图片业务任务 <span id="sec-02-image-business-worker"></span>
 
-`image_business_worker` 是每日一图和轮播共同依赖的核心业务任务。它在每次开机早期创建一次，使用固定静态资源，创建后永久常驻且不删除。每日一图、轮播主 runtime 和轮播开机启动延迟不得再各自创建独立 worker；三类工作统一提交给该任务串行执行，任何时刻最多只有一个图片业务 owner 正在运行。
+`image_business_worker` 是每日一图、轮播和Local Image Browsing共同依赖的核心业务任务。它在每次开机早期创建一次，使用固定静态资源，创建后永久常驻且不删除。每日一图、轮播主runtime、轮播开机启动延迟和本地图片浏览不得再各自创建独立worker；三种owner的工作统一提交给该任务串行执行，任何时刻最多只有一个图片业务owner正在运行。
 
-该任务只统一“每日一图 / 轮播”的业务调度，不替代公共 EPD 显示任务、cast 保存任务、HTTP/USB worker、Local Image Browsing 或 WiFi 管理任务。已经提交给 EPD 硬件的刷新不由统一任务强制中断，必须等待当前 EPD 调用安全结束后才能完成业务切换。
+该任务只统一DAILY、SLIDESHOW和LOCAL_IMAGE的业务调度，不替代公共EPD显示任务、cast保存任务、HTTP/USB worker或WiFi管理任务。已经提交给EPD硬件的刷新不由统一任务强制中断；模式切换只用generation、stop和pending替换进行非阻塞协调，当前EPD安全结束后统一任务自动接续更新owner。
 
 ### 2.1 定位、范围与重要规则 <span id="sec-02-1"></span>
 
@@ -314,14 +314,16 @@ image_business_worker（永久常驻、固定9KB静态栈）
 ├─ owner=SLIDESHOW
 │  ├─ slideshow_run_command()          轮播主runtime
 │  └─ slideshow_startup_delay_run()   开机轮播启动延迟
+├─ owner=LOCAL_IMAGE
+│  └─ local_image_run_command()        PB2本地图片浏览
 └─ idle
    └─ 没有业务命令时阻塞等待task notification，不轮询、不重复打印
 ```
 
 必须保持的功能规则：
 
-- DAILY、SLIDESHOW和轮播启动延迟只能使用这一个统一任务，不得恢复旧daily queue、旧7KB daily任务、旧6KB轮播任务或6KB动态启动延迟任务。
-- DAILY与SLIDESHOW是互斥业务。同一时间只能运行一个owner；新的模式请求先使旧generation失效，再停止或等待旧owner退出。
+- DAILY、SLIDESHOW、轮播启动延迟和LOCAL_IMAGE只能使用这一个统一任务，不得恢复旧daily queue、旧7KB daily任务、旧6KB轮播任务、6KB动态启动延迟任务或旧8KB Local任务。
+- DAILY、SLIDESHOW与LOCAL_IMAGE是互斥业务。同一时间只能运行一个owner；新的模式请求用generation和stop使旧owner失效，并原子安装更新pending命令，不在请求入口等待旧owner退出。
 - 统一任务永久常驻只是保留任务栈和控制状态，不代表开机一定执行图片业务。`NORMAL`、`LOCAL_IMAGE_BROWSING`等模式下没有有效命令时，任务保持阻塞空闲。
 - 统一任务不能承载无关的永久循环、HTTP服务、WiFi管理或EPD底层任务，避免长业务相互阻塞并扩大核心任务风险范围。
 - callback执行结束或被取消后必须返回统一循环；单次业务失败不得删除或停止统一任务。
@@ -339,13 +341,15 @@ app_main()
 │  └─ worker永久循环；空闲时阻塞等待notification
 ├─ ServerNetworkStaDailyImage_Init("/data")
 ├─ 初始化存储、网络、HTTP、SNTP等模块
+├─ LocalImageBrowsing_Init("/data")
+│  └─ 只读取状态和排放启动PB2 FIFO，不创建任务或FreeRTOS queue
 ├─ ServerNetworkStaDailyImage_StartSaved()
 │  └─ 仅mode=DAILY且配置有效时提交DAILY命令
 └─ ServerNetworkStaSlideshow_StartSavedDelayed("/data")
    └─ 仅mode=SLIDESHOW且存储可用时提交SLIDESHOW启动延迟命令
 ```
 
-`ImageBusinessWorker_Init()` 放在WiFi、HTTP等可选服务之前，并由启动主流程用 `ESP_ERROR_CHECK()` 检查。统一任务是DAILY和SLIDESHOW的基础设施；静态任务创建失败时不能继续假装相关功能可用。后续模块可以再次调用Init，但初始化必须保持幂等，不得创建第二个任务。
+`ImageBusinessWorker_Init()` 放在WiFi、HTTP等可选服务之前，并由启动主流程用 `ESP_ERROR_CHECK()` 检查。统一任务是DAILY、SLIDESHOW和LOCAL_IMAGE的基础设施；静态任务创建失败时不能继续假装相关功能可用。后续模块可以再次调用Init，但初始化必须保持幂等，不得创建第二个任务。
 
 固定资源如下：
 
@@ -358,7 +362,7 @@ app_main()
 | TCB | 一个静态TCB |
 | 生命周期 | 开机创建一次，永久常驻，不调用 `vTaskDelete()` |
 
-当前ESP32-C5 / ESP-IDF v5.5.3测试构建打印：栈9216字节、TCB336字节、命令槽664字节、mutex控制块84字节，合计固定核心资源约10300字节，另有少量句柄和状态变量。callback中的局部命令副本计入9KB任务栈，不是第二份独立任务栈。栈大小不得只按轮播路径判断；以DAILY HTTPS、TLS、下载、保存和EPD完整路径的最低余量为最终依据。
+当前ESP32-C5 / ESP-IDF v5.5.3测试构建打印：栈9216字节、TCB336字节、命令槽664字节、mutex控制块84字节，合计固定核心资源约10300字节，另有少量句柄和状态变量。callback中的局部命令副本计入9KB任务栈，不是第二份独立任务栈。删除Local原8KB动态任务和长度1的FreeRTOS queue后，预计额外减少约8.5KB内部RAM；启动PB2静态FIFO和状态mutex保留。栈大小按DAILY、SLIDESHOW、LOCAL_IMAGE三条完整路径的最低余量共同决定。
 
 ### 2.3 命令模型与串行规则 <span id="sec-02-3"></span>
 
@@ -368,10 +372,12 @@ stateDiagram-v2
     IDLE --> DAILY: Submit owner=DAILY
     IDLE --> SLIDESHOW_DELAY: Submit startup delay
     IDLE --> SLIDESHOW_RUNTIME: Submit slideshow runtime
+    IDLE --> LOCAL_IMAGE: Submit PB2 local image
     DAILY --> IDLE: 完成 / 失败 / generation失效
     SLIDESHOW_DELAY --> SLIDESHOW_RUNTIME: 延迟结束且模式仍为SLIDESHOW
     SLIDESHOW_DELAY --> IDLE: 模式切换 / control关闭 / generation失效
     SLIDESHOW_RUNTIME --> IDLE: 停止 / 失败
+    LOCAL_IMAGE --> IDLE: 显示完成 / 失败 / generation失效
 ```
 
 统一任务维持“一个current命令 + 一个pending命令槽”，不是多项FreeRTOS queue：
@@ -379,8 +385,10 @@ stateDiagram-v2
 - worker从pending槽复制命令后，把owner记为current并执行callback。
 - current运行期间允许暂存一个后续命令，因此SLIDESHOW退出后可以直接接续DAILY，反向切换同理。
 - pending槽已有命令时，第二个未协调的提交返回 `ESP_ERR_INVALID_STATE`，并打印一次 `submit blocked`。调用方不能覆盖不同owner的新命令。
+- 模式切换使用 `ImageBusinessWorker_SubmitReplacingPending()` 在同一state mutex内取消允许替换的旧pending并安装新命令，禁止分开的Cancel/Submit留下竞态窗口。
 - DAILY重新提交前只取消旧的pending DAILY；SLIDESHOW启动不能删除同时刚提交、且代表更新模式的DAILY命令。
-- payload由提交函数按值复制到固定inline区域，禁止提交超过640字节的结构；DAILY、轮播runtime和启动延迟payload必须保留 `_Static_assert` 上限检查。
+- LOCAL_IMAGE可替换旧pending DAILY/SLIDESHOW；新的DAILY/SLIDESHOW可替换pending LOCAL_IMAGE；第二个LOCAL_IMAGE不能覆盖第一个，继续由EPD reservation和单pending规则拒绝。
+- payload由提交函数按值复制到固定inline区域，禁止提交超过640字节的结构；DAILY、轮播runtime、启动延迟和LOCAL_IMAGE payload必须保留 `_Static_assert` 上限检查。
 - task notification只用于唤醒统一任务和实现可中断等待；新增业务不能擅自占用同一个任务notification做无关协议，否则会破坏提交和停止语义。
 
 ### 2.4 DAILY / SLIDESHOW 切换规则 <span id="sec-02-4"></span>
@@ -393,6 +401,9 @@ stateDiagram-v2
 | SLIDESHOW切换DAILY | 关闭并保存轮播control，写NORMAL后再写DAILY；使旧slideshow generation失效；当前EPD安全结束、轮播退出后执行pending DAILY |
 | 启动延迟期间切换模式 | 增加slideshow generation并唤醒统一任务；旧延迟立即返回，10秒到点后不得重新启动旧轮播 |
 | 重复DAILY请求 | 新generation覆盖旧generation；正在下载的旧请求在检查点取消，释放资源后执行最新pending DAILY |
+| DAILY或SLIDESHOW切换LOCAL_IMAGE | PB2先预约IDLE EPD，原子提交LOCAL_IMAGE，再非阻塞使当前DAILY/SLIDESHOW失效；旧owner返回后自动执行LOCAL_IMAGE |
+| LOCAL_IMAGE切换DAILY或SLIDESHOW | 增加local generation并取消pending LOCAL_IMAGE；已经开始的EPD不强制中断，结束后自动执行更新owner |
+| LOCAL_IMAGE切换cast/cast2pic | cast入口非阻塞取消pending LOCAL_IMAGE并释放reservation；已经开始的EPD仍按原公共EPD规则处理 |
 | NORMAL或其他模式 | 停止不再适用的DAILY/SLIDESHOW；统一任务本身不删除，只回到IDLE |
 
 模式值和generation必须共同检查。仅检查 `epd_mode` 不足以区分相同模式下的新旧请求；仅检查generation也不能允许旧业务在模式已经切换后继续提交下一工作。轮播启动延迟转为正式runtime前必须再次检查SLIDESHOW模式和generation，禁止旧启动命令覆盖更新的DAILY或cast请求。
@@ -400,10 +411,12 @@ stateDiagram-v2
 ### 2.5 取消、等待与资源所有权 <span id="sec-02-5"></span>
 
 - `ImageBusinessWorker_CancelPending(owner)` 只取消指定owner的pending命令，不强制终止current命令，也不能误删另一owner的更新请求。
+- `SubmitReplacingPending()`只替换调用方明确授权的owner；被替换命令的cancel callback在新命令可运行前完成资源释放。cancel callback必须短小、不得调用统一worker API；当前只允许释放runtime或EPD reservation，避免状态mutex递归和锁顺序风险。
 - `ImageBusinessWorker_Wake()` 唤醒正在做可中断等待的统一任务。启动延迟收到模式切换后应立即退出；轮播和DAILY长流程在各自安全检查点读取stop/mode/generation。
-- `ImageBusinessWorker_WaitOwnerIdle()` 同时检查current和pending。外部切换函数用它确认旧owner已经退出；统一worker callback内部禁止等待自己变为idle，避免自死锁。
+- `ImageBusinessWorker_WaitOwnerIdle()` 同时检查current和pending，只保留给原有DAILY/SLIDESHOW重启保护；LOCAL_IMAGE相关切换不得调用它。统一worker callback内部禁止等待自己变为idle，避免自死锁。
 - 已经开始的EPD刷新不强制中断。停止请求先阻止旧业务继续下一张或下一阶段，当前EPD结束后释放业务资源并返回统一任务。
 - DAILY job和轮播启动延迟payload按值保存在pending命令中，不需要独立heap节点。
+- LOCAL_IMAGE request也按值保存；pending取消、提交失败或run callback结束时必须且只能释放一次EPD reservation。
 - 轮播runtime优先从PSRAM分配；pending阶段取消由cancel callback释放，进入run callback后由runtime退出路径释放。两条路径互斥，必须保证只释放一次。
 - DAILY下载缓冲、TLS资源、轮播预加载缓冲仍由各业务原有路径申请和释放，不因合并任务改变所有权。
 - worker完成命令后清除current owner并继续永久循环；不得因为callback返回 `ESP_ERR_INVALID_STATE`、网络失败或正常停止而删除任务。
@@ -415,7 +428,7 @@ stateDiagram-v2
 ```text
 image_worker: static resources ... stack=9216 tcb=... command=... mutex=...
 image_worker: started stack=9216 priority=4
-image_worker: job start owner=DAILY|SLIDESHOW generation=N
+image_worker: job start owner=DAILY|SLIDESHOW|LOCAL_IMAGE generation=N
 image_worker: job done owner=... generation=N ret=... min_free=... peak_used=... configured=9216
 ```
 
@@ -428,12 +441,12 @@ image_worker: job done owner=... generation=N ret=... min_free=... peak_used=...
 
 修改DAILY、SLIDESHOW或启动延迟时必须同时检查：
 
-1. 是否仍只创建一个统一静态任务，相关目录中不得新增独立 `xTaskCreate()` / `xTaskCreateStatic()`。
+1. 是否仍只创建一个统一静态任务，daily、slideshow和local_image_browsing目录中不得新增独立 `xTaskCreate()` / `xTaskCreateStatic()`。
 2. callback是否能在模式切换和generation失效后于安全检查点退出。
 3. 是否可能在统一worker内部调用 `WaitOwnerIdle()` 等待自己，造成死锁。
 4. pending取消、提交失败、过期命令和正常完成是否各自只释放一次heap资源。
 5. payload是否不超过640字节，并保持编译期 `_Static_assert`。
-6. 完整DAILY HTTPS/TLS路径的 `min_free` 是否不少于2048字节；低于警戒线时优先增加统一栈，不得为了节省内存冒栈溢出风险。
+6. 完整DAILY、SLIDESHOW和LOCAL_IMAGE路径的 `min_free` 是否不少于2048字节；低于警戒线时优先增加统一栈，不得为了节省内存冒栈溢出风险。
 7. 是否保持“当前EPD不强制中断、旧业务不继续下一阶段、更新模式请求优先”的状态规则。
 8. 若修改代码，必须同步本章、7.8轮播章节、7.15每日一图章节和 `README_Test.md` 对应测试。
 
@@ -443,6 +456,7 @@ image_worker: job done owner=... generation=N ret=... min_free=... peak_used=...
 main/image_business_worker/image_business_worker.c/.h
 main/server_network_sta/daily_image/server_network_sta_daily_image.c
 main/server_network_sta/slideshow/server_network_sta_slideshow.c
+main/local_image_browsing/local_image_browsing.c
 main/main.c
 main/tdx_cfg.h
 ```
@@ -2370,7 +2384,7 @@ daily_download_file
 - PhotoPainter:daily_cfg保存版本、CRC、尺寸、orientation、api_url、timestamp、
   initial_run_pending、retry状态、last_daily_epd_epoch和last_completed_target_epoch。
 - PhotoPainter:epd_mode保存NORMAL/SLIDESHOW/DAILY/LOCAL_IMAGE_BROWSING；NVS `slide_ctl` 保存轮播启停和 RTC anchor。
-- BIN只在PSRAM中下载并交给EPD，不写SD；mbedTLS大块内存可按项目malloc策略进入PSRAM。
+- BIN只在PSRAM中下载并交给EPD，不写SD；mbedTLS大块内存可按项目malloc策略进入PSRAM。ESP32-C5硬件AES在TLS批量读取期间会动态申请DMA描述符或临时缓冲，实测即使 `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304` 仍可能因DMA连续块碎片化返回 `esp-aes: Failed to allocate memory`。因此正式配置关闭 `CONFIG_MBEDTLS_HARDWARE_AES`，保留 `CONFIG_MBEDTLS_AES_C=y` 使用mbedTLS软件AES；硬件SHA、MPI和ECC保持开启，TLS算法和安全性不变。96KB internal reserve继续保留给WiFi、SPI等显式internal/DMA用户。每次HTTPS POST/GET前沿用一条 `TLS heap before` 关键日志，同时打印internal、DMA、PSRAM的free/largest及 `aes=software`，不增加额外日志行。
 - `api_url`和`dailyImageUrl`都必须直接返回HTTPS 2xx；当前关闭自动重定向，不接受30x。
 
 取：
@@ -2793,15 +2807,17 @@ main/data_compression/
 
 `epd_mode=3(LOCAL_IMAGE_BROWSING)` 是独立持久模式。功能代码只位于 `main/local_image_browsing/`，专用宏统一定义在 `local_image_browsing.h`。启动读到模式3时恢复浏览游标，不启动 DAILY 或 SLIDESHOW，也不自动换图；首次 `DEVICE_INFO.wake_reason=KEY_PB2` 或合法的 `KEY_EVENT ARG=PB2,PRESS` 都可触发，KEY_EVENT不依赖DEVICE_INFO状态。UART早于本模块初始化收到的PB2事件进入长度为10的启动FIFO，初始化阶段按到达顺序逐个尝试；第一项预约EPD后，其余项仍按EPD BUSY规则拒绝，不合并也不丢失初始化交界点事件。帧格式及来源互斥规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 
-BIN目录扫描不建立RAM或SD索引文件，只保留本次候选、候选后继和循环首项等少量17字节名称缓冲。原来的150项RAM列表已删除，静态内部RAM减少2556字节；每次请求完成后只在任务栈最低余量小于 `LOCAL_IMAGE_BROWSING_STACK_WARNING_BYTES` 时打印警告，避免正常运行产生重复调试日志。
+BIN目录扫描不建立RAM或SD索引文件，只保留本次候选、候选后继和循环首项等少量17字节名称缓冲。原来的150项RAM列表已删除，静态内部RAM减少2556字节。Local独立8KB任务和长度1的FreeRTOS queue也已删除；请求作为 `owner=LOCAL_IMAGE` 提交给9KB永久常驻统一任务，栈余量由统一 `job done` 日志统计。
 
-每个新的、合法且 ACK 成功的 PB2 事件尝试一次换图；相同KEY_EVENT SEQ或重复DEVICE_INFO不重复执行业务。先通过 EPD 专用空闲预留原子判断 BUSY/IDLE：BUSY 时本次事件立即结束，不排队、不切模式、不推进游标；IDLE 时预留 EPD，停止并等待 DAILY/SLIDESHOW退出，保存模式3，再扫描 `/data/bin_img`。
+每个新的、合法且 ACK 成功的 PB2 事件尝试一次换图；相同KEY_EVENT SEQ或重复DEVICE_INFO不重复执行业务。先通过 EPD 专用空闲预留原子判断 BUSY/IDLE：BUSY 时本次事件立即结束，不排队、不切模式、不推进游标；IDLE 时预留 EPD，原子安装pending LOCAL_IMAGE并非阻塞使DAILY/SLIDESHOW失效，旧owner返回后由统一任务保存模式3并扫描 `/data/bin_img`。切换入口不使用 `StopAndWait()`。
 
 目录候选只包含普通、非空、精确小写 `.bin` 文件，不递归目录，不读取 cast_img、jpg_img、`.bin.zlib` 或其他扩展名。每次PB2按不区分大小写的字典序单遍扫描，大小写相同时用区分大小写比较保证稳定；扫描同时计算显示项和下一项，末尾自动循环到目录最小项。目录项不缓存，因此本地浏览不再受150项RAM列表上限限制。
 
 浏览状态保存在 `PhotoPainter:local_img_state`，包含版本、CRC32、事务状态、last/pending/next文件名和成功显示次数。显示前保存 `PREPARED`；显示成功后保存 `IDLE` 并推进 next。断电读到PREPARED时下次PB2重试同一张，避免跳图。目标文件在扫描后不存在、已不是普通文件或为空时重新扫描后继项、保存next并继续；单次最多尝试首次扫描得到的有效文件数量，全部无效时结束，禁止无限循环。内存、SPI、读取不完整、解压和EPD错误不按“文件不存在”跳过。
 
-所有屏型的大块EPD SPI发送统一使用 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072`，该配置禁止设为0。SPI数据或命令发送失败时不使用断言重启；错误由屏型路径上报并停止当前帧，不继续刷新。本地图片浏览保留 `PREPARED` 和当前文件，下次PB2重试同一张，不错误推进游标。
+所有屏型的大块EPD SPI发送统一经过 `spiTransmitData()`：先复制到一个永久静态、4字节对齐的1024字节DMA TX缓冲，再按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=1024` 发送，不再让SPI驱动为PSRAM源数据临时申请大块DMA内存。缓冲由静态mutex保护，固定增加约1.1KB内部RAM（1024字节缓冲、静态mutex控制块及句柄），不随显示次数增长；共享总线事务上限从原大包缩到1024后，SPI总线DMA描述符需求也相应降低，实际净变化以map为准。开机只打印一次 `EPD static DMA TX ready bytes=1024 shared_spi_max=1024`；真实发送失败仍保留一条含错误码及DMA余量的关键日志，并统一上报显示失败。1024x600旧本地显示路径以及MASTER、SLAVE、BOTH批量路径也必须经过该公共函数，不得直接提交PSRAM地址。
+
+EPD和SD共用SPI总线，`USER_SHARED_SPI_MAX_TRANSFER_SIZE=1024` 同时用于EPD初始化与SDSPI备用初始化。ESP-IDF v5.5.3 SDSPI单块数据最大512字节，驱动为非DRAM地址使用常驻516字节DMA块，因此1024字节总线上限可以完整容纳SD事务，不修改SDSPI协议和FATFS读写逻辑。原有 `TdxSharedSpi` 递归mutex继续负责EPD与SD总线互斥；EPD专用静态DMA mutex只保护EPD TX缓冲，不能代替共享总线锁。SPI数据或命令发送失败时不使用断言重启；本地图片浏览保留 `PREPARED` 和当前文件，下次PB2重试同一张，不错误推进游标。
 
 CH583 UART可能早于本模块初始化。启动早期首次DEVICE_INFO中收到并成功ACK的PB2进入现有启动FIFO，本模块初始化完成后提交；重复DEVICE_INFO不重复入队，正常运行阶段BUSY事件不缓存。PB1不进入浏览FIFO，只进入Factory Reset单请求RAM状态。Factory Reset清除local_img_state并把epd_mode恢复默认值。
 

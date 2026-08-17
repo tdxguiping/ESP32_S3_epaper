@@ -39,6 +39,8 @@ static const char *owner_name(image_business_owner_t owner)
         return "DAILY";
     case IMAGE_BUSINESS_OWNER_SLIDESHOW:
         return "SLIDESHOW";
+    case IMAGE_BUSINESS_OWNER_LOCAL_IMAGE:
+        return "LOCAL_IMAGE";
     default:
         return "NONE";
     }
@@ -139,17 +141,20 @@ esp_err_t ImageBusinessWorker_Init(void)
     return ESP_OK;
 }
 
-esp_err_t ImageBusinessWorker_Submit(image_business_owner_t owner,
-                                     image_business_run_fn_t run,
-                                     image_business_cancel_fn_t cancel,
-                                     const void *payload,
-                                     size_t payload_size,
-                                     uint32_t generation)
+esp_err_t ImageBusinessWorker_SubmitReplacingPending(
+    image_business_owner_t owner,
+    image_business_run_fn_t run,
+    image_business_cancel_fn_t cancel,
+    const void *payload,
+    size_t payload_size,
+    uint32_t generation,
+    uint32_t replace_pending_owner_mask)
 {
     if (!s_initialized || s_worker_task == NULL || s_state_mutex == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (owner == IMAGE_BUSINESS_OWNER_NONE || run == NULL ||
+    if (owner <= IMAGE_BUSINESS_OWNER_NONE ||
+        owner > IMAGE_BUSINESS_OWNER_LOCAL_IMAGE || run == NULL ||
         payload_size > sizeof(s_pending_command.payload) ||
         (payload_size > 0U && payload == NULL)) {
         return ESP_ERR_INVALID_ARG;
@@ -157,7 +162,9 @@ esp_err_t ImageBusinessWorker_Submit(image_business_owner_t owner,
     if (xSemaphoreTake(s_state_mutex, portMAX_DELAY) != pdTRUE) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (s_pending_command.valid) {
+    if (s_pending_command.valid &&
+        (replace_pending_owner_mask &
+         IMAGE_BUSINESS_OWNER_MASK(s_pending_command.owner)) == 0U) {
         ESP_LOGE(TAG,
                  "submit blocked owner=%s pending_owner=%s current_owner=%s",
                  owner_name(owner),
@@ -165,6 +172,22 @@ esp_err_t ImageBusinessWorker_Submit(image_business_owner_t owner,
                  owner_name(s_current_owner));
         xSemaphoreGive(s_state_mutex);
         return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_pending_command.valid) {
+        image_business_owner_t replaced_owner = s_pending_command.owner;
+        uint32_t replaced_generation = s_pending_command.generation;
+        /* Cancel callbacks are bounded and must not call worker APIs. */
+        if (s_pending_command.cancel != NULL) {
+            s_pending_command.cancel(s_pending_command.payload,
+                                     s_pending_command.payload_size);
+        }
+        ESP_LOGI(TAG,
+                 "pending replaced old_owner=%s old_generation=%lu new_owner=%s generation=%lu",
+                 owner_name(replaced_owner),
+                 (unsigned long)replaced_generation,
+                 owner_name(owner),
+                 (unsigned long)generation);
     }
 
     memset(&s_pending_command, 0, sizeof(s_pending_command));
@@ -180,6 +203,22 @@ esp_err_t ImageBusinessWorker_Submit(image_business_owner_t owner,
     xSemaphoreGive(s_state_mutex);
     xTaskNotifyGive(s_worker_task);
     return ESP_OK;
+}
+
+esp_err_t ImageBusinessWorker_Submit(image_business_owner_t owner,
+                                     image_business_run_fn_t run,
+                                     image_business_cancel_fn_t cancel,
+                                     const void *payload,
+                                     size_t payload_size,
+                                     uint32_t generation)
+{
+    return ImageBusinessWorker_SubmitReplacingPending(owner,
+                                                       run,
+                                                       cancel,
+                                                       payload,
+                                                       payload_size,
+                                                       generation,
+                                                       0U);
 }
 
 bool ImageBusinessWorker_CancelPending(image_business_owner_t owner)

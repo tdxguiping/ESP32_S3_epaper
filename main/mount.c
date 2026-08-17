@@ -536,7 +536,7 @@ esp_err_t example_mount_storage(const char* base_path)
         .sclk_io_num = USER_SD_SPI_CLK_PIN,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = 4000,
+        .max_transfer_sz = USER_SHARED_SPI_MAX_TRANSFER_SIZE,
     };
 
     // Print the C5 SDSPI wiring before mounting so board bring-up can verify the shared SPI bus.

@@ -30,6 +30,7 @@
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
 #include "image_business_worker.h"
+#include "local_image_browsing.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 
@@ -2291,6 +2292,7 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
     bool was_running = slideshow_runtime_is_active();
     bool called_from_shared_worker = ImageBusinessWorker_IsCurrentTask();
     if (!called_from_shared_worker) {
+        LocalImageBrowsing_InvalidateCurrent();
         esp_err_t daily_stop_ret = ServerNetworkStaDailyImage_StopAndWait();
         if (daily_stop_ret != ESP_OK) {
             ESP_LOGE(TAG, "daily image did not stop before slideshow ret=%s",
@@ -2439,13 +2441,18 @@ static esp_err_t start_slideshow_runtime(const char *base_path,
         .runtime = runtime,
         .generation = generation,
     };
-    esp_err_t submit_ret = ImageBusinessWorker_Submit(
+    uint32_t replace_mask = called_from_shared_worker
+                                ? 0U
+                                : IMAGE_BUSINESS_OWNER_MASK(
+                                      IMAGE_BUSINESS_OWNER_LOCAL_IMAGE);
+    esp_err_t submit_ret = ImageBusinessWorker_SubmitReplacingPending(
         IMAGE_BUSINESS_OWNER_SLIDESHOW,
         slideshow_run_command,
         slideshow_cancel_pending_runtime,
         &worker_payload,
         sizeof(worker_payload),
-        generation);
+        generation,
+        replace_mask);
     if (submit_ret != ESP_OK) {
         slideshow_cancel_pending_runtime(&worker_payload,
                                          sizeof(worker_payload));

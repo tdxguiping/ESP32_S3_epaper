@@ -21,6 +21,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "led_status.h"
+#include "local_image_browsing.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
@@ -660,6 +661,7 @@ save_done:
 
 static esp_err_t stop_slideshow_for_cast(const char *base_path)
 {
+    LocalImageBrowsing_Stop();
     (void)base_path;
     app_persistent_slideshow_control_t control = {
         .enabled = false,

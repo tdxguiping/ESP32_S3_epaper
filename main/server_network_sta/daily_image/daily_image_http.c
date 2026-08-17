@@ -13,6 +13,12 @@
 
 static const char *TAG = "daily_image_http";
 
+#ifdef CONFIG_MBEDTLS_HARDWARE_AES
+#define DAILY_IMAGE_TLS_AES_MODE "hardware"
+#else
+#define DAILY_IMAGE_TLS_AES_MODE "software"
+#endif
+
 static bool https_url_is_valid(const char *url)
 {
     return url != NULL && strncmp(url, "https://", 8) == 0;
@@ -21,16 +27,19 @@ static bool https_url_is_valid(const char *url)
 static void log_tls_heap(const char *operation)
 {
     ESP_LOGI(TAG,
-             "TLS heap before %s internal_free=%u internal_largest=%u psram_free=%u psram_largest=%u",
+             "TLS heap before %s internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u psram_free=%u psram_largest=%u aes=%s",
              operation != NULL ? operation : "request",
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL |
                                                    MALLOC_CAP_8BIT),
              (unsigned int)heap_caps_get_largest_free_block(
                  MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_DMA),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM |
                                                    MALLOC_CAP_8BIT),
              (unsigned int)heap_caps_get_largest_free_block(
-                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+             DAILY_IMAGE_TLS_AES_MODE);
 }
 
 static esp_err_t write_all(esp_http_client_handle_t client,

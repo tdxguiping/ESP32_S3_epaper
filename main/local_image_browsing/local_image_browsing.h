@@ -22,13 +22,8 @@
 #define LOCAL_IMAGE_BROWSING_TRANSACTION_IDLE 0U
 #define LOCAL_IMAGE_BROWSING_TRANSACTION_PREPARED 1U
 
-// Only one runtime request is accepted because an accepted request reserves the EPD.
-#define LOCAL_IMAGE_BROWSING_QUEUE_LENGTH 1U
+// Early UART events are retained until SD-backed local browsing is initialized.
 #define LOCAL_IMAGE_BROWSING_STARTUP_QUEUE_LENGTH 10U
-#define LOCAL_IMAGE_BROWSING_TASK_STACK_SIZE (8U * 1024U)
-#define LOCAL_IMAGE_BROWSING_TASK_PRIORITY 4U
-// Warn only when runtime stack headroom becomes too small for safe maintenance.
-#define LOCAL_IMAGE_BROWSING_STACK_WARNING_BYTES 1024U
 
 typedef enum {
     LOCAL_IMAGE_BROWSING_TRIGGER_DEVICE_INFO_KEY_PB2 = 0,
@@ -43,6 +38,10 @@ esp_err_t LocalImageBrowsing_Init(const char *base_path);
 esp_err_t LocalImageBrowsing_RequestNext(local_image_browsing_trigger_t trigger,
                                          uint16_t protocol_seq);
 bool LocalImageBrowsing_IsActive(void);
+// Invalidate running local work before atomically replacing its pending command.
+void LocalImageBrowsing_InvalidateCurrent(void);
+// Invalidate queued/running local work without waiting for an active EPD refresh.
+void LocalImageBrowsing_Stop(void);
 esp_err_t LocalImageBrowsing_ResetState(void);
 
 #ifdef __cplusplus

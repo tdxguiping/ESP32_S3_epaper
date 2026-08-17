@@ -746,10 +746,12 @@ SPI DMA 分包规则：
 ```text
 EPD 显示数据可能来自 PSRAM。ESP-IDF SPI driver 对 PSRAM 源数据可能临时申请内部 DMA TX buffer；
 如果一次发送 30000/32768 bytes，在内部 DMA heap 碎片化时可能返回 ESP_ERR_NO_MEM。
-因此 EPD 大数据发送统一使用 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072`，并由 `NT61522_SPI_SAFE_DMA_TX_CHUNK` 引用该配置。3072 bytes 低于实测碎片化场景的 3968 bytes 最大 DMA 空闲块。
+因此EPD大数据发送统一使用 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=1024`，并由 `NT61522_SPI_SAFE_DMA_TX_CHUNK` 引用该配置。`display_bsp.cpp`永久保留一个 `DMA_ATTR` 1024字节TX缓冲和一个静态mutex，合计约1.1KB固定内部RAM；每个payload分块复制后才提交SPI，PSRAM源地址不再触发SPI驱动运行期申请DMA bounce buffer。启动只打印一次静态缓冲大小，真实失败才打印错误及DMA余量。
+
+EPD与SD共用SPI2，`USER_SHARED_SPI_MAX_TRANSFER_SIZE=1024` 同时配置EPD总线初始化和 `mount.c` 的SDSPI备用总线初始化。ESP-IDF v5.5.3 `esp_driver_sdspi` 的 `SDSPI_MAX_DATA_LEN` 为512，内部 `SDSPI_BLOCK_BUF_SIZE` 为516；非DRAM地址由驱动复制到该按需建立并随slot常驻的DMA块。项目不复制或修改SDK的SD协议实现。1024上限覆盖SD完整事务，并减少共享总线DMA描述符规模；总线所有权仍由 `TdxSharedSpi` 管理，EPD静态TX mutex只保护EPD缓冲。
 spiTransmitData() 会兜底拆包；EPD_Sendbuffera()、EPD_WriteMultiData_ToMaster/Slave/Both() 以及各屏型直接发送路径也按同一安全分包发送。
 EPD_Sendbuffera() 和 EPD_WriteMultiData_ToMaster/Slave/Both/Target() 返回 esp_err_t；任一 SPI transaction 失败时只打印关键 ESP_LOGE，调用 EpdType_ReportDisplayFailure(ret)，并让本次 EPD 显示最终返回失败。
-spiTransmitCommand() 发送失败时不使用断言终止系统；它打印一次包含命令和错误码的 ESP_LOGE、上报显示失败并返回原始错误。`USER_EPD_SPI_SAFE_DMA_TX_CHUNK` 带非0编译期检查，避免错误配置导致发送循环无法推进。
+spiTransmitCommand()发送失败时不使用断言终止系统；它打印一次包含命令和错误码的ESP_LOGE、上报显示失败并返回原始错误。`spiTransmitData()`也在公共层上报首个错误，覆盖旧屏型未检查返回值的调用。`USER_EPD_SPI_SAFE_DMA_TX_CHUNK`带非0编译期检查，`USER_SHARED_SPI_MAX_TRANSFER_SIZE`带不小于516的检查，避免发送循环无法推进或容纳不了SDSPI块事务。
 NT61522_Display_net() 返回当前 EPD 显示结果；外层屏幕适配在数据加载失败时直接退出，不继续调用 update / refresh / sleep 刷新流程。
 直接调用 EPD_WriteMultiData_Target() 的屏幕适配也会在失败时停止后续数据加载/刷新流程，避免底层 SPI 已失败但上层仍继续按成功刷新。
 800x480、1024x600、1600x1200 7.9/13.3、1360x480、800x480 4S、DKE、mofang 等驱动均受该规则保护。发送失败后当前驱动立即停止装载，外层不得继续 update/refresh，也不得把本地浏览或轮播游标按成功推进。
@@ -828,7 +830,7 @@ type=EPD_TYPE_800_480, width=800, height=480, display_size=192000, color=BWR_3_C
 存：
 - 本驱动不写 SD/NVS；只向 EPD 控制器写命令和显示数据。
 - 是否保存屏幕类型由 EpdType_SetAndSave() 统一处理，不在本文件直接保存。
-- 帧数据通过 spiTransmitData() 发送，按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072` 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
+- 帧数据通过spiTransmitData()发送，按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=1024` 复制到公共静态DMA TX缓冲后分包，不再为PSRAM源数据临时分配DMA TX buffer。
 
 取：
 - 从 RAM buffer 读取待显示数据。
@@ -896,7 +898,7 @@ type=EPD_TYPE_1024_600, width=1024, height=600, display_size=307200, color=BWYRB
 存：
 - 本驱动不写 SD/NVS；只向 EPD 控制器写命令和显示数据。
 - 是否保存屏幕类型由 EpdType_SetAndSave() 统一处理，不在本文件直接保存。
-- 帧数据通过 spiTransmitData() 发送，按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072` 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
+- 帧数据通过spiTransmitData()发送，按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=1024` 复制到公共静态DMA TX缓冲后分包，不再为PSRAM源数据临时分配DMA TX buffer；旧本地显示循环也走相同公共函数并检查错误。
 
 取：
 - 从 RAM buffer 读取待显示数据。
@@ -1029,7 +1031,7 @@ type=EPD_TYPE_1600_1200_79, width=1600, height=1200, display_size=960000, color=
 实现说明：
 
 ```text
-- 帧数据通过 spiTransmitData() 发送，按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072` 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。
+- 帧数据通过spiTransmitData()发送，按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=1024` 复制到公共静态DMA TX缓冲后分包，不再为PSRAM源数据临时分配DMA TX buffer。
 ```
 
 存 / 取信息（含条件限制）：
@@ -1103,7 +1105,7 @@ type=EPD_TYPE_1600_1200_133, width=1600, height=1200, display_size=960000, color
 实现说明：
 
 ```text
-- 帧数据通过 spiTransmitData() 发送，按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072` 小分包，避免 PSRAM 源数据触发临时 DMA TX buffer 分配失败。首个发送错误立即中止MASTER/SLAVE数据装载并上报，本次不继续刷新。
+- 帧数据通过spiTransmitData()发送，按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=1024` 复制到公共静态DMA TX缓冲后分包，不再为PSRAM源数据临时分配DMA TX buffer。首个发送错误统一上报，MASTER/SLAVE数据装载返回失败，本次结果不得记为成功。
 ```
 
 存 / 取信息（含条件限制）：
@@ -1199,7 +1201,7 @@ type=EPD_TYPE_1600_1200_133_DKE, width=1600, height=1200, display_size=960000, c
 - DKE 13.3 与 EPD_TYPE_1600_1200_133 分开实现，不复用兴泰 13.3 的初始化参数，避免影响已验证成功的兴泰屏。
 - DKE 参考工厂 EL133UF1.cpp / EPD_IO.cpp：初始化、分帧写入、PON/DRF/POF 更新和 sleep 参数独立维护。
 - 图像总长度 960000 bytes；MASTER 和 SLAVE 各写 480000 bytes。
-- DKE 帧数据按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=3072` 小分包调用 spiTransmitData()；轮播/投图数据常在 PSRAM，SPI driver 可能临时申请内部 DMA TX buffer，小分包可避免内部 DMA heap 碎片化时出现 `ESP_ERR_NO_MEM`。任一半帧写入失败时不继续 update，调用方不推进轮播进度。
+- DKE帧数据按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=1024` 调用spiTransmitData()；轮播/投图的PSRAM数据先复制到公共静态DMA TX缓冲，SPI driver不再为payload临时申请内部DMA buffer。任一半帧写入失败时不继续update，调用方不推进轮播进度。
 - 调试日志会打印 init、master write、slave write、update、busy timeout 等步骤，便于确认卡在哪个阶段。
 ```
 
@@ -2258,7 +2260,11 @@ server_network_sta_slideshow.c
 └─ slideshow_run_runtime()（由统一worker串行执行，结束后释放 runtime）
 ```
 
-`main/image_business_worker/` 提供一个固定9KB内部RAM静态栈、一个静态TCB、一个静态状态mutex和一个640字节单pending命令槽。该worker在读取 `epd_mode` 后立即创建并永久常驻，串行执行每日一图、轮播runtime和轮播启动延迟；旧6KB轮播静态任务、旧7KB daily静态任务及6KB动态启动延迟任务均已取消。轮播runtime仍优先从PSRAM分配约2.9KB，结束或在pending阶段被取消时只释放一次。启动延迟使用统一worker的task notification进行可中断等待，模式切换会增加generation并立即唤醒，禁止过期延迟在10秒后重新启动旧轮播。新命令失败、开机恢复和CH583模式协调规则保持不变。
+`main/image_business_worker/` 提供一个固定9KB内部RAM静态栈、一个静态TCB、一个静态状态mutex和一个640字节单pending命令槽。该worker在读取 `epd_mode` 后立即创建并永久常驻，串行执行每日一图、轮播runtime、轮播启动延迟和Local Image Browsing；旧6KB轮播静态任务、旧7KB daily静态任务、6KB动态启动延迟任务及旧8KB Local动态任务均已取消。LOCAL_IMAGE相关模式切换通过generation、非阻塞stop和mutex内原子pending替换完成，不在PB2/UART请求入口等待旧owner或当前EPD；原有DAILY/SLIDESHOW内部重启保护保持不变。轮播runtime仍优先从PSRAM分配约2.9KB；pending runtime和LOCAL reservation均由cancel callback或run cleanup互斥释放一次。cancel callback只做有界资源释放且不得反向调用统一worker API。启动延迟使用统一worker的task notification进行可中断等待，禁止过期延迟在10秒后重新启动旧轮播。
+
+DAILY HTTPS内存诊断位于 `main/server_network_sta/daily_image/daily_image_http.c`。POST和GET前各保留一条 `TLS heap before` 日志，分别报告internal、`MALLOC_CAP_DMA`和PSRAM的free/largest block，并在同一行打印 `aes=software`。ESP-IDF v5.5.3的ESP32-C5硬件AES实现会在处理过程中通过 `heap_caps_aligned_alloc()` 或 `heap_caps_aligned_calloc(..., MALLOC_CAP_DMA)` 动态申请临时缓冲和DMA描述符；96KB reserve不能保证运行期始终存在所需连续DMA块。工程因此在 `sdkconfig.defaults` 和当前 `sdkconfig` 中关闭 `CONFIG_MBEDTLS_HARDWARE_AES`，保留 `CONFIG_MBEDTLS_AES_C=y`，由SDK取消 `MBEDTLS_AES_ALT` 并回到mbedTLS内置软件AES。`CONFIG_MBEDTLS_HARDWARE_SHA`、MPI和ECC保持开启；GCM/CCM及TLS安全算法不变。`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304` 继续保留给WiFi和SPI等显式internal/DMA用户，统一worker栈仍为9KB。
+
+该AES选择是全局mbedTLS配置，不只作用于DAILY；OTA等HTTPS路径也会使用软件AES。SDK中的软件AES表由 `MBEDTLS_AES_ROM_TABLES` 放在ROM，不新增大型运行期DMA缓冲。关闭 `CONFIG_MBEDTLS_AES_USE_INTERRUPT` 是硬件AES关闭后的依赖结果，单独关闭中断不能解决DMA申请失败。不得直接修改 `C:\esp\v5.5.3\esp-idf` 的AES驱动，也不通过继续增加reserve、缩小TLS入站记录或私有静态DMA池掩盖问题。
 
 ---
 
@@ -3040,13 +3046,14 @@ main/local_image_browsing/local_image_browsing.c
 ├─ local_img_state NVS CRC32持久化
 ├─ PREPARED/IDLE断电事务
 ├─ 缺失文件有界跳过
-├─ DAILY/SLIDESHOW同步停止
+├─ DAILY/SLIDESHOW非阻塞失效
+├─ 提交owner=LOCAL_IMAGE到永久常驻统一worker
 └─ EPD空闲预留、BIN加载和同步显示
 ```
 
 EPD显示模块增加空闲预留接口。预留建立后 `ServerNetworkStaEpdDisplay_IsBusy()` 返回true，普通显示入口在预留有效时拒绝新任务；本地浏览完成文件准备后消费预留并排队。EPD worker先发布active再减少pending，避免任务从队列取出时出现瞬时IDLE。
 
-本地浏览worker栈为8 KB。扫描过程不保存完整目录列表，只在栈中保留全局最小两项、游标之后最小两项和扫描结果等少量17字节缓冲；模块级150项 `s_list` 已删除，静态内部RAM减少2556字节。算法保持原有不区分大小写优先、原始大小写次序补充的稳定顺序，并同时得到当前项、下一项和有效文件总数。worker在每次请求结束后检查栈最低余量，仅低于 `LOCAL_IMAGE_BROWSING_STACK_WARNING_BYTES` 时输出 `ESP_LOGW`。
+本地浏览原8KB动态worker及长度1的FreeRTOS queue已删除，扫描、NVS事务和EPD显示逻辑改由9KB永久常驻 `image_business_worker` 的 `owner=LOCAL_IMAGE` 执行，预计额外减少约8.5KB内部RAM。扫描过程仍不保存完整目录列表，只在统一任务栈中保留全局最小两项、游标之后最小两项和扫描结果等少量17字节缓冲；模块级150项 `s_list` 已删除，静态内部RAM减少2556字节。算法保持原有稳定顺序。pending LOCAL_IMAGE被更新模式替换时由cancel callback释放EPD reservation，进入run callback后由统一cleanup释放，两条路径互斥。栈余量统一通过 `image_worker: job done owner=LOCAL_IMAGE ... min_free=...` 检查。
 
 `ch583_wifi_uart_protocol.c` 仍拥有DEVICE_INFO保存和协议ACK/ERR，并通过一个统一按键分发函数保持两种来源的映射一致：PB2交给本地浏览模块，PB1交给Factory Reset异步请求。DEVICE_INFO严格解析五字段，首次成功ACK才执行该帧的wake_reason业务，重发只重ACK；合法KEY_EVENT不依赖DEVICE_INFO状态，相同SEQ只重ACK。PB3/PB4在业务未定义前返回BAD_ARG。完整通信规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 
@@ -3124,7 +3131,7 @@ USER_ZLIB_TEST_DECOMPRESSED_RELATIVE_PATH
 
 cast、cast2pic和upload入口只校验 `bin_size` 是否等于实际收到的 `bin` part长度，不把压缩输入长度与屏幕原始 `display_size` 比较。宏为 `1` 时由公共EPD入口解压并校验输出长度；宏为 `0` 时继续把raw数据交给原有EPD长度检查。
 
-每日一图下载接口增加 `exact_size_required` 参数：非压缩模式维持严格原始长度，压缩模式使用 `TdxZlibBuffer_GetCompressBound()` 作为容量并接受实际压缩长度。轮播在压缩模式下跳过旧的原始BIN文件名SHA诊断，避免对压缩字节产生误报；非压缩模式保留原诊断。ESP32-C5使用 ESP-IDF 5.5.3 FreeRTOS `xTaskCreateStatic()`：daily、slideshow及轮播启动延迟共用9216字节内部RAM统一静态栈和一个静态TCB，通过按值复制的小型pending命令及generation取消机制串行运行，不依赖运行期heap最大连续块。
+每日一图下载接口增加 `exact_size_required` 参数：非压缩模式维持严格原始长度，压缩模式使用 `TdxZlibBuffer_GetCompressBound()` 作为容量并接受实际压缩长度。轮播在压缩模式下跳过旧的原始BIN文件名SHA诊断，避免对压缩字节产生误报；非压缩模式保留原诊断。ESP32-C5使用 ESP-IDF 5.5.3 FreeRTOS `xTaskCreateStatic()`：daily、slideshow、轮播启动延迟及Local Image Browsing共用9216字节内部RAM统一静态栈和一个静态TCB，通过按值复制的小型pending命令、generation取消及原子owner替换机制串行运行，不依赖运行期heap最大连续块。
 
 `main/main.c` 完整保留 `TdxZlibEpdTest_Run()` 的启动调用代码，当前使用局部 `#if 0` 关闭，没有增加临时测试宏；以后需要诊断时可临时改为 `#if 1`。该函数读取已生成的 `.bin.zlib` 并提交公共EPD入口；读取期间持有 `TdxSharedSpi`，提交显示前释放锁，避免同步等待EPD任务时死锁。
 

@@ -2,6 +2,7 @@
 
 #include "cast_core.h"
 #include "epd_display_mode.h"
+#include "local_image_browsing.h"
 #include "esp_log.h"
 #include "tdx_cfg.h"
 #include "usb_console_common.h"
@@ -31,6 +32,7 @@ esp_err_t UsbConsoleCast_Process(const usb_console_http_request_t *request,
         return ESP_ERR_NOT_SUPPORTED;
     }
     if (parse_ret == ESP_OK) {
+        LocalImageBrowsing_Stop();
         esp_err_t mode_ret = EpdDisplayMode_Set(USER_EPD_DISPLAY_MODE_NORMAL);
         if (mode_ret != ESP_OK) {
             ESP_LOGE("usb_console_cast", "cast mode save failed ret=%s",

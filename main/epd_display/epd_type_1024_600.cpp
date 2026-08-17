@@ -46,25 +46,24 @@ void ePaperPort::EpdType1024600_Display()
 
     uint32_t i = 0;
     uint8_t j = 0;
-    spi_transaction_t t;
 
     EPD_WriteCMD_ToBoth(0x10);  	
     Set_DCIOLevel(1);
     for (i = 0; i < (uint32_t)DisplayLen; i += 256) {
         if (j == 0) {
-            EPD_Select_Master();  
-            memset(&t, 0, sizeof(t));
-            t.length    = 8 * 256;
-            t.tx_buffer = DispBuffer + i;
-            spi_device_polling_transmit(spi, &t); //Transmit!
+            EPD_Select_Master();
             j = 1;
         } else {
             EPD_Select_Slave();
-            memset(&t, 0, sizeof(t));
-            t.length    = 8 * 256;
-            t.tx_buffer = DispBuffer + i;
-            spi_device_polling_transmit(spi, &t); //Transmit!
             j = 0;
+        }
+        esp_err_t tx_ret = spiTransmitData(DispBuffer + i, 256);
+        if (tx_ret != ESP_OK) {
+            EPD_Select_None();
+            EpdType_ReportDisplayFailure(tx_ret);
+            ReleaseRotationBuffer();
+            ReleaseDispBuffer();
+            return;
         }
     }
     EPD_Select_None();

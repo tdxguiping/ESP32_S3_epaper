@@ -89,6 +89,9 @@ esp_err_t EpdDisplayMode_Set(uint8_t mode)
 
 esp_err_t EpdDisplayMode_SetBySlideshowSwitch(bool sw)
 {
+    if (sw) {
+        LocalImageBrowsing_InvalidateCurrent();
+    }
     return EpdDisplayMode_Set(sw ? USER_EPD_DISPLAY_MODE_SLIDESHOW : USER_EPD_DISPLAY_MODE_NORMAL);
 }
 

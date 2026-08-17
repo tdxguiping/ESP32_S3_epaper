@@ -326,7 +326,6 @@ class ePaperPort {
     void EPD_WriteDATA_PreSelected(uint8_t data);
 
 
-    static constexpr size_t NT61522_SPI_MAX_BUFFER_SIZE = 32768;
     static constexpr size_t NT61522_SPI_SAFE_DMA_TX_CHUNK =
         USER_EPD_SPI_SAFE_DMA_TX_CHUNK;
 

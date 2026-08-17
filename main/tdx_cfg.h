@@ -973,8 +973,12 @@ extern "C" {
 #define USER_EPD_DISPLAY_TASK_STACK_SIZE (8 * 1024)
 // FreeRTOS task priority for USER EPD DISPLAY TASK PRIORITY; keep scheduler side effects in mind when changing it.
 #define USER_EPD_DISPLAY_TASK_PRIORITY 5
-// Keep PSRAM-backed SPI transfers below fragmented internal DMA block sizes.
-#define USER_EPD_SPI_SAFE_DMA_TX_CHUNK 3072U
+// Bound the shared EPD/SDSPI bus and back EPD payload TX with one static DMA buffer.
+#define USER_SHARED_SPI_MAX_TRANSFER_SIZE 1024U
+#define USER_EPD_SPI_SAFE_DMA_TX_CHUNK USER_SHARED_SPI_MAX_TRANSFER_SIZE
+#if USER_SHARED_SPI_MAX_TRANSFER_SIZE < 516U
+#error "USER_SHARED_SPI_MAX_TRANSFER_SIZE must hold one SDSPI block transaction"
+#endif
 #if USER_EPD_SPI_SAFE_DMA_TX_CHUNK == 0
 #error "USER_EPD_SPI_SAFE_DMA_TX_CHUNK must be greater than zero"
 #endif
@@ -1027,7 +1031,7 @@ extern "C" {
 #define USER_DAILY_IMAGE_QUERY_RESPONSE_SIZE 4096U
 // Bound connect and socket operations for both HTTPS requests.
 #define USER_DAILY_IMAGE_HTTP_TIMEOUT_MS 15000U
-// One permanent worker serializes DAILY, SLIDESHOW, and slideshow startup-delay work.
+// One permanent worker serializes DAILY, SLIDESHOW, startup delay, and LOCAL_IMAGE.
 #define USER_IMAGE_BUSINESS_WORKER_STACK_SIZE (9U * 1024U)
 // DAILY currently needs 616 bytes; keep a small bounded inline copy for one pending command.
 #define USER_IMAGE_BUSINESS_WORKER_PAYLOAD_SIZE 640U
