@@ -2260,9 +2260,9 @@ server_network_sta_slideshow.c
 └─ slideshow_run_runtime()（由统一worker串行执行，结束后释放 runtime）
 ```
 
-`main/image_business_worker/` 提供一个固定12KB内部RAM静态栈、一个静态TCB、一个静态状态mutex和一个640字节单pending命令槽。该worker在读取 `epd_mode` 后立即创建并永久常驻，串行执行每日一图、轮播runtime、轮播启动延迟、Local Image Browsing、network CAST/CAST2PIC和低优先级USB投屏；旧轮播、daily、启动延迟、Local、12KB dataup_async、8KB cast保存及8KB USB worker任务均已取消。network upload不作为owner排队，只在HTTP当前上下文进行零等待预约和同步SD保存。
+`main/image_business_worker/` 提供固定12KB内部RAM静态栈、静态TCB、状态mutex和640字节单pending命令槽，串行执行DAILY、SLIDESHOW、LOCAL_IMAGE、CAST/CAST2PIC和低优先级USB投屏。旧独立任务已取消；network upload不作为owner排队，只在HTTP当前上下文预约资源并同步保存。
 
-`main/server_network_sta/upload/server_network_sta_upload_gate.c` 是网络/USB ping共用的UPLOAD可用性判定和network upload最终准入。ping只读取状态；最终 `TryReserve()` 使用原子UPLOAD标志、EPD idle reservation、EPD/SD power image-transfer guard和 `TdxSharedSpi_Lock(0)`，任一步失败立即释放并返回BUSY。DAILY通过现有in-progress标志区分下载/执行与等待下一槽；SLIDESHOW通过EPD/Shared SPI实际状态区分一张图片事务与长期interval等待，所以两种长期owner不会让ping永久BUSY。稳定POWER_OFF可由下一请求现有恢复流程唤醒，只有PREPARING/RESTORING作为BUSY。
+`server_network_sta_upload_gate.c` 是网络/USB ping共用的UPLOAD资源判定。ping不修改UploadGate或供电状态，但会刷新RAM活动计时。非OTA multipart在供电不可立即使用时于读取body前返回1007；最终预约使用UPLOAD标志、EPD reservation和 `TdxSharedSpi_Lock(0)`，不等待正在进行的业务完成。EPD/SD只有IDLE或ARMED时允许IDLE，POWER_OFF、PREPARING和RESTORING返回BUSY。
 
 DAILY HTTPS内存诊断位于 `main/server_network_sta/daily_image/daily_image_http.c`。POST和GET前各保留一条 `TLS heap before` 日志，分别报告internal、`MALLOC_CAP_DMA`和PSRAM的free/largest block，并在同一行打印 `aes=software`。ESP-IDF v5.5.3的ESP32-C5硬件AES实现会在处理过程中通过 `heap_caps_aligned_alloc()` 或 `heap_caps_aligned_calloc(..., MALLOC_CAP_DMA)` 动态申请临时缓冲和DMA描述符；96KB reserve不能保证运行期始终存在所需连续DMA块。工程因此在 `sdkconfig.defaults` 和当前 `sdkconfig` 中关闭 `CONFIG_MBEDTLS_HARDWARE_AES`，保留 `CONFIG_MBEDTLS_AES_C=y`，由SDK取消 `MBEDTLS_AES_ALT` 并回到mbedTLS内置软件AES。`CONFIG_MBEDTLS_HARDWARE_SHA`、MPI和ECC保持开启；GCM/CCM及TLS安全算法不变。`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304` 继续保留给WiFi和SPI等显式internal/DMA用户，统一worker栈现为12KB。
 

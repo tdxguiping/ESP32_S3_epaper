@@ -281,18 +281,10 @@ static bool uri_path_is_safe(const char *uri)
 /* Handler to download a file kept on the server */
 static esp_err_t download_get_handler_impl(httpd_req_t *req)
 {
-    if (req != NULL && strncmp(req->uri, SERVER_NETWORK_STA_PING_URI, strlen(SERVER_NETWORK_STA_PING_URI)) == 0) {
-        ESP_LOGI(TAG, "HTTP GET ping handler enter uri=%s", req->uri);
-    }
     ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
     char filepath[FILE_PATH_MAX];
     FILE *fd = NULL;
     struct stat file_stat;
-
-    esp_err_t ping_ret = ServerNetworkStaPing_ProcessGet(req);
-    if (ping_ret != ESP_ERR_NOT_SUPPORTED) {
-        return ping_ret;
-    }
 
     esp_err_t time_ret = ServerNetworkStaTime_ProcessGet(req);
     if (time_ret != ESP_ERR_NOT_SUPPORTED) {
@@ -603,6 +595,12 @@ static esp_err_t run_with_epd_sd_network_guard(httpd_req_t *req,
 
 static esp_err_t download_get_handler(httpd_req_t *req)
 {
+    // Ping must observe POWER_OFF as BUSY instead of waiting for this request
+    // to restore the EPD/SD rail before UploadGate reads the power state.
+    esp_err_t ping_ret = ServerNetworkStaPing_ProcessGet(req);
+    if (ping_ret != ESP_ERR_NOT_SUPPORTED) {
+        return ping_ret;
+    }
     return run_with_epd_sd_network_guard(req, download_get_handler_impl);
 }
 

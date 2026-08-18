@@ -188,7 +188,7 @@ ping_result
 
 ```text
 BUSY  当前统一UPLOAD资源门不允许安全开始network upload
-IDLE  当前允许尝试network upload；ESP32收到upload时仍进行最终零等待预约
+IDLE  当前允许尝试network upload；ESP32收到upload时仍进行最终资源预约
 ```
 
 实际构造响应的代码：
@@ -199,7 +199,7 @@ USB HTTP-like：main/usb_console_echo/ping/usb_console_ping.c
 状态判定：main/server_network_sta/upload/server_network_sta_upload_gate.c -> ServerNetworkStaUploadGate_IsBusy()
 ```
 
-网络和USB固定返回 `func/result/message/EPD/Ble_MAC`，并共用同一个UploadGate BUSY/IDLE规则。`EPD`字段名为兼容现有客户端保持不变，但含义扩展为UPLOAD资源可用性。`result=0` 和 `result=1405` 都保留 `EPD`。
+网络和USB固定返回 `func/result/message/EPD/Ble_MAC`，并共用同一个UploadGate BUSY/IDLE规则。`EPD`字段名为兼容现有客户端保持不变，但含义扩展为UPLOAD资源可用性；EPD/SD处于POWER_OFF、PREPARING或RESTORING时返回 `BUSY`。`result=0` 和 `result=1405` 都保留 `EPD`。
 
 当 `Ble_MAC` 尚未获取时，仍返回 `EPD` 字段，并使用 `result=1405`：
 
@@ -377,7 +377,7 @@ upload_raw_result
 
 `upload` 使用 `1601~1615` 图片上传类 result，详见 [6.7](#sec-06-7)。
 
-network upload只接受 `show=false && save=true`；`show=true` 或 `save=false` 返回 `1603/TDX_JSON_RESULT_UPLOAD_INVALID` 且不执行。ping后资源变忙或最终零等待预约失败时返回 `1007/TDX_JSON_RESULT_BUSY`，不保存文件。
+network upload只接受 `show=false && save=true`；`show=true` 或 `save=false` 返回 `1603/TDX_JSON_RESULT_UPLOAD_INVALID`。非OTA multipart遇到EPD/SD供电不可立即使用，或最终资源预约失败时，返回 `1007/TDX_JSON_RESULT_BUSY` 且不保存。
 
 [⬆ 返回目录](#toc)
 

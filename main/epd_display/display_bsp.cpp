@@ -228,7 +228,7 @@ esp_err_t ePaperPort::InitializeSharedSpi()
     if (spi == nullptr) {
         spi_device_interface_config_t devcfg = {};
         devcfg.spics_io_num = -1;
-        devcfg.clock_speed_hz = 5 * 1000 * 1000;
+        devcfg.clock_speed_hz = 20 * 1000 * 1000;//5 * 1000 * 1000;
         devcfg.mode = 0;
         devcfg.queue_size = 7;
         devcfg.cs_ena_posttrans = 3;

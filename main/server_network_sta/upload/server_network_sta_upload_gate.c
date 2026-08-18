@@ -61,9 +61,10 @@ static const char *busy_reason(bool include_reservation)
     if (TdxSharedSpi_IsBusy()) {
         return "shared_spi_busy";
     }
-    // A fully powered-off rail is recoverable when the subsequent network/USB
-    // request enters its existing restore hook; only an in-flight transition is BUSY.
-    if (EpdSdPowerTest_IsTransitionBusy()) {
+    // Upload may start only while the shared EPD/SD rail is immediately usable.
+    // POWER_OFF, PREPARING and RESTORING all report BUSY; a later ping returns
+    // IDLE naturally after the existing power-test state machine restores the rail.
+    if (!EpdSdPowerTest_IsReadyForImmediateSharedSpi()) {
         return "sd_power_busy";
     }
     return NULL;

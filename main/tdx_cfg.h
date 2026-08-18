@@ -960,7 +960,7 @@ extern "C" {
 // FreeRTOS task priority for USER EPD DISPLAY TASK PRIORITY; keep scheduler side effects in mind when changing it.
 #define USER_EPD_DISPLAY_TASK_PRIORITY 5
 // Bound the shared EPD/SDSPI bus and back EPD payload TX with one static DMA buffer.
-#define USER_SHARED_SPI_MAX_TRANSFER_SIZE 1024U
+#define USER_SHARED_SPI_MAX_TRANSFER_SIZE   4096U  // 1024U
 #define USER_EPD_SPI_SAFE_DMA_TX_CHUNK USER_SHARED_SPI_MAX_TRANSFER_SIZE
 #if USER_SHARED_SPI_MAX_TRANSFER_SIZE < 516U
 #error "USER_SHARED_SPI_MAX_TRANSFER_SIZE must hold one SDSPI block transaction"

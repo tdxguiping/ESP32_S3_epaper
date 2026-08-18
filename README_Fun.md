@@ -72,7 +72,7 @@
 | WiFi 配网 NVS | `wifi:ssid/password`，`nvs.net80211:sta.ssid/sta.pswd` | USB、BLE、CH583 配网都要求 `func=wifi`、`ssid` 可解析且长度 1..32、`key` 可解析且长度小于 65；两个 namespace 都写入成功后才提交 worker 连接 | STA 启动时从保存的 WiFi 配置恢复连接；请求侧只负责保存和提交 worker，真正连接在 `User_Network_mode_app_init()` / `server_network_sta.c` |
 | `cast` 图片保存 | `/data/cast_img/<fileName>.bin`、`/data/cast_img/<fileName>.jpg`；最后投图名保存到默认 NVS `image_state:last_cast` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；zlib模式下`bin_size`是压缩后的实际传输长度，不要求等于屏幕原始长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename；新 bin/jpg 和 NVS last-cast 记录成功后，清理 `/data/cast_img` 中非本次文件名的旧 `.bin/.jpg` | `show=true && save=true` 时先成功停止轮播，再显示、保存并记录 last cast；启动时不读取或显示 last_cast |
 | `cast2pic` 数据接收 | 一次接收一组 `fileName/bin_size/image_size/bin/image` | 网络和 USB 只接受 `screen=a/b`；`ab` 和缺少 `screen` 返回 `1617`；字段完整、文件名安全且实际传输长度等于声明长度后返回 `result=0`；zlib模式不把压缩BIN长度与屏幕原始长度比较 | `result=0` 只表示数据接收校验成功；显示和保存由后台处理，结果只写日志 |
-| `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | network upload只接受 `show=false && save=true`；字段、文件名安全、实际传输长度等于声明长度、目录和剩余空间条件与cast类似；zlib模式不要求压缩BIN等于屏幕原始长度 | 资源空闲并取得零等待EPD/Shared SPI预约后，在HTTP当前上下文同步保存；`show=true` 或 `save=false` 拒绝；图片列表、轮播、快照从 jpg/bin 目录取数据 |
+| `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | network upload只接受 `show=false && save=true`；字段、文件名安全、实际传输长度等于声明长度、目录和剩余空间条件与cast类似；zlib模式不要求压缩BIN等于屏幕原始长度 | 资源空闲并取得不等待业务完成的EPD/Shared SPI预约后，在HTTP当前上下文同步保存；`show=true` 或 `save=false` 拒绝；图片列表、轮播、快照从 jpg/bin 目录取数据 |
 | `delete` 删除 | 只删除 JSON 指定的 `/data/bin_img/<fileName>.bin`、`/data/jpg_img/<fileName>.jpg` | 单次删除数量受 `TDX_DELETE_MAX_FILES=50` 限制；超过上限返回 `1514`，文件名非法返回 `1502`；网络与 USB 入口都先完整校验，校验失败不执行删除；只删除匹配的 bin/jpg；不清理、不修改 NVS `last_cast`、`slide_cfg`、`slide_ctl` 或轮播进度 | 从 JSON `fileNames` 取删除列表；校验通过后按文件名拼路径并删除 |
 | `saved_images` / `snapshot` | 通常不写入图片数据 | `saved_images` 主要扫描，不保存；`snapshot` 组合图片列表和轮播状态，不写图片 | 从 `/data/jpg_img` 扫描缩略图；从 NVS `slide_cfg` / `slide_ctl` 读取轮播状态 |
 | `slideshow` | 默认 NVS `image_state:slide_cfg`、`image_state:slide_ctl`，以及 `PhotoPainter:slide_progress` | 最终 `fileNames` 数量受 `TDX_SLIDESHOW_MAX_FILES=150` 限制，允许重复，且全部 bin 文件必须存在、是普通文件并且非空；APP 在 `random=true` 时负责将每个原始文件复制 3 次并打乱，设备按收到的最终顺序播放；列表校验失败不改动现有轮播状态；`startIndex` 必填且满足 `0 <= startIndex < file_count`；业务基础文件名为 1..16 个安全 ASCII 字节、不带扩展名，内部缓冲区为 17 字节（含 `\0`）；`interval` 限制在 `60..604800` 秒；设备保存的 `random` 永久强制为 `false`；config/control 使用 version、CRC 和 generation 校验 | 不兼容缺少 `startIndex` 的旧轮播协议/配置；启动时已有 SNTP 或运行中首次取得 SNTP 后，按最终 `fileNames + startIndex + anchor_epoch + interval` 使用绝对时间槽 |
@@ -90,7 +90,7 @@ cast、cast2pic、upload 中的 show 和 save 是两个动作。
 存文件是把 bin/jpg 写到 SD 卡；SD 卡文件保存与 EPD 显示使用同一组 SPI，所以 show=true && save=true 时整体流程仍按显示、保存分先后处理。
 当前源码通过 TdxSharedSpi 全局递归 mutex 保护 SD/EPD 共用 SPI：EPD SPI 传输、SDSPI mount、/data 文件读写/删除/扫描、缩略图读取、轮播读取与保存等路径都应先取得该锁；各 EPD 驱动的 BUSY GPIO 等待函数在所有 EPD CS 均为 HIGH 时会临时释放 SPI 锁给 SD 使用，13.3 兴泰、13.3 DKE 和 7.9 兴泰驱动在 PON/DRF/POF 等已知安全等待点会先拉高 CS 再释放 SPI，返回 EPD SPI 操作前最多等待 10 秒重新取得锁，超时重启；`R40_TSC -> BUSY -> spiReceiveData()` 等 CS 为 LOW 且后面还要继续收数据的事务中等待仍走旧路径，不释放 SPI 锁。
 这样即使不是同一次 cast/upload 请求，也避免 SD 文件 I/O 与 EPD 刷新同时占用共用 SPI。
-网络 `/dataUP` 的 multipart入口在EPD、network CAST/CAST2PIC或另一个UPLOAD预约正忙时，会在读取大body和分配PSRAM前直接返回1007 busy JSON并关闭连接。network upload解析后还会通过公共UploadGate进行最终零等待预约；即使APP先前ping得到IDLE，只要到达ESP32时资源已忙，本次也不执行保存并返回1007。
+网络 `/dataUP` 的非OTA multipart入口在EPD/SD供电不可立即使用、EPD、network CAST/CAST2PIC或另一个UPLOAD预约正忙时，会在读取大body和分配PSRAM前直接返回1007。network upload解析后还会通过公共UploadGate最终预约；资源已忙时不保存。
 由于 EPD 显示是重点，处理顺序固定为：先处理 EPD 显示，等待本次 EPD 显示任务完成之后，再去存文件到 SD 卡。
 网络 cast/cast2pic 请求解析校验通过且存在 show=true 时，HTTP handler 只返回接收成功 JSON 后立即结束；EPD 显示、SD同步保存、NVS last-cast 状态和旧图片清理由永久常驻 `image_business_worker` 的 CAST/CAST2PIC owner继续执行。network upload固定 `show=false && save=true`，不进入统一任务或后台task，取得UploadGate后在HTTP当前上下文同步保存。同一时刻只允许一个网络投屏后台事务。
 同步等待受 USER_EPD_DISPLAY_WAIT_TIMEOUT_MS 限制；调用方超时后 completion 仍由 EPD 任务持有，任务完成后再安全释放。
@@ -303,7 +303,7 @@ EPD 显示期间会临时把 WiFi PS 切到 WIFI_PS_MAX_MODEM，以降低 EPD �
 
 `image_business_worker` 是每日一图、轮播、Local Image Browsing、cast和cast2pic共同依赖的核心业务任务。它在每次开机早期创建一次，使用固定静态资源，创建后永久常驻且不删除。每日一图、轮播主runtime、轮播开机启动延迟、本地图片浏览和投屏后台显示/保存不得再各自创建独立worker；所有owner的工作统一提交给该任务串行执行，任何时刻最多只有一个图片业务owner正在运行。
 
-该任务统一DAILY、SLIDESHOW、LOCAL_IMAGE、网络CAST/CAST2PIC以及低优先级USB投屏的业务调度，不替代公共EPD显示任务、HTTP服务、USB接收任务或WiFi管理任务。network upload不作为owner排队；它使用公共UploadGate做零等待准入并在HTTP当前上下文保存。原12KB `dataup_async_worker`、8KB `cast_save` 和8KB `UsbConsoleWorker` 已删除。已经提交给EPD硬件的刷新不由统一任务强制中断。
+该任务统一DAILY、SLIDESHOW、LOCAL_IMAGE、网络CAST/CAST2PIC以及低优先级USB投屏的业务调度，不替代公共EPD显示任务、HTTP服务、USB接收任务或WiFi管理任务。network upload不作为owner排队；它使用公共UploadGate准入，不等待正在进行的业务完成，并在HTTP当前上下文保存。原12KB `dataup_async_worker`、8KB `cast_save` 和8KB `UsbConsoleWorker` 已删除。已经提交给EPD硬件的刷新不由统一任务强制中断。
 
 ### 2.1 定位、范围与重要规则 <span id="sec-02-1"></span>
 
@@ -1382,7 +1382,7 @@ GET /ping#check HTTP/1.1
 
 ```text
 BUSY  当前不能安全开始network upload
-IDLE  当前允许尝试network upload；upload入口仍做最终零等待预约
+IDLE  当前允许尝试network upload；upload入口仍做最终资源预约
 ```
 
 BLE MAC 尚未取得时仍返回完整字段：
@@ -1411,8 +1411,8 @@ BLE MAC 尚未取得时仍返回完整字段：
 取：
 - 读取 CH583 BLE MAC 字符串，用于返回 Ble_MAC。
 - BLE MAC 来源可能是 CH583 模块上报后保存在 PhotoPainter NVS 的值。
-- 读取统一任务关键阶段/pending、EPD预约和队列、Shared SPI、图片保存、EPD/SD电源切换、Factory Reset、OTA及UPLOAD预约状态。
-- DAILY/SLIDESHOW只在等待下一时间点且EPD/SD/SPI实际空闲时允许IDLE；完全掉电但可由下一请求恢复的稳定状态不形成永久BUSY。
+- 读取统一任务关键阶段/pending、EPD预约和队列、Shared SPI、图片保存、EPD/SD已断电或电源切换、Factory Reset、OTA及UPLOAD预约状态。
+- DAILY/SLIDESHOW只在等待下一时间点且资源空闲时允许IDLE；网络ping在供电恢复等待之前读取UploadGate，完全掉电时返回BUSY且不等待供电恢复。USB ping使用相同判定。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-07)
@@ -1847,7 +1847,7 @@ sequenceDiagram
     APP->>DATAUP: multipart func=upload
     DATAUP->>UP: route by func
     UP->>CORE: parse and validate show=false/save=true/fields/file sizes
-    UP->>GATE: zero-wait TryReserve
+    UP->>GATE: TryReserve（不等待业务完成）
     alt resource BUSY
         UP-->>APP: upload_result result=1007
     else reserved
@@ -1879,7 +1879,7 @@ HTTP multipart /dataUP
       └─ httpd_resp_sendstr(final result)
 ```
 
-说明：network upload与USB upload继续共享 `TdxImageTransfer_ParseSingle()` 和 `TdxImageTransfer_ProcessItems()` 的解析及保存实现；USB upload自身协议不变。network upload不再存在异步显示路径，也不创建 `dataup_async_worker`。网络与USB ping统一通过UploadGate返回UPLOAD资源的BUSY/IDLE；SLIDESHOW或DAILY仅在等待下一时间点且EPD/SD/SPI实际空闲时允许IDLE，一次性owner运行、pending、EPD、Shared SPI、SD电源切换、Factory Reset、OTA或另一个UPLOAD预约均返回BUSY。ping只是预检查，network upload入口仍必须再次零等待预约。
+说明：network upload与USB upload继续共享原解析和保存实现，不创建 `dataup_async_worker`。网络与USB ping共用UploadGate；一次性owner、pending、EPD、Shared SPI、EPD/SD不可用、Factory Reset、OTA或另一个UPLOAD预约均返回BUSY。network upload入口还会再次预约，不等待正在进行的业务完成。
 
 成功或失败返回 JSON 会包含 `fileName`、`bin_file`、`image_file`、`save`、`show`、`error` 字段；成功时 `message="upload success"` 且 `error="no error"`。
 

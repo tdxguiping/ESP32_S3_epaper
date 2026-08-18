@@ -11,8 +11,8 @@ extern "C" {
 esp_err_t EpdSdPowerTest_Init(void);
 esp_err_t EpdSdPowerTest_PrepareForSharedSpi(void);
 bool EpdSdPowerTest_IsReadyForImmediateSharedSpi(void);
-bool EpdSdPowerTest_IsTransitionBusy(void);
 void EpdSdPowerTest_NetworkBegin(void);
+esp_err_t EpdSdPowerTest_NetworkTryBegin(void);
 void EpdSdPowerTest_NetworkEnd(void);
 void EpdSdPowerTest_OnCh583BleDataReceived(void);
 void EpdSdPowerTest_OnEpdTaskRequested(void);

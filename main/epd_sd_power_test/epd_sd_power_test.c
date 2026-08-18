@@ -350,20 +350,6 @@ bool EpdSdPowerTest_IsReadyForImmediateSharedSpi(void)
 #endif
 }
 
-bool EpdSdPowerTest_IsTransitionBusy(void)
-{
-#if USER_EPD_SD_POWER_TEST_ENABLE
-    if (!__atomic_load_n(&s_initialized, __ATOMIC_ACQUIRE)) {
-        return false;
-    }
-    uint32_t state = __atomic_load_n(&s_state, __ATOMIC_ACQUIRE);
-    return state == USER_EPD_SD_POWER_TEST_STATE_PREPARING ||
-           state == USER_EPD_SD_POWER_TEST_STATE_RESTORING;
-#else
-    return false;
-#endif
-}
-
 void EpdSdPowerTest_NetworkBegin(void)
 {
 #if USER_EPD_SD_POWER_TEST_ENABLE
@@ -399,6 +385,22 @@ void EpdSdPowerTest_NetworkEnd(void)
     (void)__atomic_sub_fetch(&s_network_activity_count, 1U, __ATOMIC_ACQ_REL);
     notify_activity(USER_EPD_SD_POWER_TEST_EVENT_NETWORK_ACTIVITY_BIT);
 #endif
+}
+
+esp_err_t EpdSdPowerTest_NetworkTryBegin(void)
+{
+#if USER_EPD_SD_POWER_TEST_ENABLE
+    if (!__atomic_load_n(&s_initialized, __ATOMIC_ACQUIRE)) {
+        return ESP_OK;
+    }
+    (void)__atomic_add_fetch(&s_network_activity_count, 1U, __ATOMIC_ACQ_REL);
+    notify_activity(USER_EPD_SD_POWER_TEST_EVENT_NETWORK_ACTIVITY_BIT);
+    if (!EpdSdPowerTest_IsReadyForImmediateSharedSpi()) {
+        EpdSdPowerTest_NetworkEnd();
+        return ESP_ERR_INVALID_STATE;
+    }
+#endif
+    return ESP_OK;
 }
 
 void EpdSdPowerTest_OnCh583BleDataReceived(void)

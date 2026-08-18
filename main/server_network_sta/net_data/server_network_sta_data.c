@@ -730,6 +730,26 @@ static esp_err_t receive_data_redirect_handler_impl(httpd_req_t *req)
 
 esp_err_t receive_data_redirect_handler(httpd_req_t *req)
 {
+    char content_type[SERVER_NETWORK_STA_HTTP_HEADER_VALUE_MAX] = {0};
+    get_request_header_value(req, "Content-Type", content_type, sizeof(content_type));
+    bool is_multipart = strstr(content_type, "multipart/form-data") != NULL;
+    bool is_network_ota = NetworkOtaUpload_IsOtaRequest(req, content_type);
+
+    if (is_multipart && !is_network_ota) {
+        esp_err_t power_ret = EpdSdPowerTest_NetworkTryBegin();
+        if (power_ret != ESP_OK) {
+            ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
+            ESP_LOGW(TAG, "HTTP multipart rejected before body reason=sd_power_busy len=%u",
+                     (unsigned int)req->content_len);
+            return send_json_response(
+                req,
+                "{\"func\":\"dataup_result\",\"result\":1007,\"message\":\"sd_power_busy\",\"error\":\"sd_power_busy\"}");
+        }
+        esp_err_t ret = receive_data_redirect_handler_impl(req);
+        EpdSdPowerTest_NetworkEnd();
+        return ret;
+    }
+
     EpdSdPowerTest_NetworkBegin();
     esp_err_t ret = receive_data_redirect_handler_impl(req);
     EpdSdPowerTest_NetworkEnd();

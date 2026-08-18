@@ -480,10 +480,10 @@ UPLOAD Gate与ping回归：
 1. 网络/USB ping必须对同一设备状态返回相同EPD值。
 2. NORMAL且无pending、EPD/SD/SPI空闲时返回IDLE。
 3. DAILY或SLIDESHOW等待下一时间点且实际资源空闲时允许IDLE，不能因长期current owner永久BUSY。
-4. DAILY下载/保存/显示、SLIDESHOW读图/显示、LOCAL_IMAGE、CAST、CAST2PIC、USB投屏、pending命令、EPD队列、Shared SPI、SD电源切换、Factory Reset、OTA及另一个UPLOAD预约期间返回BUSY。
-5. EPD/SD稳定掉电且可由下一网络/USB请求恢复时不得永久BUSY；电源PREPARING/RESTORING期间必须BUSY。
+4. DAILY下载/保存/显示、SLIDESHOW读图/显示、LOCAL_IMAGE、CAST、CAST2PIC、USB投屏、pending命令、EPD队列、Shared SPI、EPD/SD已断电或电源切换、Factory Reset、OTA及另一个UPLOAD预约期间返回BUSY。
+5. EPD/SD进入POWER_OFF、PREPARING或RESTORING期间，网络和USB ping必须返回BUSY，不得等待或触发供电恢复；恢复到IDLE/ARMED后必须返回IDLE。
 6. 先ping得到IDLE，再在upload到达前启动图片业务，ESP32最终预约必须返回1007且不保存。
-7. 不先ping直接在BUSY期间发送upload，同样返回1007且不保存。
+7. POWER_OFF/PREPARING/RESTORING期间直接发送非OTA multipart，必须在读取body前返回1007，不触发供电等待，也不保存。
 8. 两个network upload并发时只能一个预约成功，另一个立即1007，不等待。
 9. 注入SD满、写入、校验、rename及HTTP断开失败；临时文件按原规则清理，随后ping必须恢复IDLE。
 10. 启动日志和任务列表不得再出现dataup_async_worker；内部RAM不再分配其12KB栈和队列。

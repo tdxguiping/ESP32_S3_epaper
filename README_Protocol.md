@@ -384,7 +384,8 @@ HTTP GET /ping
 EPD=BUSY：统一UPLOAD资源门判定当前不能安全开始network upload
 EPD=IDLE：当前允许尝试network upload；不是最终预约承诺
 网络和USB ping共用ServerNetworkStaUploadGate_IsBusy()，不得独立定义规则
-DAILY/SLIDESHOW等待下一时间点且EPD/SD/SPI空闲时可以IDLE；一次性owner、pending、EPD、Shared SPI、SD电源切换、Factory Reset、OTA或UPLOAD预约为BUSY
+DAILY/SLIDESHOW等待下一时间点且EPD/SD/SPI空闲时可以IDLE；一次性owner、pending、EPD、Shared SPI、EPD/SD已断电或电源切换、Factory Reset、OTA或UPLOAD预约为BUSY
+网络ping在EPD/SD供电恢复等待之前读取该状态；POWER_OFF期间返回BUSY且不等待供电恢复，USB ping规则相同
 Ble_MAC 已取得：result=0，message=ok，Ble_MAC 为 12 位大写无冒号字符串
 Ble_MAC 未取得：result=1405，message=Ble_MAC not ready，Ble_MAC 为空字符串
 当前固件正式输出字段名为 Ble_MAC，不输出小写 ble_mac
@@ -394,7 +395,7 @@ Ble_MAC 未取得：result=1405，message=Ble_MAC not ready，Ble_MAC 为空字�
 
 USB `/ping` 通过 `UsbConsolePing_Handle()` 调用 `UsbConsolePing_Process()` 构造同字段JSON；删除独立USB worker后，普通USB处理在USB接收任务当前上下文执行。USB路径调用 `ServerNetworkStaWifiWorkTime_OnNetworkData()`，网络HTTP路径调用 `ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()`，两者计时行为不同但响应字段一致。
 
-network upload只接受 `show=false && save=true`。`show=true` 或 `save=false` 由ESP32返回错误且不执行；即使客户端先前ping得到IDLE，upload入口最终零等待预约失败时仍返回1007且不保存。
+network upload只接受 `show=false && save=true`。`show=true` 或 `save=false` 返回错误且不执行；非OTA multipart在EPD/SD供电不可立即使用时于读取body前返回1007。upload最终预约不等待正在进行的业务完成。
 
 GET `/time` 在同一个 `download_get_handler()` 中紧接 `/ping` 检查，由 `ServerNetworkStaTime_ProcessGet()` 返回 `time_result`。
 
