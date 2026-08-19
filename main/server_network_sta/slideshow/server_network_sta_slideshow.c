@@ -1959,7 +1959,10 @@ static void slideshow_run_runtime(slideshow_runtime_t *runtime)
                                                  runtime->initial_delay_seconds);
     }
 
-    while (!s_slideshow_stop && runtime->request.file_count > 0) {
+     // 啥条件，继续跑下一轮，多加一个条件  What conditions? Keep running the next round, add another condition
+    //while (!s_slideshow_stop && runtime->request.file_count > 0) {
+      while (!s_slideshow_stop && EpdDisplayMode_Get() == USER_EPD_DISPLAY_MODE_SLIDESHOW && runtime->request.file_count > 0) {
+
         if (!slideshow_enable_sntp_schedule_if_ready(runtime)) {
             break;
         }
@@ -2024,9 +2027,16 @@ static void slideshow_run_runtime(slideshow_runtime_t *runtime)
             }
         }
 
-        if (s_slideshow_stop) {
+        //  Add a condition to check if the current mode is slideshow mode
+        // if (s_slideshow_stop) {
+        //     break;
+        // }
+        if (s_slideshow_stop ||  EpdDisplayMode_Get() != USER_EPD_DISPLAY_MODE_SLIDESHOW) {
+            ESP_LOGI(TAG,"slideshow display canceled stop=%d mode=%u",s_slideshow_stop ? 1 : 0,(unsigned int)EpdDisplayMode_Get());
             break;
         }
+
+
         char consumed_file[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
         strlcpy(consumed_file, file_name, sizeof(consumed_file));
         if (event_ret == ESP_OK && slideshow_loaded_file_matches(&loaded, file_name)) {
@@ -2149,7 +2159,8 @@ static void slideshow_run_runtime(slideshow_runtime_t *runtime)
                      (unsigned long)runtime->request.interval);
         }
 
-        if (!s_slideshow_stop) {
+        //if (!s_slideshow_stop) {
+        if (!s_slideshow_stop && EpdDisplayMode_Get() == USER_EPD_DISPLAY_MODE_SLIDESHOW) {
             esp_err_t preload_ret = slideshow_load_file(runtime->base_path,
                                                        runtime->progress.pending_file,
                                                        &loaded,

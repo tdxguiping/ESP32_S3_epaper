@@ -134,7 +134,9 @@ bool FactoryReset_IsBusy(void)
     taskENTER_CRITICAL(&s_factory_reset_request_mux);
     state = s_factory_reset_request.state;
     taskEXIT_CRITICAL(&s_factory_reset_request_mux);
-    return state != FACTORY_RESET_REQUEST_IDLE;
+    //return state != FACTORY_RESET_REQUEST_IDLE;   // always return true ,always EPD==BUSY
+    return state == FACTORY_RESET_REQUEST_PENDING ||   // as soon as finish factory reset, EPD==IDLE
+           state == FACTORY_RESET_REQUEST_RUNNING;
 }
 
 static bool factory_reset_claim_remote_request(factory_reset_trigger_t *trigger,

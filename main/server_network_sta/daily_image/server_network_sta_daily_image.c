@@ -55,6 +55,50 @@ static bool daily_mode_is_active(void)
                __atomic_load_n(&s_daily_request_generation, __ATOMIC_ACQUIRE);
 }
 
+static bool daily_wait_interruptible(TickType_t timeout_ticks)
+{
+    if (!daily_mode_is_active()) {
+        return false;
+    }
+
+    if (!ImageBusinessWorker_IsCurrentTask()) {
+        ESP_LOGE(TAG, "daily interruptible wait called outside image worker");
+        return false;
+    }
+
+    TickType_t start_tick = xTaskGetTickCount();
+
+    for (;;) {
+        if (!daily_mode_is_active()) {
+            return false;
+        }
+
+        TickType_t elapsed = xTaskGetTickCount() - start_tick;
+
+        if (elapsed >= timeout_ticks) {
+            return true;
+        }
+
+        TickType_t remaining = timeout_ticks - elapsed;
+
+        (void)ImageBusinessWorker_WaitInterruptible(remaining);
+
+        /*
+         * Wake may mean:
+         *   1. DAILY was cancelled/replaced
+         *   2. another image job arrived
+         *   3. an unrelated/stale worker notification
+         *
+         * Therefore do not treat "woken" itself as cancellation.
+         * Re-check mode + generation.
+         */
+        if (!daily_mode_is_active()) {
+            return false;
+        }
+    }
+}
+
+
 static bool daily_mode_is_selected(void)
 {
     return EpdDisplayMode_Get() == USER_EPD_DISPLAY_MODE_DAILY;
@@ -178,17 +222,37 @@ static esp_err_t submit_job(const daily_image_config_t *config,
                                         1U,
                                         __ATOMIC_ACQ_REL);
     strlcpy(job.source, source != NULL ? source : "unknown", sizeof(job.source));
-    (void)ImageBusinessWorker_CancelPending(IMAGE_BUSINESS_OWNER_DAILY);
-    esp_err_t ret = ImageBusinessWorker_SubmitReplacingPending(
+
+   // (void)ImageBusinessWorker_CancelPending(IMAGE_BUSINESS_OWNER_DAILY);
+    uint32_t replace_mask = IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_DAILY);
+    if (replace_local) {
+        replace_mask |=IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_LOCAL_IMAGE);
+    }
+
+
+    // esp_err_t ret = ImageBusinessWorker_SubmitReplacingPending(
+    //     IMAGE_BUSINESS_OWNER_DAILY,
+    //     daily_run_command,
+    //     NULL,
+    //     &job,
+    //     sizeof(job),
+    //     job.generation,
+    //     replace_local
+    //         ? IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_LOCAL_IMAGE)
+    //         : 0U);
+
+    esp_err_t ret =
+        ImageBusinessWorker_SubmitReplacingPending(
         IMAGE_BUSINESS_OWNER_DAILY,
         daily_run_command,
         NULL,
         &job,
         sizeof(job),
         job.generation,
-        replace_local
-            ? IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_LOCAL_IMAGE)
-            : 0U);
+        replace_mask);
+
+
+
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "job submit failed source=%s generation=%lu",
                  job.source, (unsigned long)job.generation);
@@ -276,10 +340,19 @@ static esp_err_t wait_until_ready(void)
                      ServerNetworkSta_StateName(status.state),
                      time_ready ? 1 : 0);
         }
-        if (attempt < USER_DAILY_IMAGE_READY_CHECK_MAX_ATTEMPTS) {
-            vTaskDelay(pdMS_TO_TICKS(
-                USER_DAILY_IMAGE_READY_CHECK_INTERVAL_SECONDS * 1000U));
-        }
+
+                if (attempt < USER_DAILY_IMAGE_READY_CHECK_MAX_ATTEMPTS) {
+                    if (!daily_wait_interruptible(pdMS_TO_TICKS(
+                            USER_DAILY_IMAGE_READY_CHECK_INTERVAL_SECONDS * 1000U))) {
+                        return ESP_ERR_INVALID_STATE;
+                    }
+                }
+
+        // if (attempt < USER_DAILY_IMAGE_READY_CHECK_MAX_ATTEMPTS) {
+        //     vTaskDelay(pdMS_TO_TICKS(
+        //         USER_DAILY_IMAGE_READY_CHECK_INTERVAL_SECONDS * 1000U));
+        // }
+
     }
 
     __atomic_store_n(&s_daily_relative_wake_seconds,
@@ -296,9 +369,15 @@ static esp_err_t wait_until_ready(void)
                              __ATOMIC_RELEASE);
             return ESP_ERR_INVALID_STATE;
         }
+
         request_guarded_power_off(USER_DAILY_IMAGE_RETRY_WAKE_SECONDS);
-        vTaskDelay(pdMS_TO_TICKS(
-            USER_DAILY_IMAGE_POWER_OFF_RETRY_SECONDS * 1000U));
+        if (!daily_wait_interruptible(pdMS_TO_TICKS(
+                USER_DAILY_IMAGE_POWER_OFF_RETRY_SECONDS * 1000U))) {
+            __atomic_store_n(&s_daily_relative_wake_seconds,0U,__ATOMIC_RELEASE);
+            return ESP_ERR_INVALID_STATE;
+        }        
+        // request_guarded_power_off(USER_DAILY_IMAGE_RETRY_WAKE_SECONDS);
+        // vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_POWER_OFF_RETRY_SECONDS * 1000U));
     }
 }
 
@@ -419,13 +498,24 @@ static esp_err_t download_with_retries(const daily_image_config_t *config,
         }
         ESP_LOGW(TAG, "download attempt failed index=%lu ret=%s",
                  (unsigned long)attempt, esp_err_to_name(ret));
+
         if (attempt < USER_DAILY_IMAGE_RETRY_COUNT) {
-            vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
-            if (!daily_mode_is_active()) {
+            if (!daily_wait_interruptible(
+                    pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS))) {
                 ret = ESP_ERR_INVALID_STATE;
                 break;
             }
         }
+        // if (attempt < USER_DAILY_IMAGE_RETRY_COUNT) {
+        //     vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
+        //     if (!daily_mode_is_active()) {
+        //         ret = ESP_ERR_INVALID_STATE;
+        //         break;
+        //     }
+        // }
+
+
+
     }
     return ret;
 }
@@ -486,7 +576,12 @@ static esp_err_t wait_for_run_window(daily_image_config_t *config,
                          esp_err_to_name(ret));
             }
             last_action = DAILY_IMAGE_SCHEDULE_WAIT_WINDOW;
-            vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_READY_POLL_MS));
+            //vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_READY_POLL_MS));
+            if (!daily_wait_interruptible(
+                    pdMS_TO_TICKS(USER_DAILY_IMAGE_READY_POLL_MS))) {
+                return ESP_ERR_INVALID_STATE;
+            }
+
             continue;
         }
 
@@ -525,7 +620,12 @@ static esp_err_t wait_for_run_window(daily_image_config_t *config,
              * Stay awake during the final wake-advance interval and enter the
              * workflow exactly at the shared slideshow lead-time boundary.
              */
-            vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_READY_POLL_MS));
+            //vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_READY_POLL_MS));
+            if (!daily_wait_interruptible(
+                    pdMS_TO_TICKS(USER_DAILY_IMAGE_READY_POLL_MS))) {
+                return ESP_ERR_INVALID_STATE;
+            }
+
             continue;
         }
 
@@ -543,7 +643,13 @@ static esp_err_t wait_for_run_window(daily_image_config_t *config,
          * worker alive safely covers a delayed/cancelled shutdown: it can still
          * enter the run window instead of losing today's image.
          */
-        vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_READY_POLL_MS));
+        //vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_READY_POLL_MS));
+        if (!daily_wait_interruptible(
+                pdMS_TO_TICKS(USER_DAILY_IMAGE_READY_POLL_MS))) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
+
     }
 }
 
@@ -606,7 +712,12 @@ static esp_err_t save_success_until_done(daily_image_config_t *config,
         ESP_LOGE(TAG, "success state save failed ret=%s; retrying",
                  esp_err_to_name(ret));
         ServerNetworkStaWifiWorkTime_OnNetworkData();
-        vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
+        //vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
+        if (!daily_wait_interruptible(
+                pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS))) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
     }
 }
 
@@ -630,7 +741,12 @@ static esp_err_t save_initial_success_until_done(
                      "initial daily success time unavailable ret=%s; retrying",
                      esp_err_to_name(ret));
             ServerNetworkStaWifiWorkTime_OnNetworkData();
-            vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
+            //vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
+            if (!daily_wait_interruptible(
+                    pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS))) {
+                return ESP_ERR_INVALID_STATE;
+            }
+
             continue;
         }
 
@@ -654,7 +770,12 @@ static esp_err_t save_initial_success_until_done(
                  "initial daily success state save failed ret=%s; retrying",
                  esp_err_to_name(ret));
         ServerNetworkStaWifiWorkTime_OnNetworkData();
-        vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
+        //vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
+        if (!daily_wait_interruptible(
+                pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS))) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
     }
 }
 
@@ -678,7 +799,12 @@ static esp_err_t save_display_start_until_done(
                      "EPD start time unavailable ret=%s; retrying",
                      esp_err_to_name(ret));
             ServerNetworkStaWifiWorkTime_OnNetworkData();
-            vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
+            //vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
+            if (!daily_wait_interruptible(
+                    pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS))) {
+                return ESP_ERR_INVALID_STATE;
+            }
+
             continue;
         }
 
@@ -701,7 +827,12 @@ static esp_err_t save_display_start_until_done(
         ESP_LOGE(TAG, "EPD start state save failed ret=%s; retrying",
                  esp_err_to_name(ret));
         ServerNetworkStaWifiWorkTime_OnNetworkData();
-        vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
+        //vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
+        if (!daily_wait_interruptible(
+                pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS))) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
     }
 }
 
@@ -721,7 +852,12 @@ static esp_err_t save_retry_until_done(daily_image_config_t *config,
         }
         ESP_LOGE(TAG, "retry state is not durable; keep awake and retry");
         ServerNetworkStaWifiWorkTime_OnNetworkData();
-        vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
+        //vTaskDelay(pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS));
+        if (!daily_wait_interruptible(
+                pdMS_TO_TICKS(USER_DAILY_IMAGE_RETRY_DELAY_MS))) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
     }
 }
 
