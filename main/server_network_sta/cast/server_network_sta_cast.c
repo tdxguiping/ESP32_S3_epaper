@@ -11,6 +11,7 @@
 #include "image_business_worker.h"
 #include "local_image_browsing.h"
 #include "esp_timer.h"
+#include "server_network_sta_slideshow.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 
@@ -231,6 +232,10 @@ esp_err_t ServerNetworkStaCast_Process(httpd_req_t *req,
         snprintf(result.error, sizeof(result.error), "%s", "mode_save_failed");
         return send_single_error(req, &result);
     }
+
+    ServerNetworkStaSlideshow_Stop();//     ← 新增
+    
+
 
     if (cast.show) {
         esp_err_t async_ret = start_cast_async(body, body_len, base_path, &cast);
