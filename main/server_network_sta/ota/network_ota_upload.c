@@ -36,10 +36,10 @@ bool NetworkOtaUpload_IsRestartPending(void)
 // OTA success: ask CH583 to power the ESP32-C5 back on after 1 second.
 #define SERVER_NETWORK_STA_OTA_CH583_WAKE_SECONDS 1U
 // Give CH583 enough time to parse/apply WAKE_TIMER before POWER_OFF is sent.
-#define SERVER_NETWORK_STA_OTA_CH583_CMD_GAP_MS 100U
+#define SERVER_NETWORK_STA_OTA_CH583_CMD_GAP_MS 200U
 // If POWER_OFF was sent but C5 is still running after this time,
 // assume CH583 did not really cut the power and fall back to esp_restart().
-#define SERVER_NETWORK_STA_OTA_CH583_POWER_CUT_WAIT_MS 100U
+#define SERVER_NETWORK_STA_OTA_CH583_POWER_CUT_WAIT_MS 200U
 
 
 
@@ -74,8 +74,8 @@ static void ota_ch583_power_cycle_or_restart(void)
                  "fallback esp_restart",
                  wake_ret);
 
-        esp_restart();
-        return;
+        //esp_restart();
+        //return;
     }
 
     /*
@@ -109,8 +109,8 @@ static void ota_ch583_power_cycle_or_restart(void)
                      cancel_ret);
         }
 
-        esp_restart();
-        return;
+        //esp_restart();
+        //return;
     }
 
     /*
@@ -139,7 +139,7 @@ static void ota_ch583_power_cycle_or_restart(void)
                  cancel_ret);
     }
 
-    esp_restart();
+  //  esp_restart();
 }
 
 // static void ota_restart_task(void *arg)
@@ -167,8 +167,8 @@ static void ota_restart_task(void *arg)
      * Keep the original 500 ms delay so the HTTP OTA response
      * can be completely returned before the device loses power.
      */
-    vTaskDelay(pdMS_TO_TICKS(SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS));
-    ESP_LOGI(TAG,"ota power cycle begin via CH583");
+    //vTaskDelay(pdMS_TO_TICKS(SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS));
+    //ESP_LOGI(TAG,"ota power cycle begin via CH583");
     ota_ch583_power_cycle_or_restart();
 
     /*
@@ -201,10 +201,10 @@ static void schedule_ota_restart(void)
      * The new boot partition is already committed at this point. If the dedicated
      * task cannot be created, preserve the original guaranteed-restart behavior.
      */
-    ESP_LOGE(TAG, "ota restart task create failed ret=%ld, use blocking fallback",
-             (long)task_ret);
+    ESP_LOGE(TAG, "ota restart task create failed ret=%ld, use blocking fallback",(long)task_ret);
     vTaskDelay(pdMS_TO_TICKS(SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS));
-    esp_restart();
+    //esp_restart();
+    ota_ch583_power_cycle_or_restart();
 }
 
 static void log_heap_watermark(const char *point)
