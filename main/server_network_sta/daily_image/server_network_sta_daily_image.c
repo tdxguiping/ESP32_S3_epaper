@@ -206,6 +206,64 @@ static void invalidate_previous_generation(const char *reason)
 
 static esp_err_t daily_run_command(const void *payload, size_t payload_size);
 
+// static esp_err_t submit_job(const daily_image_config_t *config,
+//                             const char *source)
+// {
+//     if (config == NULL || !s_daily_initialized) {
+//         return ESP_ERR_INVALID_STATE;
+//     }
+
+//     bool replace_local = source == NULL || strcmp(source, "reschedule") != 0;
+//     if (replace_local) {
+//         LocalImageBrowsing_InvalidateCurrent();
+//     }
+//     daily_image_job_t job = {.config = *config};
+//     job.generation = __atomic_add_fetch(&s_daily_request_generation,
+//                                         1U,
+//                                         __ATOMIC_ACQ_REL);
+//     strlcpy(job.source, source != NULL ? source : "unknown", sizeof(job.source));
+
+//    // (void)ImageBusinessWorker_CancelPending(IMAGE_BUSINESS_OWNER_DAILY);
+//     uint32_t replace_mask = IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_DAILY);
+//     if (replace_local) {
+//         replace_mask |=IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_LOCAL_IMAGE);
+//     }
+
+
+//     // esp_err_t ret = ImageBusinessWorker_SubmitReplacingPending(
+//     //     IMAGE_BUSINESS_OWNER_DAILY,
+//     //     daily_run_command,
+//     //     NULL,
+//     //     &job,
+//     //     sizeof(job),
+//     //     job.generation,
+//     //     replace_local
+//     //         ? IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_LOCAL_IMAGE)
+//     //         : 0U);
+
+//     esp_err_t ret =
+//         ImageBusinessWorker_SubmitReplacingPending(
+//         IMAGE_BUSINESS_OWNER_DAILY,
+//         daily_run_command,
+//         NULL,
+//         &job,
+//         sizeof(job),
+//         job.generation,
+//         replace_mask);
+
+
+
+//     if (ret != ESP_OK) {
+//         ESP_LOGE(TAG, "job submit failed source=%s generation=%lu",
+//                  job.source, (unsigned long)job.generation);
+//         return ret;
+//     }
+//     ESP_LOGI(TAG, "job submitted source=%s generation=%lu",
+//              job.source, (unsigned long)job.generation);
+//     return ESP_OK;
+// }
+
+
 static esp_err_t submit_job(const daily_image_config_t *config,
                             const char *source)
 {
@@ -213,55 +271,70 @@ static esp_err_t submit_job(const daily_image_config_t *config,
         return ESP_ERR_INVALID_STATE;
     }
 
-    bool replace_local = source == NULL || strcmp(source, "reschedule") != 0;
+    bool replace_local =
+        source == NULL || strcmp(source, "reschedule") != 0;
+
     if (replace_local) {
         LocalImageBrowsing_InvalidateCurrent();
     }
-    daily_image_job_t job = {.config = *config};
-    job.generation = __atomic_add_fetch(&s_daily_request_generation,
-                                        1U,
-                                        __ATOMIC_ACQ_REL);
-    strlcpy(job.source, source != NULL ? source : "unknown", sizeof(job.source));
 
-   // (void)ImageBusinessWorker_CancelPending(IMAGE_BUSINESS_OWNER_DAILY);
-    uint32_t replace_mask = IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_DAILY);
+    daily_image_job_t job = {
+        .config = *config
+    };
+
+    job.generation =
+        __atomic_add_fetch(&s_daily_request_generation,
+                           1U,
+                           __ATOMIC_ACQ_REL);
+
+    strlcpy(job.source,
+            source != NULL ? source : "unknown",
+            sizeof(job.source));
+
+    /*
+     * DAILY -> DAILY replacement must be atomic inside image_worker.
+     *
+     * Always allow a newer DAILY request to replace an older pending DAILY.
+     *
+     * For non-reschedule requests, DAILY is also allowed to replace
+     * a pending LOCAL_IMAGE request.
+     */
+    uint32_t replace_pending_owner_mask =
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_DAILY);
+
     if (replace_local) {
-        replace_mask |=IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_LOCAL_IMAGE);
+        replace_pending_owner_mask |=
+            IMAGE_BUSINESS_OWNER_MASK(
+                IMAGE_BUSINESS_OWNER_LOCAL_IMAGE);
     }
-
-
-    // esp_err_t ret = ImageBusinessWorker_SubmitReplacingPending(
-    //     IMAGE_BUSINESS_OWNER_DAILY,
-    //     daily_run_command,
-    //     NULL,
-    //     &job,
-    //     sizeof(job),
-    //     job.generation,
-    //     replace_local
-    //         ? IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_LOCAL_IMAGE)
-    //         : 0U);
 
     esp_err_t ret =
         ImageBusinessWorker_SubmitReplacingPending(
-        IMAGE_BUSINESS_OWNER_DAILY,
-        daily_run_command,
-        NULL,
-        &job,
-        sizeof(job),
-        job.generation,
-        replace_mask);
-
-
+            IMAGE_BUSINESS_OWNER_DAILY,
+            daily_run_command,
+            NULL,
+            &job,
+            sizeof(job),
+            job.generation,
+            replace_pending_owner_mask);
 
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "job submit failed source=%s generation=%lu",
-                 job.source, (unsigned long)job.generation);
+        ESP_LOGE(TAG,
+                 "job submit failed source=%s generation=%lu",
+                 job.source,
+                 (unsigned long)job.generation);
         return ret;
     }
-    ESP_LOGI(TAG, "job submitted source=%s generation=%lu",
-             job.source, (unsigned long)job.generation);
+
+    ESP_LOGI(TAG,
+             "job submitted source=%s generation=%lu",
+             job.source,
+             (unsigned long)job.generation);
+
     return ESP_OK;
 }
+
+
 
 static esp_err_t resubmit_job_if_current(const daily_image_job_t *job)
 {

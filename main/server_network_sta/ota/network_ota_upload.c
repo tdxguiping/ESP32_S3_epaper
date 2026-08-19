@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "ch583_wifi_uart_protocol.h"
 #include "esp_app_desc.h"
 #include "esp_app_format.h"
 #include "esp_err.h"
@@ -22,6 +23,7 @@
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 
+
 static const char *TAG = "net-ota-upload";
 static int s_last_ota_result = TDX_JSON_RESULT_OK;
 static bool s_ota_restart_pending;
@@ -31,17 +33,152 @@ bool NetworkOtaUpload_IsRestartPending(void)
     return __atomic_load_n(&s_ota_restart_pending, __ATOMIC_ACQUIRE);
 }
 
+// OTA success: ask CH583 to power the ESP32-C5 back on after 1 second.
+#define SERVER_NETWORK_STA_OTA_CH583_WAKE_SECONDS 1U
+// Give CH583 enough time to parse/apply WAKE_TIMER before POWER_OFF is sent.
+#define SERVER_NETWORK_STA_OTA_CH583_CMD_GAP_MS 100U
+// If POWER_OFF was sent but C5 is still running after this time,
+// assume CH583 did not really cut the power and fall back to esp_restart().
+#define SERVER_NETWORK_STA_OTA_CH583_POWER_CUT_WAIT_MS 100U
+
+
+
+static void ota_ch583_power_cycle_or_restart(void)
+{
+    int wake_ret;
+    int power_off_ret;
+    int cancel_ret;
+
+    /*
+     * IMPORTANT:
+     * WAKE_TIMER must be sent before POWER_OFF.
+     *
+     * If POWER_OFF is sent first, CH583 may cut ESP32-C5 power
+     * before the WAKE_TIMER command can be transmitted.
+     */
+    ESP_LOGI(TAG,
+             "OTA power cycle: arm CH583 wake timer seconds=%u",
+             (unsigned int)SERVER_NETWORK_STA_OTA_CH583_WAKE_SECONDS);
+
+    wake_ret = ch583_wifi_uart_send_wake_timer_on(SERVER_NETWORK_STA_OTA_CH583_WAKE_SECONDS);
+
+    if (wake_ret < 0) {
+        /*
+         * Do NOT send POWER_OFF here.
+         *
+         * If the wake timer was not successfully sent and CH583 cuts power,
+         * the ESP32-C5 might remain powered off indefinitely.
+         */
+        ESP_LOGE(TAG,
+                 "OTA power cycle: CH583 WAKE_TIMER failed ret=%d, "
+                 "fallback esp_restart",
+                 wake_ret);
+
+        esp_restart();
+        return;
+    }
+
+    /*
+     * ch583_wifi_uart_send_wake_timer_on() already waits for UART TX
+     * to leave the FIFO. Keep an additional short gap so CH583 has
+     * time to parse/apply WAKE_TIMER before POWER_OFF arrives.
+     */
+    vTaskDelay(pdMS_TO_TICKS(SERVER_NETWORK_STA_OTA_CH583_CMD_GAP_MS));
+
+    ESP_LOGI(TAG,
+             "OTA power cycle: send CH583 POWER_OFF, "
+             "wake_after=%u seconds",
+             (unsigned int)SERVER_NETWORK_STA_OTA_CH583_WAKE_SECONDS);
+
+    power_off_ret = ch583_wifi_uart_send_power_off();
+
+    if (power_off_ret < 0) {
+        ESP_LOGE(TAG,
+                 "OTA power cycle: CH583 POWER_OFF send failed ret=%d, "
+                 "fallback esp_restart",
+                 power_off_ret);
+
+        /*
+         * POWER_OFF failed, therefore cancel the previously armed
+         * one-second wake timer so it does not remain pending.
+         */
+        cancel_ret = ch583_wifi_uart_send_wake_timer_off();
+        if (cancel_ret < 0) {
+            ESP_LOGE(TAG,
+                     "OTA power cycle: cancel CH583 WAKE_TIMER failed ret=%d",
+                     cancel_ret);
+        }
+
+        esp_restart();
+        return;
+    }
+
+    /*
+     * Normally execution stops here because CH583 cuts the ESP32-C5
+     * power supply.
+     */
+    ESP_LOGI(TAG,
+             "OTA power cycle: POWER_OFF sent, waiting for CH583 power cut");
+
+    /*
+     * Safety fallback:
+     * if C5 is still executing after this delay, CH583 did not actually
+     * remove power. Fall back to the original software reset.
+     */
+    vTaskDelay(pdMS_TO_TICKS(
+        SERVER_NETWORK_STA_OTA_CH583_POWER_CUT_WAIT_MS));
+
+    ESP_LOGE(TAG,
+             "OTA power cycle: CH583 did not cut power, "
+             "fallback esp_restart");
+
+    cancel_ret = ch583_wifi_uart_send_wake_timer_off();
+    if (cancel_ret < 0) {
+        ESP_LOGE(TAG,
+                 "OTA power cycle: cancel CH583 WAKE_TIMER failed ret=%d",
+                 cancel_ret);
+    }
+
+    esp_restart();
+}
+
+// static void ota_restart_task(void *arg)
+// {
+//     (void)arg;
+
+//     ESP_LOGI(TAG, "ota restart pending delay_ms=%u",
+//              (unsigned int)SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS);
+//     vTaskDelay(pdMS_TO_TICKS(SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS));
+//     ESP_LOGI(TAG, "ota restart now");
+//     esp_restart();
+//     vTaskDelete(NULL);
+// }
+
+
 static void ota_restart_task(void *arg)
 {
     (void)arg;
 
-    ESP_LOGI(TAG, "ota restart pending delay_ms=%u",
+    ESP_LOGI(TAG,
+             "ota power cycle pending delay_ms=%u",
              (unsigned int)SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS);
+
+    /*
+     * Keep the original 500 ms delay so the HTTP OTA response
+     * can be completely returned before the device loses power.
+     */
     vTaskDelay(pdMS_TO_TICKS(SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS));
-    ESP_LOGI(TAG, "ota restart now");
-    esp_restart();
+    ESP_LOGI(TAG,"ota power cycle begin via CH583");
+    ota_ch583_power_cycle_or_restart();
+
+    /*
+     * Normally this line is never reached:
+     * - POWER_OFF cuts C5 power, or
+     * - fallback esp_restart() resets C5.
+     */
     vTaskDelete(NULL);
 }
+
 
 static void schedule_ota_restart(void)
 {

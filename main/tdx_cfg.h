@@ -516,7 +516,7 @@ extern "C" {
 #define SERVER_NETWORK_STA_OTA_DETAIL_LOG_ENABLE 0
 
 // Allow the HTTP handler to return and close the OTA response before restarting the device.
-#define SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS 500U
+#define SERVER_NETWORK_STA_OTA_RESTART_DELAY_MS 100U
 // Warn when first-boot image confirmation approaches the external power-cut window.
 #define USER_OTA_LOCAL_CONFIRM_WARNING_MS 6000U
 // Document the maximum CH583 delay after the APP accepts the ESP32-C5 OTA result.
