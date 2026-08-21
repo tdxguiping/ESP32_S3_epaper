@@ -43,7 +43,7 @@ static const char *TAG = "example_mount";
 #define STORAGE_INFO_MAX_FILES 50
 #define STORAGE_MOUNT_RETRY_COUNT 3
 #define STORAGE_MOUNT_RETRY_DELAY_MS 300
-#define STORAGE_MOUNT_POWER_READY_DELAY_MS 1000
+#define STORAGE_MOUNT_POWER_READY_DELAY_MS 10
 #define STORAGE_SPIFFS_PARTITION_LABEL "assets"
 #define STORAGE_SD_FAIL_COUNT_NVS_KEY "sd_fail_count"
 #define STORAGE_SD_FAIL_RESTART_LIMIT 3
@@ -530,6 +530,7 @@ esp_err_t example_mount_storage(const char* base_path)
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = USER_SD_SPI_HOST;
+#if !USER_EPD_ENABLE
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = USER_SD_SPI_MOSI_PIN,
         .miso_io_num = USER_SD_SPI_MISO_PIN,
@@ -538,6 +539,7 @@ esp_err_t example_mount_storage(const char* base_path)
         .quadhd_io_num = -1,
         .max_transfer_sz = USER_SHARED_SPI_MAX_TRANSFER_SIZE,
     };
+#endif
 
     // Print the C5 SDSPI wiring before mounting so board bring-up can verify the shared SPI bus.
     // 挂载前打印 C5 SDSPI 接线，方便板级调试时确认共用 SPI 总线配置。
@@ -554,6 +556,11 @@ esp_err_t example_mount_storage(const char* base_path)
         return shared_spi_lock_ret;
     }
 
+#if USER_EPD_ENABLE
+    // EPD initialization owns the shared SPI bus before storage mounting starts.
+    ret = ESP_OK;
+    ESP_LOGI(TAG, "SDSPI shared bus reused host=%d owner=EPD", (int)host.slot);
+#else
     ret = spi_bus_initialize(host.slot, &bus_cfg, SDSPI_DEFAULT_DMA);
     if (ret == ESP_ERR_INVALID_STATE) {
         // Reuse the SPI bus initialized by the EPD driver because C5 shares SD and EPD SPI pins.
@@ -565,6 +572,7 @@ esp_err_t example_mount_storage(const char* base_path)
         TdxSharedSpi_Unlock();
         return ret;
     }
+#endif
 
     // This initializes the slot without card detect (CD) and write protect (WP) signals.
     // Modify slot_config.gpio_cd and slot_config.gpio_wp if your board has these signals.
@@ -612,7 +620,8 @@ esp_err_t example_mount_storage(const char* base_path)
     strlcpy(s_mounted_sd_base_path, base_path, sizeof(s_mounted_sd_base_path));
     s_sd_unmounted_by_epd_power_test = false;
     ensure_default_storage_dirs(base_path);
-    example_print_storage_info(base_path);
+    // Keep optional capacity diagnostics out of the latency-critical startup path.
+    ESP_LOGI(TAG, "storage ready type=SD path=%s capacity_info=deferred", base_path);
     return ESP_OK;
 #endif
 }
@@ -635,11 +644,11 @@ esp_err_t example_storage_unmount_sd_for_epd_power_test(void)
         return ESP_OK;
     }
     if (s_mounted_sd_card == NULL || s_mounted_sd_base_path[0] == '\0') {
-        ESP_LOGE(TAG, "EPD/SD power test cannot unmount missing SD context");
+        ESP_LOGE(TAG, "EPD/SD rail cycle cannot unmount missing SD context");
         return ESP_ERR_INVALID_STATE;
     }
 
-    // The power-test task owns the shared-SPI mutex here. Unmounting before GPIO4
+    // The rail-cycle task owns the shared-SPI mutex here. Unmounting before GPIO4
     // goes low prevents FAT/VFS from retaining a live card object across SD power loss.
     esp_err_t ret = esp_vfs_fat_sdcard_unmount(s_mounted_sd_base_path, s_mounted_sd_card);
     // ESP-IDF may consume the card handle before returning a later VFS cleanup error.
@@ -692,7 +701,7 @@ esp_err_t example_storage_remount_sd_for_epd_power_test(void)
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot_config.gpio_cs = USER_SD_SPI_CS_PIN;
     slot_config.host_id = host.slot;
-    // The power-test restore path rebuilds the EPD-owned shared bus before SD remount.
+    // The rail-cycle restore path rebuilds the EPD-owned shared bus before SD remount.
     ret = esp_vfs_fat_sdspi_mount(s_mounted_sd_base_path,
                                   &host,
                                   &slot_config,

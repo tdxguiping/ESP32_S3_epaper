@@ -10,8 +10,10 @@
 
 #include "epd_display_app.h"
 #include "epd_display_mode.h"
+#include "epd_sd_power_test.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "image_business_worker.h"
@@ -19,6 +21,7 @@
 #include "server_network_sta_daily_image.h"
 #include "server_network_sta_slideshow.h"
 #include "server_network_sta_slideshow_control.h"
+#include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 
@@ -45,6 +48,7 @@ typedef struct {
     local_image_browsing_trigger_t trigger;
     uint16_t protocol_seq;
     uint32_t generation;
+    int64_t request_start_us;
     epd_display_reservation_t reservation;
 } local_image_browsing_request_t;
 
@@ -466,13 +470,14 @@ static esp_err_t load_file(const char *file_name, uint8_t **buffer, size_t *size
         ESP_LOGE(TAG, "BIN file open failed path=%s errno=%d", path, saved_errno);
         return ESP_FAIL;
     }
-    size_t read_size = fread(loaded, 1, (size_t)file_stat.st_size, file);
+    size_t expected_size = (size_t)file_stat.st_size;
+    size_t read_size = fread(loaded, 1, expected_size, file);
     bool read_failed = ferror(file) != 0;
     errno = 0;
     int close_ret = fclose(file);
     int close_errno = errno;
     TdxSharedSpi_Unlock();
-    if (read_failed || read_size != (size_t)file_stat.st_size || close_ret != 0) {
+    if (read_failed || read_size != expected_size || close_ret != 0) {
         heap_caps_free(loaded);
         ESP_LOGE(TAG,
                  "BIN file read failed path=%s expected=%u actual=%u close_errno=%d",
@@ -549,8 +554,10 @@ static esp_err_t process_request(local_image_browsing_request_t *request)
         include_reference = true;
     }
 
+    int64_t scan_start_us = esp_timer_get_time();
     local_image_browsing_scan_result_t scan = {0};
     ret = scan_next_file(reference_file, include_reference, &scan);
+    uint64_t scan_elapsed_us = (uint64_t)(esp_timer_get_time() - scan_start_us);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "no usable local BIN image ret=%s", esp_err_to_name(ret));
         xSemaphoreGive(s_state_mutex);
@@ -568,14 +575,20 @@ static esp_err_t process_request(local_image_browsing_request_t *request)
                  trigger_to_string(request->trigger),
                  (unsigned int)request->protocol_seq);
 
+        int64_t state_start_us = esp_timer_get_time();
         ret = save_prepared_file(file_name);
+        uint64_t state_elapsed_us =
+            (uint64_t)(esp_timer_get_time() - state_start_us);
         if (ret != ESP_OK) {
             break;
         }
 
         uint8_t *buffer = NULL;
         size_t size = 0;
+        int64_t read_start_us = esp_timer_get_time();
         ret = load_file(file_name, &buffer, &size);
+        uint64_t read_elapsed_us =
+            (uint64_t)(esp_timer_get_time() - read_start_us);
         if (ret == ESP_ERR_NOT_FOUND) {
             char skipped_file[LOCAL_IMAGE_BROWSING_FILE_NAME_MAX_LEN];
             strlcpy(skipped_file, file_name, sizeof(skipped_file));
@@ -602,6 +615,24 @@ static esp_err_t process_request(local_image_browsing_request_t *request)
             ret = ESP_ERR_INVALID_STATE;
             break;
         }
+
+        uint64_t read_kib_s = read_elapsed_us > 0U
+                                  ? ((uint64_t)size * 1000000ULL) /
+                                        read_elapsed_us / 1024ULL
+                                  : 0U;
+        uint64_t key_to_epd_call_us =
+            request->request_start_us > 0
+                ? (uint64_t)(esp_timer_get_time() - request->request_start_us)
+                : 0U;
+        ESP_LOGI(TAG,
+                 "local image prepare completed file=%s scan_ms=%llu state_ms=%llu read_ms=%llu size=%u read_kib_s=%llu key_to_epd_call_ms=%llu",
+                 file_name,
+                 (unsigned long long)(scan_elapsed_us / 1000U),
+                 (unsigned long long)(state_elapsed_us / 1000U),
+                 (unsigned long long)(read_elapsed_us / 1000U),
+                 (unsigned int)size,
+                 (unsigned long long)read_kib_s,
+                 (unsigned long long)(key_to_epd_call_us / 1000U));
 
         ret = ServerNetworkStaEpdDisplay_QueueReservedToScreenAndWait(
             &request->reservation, buffer, size, 1);
@@ -644,7 +675,28 @@ static esp_err_t local_image_run_command(const void *payload,
     if (request.reservation.valid) {
         ServerNetworkStaEpdDisplay_ReleaseReservation(&request.reservation);
     }
+    if (ret == ESP_OK) {
+        uint8_t mode = EpdDisplayMode_Get();
+        if (request_is_current(&request) &&
+            mode == USER_EPD_DISPLAY_MODE_LOCAL_IMAGE_BROWSING) {
+            ESP_LOGI(TAG,
+                     "local image power off requested generation=%lu delay=%u",
+                     (unsigned long)request.generation,
+                     (unsigned int)LOCAL_IMAGE_BROWSING_POWER_OFF_DELAY_SECONDS);
+            ServerNetworkStaWifiWorkTime_RequestLocalImagePowerOffCountdown(
+                LOCAL_IMAGE_BROWSING_POWER_OFF_DELAY_SECONDS);
+        } else {
+            ESP_LOGW(TAG,
+                     "local image power off skipped because ownership changed generation=%lu current=%lu mode=%u",
+                     (unsigned long)request.generation,
+                     (unsigned long)__atomic_load_n(&s_request_generation,
+                                                    __ATOMIC_ACQUIRE),
+                     (unsigned int)mode);
+            EpdSdPowerTest_CommitStayAwake("local_image_ownership_changed");
+        }
+    }
     if (ret != ESP_OK) {
+        EpdSdPowerTest_CommitStayAwake("local_image_followup_failed");
         ESP_LOGE(TAG, "request failed trigger=%s seq=%u generation=%lu ret=%s",
                  trigger_to_string(request.trigger),
                  (unsigned int)request.protocol_seq,
@@ -667,11 +719,13 @@ static void local_image_cancel_pending(const void *payload, size_t payload_size)
 }
 
 static esp_err_t submit_initialized_request(local_image_browsing_trigger_t trigger,
-                                            uint16_t protocol_seq)
+                                             uint16_t protocol_seq,
+                                             int64_t request_start_us)
 {
     local_image_browsing_request_t request = {
         .trigger = trigger,
         .protocol_seq = protocol_seq,
+        .request_start_us = request_start_us,
     };
     esp_err_t ret = ServerNetworkStaEpdDisplay_TryReserveIdle(&request.reservation);
     if (ret != ESP_OK) {
@@ -751,7 +805,9 @@ esp_err_t LocalImageBrowsing_Init(const char *base_path)
         portEXIT_CRITICAL(&s_startup_mux);
 
         deferred_count++;
-        (void)submit_initialized_request(deferred.trigger, deferred.protocol_seq);
+        (void)submit_initialized_request(deferred.trigger,
+                                         deferred.protocol_seq,
+                                         deferred.request_start_us);
     }
     ESP_LOGI(TAG, "initialized mode=%u active=%d deferred=%u",
              (unsigned int)EpdDisplayMode_Get(),
@@ -768,6 +824,7 @@ esp_err_t LocalImageBrowsing_RequestNext(local_image_browsing_trigger_t trigger,
         return ESP_ERR_INVALID_ARG;
     }
 
+    int64_t request_start_us = esp_timer_get_time();
     bool deferred = false;
     bool startup_queue_full = false;
     portENTER_CRITICAL(&s_startup_mux);
@@ -777,6 +834,7 @@ esp_err_t LocalImageBrowsing_RequestNext(local_image_browsing_trigger_t trigger,
                           LOCAL_IMAGE_BROWSING_STARTUP_QUEUE_LENGTH;
             s_startup_requests[tail].trigger = trigger;
             s_startup_requests[tail].protocol_seq = protocol_seq;
+            s_startup_requests[tail].request_start_us = request_start_us;
             s_startup_request_count++;
             deferred = true;
         } else {
@@ -795,7 +853,7 @@ esp_err_t LocalImageBrowsing_RequestNext(local_image_browsing_trigger_t trigger,
                  trigger_to_string(trigger), (unsigned int)protocol_seq);
         return ESP_OK;
     }
-    return submit_initialized_request(trigger, protocol_seq);
+    return submit_initialized_request(trigger, protocol_seq, request_start_us);
 }
 
 bool LocalImageBrowsing_IsActive(void)

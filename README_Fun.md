@@ -664,11 +664,22 @@ mount.c
 - example_storage_get_free_bytes() 读取 SD/FATFS 或 SPIFFS 剩余容量。
 - example_print_storage_info() 读取挂载状态、容量、目录树、txt 文件内容。
 - list_storage_tree() 扫描并打印 /data 下文件。
-- SD 挂载参数：上电等待 1000ms；单次启动内最多重试 3 次；重试间隔 300ms。失败计数未超过阈值时不进入 SPIFFS，而是软件复位后重试 SD。
-- GPIO4 是 EPD 与外部 SD 卡公共电源开关；`ServerNetworkStaEpdDisplay_Init()` 在首次 SD 挂载前复用现有IO隔离接口执行一次启动电源复位：释放共享SPI、相关IO高阻、GPIO4拉低2000ms、重新拉高并稳定100ms，再恢复安全CS电平和共享SPI。这样USB或软件复位后遗留的SD状态不会进入首次挂载。EPD refresh/sleep 本身不得直接拉低 GPIO4；运行期仍只有独立 EPD/SD 电源测试在确认全部安全条件后可以临时拉低。CH583 整机关机提交路径仍不调用 `Set_Power(0)`。
+- SD 挂载参数：启动上电稳定100ms后，挂载入口再等待10ms；单次启动内最多重试3次；重试间隔300ms。失败计数未超过阈值时不进入SPIFFS，而是软件复位后重试SD。SD容量统计保留为按需诊断，不阻塞首次挂载和本地图片启动。
+- GPIO4 是EPD与外部SD卡公共电源开关。硬件上电前已经断电足够长，因此`ServerNetworkStaEpdDisplay_Init()`启动时只将GPIO4置为HIGH并等待100ms稳定，不隔离IO、不主动拉低GPIO4，也不执行启动电源复位。EPD refresh/sleep本身不得直接拉低GPIO4；运行期只有正式EPD/SD独立掉电功能在明确保持开机且确认全部安全条件后可以临时拉低至少2000ms，明确立即发送CH583 POWER_OFF时跳过。CH583整机关机提交路径仍不直接调用`Set_Power(0)`。
+
+最终状态规则（正式依据）：
+
+| 场景 | EPD/SD电源与状态规则 |
+|---|---|
+| ESP32启动 | GPIO4只置为HIGH并稳定100ms；禁止启动断电复位，禁止主动产生GPIO4 LOW脉冲。 |
+| EPD显示完成且明确立即关机 | 提交`POWER_OFF_COMMITTED`，跳过正式EPD/SD独立掉电，通过公共安全关机链路通知CH583。 |
+| EPD显示完成且明确不会关机 | 提交`STAY_AWAKE`，必须执行正式EPD/SD独立掉电，GPIO4实际LOW不少于2000ms。 |
+| EPD显示完成但关机决定尚未确定 | 保持`WAIT_DECISION`，既不能提前拉低GPIO4，也不能提前恢复或访问未就绪的EPD/SD。 |
+| 正式独立掉电期间 | EPD固定报告`BUSY`；HTTP与CH583 UART继续运行；需要SD的请求立即返回`EPD=BUSY`/`sd_power_busy`并等待客户端在恢复后重试。 |
+| GPIO4已经LOW | HTTP、CH583、EPD或SPI请求都不能提前恢复供电；必须完成至少2000ms、上电稳定、IO恢复和SD重挂载后才能回到`IDLE`。 |
 
 日志：
-- 保留关键节点：SD mount start、SDSPI pins、bus reuse、SD ready、SPIFFS fallback、storage ready、mount failed。
+- 保留关键节点：startup rail enabled、SD mount start、SDSPI pins、shared bus reused、SD ready、SPIFFS fallback、storage ready、mount failed。EPD启用时由EPD初始化共享SPI，SD挂载直接打印`SDSPI shared bus reused ... owner=EPD`并复用，不再重复调用`spi_bus_initialize()`产生预期内的错误日志；EPD关闭时仍由SD路径自行初始化总线。启动正常日志必须包含`power_reset_skipped=1`和`wait_ms=10`，不得出现启动GPIO4 LOW或startup rail reset日志。
 - 失败或不可恢复问题使用 `ESP_LOGE`；可继续 fallback 或复用 bus 的情况使用 `ESP_LOGW`；普通挂载成功节点使用 `ESP_LOGI`。
 - 启动目录逐项列表由 `USER_STORAGE_LIST_ON_STARTUP_ENABLE` 控制，默认关闭。
 - HTTP 目录列表逐项文件日志由 `USER_HTTP_FILE_LIST_LOG_ENABLE` 控制，默认关闭。
@@ -1707,6 +1718,8 @@ timestamp 表示 `fileNames[startIndex]` 起始图片播放时间，之后每 in
 轮播 task 内部 1 秒检查 RTC / 系统时间；设备内部仍按当前 EPD type 在 `next_epoch - lead_seconds` 时提前进入 EPD 显示流程：DKE 13.3 寸为 1 秒，兴泰 13.3 寸为 3 秒，其它屏型默认 2 秒，但图片索引按逻辑 `next_epoch` 对应的槽计算。
 返回成功时带 timestamp、time_source、time_diff、anchor_epoch、now_epoch、next_epoch、remain，APP 可用 remain 校验倒计时同步。time_source=sntp 表示使用设备 SNTP 时间；time_source=timestamp 表示 SNTP 未同步，已使用 APP / PC timestamp 写入 RTC。
 开机自动恢复启动点如果 `ServerNetworkStaTime_IsSntpSynced()==true`，则立即启用绝对时间槽；否则仍走原 CH583/CH585、anchor fallback 与 pending_file 路径。轮播等待期间每秒只检查状态、不打印；首次发现 SNTP 成功后切换一次，之后不再回退。
+
+每张轮播图片只有在EPD成功、下一张progress写入NVS成功、runtime timing以及RTC模式的`next_epoch`建立完成后，才通过SLIDESHOW专用one-shot入口申请1秒关机倒计时。申请后仍完成现有下一张SD预读；`wifi_work_time`在倒计时到期时优先读取RTC timing、再回退runtime timing，下一播放点剩余时间不大于40秒时取消本次关机、提交STAY_AWAKE并执行GPIO4 LOW不少于2000ms的正式EPD/SD独立掉电，大于40秒时才进入现有WAKE_TIMER和安全关机链路。模式或stop状态已经变化、显示或progress保存失败时不申请关机，并提交STAY_AWAKE；已申请后模式切离SLIDESHOW时恢复原工作时间、取消旧SLIDESHOW one-shot并执行正式独立掉电。
 ```
 
 
@@ -2080,8 +2093,11 @@ seconds WiFi 工作时长，单位秒，网络 HTTP 只接受该字段和严格�
 - ServerNetworkStaWifiWorkTime_OnCh583Activity() 只记录 CH583 活动 tick；合法 DEVICE_INFO、单帧及每个有效 BLE_DATA 分片刷新。PING/PONG、ACK/ERR、GPIO_VALUE、TIME_STATUS、NFC_STATUS 不刷新。
 - LED 关机准备完成后立即执行 final guard；若工作计时已被 USB/BLE 等活动重置，或此时出现 HTTP、CH583、OTA、EPD、图片保存活动，则设置 LED cancel-pending 状态并调用 `UserLedStatus_CancelPowerOffSync()`，同时把本次已开启的 CH583 WAKE_TIMER 回滚为 `OFF,0`。LED 或 WAKE_TIMER 取消失败时，`work_state_task()` 后续每轮都优先重试；两项都取消成功前不进入普通活动保护或新的关机流程。LED 准备失败或 `POWER_OFF` 发送失败时也执行相同的 WAKE_TIMER 回滚，避免 ESP32 继续运行期间遗留旧唤醒定时器。
 - TdxImageTransfer_ProcessItems() 在 cast/upload/cast2pic 发现本次需要保存图片时设置 image_save_busy，并覆盖后续 EPD 显示、保存和 cleanup；显示失败、保存成功、保存失败或 cleanup 后都会清除。work_state_task() 在所有 POWER_OFF 前检查 image_save_busy，busy 时不发送 WAKE_TIMER / LED 关闭 / POWER_OFF，只推迟到保存完成后的下一轮继续关机判断。
-- EPD 完成低功耗倒计时开启时，每个 EPD display job 完成后只请求一次运行时倒计时；倒计时到期后，只有 `epd_mode=1(SLIDESHOW)` 才检查下一次轮播剩余时间，如果剩余时间不大于 60 秒，不关机并恢复 one-shot 前的运行时目标；非轮播模式不做该判断，直接进入现有关机流程；下一次 EPD job 完成才会再次请求。
-- 轮播开启时，WAKE_TIMER 优先使用 RTC 轮播的 `next_epoch - now_epoch` 剩余秒数，并扣除开机自动恢复轮播延迟和额外提前量：`remain - (startup_delay_seconds + TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS)`；其中 `startup_delay_seconds = ceil(TDX_SLIDESHOW_STARTUP_DELAY_MS / 1000)`，当前为 10 秒，`TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS` 当前为 20 秒，总提前 30 秒。若当前不是 RTC 轮播或 RTC timing 不可用，则回退使用旧 runtime timing：`runtime_interval - 已走秒数 - 总提前秒数`；再不可用才回退 control 文件中的 interval。若计算出的 wake_interval 小于 `TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS=10`，ESP32 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，只重置 wifi_work_time 运行时计时；关机流程仍按独立的 20 秒重试节流再次评估。该分支不会设置 LED power-off pending。轮播配置自身的最小间隔仍由 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60` 控制。
+- 通用EPD完成低功耗倒计时仍由`USER_EPD_DONE_LOW_POWER_ENABLE`控制且默认关闭。DAILY、SLIDESHOW和LOCAL_IMAGE使用各自专用one-shot入口并记录owner；owner与当前`epd_mode`不一致时恢复one-shot以前的工作时间并取消旧请求。只有SLIDESHOW owner在倒计时到期时检查下一轮播剩余时间：不大于40秒不关机，大于40秒才进入现有关机流程；DAILY和LOCAL_IMAGE不做轮播时间判断。LOCAL_IMAGE的1秒one-shot在入口、LED准备后的final guard以及共享SPI锁内locked guard统一使用`elapsed >= target`到期（对应timer active为`elapsed < target`）；其它owner和普通工作时间保留原`elapsed > target`规则（对应timer active为`elapsed <= target`），不主动中断work_state任务现有1秒轮询。
+- DAILY、SLIDESHOW和LOCAL_IMAGE的EPD完成后先进入WAIT_DECISION，不立即执行EPD/SD独立掉电。只有最终锁内guard全部通过、马上发送`POWER_OFF`时才提交POWER_OFF_COMMITTED并跳过独立掉电；one-shot取消、明确继续运行或`POWER_OFF` UART写入失败时提交STAY_AWAKE，必须执行GPIO4实际LOW不少于2000ms的正式独立掉电。该2秒窗口不可被HTTP、CH583、EPD或普通共享SPI活动提前结束；恢复和SD重挂载完成前不得再次尝试关机。
+- 正式独立掉电只关闭GPIO4控制的EPD/SD外部电源域，ESP32、WiFi/HTTP和CH583 UART继续运行。`GET /ping`、`GET /time`、OTA以及不依赖EPD/SD的小JSON命令不等待供电恢复；依赖SD的旧文件下载/上传/删除、非OTA multipart及`daily_download_file/get_snapshot/get_saved_images/start_slideshow/set_slideshow/delete`在供电不可立即使用时立即返回`1007`、`error=sd_power_busy`和`EPD=BUSY`。APP继续用`/ping`轮询，恢复为`EPD=IDLE`后重试原请求；HTTP handler不再占用服务器任务等待完整2秒。
+- GPIO4已经LOW后，HTTP或CH583活动只能正常通信或取得BUSY结果，不能提前上电。CH583的PING/PONG、DEVICE_INFO、KEY_EVENT、ACK/ERR及UART解析继续运行；后续确实访问EPD/SD的业务仍由共享SPI门控保护。
+- 轮播开启时，WAKE_TIMER 优先使用 RTC 轮播的 `next_epoch - now_epoch` 剩余秒数，并扣除开机自动恢复轮播延迟和额外提前量：`remain - (startup_delay_seconds + TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS)`；其中 `startup_delay_seconds = ceil(TDX_SLIDESHOW_STARTUP_DELAY_MS / 1000)`，当前为 10 秒，`TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS` 当前为 15 秒，总提前 25 秒。若当前不是 RTC 轮播或 RTC timing 不可用，则回退使用旧 runtime timing：`runtime_interval - 已走秒数 - 总提前秒数`；再不可用才回退 control 文件中的 interval。若计算出的 wake_interval 小于 `TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS=10`，ESP32 不发送 WAKE_TIMER ON/OFF，也不发送 POWER_OFF，只重置 wifi_work_time 运行时计时并提交STAY_AWAKE；存在待决EPD时执行正式独立掉电。该分支不会设置 LED power-off pending。轮播配置自身的最小间隔仍由 `TDX_SLIDESHOW_INTERVAL_MIN_SECONDS=60` 控制。
 ```
 
 work_state 栈大小要求：
@@ -2094,10 +2110,10 @@ USER_WORK_STATE_TASK_STACK_SIZE 默认使用 8 * 1024。
 work_state_task() 不是只做简单计时。工作时间超时后，它会执行关机前完整链路：
 1. 先确认 CH583 UART 已初始化、最近一次 HTTP 与 CH583 合法业务活动都已过去 20 秒、OTA receive/write hold 均已解除、EPD task 空闲且图片保存不忙；DEVICE_INFO 是否到达不参与判断，其他任一保护条件不满足时不关机。
 2. 读取 slideshow control，决定 WAKE_TIMER ON/OFF。
-3. slideshow 开启时优先读取 RTC schedule timing，使用 `next_epoch - now_epoch` 作为剩余秒数，并额外扣掉 `TDX_SLIDESHOW_STARTUP_DELAY_MS` 换算后的 10 秒和 `TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS=20` 秒；若没有 RTC timing，再回退旧 runtime timing。若剩余 wake_interval 小于 `TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS=10`，不发送 WAKE_TIMER ON/OFF、不设置 LED power-off pending、不发送 POWER_OFF，只重置 wifi_work_time 运行时计时；关机流程仍按 20 秒重试节流再次评估。否则发送 CH583 WAKE_TIMER ON。
+3. slideshow 开启时优先读取 RTC schedule timing，使用 `next_epoch - now_epoch` 作为剩余秒数，并额外扣掉 `TDX_SLIDESHOW_STARTUP_DELAY_MS` 换算后的 10 秒和 `TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS=15` 秒，总提前25秒；若没有 RTC timing，再回退旧 runtime timing。若剩余 wake_interval 小于 `TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS=10`，不发送 WAKE_TIMER ON/OFF、不设置 LED power-off pending、不发送 POWER_OFF，只重置 wifi_work_time 运行时计时并提交STAY_AWAKE；有待决EPD时执行正式独立掉电。否则发送 CH583 WAKE_TIMER ON。
 4. 调用 `UserLedStatus_PreparePowerOffSync()`，等待 LED Task 停止 RED/GREEN 闪烁并强制关闭后，再执行 final guard；若出现新任务则通过 `UserLedStatus_CancelPowerOffSync()` 解除关机锁并恢复基础灯效，并发送 `WAKE_TIMER OFF,0` 撤销本次关机尝试设置的唤醒定时器。LED 准备失败或 `POWER_OFF` 发送失败时也撤销该定时器；取消发送失败则保留待重试状态，后续每轮优先重试。
-5. 取得 EPD/SD 共用 SPI 锁，并在锁内再次检查工作计时、HTTP、CH583、OTA、EPD 和图片保存 guard；出现新任务就释放锁并回滚 LED/WAKE_TIMER。
-6. 发送 CH583 POWER_OFF；UART 发送失败时 GPIO4 保持 HIGH，释放 SPI 锁并取消 LED 关机状态及 WAKE_TIMER。
+5. 取得 EPD/SD 共用 SPI 锁，并在锁内再次检查工作计时、HTTP、CH583、OTA、EPD 和图片保存 guard；出现新任务就释放锁并回滚 LED/WAKE_TIMER。若已有必须完成的STAY_AWAKE独立掉电，等待GPIO4恢复和SD重挂载成功后再重新评估。
+6. 最终guard通过后提交立即关机决定，跳过本次独立掉电并发送 CH583 POWER_OFF；UART发送失败时撤销该豁免、提交STAY_AWAKE、释放SPI锁、取消LED/WAKE_TIMER并补做完整2秒独立掉电。
 7. UART 发送成功后保持 GPIO4 HIGH，不调用 `ServerNetworkStaEpdDisplay_SetPower(false)`；继续等待 CH583 关闭 ESP32/WiFi 电源，2 秒后设备仍运行则沿用原逻辑调用 `esp_restart()`。
 
 这些调用会进入 CH583 V1 组帧、UART 写入、调试输出等函数，栈上存在多个局部 buffer。
@@ -2437,9 +2453,9 @@ daily_download_file
 - 5分钟间隔只约束同一配置的第二次及以后；APP重复下发合法sw=1会再次触发不受限制的首次执行。
 - cast/cast2pic切换NORMAL，slideshow/slideshow_control切换SLIDESHOW，都会停止daily。
 - 已经开始的EPD刷新不强制中断；旧generation不得覆盖APP刚保存的新配置。
-- daily重复检查关机时保留已激活的一次性截止时间，不重新开始倒计时。
-- daily申请一次性关机时记录DAILY owner；模式切换只取消DAILY拥有的一次性关机，不取消其他功能新建的倒计时。
-- daily one-shot激活后若cast/cast2pic/slideshow把模式切离DAILY，恢复原工作时间并取消旧daily关机。
+- daily重复检查关机时通过DAILY专用入口保留已激活的一次性截止时间，不重新开始倒计时。
+- DAILY、SLIDESHOW和LOCAL_IMAGE专用入口分别记录唯一owner；新业务完成时可接管已激活one-shot的owner，但保留原截止时间。
+- owned one-shot激活后如果模式切离对应业务，恢复原工作时间并取消旧关机；通用EPD one-shot保持原有不绑定模式的行为。
 - daily、slideshow、Local Image Browsing、cast和cast2pic共用12KB内部RAM静态 `image_business_worker`、一个静态TCB、一个静态状态mutex和一个640字节单pending命令槽；统一worker在WiFi、HTTP和USB等可选服务之前创建并永久常驻。旧daily queue、独立daily/轮播/Local/cast保存/USB worker任务均已取消。启动打印一次统一静态资源，命令完成时打印owner、返回值、最小栈余量和峰值，正常空闲不重复打印。
 - 新配置保存后若停止轮播、模式或任务提交失败，恢复旧daily_cfg；不自动恢复轮播，模式保持NORMAL。
 - 新配置首次保存失败时尚未停止轮播：恢复旧daily_cfg并保留原NORMAL/SLIDESHOW；旧模式为DAILY时回到NORMAL。
@@ -2853,6 +2869,10 @@ BIN目录扫描不建立RAM或SD索引文件，只保留本次候选、候选后
 目录候选只包含普通、非空、精确小写 `.bin` 文件，不递归目录，不读取 cast_img、jpg_img、`.bin.zlib` 或其他扩展名。每次PB2按不区分大小写的字典序单遍扫描，大小写相同时用区分大小写比较保证稳定；扫描同时计算显示项和下一项，末尾自动循环到目录最小项。目录项不缓存，因此本地浏览不再受150项RAM列表上限限制。
 
 浏览状态保存在 `PhotoPainter:local_img_state`，包含版本、CRC32、事务状态、last/pending/next文件名和成功显示次数。显示前保存 `PREPARED`；显示成功后保存 `IDLE` 并推进 next。断电读到PREPARED时下次PB2重试同一张，避免跳图。目标文件在扫描后不存在、已不是普通文件或为空时重新扫描后继项、保存next并继续；单次最多尝试首次扫描得到的有效文件数量，全部无效时结束，禁止无限循环。内存、SPI、读取不完整、解压和EPD错误不按“文件不存在”跳过。
+
+本地图片读取保留完整压缩文件PSRAM缓冲和现有完整zlib解压/EPD队列，不新增流式显示，也不使用额外内部RAM中转缓冲；`load_file()`在共享SPI锁保护下将完整压缩文件直接读入现有PSRAM目标。每次正常请求在调用EPD前输出一条`local image prepare completed`关键计时，包含目录扫描、PREPARED状态保存、SD读取、文件大小、读取速度及从KEY/DEVICE_INFO请求到EPD调用的总时间；冷启动延后队列保留原始请求时间，因此`key_to_epd_call_ms`覆盖模块初始化和SD挂载等待。该日志只用于性能定位，不改变事务、读取、预约或显示顺序。
+
+本地图片浏览只有在EPD成功、`save_display_success()`成功、EPD reservation释放、request generation仍为当前值且模式仍为3时，才通过LOCAL_IMAGE专用入口申请1秒关机倒计时。最终guard通过并明确立即关机时跳过EPD/SD独立掉电；显示、NVS或归属检查失败均不申请关机，而是提交STAY_AWAKE并执行GPIO4 LOW不少于2000ms的正式独立掉电。申请后如果其他业务切换模式，`wifi_work_time`恢复原工作时间、取消旧LOCAL_IMAGE one-shot并提交STAY_AWAKE。实际`POWER_OFF`仍由公共guard和共享SPI锁统一发送。
 
 所有屏型的大块EPD SPI发送统一经过 `spiTransmitData()`：先复制到一个永久静态、4字节对齐的1024字节DMA TX缓冲，再按 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=1024` 发送，不再让SPI驱动为PSRAM源数据临时申请大块DMA内存。缓冲由静态mutex保护，固定增加约1.1KB内部RAM（1024字节缓冲、静态mutex控制块及句柄），不随显示次数增长；共享总线事务上限从原大包缩到1024后，SPI总线DMA描述符需求也相应降低，实际净变化以map为准。开机只打印一次 `EPD static DMA TX ready bytes=1024 shared_spi_max=1024`；真实发送失败仍保留一条含错误码及DMA余量的关键日志，并统一上报显示失败。1024x600旧本地显示路径以及MASTER、SLAVE、BOTH批量路径也必须经过该公共函数，不得直接提交PSRAM地址。
 

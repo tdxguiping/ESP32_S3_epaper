@@ -98,51 +98,6 @@ esp_err_t ServerNetworkStaEpdDisplay_RestoreRailIoAfterPowerTestOn(void)
     return ePaperDisplay.RestoreRailIoAfterPowerTestOn();
 }
 
-#if USER_EPD_ENABLE
-static esp_err_t reset_shared_rail_before_storage_mount(void)
-{
-    esp_err_t ret = TdxSharedSpi_LockForEpdSdPowerTest(portMAX_DELAY);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "EPD/SD startup rail reset lock failed ret=%s",
-                 esp_err_to_name(ret));
-        return ret;
-    }
-
-    ret = ServerNetworkStaEpdDisplay_PrepareRailIoForPowerTestOff();
-    if (ret == ESP_OK) {
-        ret = ServerNetworkStaEpdDisplay_SetPower(false);
-        if (ret != ESP_OK) {
-            esp_err_t restore_ret =
-                ServerNetworkStaEpdDisplay_RestoreRailIoAfterPowerTestOn();
-            if (restore_ret != ESP_OK) {
-                ESP_LOGE(TAG,
-                         "EPD/SD startup rail reset rollback failed ret=%s",
-                         esp_err_to_name(restore_ret));
-            }
-        }
-    }
-    if (ret == ESP_OK) {
-        vTaskDelay(pdMS_TO_TICKS(USER_EPD_SD_POWER_TEST_OFF_TIME_MS));
-        ret = ServerNetworkStaEpdDisplay_SetPower(true);
-        if (ret == ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(USER_EPD_SD_POWER_TEST_POWER_STABLE_MS));
-            ret = ServerNetworkStaEpdDisplay_RestoreRailIoAfterPowerTestOn();
-        }
-    }
-
-    TdxSharedSpi_UnlockForEpdSdPowerTest();
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "EPD/SD startup rail reset completed off_ms=%u stable_ms=%u",
-                 (unsigned int)USER_EPD_SD_POWER_TEST_OFF_TIME_MS,
-                 (unsigned int)USER_EPD_SD_POWER_TEST_POWER_STABLE_MS);
-    } else {
-        ESP_LOGE(TAG, "EPD/SD startup rail reset failed ret=%s",
-                 esp_err_to_name(ret));
-    }
-    return ret;
-}
-#endif
-
 static void release_epd_job(epd_display_job_t *job)
 {
     if (job != NULL && job->data != NULL) {
@@ -354,9 +309,13 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
             release_completion(completion);
         }
         __atomic_store_n(&s_epd_display_active, false, __ATOMIC_RELEASE);
-        // Arm the independent rail test only after the display driver has returned and
-        // the active flag is clear. Queued EPD jobs are still covered by IsBusy().
-        EpdSdPowerTest_OnEpdJobDone();
+        // The three shutdown-capable image modes defer rail cycling until their
+        // durable follow-up work determines whether CH583 will remain powered.
+        if (ServerNetworkStaWifiWorkTime_ShouldAwaitPostDisplayPowerDecision()) {
+            EpdSdPowerTest_OnEpdJobDoneAwaitDecision();
+        } else {
+            EpdSdPowerTest_OnEpdJobDone();
+        }
 #if USER_EPD_DONE_LOW_POWER_ENABLE
         ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(
             USER_EPD_DONE_LOW_POWER_DELAY_SECONDS);
@@ -367,16 +326,15 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
 esp_err_t ServerNetworkStaEpdDisplay_Init(void)
 {
 #if USER_EPD_ENABLE
-    esp_err_t rail_reset_ret = reset_shared_rail_before_storage_mount();
-    if (rail_reset_ret != ESP_OK) {
-        return rail_reset_ret;
-    }
-
     esp_err_t power_ret = ServerNetworkStaEpdDisplay_SetPower(true);
     if (power_ret != ESP_OK) {
         ESP_LOGE(TAG, "EPD/SD startup power on failed ret=%s", esp_err_to_name(power_ret));
         return power_ret;
     }
+    vTaskDelay(pdMS_TO_TICKS(USER_EPD_SD_STARTUP_POWER_STABLE_MS));
+    ESP_LOGI(TAG,
+             "EPD/SD startup rail enabled stable_ms=%u power_reset_skipped=1",
+             (unsigned int)USER_EPD_SD_STARTUP_POWER_STABLE_MS);
 
     // Load the saved EPD type before USB or network code reports the current display profile.
     // 在 USB 或网络代码上报当前屏幕配置前读取保存的 EPD 类型。

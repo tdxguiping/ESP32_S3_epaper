@@ -431,12 +431,8 @@ void app_main(void)
          * mounted, so EPD traffic cannot disturb the initial SD handshake. */
         (void)FactoryReset_HandleStartupWelcome();
     }
-    esp_err_t power_test_ret = EpdSdPowerTest_Init();
-    if (power_test_ret != ESP_OK) {
-        // The test is optional and must never prevent the existing application from starting.
-        ESP_LOGE(TAG, "EPD/SD independent power test init failed ret=%s",
-                 esp_err_to_name(power_test_ret));
-    }
+    // Stay-awake post-display rail cycling is a mandatory production function.
+    ESP_ERROR_CHECK(EpdSdPowerTest_Init());
 #if 0
     /*
      * Keep the verified zlib EPD test available for future diagnostics.

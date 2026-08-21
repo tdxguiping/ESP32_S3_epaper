@@ -424,6 +424,7 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 set_slideshow 的 sw=1 会更新 NVS `slide_ctl`、同步写 `epd_mode=1(SLIDESHOW)`，并尝试启动轮播。
 若旧轮播正在运行，`set_slideshow sw=1` 写入新的 interval / timestamp 后会按 RTC 计算出的 next_epoch 重新同步；如果 EPD 正在显示，不打断本次显示，显示完成后继续按 RTC 下一个播放点等待，等待期间会预加载下一张。
 `ServerNetworkStaSlideshow_GetScheduleTiming()` 可读取当前 RTC 轮播的 now_epoch / next_epoch / remain，snapshot 和关机前 WAKE_TIMER 计算优先使用这组值。
+轮播省电测试：EPD和`save_slideshow_progress()`成功后必须先建立下一张progress及`next_epoch`，再出现`slideshow power off requested`；下一张SD预读仍须完成。分别制造remain=41和remain=40，前者应进入WAKE_TIMER/POWER_OFF安全链路，后者应打印`one-shot power off skipped because slideshow next is soon`且不得发送POWER_OFF。允许关机时日志应显示`startup_delay=10 extra_advance=15 wake_advance=25`。EPD失败、progress保存失败、stop置位或模式切离SLIDESHOW时不得申请；申请后切换NORMAL/DAILY/LOCAL时必须取消SLIDESHOW owner，不能影响新业务。
 存储未就绪、未保存轮播列表、参数非法、interval 非法、NVS control 保存失败、轮播 runtime 启动失败、timestamp 非法、timestamp 写 RTC 失败、SNTP 时间差过大已分别返回 1012、1501、1004、1507、1509、1506、1510、1512、1513。control 保存后若模式保存失败或 runtime 启动失败，必须停止轮播并尝试回滚为 `slide_ctl.enabled=false`、`epd_mode=NORMAL`；回滚异常打印一条 `ESP_LOGE`。
 网络 JSON 的 `func` 判断支持空格、CRLF 和 PowerShell `ConvertTo-Json` 输出格式。
 ```
@@ -481,12 +482,17 @@ UPLOAD Gate与ping回归：
 2. NORMAL且无pending、EPD/SD/SPI空闲时返回IDLE。
 3. DAILY或SLIDESHOW等待下一时间点且实际资源空闲时允许IDLE，不能因长期current owner永久BUSY。
 4. DAILY下载/保存/显示、SLIDESHOW读图/显示、LOCAL_IMAGE、CAST、CAST2PIC、USB投屏、pending命令、EPD队列、Shared SPI、EPD/SD已断电或电源切换、Factory Reset、OTA及另一个UPLOAD预约期间返回BUSY。
-5. EPD/SD进入POWER_OFF、PREPARING或RESTORING期间，网络和USB ping必须返回BUSY，不得等待或触发供电恢复；恢复到IDLE/ARMED后必须返回IDLE。
+5. EPD/SD进入POWER_OFF、PREPARING或RESTORING期间，网络和USB ping必须返回BUSY，不得等待或触发供电恢复；恢复到IDLE/ARMED、WAIT_DECISION或POWER_OFF_COMMITTED后必须返回IDLE。
 6. 先ping得到IDLE，再在upload到达前启动图片业务，ESP32最终预约必须返回1007且不保存。
 7. POWER_OFF/PREPARING/RESTORING期间直接发送非OTA multipart，必须在读取body前返回1007，不触发供电等待，也不保存。
 8. 两个network upload并发时只能一个预约成功，另一个立即1007，不等待。
 9. 注入SD满、写入、校验、rename及HTTP断开失败；临时文件按原规则清理，随后ping必须恢复IDLE。
 10. 启动日志和任务列表不得再出现dataup_async_worker；内部RAM不再分配其12KB栈和队列。
+11. GPIO4 LOW期间连续请求网络`/ping`和`/time`，两者都必须及时响应；`/ping`固定返回`EPD=BUSY`，不得触发GPIO4提前HIGH。
+12. GPIO4 LOW期间请求旧文件下载/上传/删除，必须立即返回HTTP 503、`result=1007`、`error=sd_power_busy`、`EPD=BUSY`和`Retry-After: 1`，不得在HTTP handler中等待完整2秒。
+13. GPIO4 LOW期间分别发送`get_saved_images/get_snapshot/start_slideshow/set_slideshow/delete/daily_download_file`，必须返回`dataup_result/1007/sd_power_busy/EPD=BUSY`；发送`set_wifi_work_time`必须继续正常处理。
+14. GPIO4 LOW期间执行OTA请求和CH583 PING/PONG、DEVICE_INFO、KEY_EVENT、ACK/ERR回归，网络和UART通信必须继续；依赖EPD/SD的后续业务只能BUSY或等待底层恢复，不能访问未供电设备。
+15. 从`EPD=BUSY`轮询到`EPD=IDLE`后重试原SD请求，必须成功；日志`actual_off_ms`必须不小于2000，且不得出现请求触发的提前恢复。
 ```
 
 文件保存 16 KiB stdio 缓冲回归测试：
@@ -545,10 +551,31 @@ EPD 完成低功耗倒计时：
 ```text
 USER_EPD_DONE_LOW_POWER_ENABLE 默认 0。
 USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 默认 5 秒。
-USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 默认 60 秒。
+USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 默认 40 秒。
 ```
 
-普通EPD完成自动倒计时默认关闭；开启后只修改RAM计时，不写NVS。每日一图独立请求one-shot，不受该开关控制；DAILY创建的one-shot在模式切离DAILY后恢复原工作时间并取消。
+普通EPD完成自动倒计时默认关闭；开启后只修改RAM计时，不写NVS。每日一图、轮播和本地图片浏览分别使用DAILY、SLIDESHOW和LOCAL_IMAGE专用one-shot，不受该开关控制；owned one-shot在模式切离对应业务后恢复原工作时间并取消。轮播下一播放点剩余时间不大于40秒时也取消本次one-shot并继续运行。
+
+正式EPD/SD独立掉电验收：
+
+```text
+1. 本地浏览和每日一图正常关机、轮播remain=41秒时，应出现立即POWER_OFF决定，不能出现mandatory power cycle started；轮播唤醒仍为remain-25秒。
+2. 轮播remain=39秒和40秒、owner模式切换、显示后状态保存失败时，应出现stay awake决定和mandatory power cycle started，且不得发送POWER_OFF。
+3. 从GPIO4拉低后的started日志到恢复日志，actual_off_ms必须>=2000；分别使用13.3英寸和7.9英寸EPD验证。
+4. GPIO4 LOW期间注入HTTP、CH583 BLE_DATA、新EPD请求和普通共享SPI/SD访问，只允许打印一次等待警告，不得提前恢复；阻塞调用在GPIO4恢复、稳定100ms和SD重挂载后继续。
+5. 注入POWER_OFF UART写入失败，应撤销立即关机豁免、回滚LED/WAKE_TIMER并执行完整2秒独立掉电；独立掉电完成前不得再次进入关机发送。
+6. 注入SD卸载、IO隔离、GPIO4操作或SD重挂载失败，必须使用ESP_LOGE；准备阶段失败要在恢复后重试正式掉电，恢复失败时保持BUSY并定时重试。
+```
+
+启动EPD/SD供电与SD快速挂载验收：
+
+```text
+1. 冷启动日志必须出现`EPD/SD startup rail enabled stable_ms=100 power_reset_skipped=1`，随后出现`SD mount start wait_ms=10`。
+2. 启动期间不得出现`EPD/SD rail IO isolated`、GPIO4 level=0或`startup rail reset completed`；示波器确认ESP32启动代码没有产生GPIO4 LOW脉冲。
+3. 连续冷启动至少20次，并使用不同品牌和容量的SD卡重复测试；首次挂载应成功，不应依赖第2/3次重试。
+4. 如果10ms设置出现偶发首次挂载失败，只调整挂载等待时间，不得恢复启动断电复位，也不得修改正式2000ms独立掉电规则。
+5. 启动`storage ready`之前仍须完成必要目录检查；SD总容量和剩余容量统计不得阻塞首次挂载或本地图片任务。
+```
 
 Factory Reset 白屏保持及客户下次开机测试：
 
@@ -559,7 +586,7 @@ Factory Reset 白屏保持及客户下次开机测试：
 4. 确认 PhotoPainter:epd_mode 已写入 USER_EPD_DISPLAY_MODE_DEFAULT，并能读回相同值。
 5. 确认清理成功后先写入并读回 `PhotoPainter:fr_welcome=1`，再使用 `WHITE=0x11` 显示白屏并等待实际完成。
 6. 白屏完成后确认ESP32继续运行并保持白屏，不得出现 `factory reset CH583 power cycle requested`、Factory Reset专用 `WAKE_TIMER ON,10`、`POWER_OFF` 或新的 `app start`。
-7. 由客人正常关机后再次开机。启动时应先出现共享电源复位日志：IO隔离、GPIO4 LOW、约2000ms后GPIO4 HIGH、稳定100ms、IO/SPI恢复完成；随后完成SD/SPIFFS存储挂载和Factory Reset初始化，再在网络业务启动前读取标志、解压并显示固件内置欢迎图。约40～50秒显示成功后删除 `fr_welcome`，随后继续默认显示模式和未配网启动。正常SD卡首次挂载必须成功；存储未就绪时不得显示欢迎图或清除标志。EPD type、WiFi工作时间、BLE MAC和OTA状态保持不变。
+7. 由客人正常关机后再次开机。启动时只能出现GPIO4置为HIGH并稳定100ms的日志，不得出现IO隔离、GPIO4 LOW或启动电源复位；SD挂载入口等待10ms后完成SD/SPIFFS存储挂载和Factory Reset初始化，再在网络业务启动前读取标志、解压并显示固件内置欢迎图。约40～50秒显示成功后删除 `fr_welcome`，随后继续默认显示模式和未配网启动。正常SD卡首次挂载必须成功；存储未就绪时不得显示欢迎图或清除标志。EPD type、WiFi工作时间、BLE MAC和OTA状态保持不变。
 8. 分别使用首次 DEVICE_INFO(KEY_PB1) 和合法 KEY_EVENT(PB1,PRESS) 重复以上测试，确认与 GPIO28 使用同一清理、白屏保持和下次开机欢迎图流程；KEY_EVENT应分别覆盖DEVICE_INFO之前和之后。
 9. 客人下次开机的 DEVICE_INFO 按实际硬件唤醒原因上报，Factory Reset不再要求固定为TIMER，也不得因为旧KEY_PB1重复执行恢复出厂。
 10. 确认正式执行依次出现 `factory reset worker submitted`、`image_worker: job start owner=FACTORY_RESET`、标志保存/白屏日志和 `job done owner=FACTORY_RESET ... configured=12288`；`min_free` 必须不少于2048字节。客人下次开机还应出现startup welcome开始及标志清除日志。
@@ -611,7 +638,9 @@ Invoke-RestMethod -Uri "$esp/dataUP" `
 
 边界测试：将 `$future` 改为当前时间加100秒。预期首次仍立即执行；该timestamp对应的正式时间槽因距离首次EPD调用不足300秒，被推迟到首次EPD调用满300秒后执行。失败后的重试时间仍为1小时。
 
-内存诊断：确认生成配置中 `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304`、`CONFIG_MBEDTLS_AES_C=y`，并且 `CONFIG_MBEDTLS_HARDWARE_AES` 与 `CONFIG_MBEDTLS_AES_USE_INTERRUPT` 均未设置；硬件SHA、MPI和ECC仍为开启。启动早期应打印一次 `image_worker: static resources`，确认 `stack=12288`，并列出统一TCB、单pending命令槽、状态mutex和内部RAM；随后打印 `image_worker: started stack=12288` 和 `daily_image: base initialized ... shared_worker=resident`。不得再有8KB `cast_save` 或8KB `UsbConsoleWorker`任务资源。每次DAILY HTTPS POST/GET前的原有 `TLS heap before` 日志必须包含 `internal_free/internal_largest`、`dma_free/dma_largest`、`psram_free/psram_largest` 和 `aes=software`。先完成一次“LOCAL_IMAGE显示→EPD/SD断电测试→SD重新挂载→立即DAILY”的复现顺序，再至少连续执行20次完整DAILY下载；即使 `dma_largest` 降到3968字节附近，也不得出现 `esp-aes: Failed to allocate memory`、普通malloc失败、WiFi异常或PSRAM持续下降。另需回归CAST、CAST2PIC、network upload、OTA HTTPS和WiFi重连，并记录软件AES下的下载时间及CPU看门狗状态。所有owner完整周期的 `min_free>=2048` 才可保留12KB；低于2048时继续增加统一栈，不得先压缩任务栈。
+关机回归：成功显示并保存完成状态后、下载或EPD失败并保存一小时重试后，都应通过DAILY专用入口申请one-shot；每20秒重复检查不得重置已激活的1秒截止时间。one-shot等待期间切换SLIDESHOW、LOCAL_IMAGE或NORMAL，必须打印DAILY owner取消日志并恢复原工作时间，不得由旧DAILY请求关闭新业务。
+
+内存诊断：确认生成配置中 `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304`、`CONFIG_MBEDTLS_AES_C=y`，并且 `CONFIG_MBEDTLS_HARDWARE_AES` 与 `CONFIG_MBEDTLS_AES_USE_INTERRUPT` 均未设置；硬件SHA、MPI和ECC仍为开启。启动早期应打印一次 `image_worker: static resources`，确认 `stack=12288`，并列出统一TCB、单pending命令槽、状态mutex和内部RAM；随后打印 `image_worker: started stack=12288` 和 `daily_image: base initialized ... shared_worker=resident`。不得再有8KB `cast_save` 或8KB `UsbConsoleWorker`任务资源。每次DAILY HTTPS POST/GET前的原有 `TLS heap before` 日志必须包含 `internal_free/internal_largest`、`dma_free/dma_largest`、`psram_free/psram_largest` 和 `aes=software`。先完成一次“LOCAL_IMAGE明确保持开机→EPD/SD正式独立掉电→SD重新挂载→立即DAILY”的复现顺序，再至少连续执行20次完整DAILY下载；即使 `dma_largest` 降到3968字节附近，也不得出现 `esp-aes: Failed to allocate memory`、普通malloc失败、WiFi异常或PSRAM持续下降。另需回归CAST、CAST2PIC、network upload、OTA HTTPS和WiFi重连，并记录软件AES下的下载时间及CPU看门狗状态。所有owner完整周期的 `min_free>=2048` 才可保留12KB；低于2048时继续增加统一栈，不得先压缩任务栈。
 
 关闭请求：
 
@@ -716,7 +745,11 @@ KEY_EVENT测试：无论DEVICE_INFO是否完成，分别发送 `PB2,PRESS` 和 `
 
 断电恢复测试：A成功后断电，重启确认模式3恢复但不自动刷新；下一次PB2显示B。制造PREPARED=B后在EPD完成前断电，重启后下一次PB2重试B。破坏state版本、长度或CRC，预期ESP_LOGE并从安全默认游标恢复。
 
+本地浏览省电测试：A显示成功、`local_img_state`变为IDLE并推进next、EPD reservation释放后，应出现`local image power off requested`并进入公共安全关机链路。LOCAL_IMAGE的`target=1`必须允许在`elapsed=1`进入超时判断，final guard和locked guard在没有其它活动时也不得以`timer=1`取消本次关机；DAILY、SLIDESHOW和普通工作时间仍保持原严格大于规则。分别注入EPD失败、状态保存失败、generation替换和模式切换，均不得由旧LOCAL请求关机；申请后切换其他模式时必须取消LOCAL_IMAGE owner。确认模块内没有直接调用`ch583_wifi_uart_send_power_off()`，HTTP、CH583、OTA、EPD、保存和最终SPI guard全部保留。
+
 启动早期测试：让 `DEVICE_INFO(KEY_PB2)` 在LocalImageBrowsing_Init之前到达并成功ACK，确认进入启动FIFO并在模块初始化后执行一次。让 `DEVICE_INFO(KEY_PB1)` 在FactoryReset_Init之前到达，确认只保存一个RAM pending请求并在任务就绪后执行。
+
+本地图片响应计时测试：正常请求必须输出`local image prepare completed`，包含`scan_ms/state_ms/read_ms/size/read_kib_s/key_to_epd_call_ms`。分别记录已开机按键和冷启动延后按键至少20次，确认压缩文件直接读入现有PSRAM缓冲，不申请额外内部RAM中转缓冲，并保持完整长度、PREPARED事务、zlib解压、EPD预约和关机规则；统一worker的`min_free`仍须不小于2048字节。
 
 独立重启兼容测试：本轮不发送DEVICE_INFO，分别发送 `PB2,PRESS` 和 `PB1,PRESS`，必须正常ACK并分别执行一次本地浏览和恢复出厂，不得返回 `DEVICE_INFO_REQUIRED`。再在DEVICE_INFO完成后重复两条新SEQ事件，确认处理规则一致；BLE_DATA、PING等既有专项测试保持各自规则。详细协议预期见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 
@@ -730,4 +763,4 @@ SPI DMA回归测试：启动时应只出现一次 `EPD static DMA TX ready bytes
 
 SPI命令错误测试：注入一次 `spiTransmitCommand()` 失败，确认只打印包含command和ret的关键ESP_LOGE，不触发assert、Guru Meditation或自动重启；EPD最终结果必须非ESP_OK，本地图片浏览不得推进游标。将 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK` 临时设为0，或将 `USER_SHARED_SPI_MAX_TRANSFER_SIZE` 设为小于516时，构建必须被编译期检查拒绝；正式值保持1024。
 
-SD共享SPI回归测试：确认SDSPI mount和掉电测试remount正常，连续执行大文件读、写、删除、轮播读取及本地图片读取；同时让EPD在BUSY安全点释放共享锁给SD。不得出现大于1024字节的SPI事务、`ESP_ERR_NO_MEM`、文件损坏、锁超时或EPD/SD同时选中。SDSPI仍使用ESP-IDF原生512字节数据块和516字节常驻DMA块，不增加项目自定义SD协议。
+SD共享SPI回归测试：EPD启用的正常启动必须出现`SDSPI shared bus reused host=1 owner=EPD`，不得再出现`spi_bus_initialize ... SPI bus already initialized`；EPD关闭配置仍须由SD成功初始化总线。确认SDSPI mount和掉电测试remount正常，连续执行大文件读、写、删除、轮播读取及本地图片读取；同时让EPD在BUSY安全点释放共享锁给SD。不得出现大于1024字节的SPI事务、`ESP_ERR_NO_MEM`、文件损坏、锁超时或EPD/SD同时选中。SDSPI仍使用ESP-IDF原生512字节数据块和516字节常驻DMA块，不增加项目自定义SD协议。

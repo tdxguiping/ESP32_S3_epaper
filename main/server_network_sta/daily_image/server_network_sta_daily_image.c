@@ -10,6 +10,7 @@
 #include "daily_image_schedule.h"
 #include "epd_display_app.h"
 #include "epd_display_mode.h"
+#include "epd_sd_power_test.h"
 #include "epd_type.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -625,7 +626,7 @@ static void request_guarded_power_off(uint32_t wake_seconds)
     ESP_LOGI(TAG, "request power off wake_seconds=%lu delay=%u",
              (unsigned long)wake_seconds,
              (unsigned int)USER_DAILY_IMAGE_POWER_OFF_DELAY_SECONDS);
-    ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(
+    ServerNetworkStaWifiWorkTime_RequestDailyPowerOffCountdown(
         USER_DAILY_IMAGE_POWER_OFF_DELAY_SECONDS);
 }
 
@@ -680,6 +681,7 @@ static esp_err_t wait_for_run_window(daily_image_config_t *config,
         }
 
         if (decision->action == DAILY_IMAGE_SCHEDULE_RUN_NOW) {
+            EpdSdPowerTest_CommitStayAwake("daily_run_now");
             if (decision->initial_run && !decision->retry) {
                 ESP_LOGI(TAG,
                          "initial daily run pending, execute now anchor=%lld",
@@ -689,6 +691,7 @@ static esp_err_t wait_for_run_window(daily_image_config_t *config,
             return ESP_OK;
         }
         if (decision->action == DAILY_IMAGE_SCHEDULE_WAIT_WINDOW) {
+            EpdSdPowerTest_CommitStayAwake("daily_wait_window");
             /*
              * Stay awake during the final wake-advance interval and enter the
              * workflow exactly at the shared slideshow lead-time boundary.

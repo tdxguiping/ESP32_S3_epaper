@@ -147,6 +147,22 @@ static esp_err_t send_json_response(httpd_req_t *req, const char *json)
     return httpd_resp_sendstr(req, json != NULL ? json : "{}");
 }
 
+static esp_err_t send_epd_sd_busy_response(httpd_req_t *req, const char *request_type)
+{
+    char json[160];
+    snprintf(json,
+             sizeof(json),
+             "{\"func\":\"dataup_result\",\"result\":%d,\"message\":\"sd_power_busy\",\"error\":\"sd_power_busy\",\"EPD\":\"BUSY\"}",
+             TDX_JSON_RESULT_BUSY);
+    ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
+    ESP_LOGW(TAG,
+             "HTTP EPD/SD request rejected type=%s reason=sd_power_busy epd=BUSY",
+             request_type != NULL ? request_type : "unknown");
+    httpd_resp_set_hdr(req, "Retry-After", "1");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    return send_json_response(req, json);
+}
+
 static esp_err_t send_dataup_error_response(httpd_req_t *req,
                                             const char *http_status,
                                             int result,
@@ -197,6 +213,54 @@ static esp_err_t send_unsupported_func_response(httpd_req_t *req)
              "{\"func\":\"unknown_result\",\"result\":%d,\"message\":\"unsupported func\"}",
              TDX_JSON_RESULT_FUNC_UNSUPPORTED);
     return send_json_response(req, json);
+}
+
+static bool json_func_equals(const char *body, const char *func)
+{
+    if (body == NULL || func == NULL) {
+        return false;
+    }
+    const char *pos = strstr(body, "\"func\"");
+    if (pos == NULL) {
+        return false;
+    }
+    pos += strlen("\"func\"");
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos++ != ':') {
+        return false;
+    }
+    while (*pos == ' ' || *pos == '\t' || *pos == '\r' || *pos == '\n') {
+        pos++;
+    }
+    if (*pos++ != '"') {
+        return false;
+    }
+    size_t func_len = strlen(func);
+    size_t value_len = strlen(pos);
+    return value_len > func_len &&
+           strncmp(pos, func, func_len) == 0 &&
+           pos[func_len] == '"';
+}
+
+static bool small_json_requires_epd_sd(const char *body)
+{
+    // Keep network-only JSON commands responsive while the external rail is off.
+    static const char *const resource_funcs[] = {
+        "daily_download_file",
+        "get_snapshot",
+        "get_saved_images",
+        "start_slideshow",
+        "set_slideshow",
+        "delete",
+    };
+    for (size_t i = 0; i < sizeof(resource_funcs) / sizeof(resource_funcs[0]); i++) {
+        if (json_func_equals(body, resource_funcs[i])) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void log_network_small_json_body(const char *body, size_t body_len)
@@ -661,6 +725,7 @@ static esp_err_t receive_data_redirect_handler_impl(httpd_req_t *req)
 
     esp_err_t resp_ret = ESP_FAIL;
     bool body_taken = false;
+    bool power_guard_active = false;
     if (is_network_ota) {
         ESP_LOGI(TAG, "HTTP data dispatch=ota uri=%s len=%u",
                  uri != NULL ? uri : "<null>", (unsigned int)remaining);
@@ -668,7 +733,17 @@ static esp_err_t receive_data_redirect_handler_impl(httpd_req_t *req)
     } else if (is_small_json) {
         ESP_LOGI(TAG, "HTTP data dispatch=json uri=%s len=%u",
                  uri != NULL ? uri : "<null>", (unsigned int)remaining);
-        resp_ret = process_small_json_request(req, body, remaining);
+        if (small_json_requires_epd_sd(body)) {
+            esp_err_t power_ret = EpdSdPowerTest_NetworkTryBeginNoWake();
+            if (power_ret != ESP_OK) {
+                resp_ret = send_epd_sd_busy_response(req, "json");
+            } else {
+                power_guard_active = true;
+                resp_ret = process_small_json_request(req, body, remaining);
+            }
+        } else {
+            resp_ret = process_small_json_request(req, body, remaining);
+        }
     } else if (is_multipart) {
         ESP_LOGI(TAG, "HTTP data dispatch=multipart len=%u", (unsigned int)remaining);
         resp_ret = ServerNetworkStaCast2Pic_Process(req, body, remaining, content_type, s_base_path, &body_taken);
@@ -697,6 +772,9 @@ static esp_err_t receive_data_redirect_handler_impl(httpd_req_t *req)
 
     if (!body_taken) {
         heap_caps_free(body);
+    }
+    if (power_guard_active) {
+        EpdSdPowerTest_NetworkEnd();
     }
     if (is_network_ota) {
         log_heap_watermark("body_free");
@@ -736,24 +814,18 @@ esp_err_t receive_data_redirect_handler(httpd_req_t *req)
     bool is_network_ota = NetworkOtaUpload_IsOtaRequest(req, content_type);
 
     if (is_multipart && !is_network_ota) {
-        esp_err_t power_ret = EpdSdPowerTest_NetworkTryBegin();
+        esp_err_t power_ret = EpdSdPowerTest_NetworkTryBeginNoWake();
         if (power_ret != ESP_OK) {
-            ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
-            ESP_LOGW(TAG, "HTTP multipart rejected before body reason=sd_power_busy len=%u",
-                     (unsigned int)req->content_len);
-            return send_json_response(
-                req,
-                "{\"func\":\"dataup_result\",\"result\":1007,\"message\":\"sd_power_busy\",\"error\":\"sd_power_busy\"}");
+            return send_epd_sd_busy_response(req, "multipart");
         }
         esp_err_t ret = receive_data_redirect_handler_impl(req);
         EpdSdPowerTest_NetworkEnd();
         return ret;
     }
 
-    EpdSdPowerTest_NetworkBegin();
-    esp_err_t ret = receive_data_redirect_handler_impl(req);
-    EpdSdPowerTest_NetworkEnd();
-    return ret;
+    // OTA and network-only JSON requests remain available during the rail-off interval.
+    // Resource-dependent JSON commands acquire their own non-blocking guard after parsing.
+    return receive_data_redirect_handler_impl(req);
 }
 
 esp_err_t server_network_sta_net_data_register_handlers(httpd_handle_t server, const char *base_path)

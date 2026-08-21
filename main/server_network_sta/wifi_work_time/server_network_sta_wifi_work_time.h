@@ -20,7 +20,12 @@ void ServerNetworkStaWifiWorkTime_OnNetworkData(void);
 void ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity(void);
 void ServerNetworkStaWifiWorkTime_OnCh583Activity(void);
 void ServerNetworkStaWifiWorkTime_OnCh583Initialized(void);
+// Return true when the active image mode must decide between immediate shutdown and stay-awake rail cycling.
+bool ServerNetworkStaWifiWorkTime_ShouldAwaitPostDisplayPowerDecision(void);
 void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t seconds);
+void ServerNetworkStaWifiWorkTime_RequestDailyPowerOffCountdown(uint32_t seconds);
+void ServerNetworkStaWifiWorkTime_RequestSlideshowPowerOffCountdown(uint32_t seconds);
+void ServerNetworkStaWifiWorkTime_RequestLocalImagePowerOffCountdown(uint32_t seconds);
 void ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(bool active);
 void ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle(uint32_t wake_seconds);
 void ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(bool in_progress);

@@ -582,9 +582,11 @@ extern "C" {
 // Timing value for TDX SLIDESHOW RTC DISPLAY LEAD SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_RTC_DISPLAY_LEAD_SECONDS 2
 // Timing value for TDX SLIDESHOW WAKE EXTRA ADVANCE SECONDS; verify related wake, sleep, and retry behavior if it changes.
-#define TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS 20
+#define TDX_SLIDESHOW_WAKE_EXTRA_ADVANCE_SECONDS 15
 // Timing value for TDX SLIDESHOW AFTER DISPLAY WAIT MS; verify related wake, sleep, and retry behavior if it changes.
 #define TDX_SLIDESHOW_AFTER_DISPLAY_WAIT_MS 12000
+// Request guarded CH583 power-off shortly after slideshow state becomes durable.
+#define TDX_SLIDESHOW_POST_DISPLAY_POWER_OFF_DELAY_SECONDS 1U
 // Configuration value for TDX SLIDESHOW DEEP SLEEP FLAG VALUE; update local references before changing it.
 #define TDX_SLIDESHOW_DEEP_SLEEP_FLAG_VALUE 0xA5
 // NVS key used by TDX SLIDESHOW NVS FLAG KEY; keep storage compatibility before changing it.
@@ -665,9 +667,15 @@ extern "C" {
 #define USER_WORK_STATE_RUNTIME_CH583_STARTUP_PENDING_BIT (1UL << 0)
 #define USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT    (1UL << 1)
 #define USER_WORK_STATE_RUNTIME_WAKE_TIMER_CANCEL_PENDING_BIT (1UL << 2)
-// One-shot state is published atomically so its active and DAILY-owner bits stay consistent.
+// One-shot state is published atomically so its active and business-owner bits stay consistent.
 #define USER_WORK_STATE_ONE_SHOT_ACTIVE_BIT      (1U << 0)
 #define USER_WORK_STATE_ONE_SHOT_DAILY_OWNER_BIT (1U << 1)
+#define USER_WORK_STATE_ONE_SHOT_SLIDESHOW_OWNER_BIT (1U << 2)
+#define USER_WORK_STATE_ONE_SHOT_LOCAL_IMAGE_OWNER_BIT (1U << 3)
+#define USER_WORK_STATE_ONE_SHOT_OWNER_MASK \
+    (USER_WORK_STATE_ONE_SHOT_DAILY_OWNER_BIT | \
+     USER_WORK_STATE_ONE_SHOT_SLIDESHOW_OWNER_BIT | \
+     USER_WORK_STATE_ONE_SHOT_LOCAL_IMAGE_OWNER_BIT)
 // WIFI_PROVISION low nibble used only for the one-shot standby notification
 // immediately before POWER_OFF. It must not be stored as an EPD display mode.
 #define CH583_WIFI_PROVISION_MODE_STANDBY 0x0FU
@@ -680,14 +688,21 @@ extern "C" {
 // Timing value for USER EPD DONE LOW POWER DELAY SECONDS; verify related wake, sleep, and retry behavior if it changes.
 #define USER_EPD_DONE_LOW_POWER_DELAY_SECONDS 5
 // Timing value for USER EPD DONE LOW POWER SLIDESHOW MIN REMAIN SECONDS; verify related wake, sleep, and retry behavior if it changes.
-#define USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 60
+#define USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS 40
 
-// Independent GPIO4 power-cycle test for the shared EPD/SD rail. This test does not use
-// the CH583 POWER_OFF path and is armed only after an EPD display job has completed.
+// Allow the shared EPD/SD rail to stabilize after startup enables it.
+// Startup follows a long hardware power-off period and must not pulse the rail low.
+#define USER_EPD_SD_STARTUP_POWER_STABLE_MS 100U
+
+// Mandatory independent GPIO4 power cycle for the shared EPD/SD rail when the
+// post-display decision keeps CH583 awake. An immediate committed POWER_OFF skips it.
 #define USER_EPD_SD_POWER_TEST_ENABLE 1
+#if USER_EPD_SD_POWER_TEST_ENABLE != 1
+#error "The production EPD/SD stay-awake power cycle must remain enabled"
+#endif
 // Isolate every external EPD/SD rail signal during the independent GPIO4 power test.
 #define USER_EPD_SD_POWER_TEST_IO_ISOLATION_ENABLE 1
-// Keep the rail off for exactly this test interval unless an activity event restores it earlier.
+// Keep GPIO4 low for at least this interval. Activity cannot restore the rail early.
 #define USER_EPD_SD_POWER_TEST_OFF_TIME_MS 2000U
 // Recheck while armed so a shared-SPI user that was already active can finish without extra hooks.
 #define USER_EPD_SD_POWER_TEST_RECHECK_MS 20U
@@ -712,12 +727,14 @@ extern "C" {
 #define USER_EPD_SD_POWER_TEST_EVENT_SLIDESHOW_FOLLOWUP_BIT (1UL << 6)
 #define USER_EPD_SD_POWER_TEST_READY_BIT               (1UL << 0)
 
-// Runtime state values are definitions only; the mutable state remains private to the test module.
+// Runtime state values are definitions only; mutable state remains private to the power module.
 #define USER_EPD_SD_POWER_TEST_STATE_IDLE       0U
 #define USER_EPD_SD_POWER_TEST_STATE_ARMED      1U
 #define USER_EPD_SD_POWER_TEST_STATE_PREPARING  2U
 #define USER_EPD_SD_POWER_TEST_STATE_POWER_OFF  3U
 #define USER_EPD_SD_POWER_TEST_STATE_RESTORING  4U
+#define USER_EPD_SD_POWER_TEST_STATE_WAIT_DECISION 5U
+#define USER_EPD_SD_POWER_TEST_STATE_POWER_OFF_COMMITTED 6U
 
 /* -------------------------------------------------------------------------- */
 /* 12. BLE / GATT Legacy Compatibility                                         */

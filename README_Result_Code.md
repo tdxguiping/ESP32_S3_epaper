@@ -148,6 +148,8 @@ default NVS partition / image_state namespace / last_cast
 
 `DEVICE_INFO.wake_reason=KEY_PB2` 与 `KEY_EVENT ARG=PB2,PRESS` 在协议ACK成功后请求一次本地图片浏览；`DEVICE_INFO.wake_reason=KEY_PB1` 与 `KEY_EVENT ARG=PB1,PRESS` 请求恢复出厂。两类UART事件都不新增JSON result code；业务失败只写关键日志，不改变已经发送的协议ACK。相同KEY_EVENT SEQ或重复DEVICE_INFO只重发ACK，不重复执行业务。
 
+DAILY、SLIDESHOW和LOCAL_IMAGE显示完成后的owner one-shot、WAIT_DECISION、立即关机时跳过独立掉电、保持开机时执行GPIO4至少2秒掉电、模式切换取消以及轮播剩余时间不大于40秒时跳过关机，均属于内部电源状态，不新增JSON result code或UART ERR编码，也不改变原业务成功/失败返回值。`POWER_OFF` UART写入失败后的独立掉电补偿仍只记录本地日志。
+
 合法KEY_EVENT不依赖DEVICE_INFO状态，ESP32独立重启后提前到达也正常ACK并执行业务，不使用UART帧级 `ERR,DEVICE_INFO_REQUIRED`。启动依赖未就绪属于ESP32内部FIFO或单请求RAM状态调度，不新增正式JSON result code。BLE_DATA队列无法接收时使用UART帧级`ERR,BUSY`，内存申请失败时使用UART帧级`ERR,NO_MEM`；这些都不是BLE/WiFi JSON正式返回码。完整通信规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 
 GPIO28、`DEVICE_INFO(KEY_PB1)` 和 `KEY_EVENT(PB1,PRESS)` 共用同一个Factory Reset执行逻辑，不返回JSON，也不新增result code。文件和NVS清理成功后保存欢迎图待显示标志、显示白屏并上报未配网 `WIFI_PROVISION 40`；ESP32继续运行，不发送Factory Reset专用 `WAKE_TIMER`、`POWER_OFF`，也不自动重启。客人以后正常开机时显示固件内置欢迎图，成功后删除标志。实际文件删除、必要NVS操作、标志保存、白屏或启动欢迎图显示失败只记录本地错误，不映射新的正式result code。
@@ -200,6 +202,8 @@ USB HTTP-like：main/usb_console_echo/ping/usb_console_ping.c
 ```
 
 网络和USB固定返回 `func/result/message/EPD/Ble_MAC`，并共用同一个UploadGate BUSY/IDLE规则。`EPD`字段名为兼容现有客户端保持不变，但含义扩展为UPLOAD资源可用性；EPD/SD处于POWER_OFF、PREPARING或RESTORING时返回 `BUSY`。`result=0` 和 `result=1405` 都保留 `EPD`。
+
+EPD/SD供电不可立即使用时，需要SD的网络请求复用正式通用忙码`1007/TDX_JSON_RESULT_BUSY`，并返回`message=sd_power_busy`、`error=sd_power_busy`、`EPD=BUSY`，不新增结果码。非OTA multipart在读取body前返回；依赖SD的small JSON在识别`func`后立即返回。旧文件下载/上传/删除使用`func=storage_result`和相同字段，同时使用HTTP 503。客户端应继续调用`/ping`，只在`EPD=IDLE`后重试原请求。
 
 当 `Ble_MAC` 尚未获取时，仍返回 `EPD` 字段，并使用 `result=1405`：
 
@@ -482,7 +486,7 @@ dataup_result
 |---:|---|
 | `0` | 通用 multipart 文件保存成功 |
 | `1006` | `TDX_JSON_RESULT_BODY_TOO_LARGE`，非 OTA 请求体过大 |
-| `1007` | `TDX_JSON_RESULT_BUSY`，上传锁或 EPD / 后台图片任务正忙 |
+| `1007` | `TDX_JSON_RESULT_BUSY`，上传锁、EPD/后台图片任务正忙，或EPD/SD供电不可立即使用；供电忙时`error=sd_power_busy`且`EPD=BUSY` |
 | `1008` | `TDX_JSON_RESULT_TIMEOUT`，上一后台图片任务处于超时状态 |
 | `1011` | `TDX_JSON_RESULT_NO_MEMORY`，请求体内存分配失败 |
 

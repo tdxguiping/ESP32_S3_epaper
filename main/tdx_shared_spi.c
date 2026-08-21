@@ -29,9 +29,9 @@ esp_err_t TdxSharedSpi_Lock(TickType_t ticks_to_wait)
     // caller has requested SPI but has not reached the mutex take operation yet.
     (void)__atomic_add_fetch(&s_normal_spi_request_count, 1U, __ATOMIC_ACQ_REL);
 #if USER_EPD_SD_POWER_TEST_ENABLE
-    // Every normal shared-SPI request must restore the EPD/SD rail before the caller
-    // can touch either device. The test-only lock below bypasses this hook so the
-    // power-test task can perform its final idle check without canceling itself.
+    // Every normal shared-SPI request must wait for the EPD/SD rail before the caller
+    // can touch either device. The dedicated lock below lets the rail-cycle task
+    // perform its final idle check without reporting itself as normal activity.
     esp_err_t power_ret = EpdSdPowerTest_PrepareForSharedSpi();
     if (power_ret != ESP_OK) {
         (void)__atomic_sub_fetch(&s_normal_spi_request_count, 1U, __ATOMIC_ACQ_REL);
@@ -78,7 +78,7 @@ void TdxSharedSpi_UnlockForEpdSdPowerTest(void)
 {
     if (s_shared_spi_mutex != NULL) {
         if (xSemaphoreGiveRecursive(s_shared_spi_mutex) != pdTRUE) {
-            ESP_LOGE(TAG, "release EPD/SD power-test SPI mutex failed");
+            ESP_LOGE(TAG, "release EPD/SD rail-cycle SPI mutex failed");
         }
     }
 }

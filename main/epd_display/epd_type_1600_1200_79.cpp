@@ -82,7 +82,7 @@ void ePaperPort::EPD_Check_Busy_79_UnlockSpi(uint16_t loop_counter)
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
         i++;
-        UserDebugOutput_Printf("~%d.", i);
+        //UserDebugOutput_Printf("~%d.", i);
 
         if (i > loop_counter) {
             int elapsed_ms = (int)((esp_timer_get_time() - start_us) / 1000);

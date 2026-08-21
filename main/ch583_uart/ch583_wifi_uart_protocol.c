@@ -1344,7 +1344,7 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
             ESP_LOGE(TAG, "PONG send failed seq=%u", (unsigned int)frame.seq);
         }
     } else if (strcmp(frame.cmd, "BLE_DATA") == 0) {
-        // Only a validated BLE_DATA frame received from CH583 may interrupt the rail-off test.
+        // Record validated BLE activity without shortening the mandatory rail-off interval.
         EpdSdPowerTest_OnCh583BleDataReceived();
         if (ch583_wifi_handle_ble_data(&frame, ble_data_callback)) {
             // Preserve the original full work timer reset only for accepted BLE data.

@@ -24,6 +24,8 @@
 
 // Early UART events are retained until SD-backed local browsing is initialized.
 #define LOCAL_IMAGE_BROWSING_STARTUP_QUEUE_LENGTH 10U
+// Request guarded CH583 power-off shortly after local display state becomes durable.
+#define LOCAL_IMAGE_BROWSING_POWER_OFF_DELAY_SECONDS 1U
 
 typedef enum {
     LOCAL_IMAGE_BROWSING_TRIGGER_DEVICE_INFO_KEY_PB2 = 0,

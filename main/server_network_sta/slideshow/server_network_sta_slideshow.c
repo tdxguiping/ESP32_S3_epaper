@@ -26,6 +26,7 @@
 #include "server_network_sta.h"
 #include "server_network_sta_daily_image.h"
 #include "server_network_sta_time.h"
+#include "server_network_sta_wifi_work_time.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
@@ -2040,9 +2041,8 @@ static void slideshow_run_runtime(slideshow_runtime_t *runtime)
         char consumed_file[TDX_SLIDESHOW_FILE_NAME_MAX_LEN] = {0};
         strlcpy(consumed_file, file_name, sizeof(consumed_file));
         if (event_ret == ESP_OK && slideshow_loaded_file_matches(&loaded, file_name)) {
-            // Keep the independent rail test armed but blocked until the progress
-            // update and next SD preload below are complete. Starting the guard before
-            // the synchronous display closes the gap immediately after EPD completion.
+            // Reserve the SD follow-up before synchronous display completion so a
+            // later stay-awake decision cannot cycle the rail before progress is durable.
             EpdSdPowerTest_SlideshowFollowupBegin();
             power_test_followup_active = true;
             event_ret = slideshow_display_loaded_file_and_wait(&loaded,
@@ -2110,6 +2110,7 @@ static void slideshow_run_runtime(slideshow_runtime_t *runtime)
             if (power_test_followup_active) {
                 EpdSdPowerTest_SlideshowFollowupEnd();
             }
+            EpdSdPowerTest_CommitStayAwake("slideshow_next_progress_invalid");
             break;
         }
 
@@ -2133,7 +2134,28 @@ static void slideshow_run_runtime(slideshow_runtime_t *runtime)
             slideshow_begin_rtc_interval(runtime->request.interval, runtime->next_epoch);
         }
 
+        if (event_ret == ESP_OK && save_ret == ESP_OK) {
+            uint8_t mode = EpdDisplayMode_Get();
+            if (!s_slideshow_stop && mode == USER_EPD_DISPLAY_MODE_SLIDESHOW) {
+                ESP_LOGI(TAG,
+                         "slideshow power off requested file=%s next=%s next_epoch=%lld delay=%u",
+                         consumed_file,
+                         runtime->progress.pending_file,
+                         (long long)runtime->next_epoch,
+                         (unsigned int)TDX_SLIDESHOW_POST_DISPLAY_POWER_OFF_DELAY_SECONDS);
+                ServerNetworkStaWifiWorkTime_RequestSlideshowPowerOffCountdown(
+                    TDX_SLIDESHOW_POST_DISPLAY_POWER_OFF_DELAY_SECONDS);
+            } else {
+                ESP_LOGW(TAG,
+                         "slideshow power off skipped because ownership changed stop=%d mode=%u",
+                         s_slideshow_stop ? 1 : 0,
+                         (unsigned int)mode);
+                EpdSdPowerTest_CommitStayAwake("slideshow_ownership_changed");
+            }
+        }
+
         if (event_ret != ESP_OK || save_ret != ESP_OK) {
+            EpdSdPowerTest_CommitStayAwake("slideshow_followup_failed");
             ESP_LOGW(TAG,
                      "slideshow event consumed file=%s next=%s result=%s progress_save=%s sntp=%d consumed_slot=%llu next_slot=%llu next_epoch=%lld",
                      consumed_file,

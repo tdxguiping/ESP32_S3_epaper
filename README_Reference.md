@@ -27,7 +27,7 @@
   - [12.13 epd_type_800_480_4s_75_DKE](#sec-12-13)
   - [12.14 epd_type_800_480_4s_75_mofang](#sec-12-14)
   - [12.15 三色屏测试数据源](#sec-12-15)
-  - [12.16 EPD/SD 共用电源测试](#sec-12-16)
+  - [12.16 EPD/SD 共用电源正式独立掉电](#sec-12-16)
 - [14. 文件服务器静态资源与旧接口](#sec-14)
 - [16. 目录到功能索引](#sec-16)
 - [17. zlib 文件压缩模块与自检索引](#sec-17-zlib)
@@ -734,8 +734,9 @@ EPD / SD 公共电源规则：
 
 ```text
 - EPD_SD_Power_PIN 固定为 GPIO_NUM_4，并配置为 GPIO_MODE_OUTPUT。
-- ePaperPort 构造先调用 Set_Power(1)，再配置 EPD 控制脚和共享 SPI；`ServerNetworkStaEpdDisplay_Init()` 在首次存储挂载前复用现有电源测试底层接口，持有专用共享SPI锁，依次释放SPI、隔离相关IO、GPIO4拉低2000ms、重新拉高并稳定100ms、恢复安全CS电平和SPI。该启动复位用于清除USB或软件复位后SD控制器遗留状态，任一步失败都会使EPD初始化失败并阻止进入不可靠的存储挂载。
-- EPD_Reset() 再次调用 Set_Power(1)；EPD refresh/sleep 本身不调用 Set_Power(0)。独立 EPD/SD 电源测试会在 EPD 完成后等待所有安全条件满足，并先卸载外部 SD，之后才临时关闭 GPIO4。
+- 硬件工程确认ESP32启动前公共电源已经断电足够长。ePaperPort构造和`ServerNetworkStaEpdDisplay_Init()`只确保GPIO4为HIGH；初始化函数等待`USER_EPD_SD_STARTUP_POWER_STABLE_MS=100`后继续。启动期间不持有正式掉电测试锁、不隔离IO、不主动拉低GPIO4，也不执行EPD/SD启动复位。随后SD挂载入口固定等待`STORAGE_MOUNT_POWER_READY_DELAY_MS=10`再开始SDSPI初始化。
+- EPD_Reset() 再次调用 Set_Power(1)；EPD refresh/sleep 本身不调用 Set_Power(0)。正式EPD/SD独立掉电只在显示后明确保持开机时执行，并先卸载外部SD，之后才临时关闭GPIO4至少2000ms；明确立即发送CH583 POWER_OFF时跳过。
+- `USER_EPD_SD_STARTUP_POWER_STABLE_MS`与`USER_EPD_SD_POWER_TEST_OFF_TIME_MS=2000`完全独立；启动稳定时间不得替代或缩短正式独立掉电时间。
 - 当前 `USER_POWER_OFF_LOCAL_EPD_SD_CUTOFF_ENABLE=0`，work_state_task() 发送 CH583 POWER_OFF 后不调用 Set_Power(0)，GPIO4 持续保持 HIGH。
 - work_state_task() 在共用 SPI 锁内复检所有 guard，再发送 POWER_OFF；无论 UART 写入成功或失败，GPIO4 都保持 HIGH。
 - POWER_OFF UART 写入成功后等待 CH583 切断 ESP32-C5 电源；2 秒内仍未断电则沿用原逻辑调用 esp_restart()。
@@ -748,7 +749,9 @@ EPD 显示数据可能来自 PSRAM。ESP-IDF SPI driver 对 PSRAM 源数据可�
 如果一次发送 30000/32768 bytes，在内部 DMA heap 碎片化时可能返回 ESP_ERR_NO_MEM。
 因此EPD大数据发送统一使用 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK=1024`，并由 `NT61522_SPI_SAFE_DMA_TX_CHUNK` 引用该配置。`display_bsp.cpp`永久保留一个 `DMA_ATTR` 1024字节TX缓冲和一个静态mutex，合计约1.1KB固定内部RAM；每个payload分块复制后才提交SPI，PSRAM源地址不再触发SPI驱动运行期申请DMA bounce buffer。启动只打印一次静态缓冲大小，真实失败才打印错误及DMA余量。
 
-EPD与SD共用SPI2，`USER_SHARED_SPI_MAX_TRANSFER_SIZE=1024` 同时配置EPD总线初始化和 `mount.c` 的SDSPI备用总线初始化。ESP-IDF v5.5.3 `esp_driver_sdspi` 的 `SDSPI_MAX_DATA_LEN` 为512，内部 `SDSPI_BLOCK_BUF_SIZE` 为516；非DRAM地址由驱动复制到该按需建立并随slot常驻的DMA块。项目不复制或修改SDK的SD协议实现。1024上限覆盖SD完整事务，并减少共享总线DMA描述符规模；总线所有权仍由 `TdxSharedSpi` 管理，EPD静态TX mutex只保护EPD缓冲。
+EPD与SD共用SPI2，`USER_SHARED_SPI_MAX_TRANSFER_SIZE=1024` 同时配置EPD总线初始化和 `mount.c` 的SDSPI备用总线初始化。EPD启用时启动顺序保证EPD先建立共享总线，SDSPI挂载直接复用而不重复调用`spi_bus_initialize()`；EPD关闭时保留SDSPI备用初始化。ESP-IDF v5.5.3 `esp_driver_sdspi` 的 `SDSPI_MAX_DATA_LEN` 为512，内部 `SDSPI_BLOCK_BUF_SIZE` 为516；非DRAM地址由驱动复制到该按需建立并随slot常驻的DMA块。项目不复制或修改SDK的SD协议实现。1024上限覆盖SD完整事务，并减少共享总线DMA描述符规模；总线所有权仍由 `TdxSharedSpi` 管理，EPD静态TX mutex只保护EPD缓冲。
+
+本地图片仍先申请完整压缩文件PSRAM缓冲，再使用现有zlib接口生成完整显示缓冲；没有引入流式EPD路径。`local_image_browsing.c`在共享SPI锁保护下将完整压缩文件直接读入该PSRAM缓冲，不申请额外内部RAM中转缓冲。该私有读取路径不影响轮播、DAILY、CAST、UPLOAD或公共SD函数。
 spiTransmitData() 会兜底拆包；EPD_Sendbuffera()、EPD_WriteMultiData_ToMaster/Slave/Both() 以及各屏型直接发送路径也按同一安全分包发送。
 EPD_Sendbuffera() 和 EPD_WriteMultiData_ToMaster/Slave/Both/Target() 返回 esp_err_t；任一 SPI transaction 失败时只打印关键 ESP_LOGE，调用 EpdType_ReportDisplayFailure(ret)，并让本次 EPD 显示最终返回失败。
 spiTransmitCommand()发送失败时不使用断言终止系统；它打印一次包含命令和错误码的ESP_LOGE、上报显示失败并返回原始错误。`spiTransmitData()`也在公共层上报首个错误，覆盖旧屏型未检查返回值的调用。`USER_EPD_SPI_SAFE_DMA_TX_CHUNK`带非0编译期检查，`USER_SHARED_SPI_MAX_TRANSFER_SIZE`带不小于516的检查，避免发送循环无法推进或容纳不了SDSPI块事务。
@@ -1709,7 +1712,7 @@ ServerNetworkStaEpdDisplay_Task()
 
 ---
 
-### 12.16 EPD/SD 共用电源独立测试 <span id="sec-12-16"></span>
+### 12.16 EPD/SD 共用电源正式独立掉电 <span id="sec-12-16"></span>
 
 相关文件：
 
@@ -1723,10 +1726,13 @@ main/epd_display/epd_display_app.h
 main/tdx_shared_spi.c
 main/mount.c
 main/tdx_cfg.h
+main/server_network_sta/wifi_work_time/server_network_sta_wifi_work_time.c
+main/server_network_sta/daily_image/server_network_sta_daily_image.c
 main/server_network_sta/slideshow/server_network_sta_slideshow.c
+main/local_image_browsing/local_image_browsing.c
 ```
 
-该功能是 GPIO4 EPD/SD 共用电源的独立测试状态机，不复用 `wifi_work_time`，也不发送 CH583 `POWER_OFF`。只有实际 EPD 显示任务完成后才 armed；启动后未发生 EPD 显示时不执行测试。EPD 队列仍有任务、HTTP 请求未结束、图片 show/save 事务未结束、轮播显示后的进度保存或下一张 SD 预读未结束、普通共享 SPI 请求正在执行或等待时均不关电。启动存储类型未知时测试不启动，原有业务继续运行。
+该模块保留历史文件名和`USER_EPD_SD_POWER_TEST_*`配置名，但功能已是正式且不可关闭的生产功能；编译期关闭宏会直接报错，初始化失败由主流程的`ESP_ERROR_CHECK`处理。DAILY、SLIDESHOW和LOCAL_IMAGE的EPD任务完成后先进入WAIT_DECISION：只有`wifi_work_time`完成全部guard、WAKE_TIMER、LED和共享SPI锁内复查，马上发送CH583 `POWER_OFF`时才提交POWER_OFF_COMMITTED并跳过本次独立掉电；明确保持开机、owner取消或`POWER_OFF` UART写入失败时提交STAY_AWAKE并执行正式掉电。其他显示模式继续保留EPD完成后自动armed的原行为。
 
 网络cast/cast2pic、network upload和USB图片业务共用 `TdxImageTransfer_ProcessItems()` 的保存实现，并使用独立引用计数覆盖完整事务，避免保存间隙被误判。network upload固定 `show=false && save=true`，不再进入“先show、后save”路径。轮播使用单独的slideshow follow-up引用计数，在同步EPD显示前登记，在显示完成后的进度保存和下一张SD BIN预读结束后释放。
 
@@ -1734,46 +1740,50 @@ main/server_network_sta/slideshow/server_network_sta_slideshow.c
 
 ```text
 EPD job done
+-> DAILY/SLIDESHOW/LOCAL_IMAGE: WAIT_DECISION
+-> immediate POWER_OFF committed: skip independent rail cycle
+-> stay awake committed: arm mandatory rail cycle
 -> wait EPD queue idle
 -> wait image transfer count = 0
 -> wait slideshow follow-up count = 0
--> test-only zero-wait shared SPI lock
+-> dedicated zero-wait shared SPI lock
 -> verify no normal SPI request is active or waiting
--> external SD: unmount while holding the test lock
+-> external SD: unmount while holding the rail-cycle lock
 -> SPIFFS: skip all storage unmount/remount operations
 -> recheck activity generation
 -> remove the EPD SPI device and free the shared SPI bus
 -> set GPIO0/1/6/7/8/9/10/25/26 to input with all internal pulls disabled
 -> recheck all activity counters and the event generation after IO isolation
 -> GPIO4 LOW last
--> release test lock
--> interruptible wait, maximum 2000 ms
+-> release rail-cycle lock
+-> monotonic wait until actual GPIO4 LOW time >= 2000 ms
+-> activity notifications are recorded but cannot restore power early
 -> GPIO4 HIGH first
 -> wait 100 ms for shared-rail stabilization
 -> restore EPD control pins and rebuild the shared SPI bus/device
--> external SD: use the test-only remount path
+-> external SD: use the dedicated remount path
 -> release blocked normal SPI callers
 ```
 
-普通 `TdxSharedSpi_Lock()` 在测试 armed、preparing、off 或 restoring 状态下会先登记请求并通知测试模块。登记发生在 mutex take 之前，因此已经等待 SPI 的 SD/EPD任务也会阻止断电。GPIO4 已关闭时，普通 SPI 调用等待电源开启；使用外部 SD 时还会等待 SD 重新挂载，请求不会因测试被丢弃。状态机使用单独的 `TdxSharedSpi_LockForEpdSdPowerTest()`，避免最终检查把自身误报为新 SPI 活动。关闭 `USER_EPD_SD_POWER_TEST_ENABLE` 时，普通 SPI 锁不执行测试计数或电源等待。
+普通 `TdxSharedSpi_Lock()` 在armed、preparing、off或restoring状态下会先登记请求并通知电源模块。登记发生在mutex take之前，因此已经等待SPI的SD/EPD任务会阻止尚未开始的掉电；GPIO4已经LOW后，普通SPI调用必须等待完整2000ms、电源稳定和SD重挂载，不能触发提前恢复。WAIT_DECISION和POWER_OFF_COMMITTED期间GPIO4仍为HIGH，可立即使用SPI。状态机使用单独的`TdxSharedSpi_LockForEpdSdPowerTest()`，避免最终检查把自身误报为新SPI活动。
 
-HTTP handler 使用 Begin/End 引用计数覆盖完整请求周期；请求到达时若 GPIO4 已关闭，会等待电源恢复后再进入原 handler。提前恢复条件：任何 HTTP 业务请求、CH583 发来的合法 `BLE_DATA`、新 EPD 请求或普通共享 SPI 请求。ESP32 发给 CH583 的命令以及 CH583 发来的其他命令都不影响本测试。2000 ms 内没有事件时也会自动恢复。所有配置、事件位和状态值统一定义在 `tdx_cfg.h` 的 `USER_EPD_SD_POWER_TEST_*` 宏中。
+HTTP不再使用阻塞式Begin/End覆盖所有请求。`file_server.c`的SD文件下载/上传/删除和`server_network_sta_data.c`中的非OTA multipart使用HTTP专用`EpdSdPowerTest_NetworkTryBeginNoWake()`做非阻塞预约；依赖SD的small JSON在读取并识别`func`后使用相同预约。该入口登记请求计数和事件代数以关闭最终掉电竞态，但BUSY时不唤醒电源任务，避免APP轮询加速RESTORING重试。供电不可立即使用时返回`1007/sd_power_busy/EPD=BUSY`，旧文件入口同时返回HTTP 503和`Retry-After: 1`。`/ping`、`/time`、OTA及网络专用JSON不取得该预约，断电期间继续运行。任何HTTP、CH583合法`BLE_DATA`、新EPD请求或普通共享SPI请求都不能缩短2000ms；恢复函数在GPIO4拉高前再次使用`esp_timer_get_time()`检查实际LOW时间，不足2000000us时使用`ESP_LOGE`拒绝恢复。关键日志中的`actual_off_ms`必须不小于2000。
 
-`USER_EPD_SD_POWER_TEST_IO_ISOLATION_ENABLE=1` 时，断电测试通过专用 EPD C 接口释放 SPI 外设路由，并将外部电源域相关 IO 切换为无上下拉的输入高阻，避免 GPIO 反向给 EPD 或 SD 供电。恢复时先开启 GPIO4，等待 100 ms，再恢复控制脚和 EPD 所有的共享 SPI 总线。公共 `Set_Power()` 仍只控制 GPIO4，不改变普通 EPD 初始化、复位和显示流程；测试路径不使用 `gpio_reset_pin()`，避免默认上拉造成反向供电。
+`USER_EPD_SD_POWER_TEST_IO_ISOLATION_ENABLE=1` 时，正式掉电通过专用 EPD C 接口释放 SPI 外设路由，并将外部电源域相关 IO 切换为无上下拉的输入高阻，避免 GPIO 反向给 EPD 或 SD 供电。恢复时先开启 GPIO4，等待 100 ms，再恢复控制脚和 EPD 所有的共享 SPI 总线。公共 `Set_Power()` 仍只控制 GPIO4，不改变普通 EPD 初始化、复位和显示流程；该路径不使用 `gpio_reset_pin()`，避免默认上拉造成反向供电。
 
-外部 SD 测试恢复使用 `example_storage_remount_sd_for_epd_power_test()`，不调用启动入口 `example_mount_storage()`。恢复顺序是先恢复 EPD 共享 SPI，再重新挂载 SD。ESP-IDF 卸载接口一旦被调用，测试模块不再保留旧 card handle；即使卸载最后返回 VFS 清理错误，也保持普通 SPI 请求阻塞并进入现有重挂载重试路径。恢复失败时 GPIO4 保持 HIGH，状态机限频记录错误并定时重试；不修改启动挂载失败计数、不调用 `esp_restart()`、不回退 SPIFFS、不扫描目录。当前存储为 SPIFFS 时，内部 SPIFFS 不卸载也不重新挂载，但 EPD IO 仍按相同顺序隔离和恢复。
+外部 SD 恢复使用 `example_storage_remount_sd_for_epd_power_test()`，不调用启动入口 `example_mount_storage()`。恢复顺序是先恢复 EPD 共享 SPI，再重新挂载 SD。ESP-IDF 卸载接口一旦被调用，模块不再保留旧 card handle；即使卸载最后返回 VFS 清理错误，也保持普通 SPI 请求和CH583关机重试阻塞，并进入现有重挂载重试路径。准备阶段失败会在资源恢复后重新armed，不能丢失本次正式掉电义务；已经完成2秒LOW但重挂载失败时只重试恢复，不重复无意义的掉电。当前存储为 SPIFFS 时，内部 SPIFFS 不卸载也不重新挂载，但 EPD IO 仍按相同顺序隔离和恢复。
 
 存 / 取信息（含条件限制）：
 
 ```text
 存：
-- 状态、事件代数、HTTP/图片事务/轮播后续 SD 工作引用计数，以及 EPD SPI 总线/IO 恢复需求状态只保存在 RAM，不写 NVS。
+- WAIT_DECISION、POWER_OFF_COMMITTED、armed、事件代数、HTTP/图片事务/轮播后续 SD 工作引用计数，以及 EPD SPI 总线/IO 恢复需求状态只保存在 RAM，不写 NVS。
 - 断电前卸载 SD；恢复供电后重新建立 SD card 和 FAT/VFS 挂载状态。
 
 取：
 - 读取 EPD 队列/执行 busy 状态。
 - 读取普通共享 SPI 请求计数，覆盖正在执行和等待 mutex 的任务。
-- 读取测试模块事件通知；只有校验通过的 CH583 `BLE_DATA` 作为 CH583 提前恢复事件。
+- 读取模块事件通知；校验通过的 CH583 `BLE_DATA`、HTTP、EPD和SPI活动只能推迟开始或等待恢复，不能提前结束GPIO4的2秒LOW窗口。
 ```
 
 [⬆ 返回目录](#toc) | [↩ 返回当前目录](#sec-12)
@@ -1881,7 +1891,7 @@ main/
 ├─ file_server.c
 │  └─ HTTP server、静态文件、旧上传/删除入口、新网络接口注册
 ├─ epd_sd_power_test/
-│  └─ EPD任务完成后执行 GPIO4 EPD/SD 共用电源的独立2秒断电测试
+│  └─ 保持开机决定后执行GPIO4至少2秒正式独立掉电；立即POWER_OFF时跳过
 ├─ server_network_sta/
 │  ├─ server_network_sta.c
 │  │  └─ WiFi STA、mDNS、HTTP server 启动
@@ -2262,7 +2272,7 @@ server_network_sta_slideshow.c
 
 `main/image_business_worker/` 提供固定12KB内部RAM静态栈、静态TCB、状态mutex和640字节单pending命令槽，串行执行DAILY、SLIDESHOW、LOCAL_IMAGE、CAST/CAST2PIC和低优先级USB投屏。旧独立任务已取消；network upload不作为owner排队，只在HTTP当前上下文预约资源并同步保存。
 
-`server_network_sta_upload_gate.c` 是网络/USB ping共用的UPLOAD资源判定。ping不修改UploadGate或供电状态，但会刷新RAM活动计时。非OTA multipart在供电不可立即使用时于读取body前返回1007；最终预约使用UPLOAD标志、EPD reservation和 `TdxSharedSpi_Lock(0)`，不等待正在进行的业务完成。EPD/SD只有IDLE或ARMED时允许IDLE，POWER_OFF、PREPARING和RESTORING返回BUSY。
+`server_network_sta_upload_gate.c` 是网络/USB ping共用的UPLOAD资源判定。ping不修改UploadGate或供电状态，但会刷新RAM活动计时。非OTA multipart在供电不可立即使用时于读取body前返回1007；最终预约使用UPLOAD标志、EPD reservation和 `TdxSharedSpi_Lock(0)`，不等待正在进行的业务完成。EPD/SD处于IDLE、ARMED、WAIT_DECISION或POWER_OFF_COMMITTED时供电可立即使用；POWER_OFF、PREPARING和RESTORING返回BUSY。
 
 DAILY HTTPS内存诊断位于 `main/server_network_sta/daily_image/daily_image_http.c`。POST和GET前各保留一条 `TLS heap before` 日志，分别报告internal、`MALLOC_CAP_DMA`和PSRAM的free/largest block，并在同一行打印 `aes=software`。ESP-IDF v5.5.3的ESP32-C5硬件AES实现会在处理过程中通过 `heap_caps_aligned_alloc()` 或 `heap_caps_aligned_calloc(..., MALLOC_CAP_DMA)` 动态申请临时缓冲和DMA描述符；96KB reserve不能保证运行期始终存在所需连续DMA块。工程因此在 `sdkconfig.defaults` 和当前 `sdkconfig` 中关闭 `CONFIG_MBEDTLS_HARDWARE_AES`，保留 `CONFIG_MBEDTLS_AES_C=y`，由SDK取消 `MBEDTLS_AES_ALT` 并回到mbedTLS内置软件AES。`CONFIG_MBEDTLS_HARDWARE_SHA`、MPI和ECC保持开启；GCM/CCM及TLS安全算法不变。`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304` 继续保留给WiFi和SPI等显式internal/DMA用户，统一worker栈现为12KB。
 
@@ -2914,6 +2924,10 @@ work_state_task()
 ServerNetworkStaWifiWorkTime_OnNetworkData()
 ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity()
 ServerNetworkStaWifiWorkTime_OnCh583Activity()
+ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown()
+ServerNetworkStaWifiWorkTime_RequestDailyPowerOffCountdown()
+ServerNetworkStaWifiWorkTime_RequestSlideshowPowerOffCountdown()
+ServerNetworkStaWifiWorkTime_RequestLocalImagePowerOffCountdown()
 ServerNetworkStaWifiWorkTime_SetFactoryResetGuard()
 ServerNetworkStaWifiWorkTime_SetOtaWriteInProgress()
 ServerNetworkStaWifiWorkTime_SetOtaReceiveInProgress()
@@ -2922,6 +2936,8 @@ UserLedStatus_CancelPowerOffSync()
 ch583_wifi_uart_send_power_off()
 ch583_wifi_send_frame()
 ```
+
+`wifi_work_time`内部one-shot状态包含ACTIVE以及DAILY、SLIDESHOW、LOCAL_IMAGE三种互斥owner。三个业务专用入口共用私有倒计时实现；相同或新owner接管已激活请求时保留原截止时间，避免DAILY周期检查反复重置。`work_state_task()`发现owner与当前`epd_mode`不一致时恢复原工作时间、取消旧请求并提交STAY_AWAKE。LOCAL_IMAGE的入口、final guard和locked guard统一在`elapsed >= target`时认定1秒倒计时到期；其它owner和普通工作时间继续使用`elapsed > target`。SLIDESHOW owner另外复用RTC/runtime remain检查，剩余时间不大于40秒时取消本次关机并执行正式2秒独立掉电；允许关机时按10秒启动延迟加15秒额外量提前25秒唤醒。最终共享SPI锁内复查通过后才提交立即POWER_OFF并跳过独立掉电；UART写入失败则撤销豁免、补做正式掉电并在完成前阻止关机重试。原通用入口和CH583底层帧格式不变。
 
 GPIO28长按达到5秒后、删除任何文件前调用 `ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(true)`；短按不设置。PB1远程请求使用单个RAM状态合并，在Factory Reset任务已就绪时立即设置同一guard，初始化前请求则在任务创建成功后补设。`work_state_task()`在普通入口、LED后和SPI锁内复检该标志，避免普通关机抢占等待、清理或白屏显示。白屏完成后不再调用 `ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle()`，成功和失败都直接清guard；普通关机规则随后继续有效。文件清理按best-effort继续执行，`ENOENT`不算失败，真实unlink、路径长度、目录读取或关闭错误累计到 `file_delete_failed/file_ret`，任一失败都会使总ret失败。
 
@@ -3055,7 +3071,8 @@ main/local_image_browsing/local_image_browsing.c
 ├─ 缺失文件有界跳过
 ├─ DAILY/SLIDESHOW非阻塞失效
 ├─ 提交owner=LOCAL_IMAGE到永久常驻统一worker
-└─ EPD空闲预留、BIN加载和同步显示
+├─ EPD空闲预留、BIN加载和同步显示
+└─ 显示及游标持久化成功后的LOCAL_IMAGE owner关机请求
 ```
 
 EPD显示模块增加空闲预留接口。预留建立后 `ServerNetworkStaEpdDisplay_IsBusy()` 返回true，普通显示入口在预留有效时拒绝新任务；本地浏览完成文件准备后消费预留并排队。EPD worker先发布active再减少pending，避免任务从队列取出时出现瞬时IDLE。

@@ -584,10 +584,30 @@ static esp_err_t delete_post_handler_impl(httpd_req_t *req)
 
 typedef esp_err_t (*file_server_handler_fn_t)(httpd_req_t *req);
 
-static esp_err_t run_with_epd_sd_network_guard(httpd_req_t *req,
-                                                file_server_handler_fn_t handler)
+static esp_err_t send_epd_sd_busy_response(httpd_req_t *req)
 {
-    EpdSdPowerTest_NetworkBegin();
+    char json[160];
+    snprintf(json,
+             sizeof(json),
+             "{\"func\":\"storage_result\",\"result\":%d,\"message\":\"sd_power_busy\",\"error\":\"sd_power_busy\",\"EPD\":\"BUSY\"}",
+             TDX_JSON_RESULT_BUSY);
+    ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity();
+    ESP_LOGW(TAG, "HTTP storage request rejected uri=%s reason=sd_power_busy epd=BUSY",
+             req != NULL && req->uri != NULL ? req->uri : "<null>");
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Retry-After", "1");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    return httpd_resp_sendstr(req, json);
+}
+
+static esp_err_t run_with_epd_sd_immediate_guard(httpd_req_t *req,
+                                                  file_server_handler_fn_t handler)
+{
+    esp_err_t power_ret = EpdSdPowerTest_NetworkTryBeginNoWake();
+    if (power_ret != ESP_OK) {
+        return send_epd_sd_busy_response(req);
+    }
     esp_err_t ret = handler(req);
     EpdSdPowerTest_NetworkEnd();
     return ret;
@@ -601,17 +621,24 @@ static esp_err_t download_get_handler(httpd_req_t *req)
     if (ping_ret != ESP_ERR_NOT_SUPPORTED) {
         return ping_ret;
     }
-    return run_with_epd_sd_network_guard(req, download_get_handler_impl);
+
+    // Time requests do not use the external EPD/SD rail and must remain responsive
+    // throughout the mandatory rail-off interval.
+    esp_err_t time_ret = ServerNetworkStaTime_ProcessGet(req);
+    if (time_ret != ESP_ERR_NOT_SUPPORTED) {
+        return time_ret;
+    }
+    return run_with_epd_sd_immediate_guard(req, download_get_handler_impl);
 }
 
 static esp_err_t upload_post_handler(httpd_req_t *req)
 {
-    return run_with_epd_sd_network_guard(req, upload_post_handler_impl);
+    return run_with_epd_sd_immediate_guard(req, upload_post_handler_impl);
 }
 
 static esp_err_t delete_post_handler(httpd_req_t *req)
 {
-    return run_with_epd_sd_network_guard(req, delete_post_handler_impl);
+    return run_with_epd_sd_immediate_guard(req, delete_post_handler_impl);
 }
 
 /* Function to start the file server */

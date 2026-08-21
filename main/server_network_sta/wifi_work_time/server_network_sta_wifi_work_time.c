@@ -11,12 +11,15 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 #include "freertos/task.h"
 #include "nvs.h"
 #include "ch583_wifi_uart_protocol.h"
 #include "epd_display_app.h"
 #include "epd_display_mode.h"
+#include "epd_sd_power_test.h"
 #include "led_status.h"
+#include "local_image_browsing.h"
 #include "server_network_sta_slideshow.h"
 #include "server_network_sta_daily_image.h"
 #include "tdx_cfg.h"
@@ -40,6 +43,7 @@ static uint32_t s_runtime_state_flags = 0;
 // Zero disables the guard; nonzero stores the absolute FreeRTOS deadline plus one.
 static uint32_t s_wifi_connect_guard_deadline_encoded = 0;
 static uint8_t s_one_shot_power_off_state = 0;
+static portMUX_TYPE s_one_shot_power_off_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_one_shot_restore_continue_time = USER_WORK_STATE_DEFAULT_CONTINUE_SECONDS;
 static uint32_t s_one_shot_restore_standby_time = USER_WORK_STATE_DEFAULT_STANDBY_SECONDS;
 static bool s_factory_reset_guard_active = false;
@@ -338,8 +342,15 @@ static void reset_work_time_counter_for_slideshow_short_interval(void)
     working_time = 0;
 }
 
-static void restore_work_time_after_one_shot_skip(void)
+static bool restore_work_time_after_one_shot_skip(uint8_t expected_state)
 {
+    portENTER_CRITICAL(&s_one_shot_power_off_mux);
+    uint8_t current_state =
+        __atomic_load_n(&s_one_shot_power_off_state, __ATOMIC_ACQUIRE);
+    if (current_state != expected_state) {
+        portEXIT_CRITICAL(&s_one_shot_power_off_mux);
+        return false;
+    }
     server_required_continue_work_time = s_one_shot_restore_continue_time;
     wifi_standby_time_s = s_one_shot_restore_standby_time;
     working_time = 0;
@@ -347,7 +358,24 @@ static void restore_work_time_after_one_shot_skip(void)
     s_last_network_data_tick = s_wifi_work_start_tick;
     s_last_power_off_send_tick = 0;
     __atomic_store_n(&s_one_shot_power_off_state, 0, __ATOMIC_RELEASE);
+    portEXIT_CRITICAL(&s_one_shot_power_off_mux);
     UserLedStatus_SetPowerOffPending(false);
+    EpdSdPowerTest_CommitStayAwake("one_shot_power_off_canceled");
+    return true;
+}
+
+static const char *one_shot_owner_to_string(uint8_t owner)
+{
+    switch (owner) {
+    case USER_WORK_STATE_ONE_SHOT_DAILY_OWNER_BIT:
+        return "DAILY";
+    case USER_WORK_STATE_ONE_SHOT_SLIDESHOW_OWNER_BIT:
+        return "SLIDESHOW";
+    case USER_WORK_STATE_ONE_SHOT_LOCAL_IMAGE_OWNER_BIT:
+        return "LOCAL_IMAGE";
+    default:
+        return "GENERIC";
+    }
 }
 
 static bool should_skip_or_cancel_one_shot_power_off(void)
@@ -359,15 +387,22 @@ static bool should_skip_or_cancel_one_shot_power_off(void)
     }
 
     uint8_t mode = EpdDisplayMode_Get();
-    /*
-     * A one-shot created in DAILY mode becomes stale when cast, cast2pic, or
-     * slideshow takes ownership. Generic EPD one-shots keep their old behavior.
-     */
-    if ((one_shot_state & USER_WORK_STATE_ONE_SHOT_DAILY_OWNER_BIT) != 0 &&
-        mode != USER_EPD_DISPLAY_MODE_DAILY) {
-        restore_work_time_after_one_shot_skip();
+    uint8_t owner = one_shot_state & USER_WORK_STATE_ONE_SHOT_OWNER_MASK;
+    bool owner_matches_mode =
+        (owner == USER_WORK_STATE_ONE_SHOT_DAILY_OWNER_BIT &&
+         mode == USER_EPD_DISPLAY_MODE_DAILY) ||
+        (owner == USER_WORK_STATE_ONE_SHOT_SLIDESHOW_OWNER_BIT &&
+         mode == USER_EPD_DISPLAY_MODE_SLIDESHOW) ||
+        (owner == USER_WORK_STATE_ONE_SHOT_LOCAL_IMAGE_OWNER_BIT &&
+         mode == USER_EPD_DISPLAY_MODE_LOCAL_IMAGE_BROWSING);
+    /* Generic EPD one-shots intentionally keep their mode-independent behavior. */
+    if (owner != 0 && !owner_matches_mode) {
+        if (!restore_work_time_after_one_shot_skip(one_shot_state)) {
+            return true;
+        }
         ESP_LOGI(TAG,
-                 "daily one-shot power off canceled because mode changed mode=%u(%s) restore_continue=%lu restore_standby=%lu",
+                 "owned one-shot power off canceled owner=%s mode=%u(%s) restore_continue=%lu restore_standby=%lu",
+                 one_shot_owner_to_string(owner),
                  (unsigned int)mode,
                  EpdDisplayMode_ToString(mode),
                  (unsigned long)server_required_continue_work_time,
@@ -408,7 +443,9 @@ static bool should_skip_or_cancel_one_shot_power_off(void)
                      now_text,
                      (long long)next_epoch,
                      next_text);
-            restore_work_time_after_one_shot_skip();
+            if (!restore_work_time_after_one_shot_skip(one_shot_state)) {
+                return true;
+            }
             return true;
         }
         ESP_LOGI(TAG,
@@ -432,7 +469,9 @@ static bool should_skip_or_cancel_one_shot_power_off(void)
                      (unsigned long)USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS,
                      (unsigned long)interval,
                      (unsigned long)elapsed);
-            restore_work_time_after_one_shot_skip();
+            if (!restore_work_time_after_one_shot_skip(one_shot_state)) {
+                return true;
+            }
             return true;
         }
         ESP_LOGI(TAG,
@@ -493,6 +532,7 @@ static bool configure_ch583_wake_timer_before_power_off(bool *slideshow_enabled_
         }
         if (keep_awake) {
             ESP_LOGI(TAG, "daily power off postponed for due run window");
+            EpdSdPowerTest_CommitStayAwake("daily_due_run_window");
             return false;
         }
         ESP_LOGI(TAG, "daily wake timer on interval=%lu advance=%u",
@@ -557,6 +597,7 @@ static bool configure_ch583_wake_timer_before_power_off(bool *slideshow_enabled_
         if ((one_shot_state & USER_WORK_STATE_ONE_SHOT_ACTIVE_BIT) == 0 &&
             wake_interval < TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS) {
             reset_work_time_counter_for_slideshow_short_interval();
+            EpdSdPowerTest_CommitStayAwake("slideshow_wake_interval_too_short");
             ESP_LOGI(TAG,
                      "slideshow wake interval too short, skip power off wake_interval=%lu min=%lu saved_interval=%lu elapsed=%lu startup_delay=%lu extra_advance=%lu wake_advance=%lu",
                      (unsigned long)wake_interval,
@@ -641,10 +682,20 @@ static bool retry_pending_led_power_off_cancel(void)
     return true;
 }
 
+// LOCAL_IMAGE uses an inclusive deadline; all other work keeps the legacy
+// strict deadline. Every power-off guard must evaluate the same rule.
+static bool is_work_time_expired(uint32_t elapsed,
+                                 uint32_t target,
+                                 bool local_image_one_shot)
+{
+    return local_image_one_shot ? elapsed >= target : elapsed > target;
+}
+
 static void work_state_task(void *arg)
 {
     uint8_t counter = 0;
     uint8_t slideshow_debug_counter = 0;
+    bool power_cycle_guard_logged = false;
 #if CH583_WIFI_NFC_TEST_ENABLE
     bool nfc_test_done = false;
 #endif
@@ -676,6 +727,10 @@ static void work_state_task(void *arg)
             __atomic_load_n(&s_one_shot_power_off_state, __ATOMIC_ACQUIRE);
         bool one_shot_active =
             (one_shot_state & USER_WORK_STATE_ONE_SHOT_ACTIVE_BIT) != 0;
+        bool local_image_one_shot =
+            one_shot_active &&
+            (one_shot_state & USER_WORK_STATE_ONE_SHOT_OWNER_MASK) ==
+                USER_WORK_STATE_ONE_SHOT_LOCAL_IMAGE_OWNER_BIT;
         uint32_t clamped_continue_time = one_shot_active ?
                                          server_required_continue_work_time :
                                          clamp_continue_seconds(server_required_continue_work_time);
@@ -758,8 +813,9 @@ static void work_state_task(void *arg)
             slideshow_debug_counter = 0;
         }
 
-        if (factory_reset_power_cycle_pending ||
-            elapsed > server_required_continue_work_time) {
+        bool work_time_expired = is_work_time_expired(
+            elapsed, server_required_continue_work_time, local_image_one_shot);
+        if (factory_reset_power_cycle_pending || work_time_expired) {
             uint32_t ota_hold_flags = __atomic_load_n(&s_ota_hold_flags, __ATOMIC_ACQUIRE);
             if (ota_hold_flags != 0) {
                 if (counter == 0) {
@@ -865,6 +921,20 @@ static void work_state_task(void *arg)
                 (void)__atomic_fetch_and(&s_guard_log_flags,
                                          ~USER_WORK_STATE_GUARD_LOG_CH583_BIT,
                                          __ATOMIC_ACQ_REL);
+                if (EpdSdPowerTest_IsMandatoryCyclePending()) {
+                    if (!power_cycle_guard_logged) {
+                        power_cycle_guard_logged = true;
+                        ESP_LOGI(TAG,
+                                 "POWER_OFF postponed until mandatory EPD/SD power cycle completes");
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
+                if (power_cycle_guard_logged) {
+                    power_cycle_guard_logged = false;
+                    ESP_LOGI(TAG,
+                             "mandatory EPD/SD power cycle complete; POWER_OFF may be reevaluated");
+                }
                 if (!factory_reset_power_cycle_pending &&
                     s_last_power_off_send_tick != 0 &&
                     (now - s_last_power_off_send_tick) < retry_interval_ticks) {
@@ -932,7 +1002,9 @@ static void work_state_task(void *arg)
                                     __ATOMIC_ACQUIRE) > 0;
                 bool final_timer_active =
                     !factory_reset_power_cycle_pending &&
-                    final_elapsed <= server_required_continue_work_time;
+                    !is_work_time_expired(final_elapsed,
+                                          server_required_continue_work_time,
+                                          local_image_one_shot);
                 if (factory_reset_power_cycle_pending) {
                     final_http_hold_remaining = 0;
                     final_ch583_hold_remaining = 0;
@@ -1026,7 +1098,9 @@ static void work_state_task(void *arg)
                                     __ATOMIC_ACQUIRE) > 0;
                 bool locked_timer_active =
                     !factory_reset_power_cycle_pending &&
-                    locked_elapsed <= server_required_continue_work_time;
+                    !is_work_time_expired(locked_elapsed,
+                                          server_required_continue_work_time,
+                                          local_image_one_shot);
                 if (factory_reset_power_cycle_pending) {
                     locked_http_hold_remaining = 0;
                     locked_ch583_hold_remaining = 0;
@@ -1086,9 +1160,31 @@ static void work_state_task(void *arg)
                     vTaskDelay(pdMS_TO_TICKS(100));
                 }
 
+                esp_err_t power_decision_ret =
+                    EpdSdPowerTest_CommitImmediatePowerOff();
+                if (power_decision_ret != ESP_OK) {
+                    ESP_LOGW(TAG,
+                             "POWER_OFF postponed because post-display power decision is not ready ret=%s",
+                             esp_err_to_name(power_decision_ret));
+                    TdxSharedSpi_Unlock();
+                    (void)__atomic_fetch_or(&s_runtime_state_flags,
+                                            USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT,
+                                            __ATOMIC_ACQ_REL);
+                    if (!retry_pending_led_power_off_cancel()) {
+                        ESP_LOGE(TAG, "power decision failure left LED cancellation pending");
+                    }
+                    if (!retry_pending_wake_timer_cancel()) {
+                        ESP_LOGE(TAG, "power decision failure left CH583 wake timer rollback pending");
+                    }
+                    s_last_power_off_send_tick = 0;
+                    vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                    continue;
+                }
+
                 int power_off_ret = ch583_wifi_uart_send_power_off();
                 if (power_off_ret < 0) {
                     ESP_LOGE(TAG, "CH583 POWER_OFF UART send failed ret=%d", power_off_ret);
+                    EpdSdPowerTest_CommitStayAwake("ch583_power_off_send_failed");
                     if (provision_ret == 0) {
                         int restore_ret =
                             ch583_wifi_uart_send_current_wifi_provision_status();
@@ -1430,29 +1526,45 @@ void ServerNetworkStaWifiWorkTime_OnCh583Initialized(void)
     }
 }
 
-void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t seconds)
+bool ServerNetworkStaWifiWorkTime_ShouldAwaitPostDisplayPowerDecision(void)
+{
+    uint8_t mode = EpdDisplayMode_Get();
+    return mode == USER_EPD_DISPLAY_MODE_DAILY ||
+           mode == USER_EPD_DISPLAY_MODE_SLIDESHOW ||
+           mode == USER_EPD_DISPLAY_MODE_LOCAL_IMAGE_BROWSING;
+}
+
+static void request_owned_one_shot_power_off_countdown(uint32_t seconds,
+                                                       uint8_t owner)
 {
     if (seconds == 0) {
         return;
     }
-    bool daily_owned =
-        EpdDisplayMode_Get() == USER_EPD_DISPLAY_MODE_DAILY;
     /*
      * Keep an active one-shot deadline stable. The daily worker periodically
      * checks that shutdown is progressing, so resetting the counter here can
      * race the final power-off guard and cause an unnecessary cancel/retry.
      */
+    TickType_t request_tick = xTaskGetTickCount();
+    portENTER_CRITICAL(&s_one_shot_power_off_mux);
     uint8_t one_shot_state =
         __atomic_load_n(&s_one_shot_power_off_state, __ATOMIC_ACQUIRE);
     if ((one_shot_state & USER_WORK_STATE_ONE_SHOT_ACTIVE_BIT) != 0) {
-        if (daily_owned) {
-            (void)__atomic_fetch_or(&s_one_shot_power_off_state,
-                                    USER_WORK_STATE_ONE_SHOT_DAILY_OWNER_BIT,
-                                    __ATOMIC_ACQ_REL);
+        uint8_t updated_state = one_shot_state;
+        if (owner != 0) {
+            updated_state =
+                (one_shot_state & ~USER_WORK_STATE_ONE_SHOT_OWNER_MASK) | owner;
         }
+        __atomic_store_n(&s_one_shot_power_off_state,
+                         updated_state,
+                         __ATOMIC_RELEASE);
+        uint32_t active_target = server_required_continue_work_time;
+        portEXIT_CRITICAL(&s_one_shot_power_off_mux);
         ESP_LOGI(TAG,
-                 "one-shot power off countdown already active, keep target=%lu",
-                 (unsigned long)server_required_continue_work_time);
+                 "one-shot power off countdown already active owner=%s keep target=%lu",
+                 one_shot_owner_to_string(updated_state &
+                                          USER_WORK_STATE_ONE_SHOT_OWNER_MASK),
+                 (unsigned long)active_target);
         return;
     }
     s_one_shot_restore_continue_time = server_required_continue_work_time;
@@ -1461,20 +1573,46 @@ void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t secon
     server_required_continue_work_time = seconds;
     wifi_standby_time_s = seconds;
     working_time = 0;
-    s_wifi_work_start_tick = xTaskGetTickCount();
+    s_wifi_work_start_tick = request_tick;
     s_last_network_data_tick = s_wifi_work_start_tick;
     s_last_power_off_send_tick = 0;
-    one_shot_state = USER_WORK_STATE_ONE_SHOT_ACTIVE_BIT;
-    if (daily_owned) {
-        one_shot_state |= USER_WORK_STATE_ONE_SHOT_DAILY_OWNER_BIT;
-    }
+    one_shot_state = USER_WORK_STATE_ONE_SHOT_ACTIVE_BIT | owner;
     __atomic_store_n(&s_one_shot_power_off_state, one_shot_state, __ATOMIC_RELEASE);
+    portEXIT_CRITICAL(&s_one_shot_power_off_mux);
     UserLedStatus_SetPowerOffPending(true);
 
     ESP_LOGI(TAG,
-             "one-shot power off countdown requested target=%lu standby=%lu",
+             "one-shot power off countdown requested owner=%s target=%lu standby=%lu",
+             one_shot_owner_to_string(owner),
              (unsigned long)server_required_continue_work_time,
              (unsigned long)wifi_standby_time_s);
+}
+
+void ServerNetworkStaWifiWorkTime_RequestOneShotPowerOffCountdown(uint32_t seconds)
+{
+    uint8_t owner =
+        EpdDisplayMode_Get() == USER_EPD_DISPLAY_MODE_DAILY
+            ? USER_WORK_STATE_ONE_SHOT_DAILY_OWNER_BIT
+            : 0;
+    request_owned_one_shot_power_off_countdown(seconds, owner);
+}
+
+void ServerNetworkStaWifiWorkTime_RequestDailyPowerOffCountdown(uint32_t seconds)
+{
+    request_owned_one_shot_power_off_countdown(
+        seconds, USER_WORK_STATE_ONE_SHOT_DAILY_OWNER_BIT);
+}
+
+void ServerNetworkStaWifiWorkTime_RequestSlideshowPowerOffCountdown(uint32_t seconds)
+{
+    request_owned_one_shot_power_off_countdown(
+        seconds, USER_WORK_STATE_ONE_SHOT_SLIDESHOW_OWNER_BIT);
+}
+
+void ServerNetworkStaWifiWorkTime_RequestLocalImagePowerOffCountdown(uint32_t seconds)
+{
+    request_owned_one_shot_power_off_countdown(
+        seconds, USER_WORK_STATE_ONE_SHOT_LOCAL_IMAGE_OWNER_BIT);
 }
 
 void ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(bool active)

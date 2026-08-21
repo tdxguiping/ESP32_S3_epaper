@@ -56,6 +56,22 @@
 
 ## 6. 网络 HTTP 数据入口汇总 <span id="sec-06"></span>
 
+EPD/SD正式独立掉电期间，GPIO4只关闭EPD/SD外部电源域，HTTP服务保持在线。协议按资源依赖处理：`GET /ping`、`GET /time`、OTA和不依赖EPD/SD的小JSON继续执行；需要SD的请求不在HTTP handler中等待恢复，而是立即返回BUSY，由客户端等待`/ping`中的`EPD`恢复为`IDLE`后重试。
+
+需要SD且当前供电不可立即使用时，JSON响应固定包含：
+
+```json
+{
+  "func": "dataup_result",
+  "result": 1007,
+  "message": "sd_power_busy",
+  "error": "sd_power_busy",
+  "EPD": "BUSY"
+}
+```
+
+旧文件下载、上传、删除入口使用相同`result/error/EPD`含义，`func`为`storage_result`，并返回HTTP 503、`Retry-After: 1`和`Connection: close`。非OTA multipart在读取body前返回；small JSON先读取最多4096字节的请求体以识别`func`，再对`daily_download_file/get_snapshot/get_saved_images/start_slideshow/set_slideshow/delete`执行非阻塞EPD/SD门控。任何BUSY响应都不能缩短GPIO4至少2000ms的LOW窗口。
+
 Mermaid 总入口图：
 
 ```mermaid
@@ -1295,6 +1311,10 @@ CH583 收到合法 WIFI_DATA 后，如果 BLE 连接且 notify 已开启，则�
 
 > 当前状态：CH583 POWER_OFF 关机链路保持启用，`work_state_task()`超时后仍执行 WAKE_TIMER、LED 关机准备并发送 POWER_OFF。`USER_POWER_OFF_LOCAL_EPD_SD_CUTOFF_ENABLE=0` 只表示发送成功后不调用 `Set_Power(0)`，GPIO4 保持 HIGH，等待 CH583 关闭 ESP32/WiFi 电源。
 
+> DAILY、SLIDESHOW和LOCAL_IMAGE在EPD及各自关键状态持久化成功后，通过带业务owner的one-shot入口复用同一关机链路，不直接发送`POWER_OFF`。模式切离owner时取消旧one-shot；SLIDESHOW下一播放点剩余时间不大于40秒时也取消本次关机。该调整不改变`WAKE_TIMER`、`WIFI_PROVISION`或`POWER_OFF`帧格式。
+
+> 三种模式的EPD完成后先等待本地电源决定。最终guard和共享SPI锁内复查均通过、下一步就是发送`POWER_OFF`时，ESP32提交立即关机并跳过EPD/SD独立掉电；明确继续运行时必须先执行GPIO4 LOW不少于2000ms的独立掉电并恢复SD。`POWER_OFF` UART写入失败会撤销豁免并转为保持开机掉电流程。本规则只改变内部时序，不增加UART命令、ARG或ACK/ERR。
+
 Mermaid 时序图：
 
 ```mermaid
@@ -1344,9 +1364,10 @@ work_state_task()
       ├─ TdxSharedSpi_Lock(10s)
       ├─ 锁内再次检查工作计时及 HTTP/CH583/OTA/EPD/image-save guard
       ├─ 一次性发送WIFI_PROVISION：NORMAL=F，SLIDESHOW=1，DAILY=2，LOCAL_IMAGE_BROWSING=F
+      ├─ 提交immediate POWER_OFF决定，跳过EPD/SD独立掉电
       ├─ ch583_wifi_uart_send_power_off()
       │  └─ ch583_wifi_send_frame("POWER_OFF", "")
-      ├─ 发送失败：GPIO4 保持 HIGH，释放 SPI 锁并回滚 LED/WAKE_TIMER
+      ├─ 发送失败：提交STAY_AWAKE，释放SPI锁、回滚LED/WAKE_TIMER并执行GPIO4 LOW至少2000ms
       └─ UART 发送成功
          ├─ 保持 GPIO4 HIGH，不调用 ServerNetworkStaEpdDisplay_SetPower(false)
          └─ 2 秒后仍运行则 esp_restart()
@@ -1360,7 +1381,7 @@ ARG 为空
 WiFi 任务完成后，如果允许 CH583 关闭 WiFi 电源，ESP32-C5 发送 POWER_OFF
 CH583校验后回复ACK并关闭ESP32/WiFi电源。发送前必须通过HTTP/CH583、OTA、EPD、图片保存、每日一图和SPI复检；取消关机时回滚LED及已开启的WAKE_TIMER。关机前上报模式：NORMAL和LOCAL_IMAGE_BROWSING使用临时`F`，SLIDESHOW使用`1`，DAILY使用`2`。`POWER_OFF`成功后GPIO4保持HIGH；2秒内仍未断电则软件重启。
 
-轮播`wake_interval`小于`TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS`（当前10秒）时跳过本次关机；该阈值不改变轮播最小间隔60秒。
+轮播one-shot在下一播放点剩余时间不大于`USER_EPD_DONE_LOW_POWER_SLIDESHOW_MIN_REMAIN_SECONDS`（当前40秒）时取消关机并执行正式EPD/SD独立掉电；允许继续关机时，从remain扣除10秒启动延迟和15秒额外提前量，总提前25秒，并在最终提交后跳过独立掉电。若实际`wake_interval`仍小于`TDX_SLIDESHOW_POWER_OFF_MIN_WAKE_INTERVAL_SECONDS`（当前10秒），也跳过本次关机并转为保持开机处理。两个阈值都不改变轮播配置的最小间隔60秒。
 ```
 
 Factory Reset 白屏保持及客户下次开机流程：
