@@ -16,6 +16,7 @@
 #include "epd_display_app.h"
 #include "app_persistent_state.h"
 #include "file_serving_example_common.h"
+#include "memory_policy.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
@@ -643,7 +644,7 @@ esp_err_t UsbConsoleCommon_SavePartFile(const char *dir,
     void *io_buf = NULL;
 #if USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE > 0
     // Use an explicit stdio buffer so SD/FATFS writes can batch internal file operations.
-    io_buf = malloc(USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
+    io_buf = MemoryPolicy_AllocBuffer(USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
     if (io_buf != NULL) {
         if (setvbuf(fp, io_buf, _IOFBF, USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE) != 0) {
             ESP_LOGW(TAG,

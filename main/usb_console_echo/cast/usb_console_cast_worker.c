@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "image_business_worker.h"
+#include "memory_policy.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "usb_console_common.h"
@@ -141,7 +142,7 @@ esp_err_t UsbConsoleCast_SubmitAsync(const usb_console_http_request_t *request,
                                          TDX_JSON_RESULT_NO_MEMORY);
     }
 
-    job->body = (char *)malloc(request->body_len + 1);
+    job->body = (char *)MemoryPolicy_AllocBuffer(request->body_len + 1);
     if (job->body == NULL) {
         free_cast_job(job);
         return UsbConsoleCommon_SetJsonf(response,

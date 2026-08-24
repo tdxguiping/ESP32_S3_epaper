@@ -28,6 +28,10 @@ void ServerNetworkStaWifiWorkTime_RequestSlideshowPowerOffCountdown(uint32_t sec
 void ServerNetworkStaWifiWorkTime_RequestLocalImagePowerOffCountdown(uint32_t seconds);
 void ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(bool active);
 void ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle(uint32_t wake_seconds);
+// Submit one dedicated WiFi recovery power cycle through the centralized safe shutdown chain.
+esp_err_t ServerNetworkStaWifiWorkTime_RequestWifiRecoveryPowerCycle(uint32_t wake_seconds);
+// Cancel a pending recovery when WiFi obtains an IP before POWER_OFF is committed.
+void ServerNetworkStaWifiWorkTime_CancelWifiRecoveryPowerCycle(const char *reason);
 void ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(bool in_progress);
 bool ServerNetworkStaWifiWorkTime_IsImageSaveInProgress(void);
 void ServerNetworkStaWifiWorkTime_ImageTransferBegin(void);

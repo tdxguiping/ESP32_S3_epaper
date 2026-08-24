@@ -8,6 +8,7 @@
 #include "epd_sd_power_test.h"
 #include "epd_type.h"
 #include "factory_reset.h"
+#include "ch583_factory_test.h"
 #include "led_status.h"
 #include "local_image_browsing.h"
 #include "server_network_sta_time.h"
@@ -178,12 +179,13 @@ static int ch583_wifi_base64url_encode(const uint8_t *in, size_t in_len, char *o
     return (int)out_len;
 }
 
-static uint16_t ch583_wifi_crc16_ccitt_false(const char *data, size_t len)
+uint16_t ch583_wifi_uart_crc16(const void *data, size_t len)
 {
+    const uint8_t *bytes = (const uint8_t *)data;
     uint16_t crc = 0xFFFF;
 
     for (size_t i = 0; i < len; i++) {
-        crc ^= (uint16_t)((uint8_t)data[i] << 8);
+        crc ^= (uint16_t)(bytes[i] << 8);
         for (int bit = 0; bit < 8; bit++) {
             if ((crc & 0x8000) != 0) {
                 crc = (uint16_t)((crc << 1) ^ 0x1021);
@@ -349,7 +351,7 @@ static int ch583_wifi_send_frame(const char *cmd, const char *arg, uint8_t need_
         goto done;
     }
 
-    uint16_t crc = ch583_wifi_crc16_ccitt_false(body, (size_t)body_len);
+    uint16_t crc = ch583_wifi_uart_crc16(body, (size_t)body_len);
     int frame_len = snprintf(frame_text, sizeof(frame_text), "@#%s|CRC=%04X^&\n\r", body, crc);
     if (frame_len <= 0 || frame_len >= (int)sizeof(frame_text)) {
         UserDebugOutput_Printf("CH583_PROTO tx frame overflow cmd=%s\r\n", cmd);
@@ -411,7 +413,7 @@ static int __attribute__((unused)) ch583_wifi_send_wifi_provision_frame(uint8_t 
     body[prefix_len] = (char)combined_status;
     size_t body_len = (size_t)prefix_len + 1U;
 
-    uint16_t crc = ch583_wifi_crc16_ccitt_false(body, body_len);
+    uint16_t crc = ch583_wifi_uart_crc16(body, body_len);
     memcpy(frame_text, "@#", 2);
     memcpy(frame_text + 2, body, body_len);
     int suffix_len = snprintf(frame_text + 2 + body_len,
@@ -818,7 +820,8 @@ static bool ch583_wifi_parse_frame(char *body, ch583_wifi_frame_t *frame, uint16
     memset(frame, 0, sizeof(*frame));
     crc_pos = strstr(body, "|CRC=");
     if (crc_pos == NULL) {
-        CH583_WIFI_DEBUG_PRINTF("CH583_PROTO bad format no CRC body=%s\r\n", body);
+        CH583_WIFI_DEBUG_PRINTF("CH583_PROTO bad format no CRC body_len=%u\r\n",
+                                (unsigned int)strlen(body));
         if (error_reason != NULL) {
             *error_reason = "BAD_FORMAT";
         }
@@ -835,14 +838,13 @@ static bool ch583_wifi_parse_frame(char *body, ch583_wifi_frame_t *frame, uint16
         return false;
     }
 
-    crc_calc = ch583_wifi_crc16_ccitt_false(body, crc_input_len);
+    crc_calc = ch583_wifi_uart_crc16(body, crc_input_len);
     *crc_received = (uint16_t)crc_value;
     if (crc_calc != *crc_received) {
-        CH583_WIFI_DEBUG_PRINTF("CH583_PROTO bad crc calc=%04X recv=%04X body=%.*s\r\n",
+        CH583_WIFI_DEBUG_PRINTF("CH583_PROTO bad crc calc=%04X recv=%04X body_len=%u\r\n",
                crc_calc,
                *crc_received,
-               (int)crc_input_len,
-               body);
+               (unsigned int)crc_input_len);
         if (error_reason != NULL) {
             *error_reason = "BAD_CRC";
         }
@@ -1350,6 +1352,33 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
             // Preserve the original full work timer reset only for accepted BLE data.
             ServerNetworkStaWifiWorkTime_OnNetworkData();
         }
+    } else if (strcmp(frame.cmd, "FACTORY_DATA") == 0) {
+        uint32_t admission = 0U;
+        esp_err_t ret = Ch583FactoryTest_Admit(frame.seq,
+                                               frame.arg,
+                                               frame.arg_len,
+                                               &admission);
+        if (ret == ESP_OK) {
+            if (ch583_wifi_send_ack(frame.seq) != 0) {
+                ESP_LOGE(TAG, "FACTORY_DATA ACK send failed seq=%u",
+                         (unsigned int)frame.seq);
+                Ch583FactoryTest_CancelAdmission(admission);
+            } else {
+                ret = Ch583FactoryTest_Commit(admission);
+                if (ret != ESP_OK) {
+                    ESP_LOGE(TAG,
+                             "FACTORY_DATA commit failed seq=%u ret=%s",
+                             (unsigned int)frame.seq,
+                             esp_err_to_name(ret));
+                    Ch583FactoryTest_CancelAdmission(admission);
+                }
+            }
+        } else {
+            const char *reason = ret == ESP_ERR_NO_MEM ? "NO_MEM" :
+                                 ret == ESP_ERR_INVALID_ARG ? "BAD_ARG" :
+                                 "BUSY";
+            ch583_wifi_send_err(frame.seq, reason);
+        }
     } else if (strcmp(frame.cmd, "ACK") == 0 ||
                strcmp(frame.cmd, "ERR") == 0 ||
                strcmp(frame.cmd, "PONG") == 0 ||
@@ -1393,7 +1422,8 @@ void ch583_wifi_uart_process_bytes(const uint8_t *data, size_t len, ch583_wifi_b
         if (byte == '&' && s_frame_body_len > 0 && s_frame_body[s_frame_body_len - 1] == '^') {
             s_frame_body_len--;
             s_frame_body[s_frame_body_len] = '\0';
-            CH583_WIFI_DEBUG_PRINTF("CH583_PROTO frame end body_len=%u body=%s\r\n", (unsigned int)s_frame_body_len, s_frame_body);
+            CH583_WIFI_DEBUG_PRINTF("CH583_PROTO frame end body_len=%u\r\n",
+                                    (unsigned int)s_frame_body_len);
             ch583_wifi_handle_frame_body(s_frame_body, ble_data_callback);
             s_in_frame = false;
             s_frame_body_len = 0;
@@ -1438,6 +1468,14 @@ int ch583_wifi_uart_send_wifi_data(const char *message)
         UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_UART_TX);
     }
     return ret;
+}
+
+int ch583_wifi_uart_send_factory_result(const char *result)
+{
+    if (result == NULL || result[0] == '\0') {
+        return -1;
+    }
+    return ch583_wifi_send_frame("FACTORY_RESULT", result, 1);
 }
 
 int ch583_wifi_uart_send_wifi_provision_status(uint8_t status)

@@ -1054,3 +1054,25 @@ zlib模式下，cast、cast2pic和upload的 `bin_size` 是压缩后的实际传�
 - 文件 I/O、zlib数据错误或EPD显示失败使用 `ESP_FAIL`。
 
 具体zlib原始错误值、压缩输入长度、解压输出长度和耗时只通过设备端 `ESP_LOGE/ESP_LOGI` 输出，不发送给网络、USB、BLE或CH583客户端。
+
+## WiFi recovery result-code note (2026-08)
+
+- No new result code is introduced for the one-shot CH583 power cycle; it is an internal recovery action.
+- `wifi_wakeup_result/result=1307` is the final result of the independent 10-second notification observer when WiFi is still not READY. Sending 1307 does not stop the WiFi manager and does not itself request power-off.
+- The separate 20-second cold-start recovery may request one CH583 power cycle only when no IP exists, the state is a recoverable WiFi connection state, EPD is `IDLE`, and the persistent one-shot marker is clear.
+
+## CH583/CH585 WiFi出厂产测返回规则
+
+出厂产测不增加BLE JSON正式result。`FACTORY_DATA`继续使用UART协议层ACK/ERR：
+
+| UART结果 | 条件 |
+|---|---|
+| `ACK,<received_seq>` | ARG合法、FACTORY_TEST独占状态准入成功；ACK发送成功后才提交统一任务 |
+| `ERR,<received_seq>,BAD_ARG` | 未知厂测子命令、SSID/key缺失、超长、包含空格或非有效ASCII；协议保留字符可能先被外层解析判为格式/CRC错误 |
+| `ERR,<received_seq>,BAD_LEN` | LEN与ARG实际字节数不一致或超过外层限制 |
+| `ERR,<received_seq>,BAD_PART` | PART/TOTAL不是1/1 |
+| `ERR,<received_seq>,BAD_CRC` | 外层CRC错误 |
+| `ERR,<received_seq>,BUSY` | Factory Reset或统一业务资源拒绝厂测请求 |
+| `ERR,<received_seq>,NO_MEM` | 必要资源不可用 |
+
+ACK只表示厂测事件已被设备接收，不表示MAC读取或WiFi连接已经成功；`FACTORY_RESULT`不得早于该请求ACK。正式业务结果由后续`CMD=FACTORY_RESULT`中的`facWifiMac ...`、`facWifiCon success ...`或`facWifiCon failed ...`表达。`facWifiCon success`必须对应本次新凭据和新连接generation取得的非零IP；失败RSSI为0，不使用旧连接RSSI。Factory Reset抢占和厂测抑制20秒hard recovery均为内部控制，不增加返回码。

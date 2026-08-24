@@ -764,3 +764,33 @@ SPI DMA回归测试：启动时应只出现一次 `EPD static DMA TX ready bytes
 SPI命令错误测试：注入一次 `spiTransmitCommand()` 失败，确认只打印包含command和ret的关键ESP_LOGE，不触发assert、Guru Meditation或自动重启；EPD最终结果必须非ESP_OK，本地图片浏览不得推进游标。将 `USER_EPD_SPI_SAFE_DMA_TX_CHUNK` 临时设为0，或将 `USER_SHARED_SPI_MAX_TRANSFER_SIZE` 设为小于516时，构建必须被编译期检查拒绝；正式值保持1024。
 
 SD共享SPI回归测试：EPD启用的正常启动必须出现`SDSPI shared bus reused host=1 owner=EPD`，不得再出现`spi_bus_initialize ... SPI bus already initialized`；EPD关闭配置仍须由SD成功初始化总线。确认SDSPI mount和掉电测试remount正常，连续执行大文件读、写、删除、轮播读取及本地图片读取；同时让EPD在BUSY安全点释放共享锁给SD。不得出现大于1024字节的SPI事务、`ESP_ERR_NO_MEM`、文件损坏、锁超时或EPD/SD同时选中。SDSPI仍使用ESP-IDF原生512字节数据块和516字节常驻DMA块，不增加项目自定义SD协议。
+
+## WiFi one-shot hard recovery tests (2026-08)
+
+1. With the AP available, verify WiFi obtains an IP before 20 seconds and neither `WAKE_TIMER ON,1` nor `POWER_OFF` is sent.
+2. With the AP unavailable on the first boot, verify the absolute 20-second deadline is not refreshed by retries. With EPD `IDLE`, verify the NVS marker is committed, then CH583 receives `WAKE_TIMER ON,1` before `POWER_OFF` and powers the ESP32 back after one second.
+3. Keep the AP unavailable after the recovery boot. Verify no second automatic `POWER_OFF` is sent and the existing WiFi manager continues retrying while powered.
+4. Enable the AP later on the second boot. Verify `GOT_IP` prevents shutdown and stable `READY` clears the one-shot marker.
+5. Keep EPD busy across the 20-second boundary. Verify recovery is postponed, no wake timer or power-off command is sent, and the request is evaluated only after EPD becomes `IDLE`.
+6. Produce `GOT_IP` while shutdown preparation is running. Verify the final, SPI-locked or immediate pre-commit check cancels shutdown and rolls back the armed wake timer.
+7. Use wrong credentials or no saved credentials. Verify terminal `AUTH_FAILED`/`NO_CONFIG` does not request a hard recovery.
+8. Save a new SSID/password after a previous recovery. Verify the marker clears and the new credential receives a fresh 20-second one-shot window.
+9. Inject NVS marker-save failure. Verify the ESP32 remains powered and no `POWER_OFF` is sent.
+10. For `wifi_wakeup` received during `CONNECTING`/WiFi `RETRY_WAIT`, verify the immediate progress reply is followed within 10 seconds by either `wifi_info_result` or exactly one final 1307.
+
+## CH583/CH585 WiFi出厂产测测试
+
+1. 发送合法`facWifiMac`，确认先收到外层ACK，再收到`FACTORY_RESULT`；MAC为ESP32-C5 WiFi STA MAC的12位大写十六进制，版本等于`esp_app_get_description()->version`。
+2. 删除MAC结果中的两个逗号，对`MAC+版本`使用现有CRC16-CCITT-FALSE重新计算，确认等于4位小写内部业务CRC；再独立验证完整V1 Body的4位大写外层CRC。
+3. 确认MAC结果LEN按实际ARG计算；版本长度改变时LEN同步改变，不固定为32或36。
+4. 厂测开始后分别访问网络和USB ping，确认都通过公共UploadGate返回`EPD=BUSY`；直接绕过ping提交cast、cast2pic或upload，确认设备仍拒绝请求且不接收大body。
+5. 厂测前启动轮播、每日一图或本地浏览，确认合法`FACTORY_DATA`使它们停止；正在执行的EPD/SPI事务只在安全点结束，不发生强制中断或SPI冲突。
+6. 设备原先已连接其他AP时执行合法`facWifiCon`，确认旧IP和旧RSSI不会被误判；日志必须先进入reconfigure/connecting，凭据generation和连接generation都更新并取得新非零IP后，才在15秒内返回`success`及当前AP真实RSSI，不等待HTTP、mDNS或SNTP READY。
+7. 使用不存在的AP或错误密码，确认每500ms检查一次，15秒边界再次检查后返回`failed`和RSSI `0`，不得返回厂测开始前旧AP的RSSI；厂测结束20秒后不得因本次失败触发WiFi hard recovery掉电。
+8. 分别测试空SSID、空key、SSID超过32字节、key超过63字节、控制字符、空格及`|`、`^`、`&`，确认不进入厂测并返回协议错误。
+9. 在第一个`facWifiCon`等待期间连续发送新请求，确认最新请求覆盖旧请求，旧请求最多500ms内退出且不发送旧结果，EPD状态在覆盖期间持续BUSY。
+10. 厂测完成并尝试发送结果后，确认EPD工作模式保存为NORMAL，网络和USB ping恢复`EPD=IDLE`，后续cast通常业务可提交；轮播、每日一图和本地浏览不自动恢复。
+11. 注入MAC读取、凭据保存、连接提交、结果发送或NORMAL模式保存失败，确认使用对应ESP_LOGE且所有结束路径最终清除厂测BUSY，不永久阻塞APP。
+12. Factory Reset执行时发送厂测命令，确认返回`ERR,BUSY`；在`facWifiCon`的15秒等待期间触发Factory Reset，确认当前厂测立即失效、不发送旧结果，并在下一次500ms等待之前让Factory Reset接管统一任务。
+13. 当前开发阶段确认方向日志与WiFi manager凭据加载日志都明文打印`facWifiCon`密码，便于核对产测参数；不得打印每500ms轮询信息，只保留接收、连接开始、成功/失败、覆盖、发送失败和完成等关键日志。转正式发布版本前必须重新评估并关闭密码明文日志。
+14. 冷启动后在正常同步WiFi连接入口前发送`facWifiCon`，确认启动流程打印由厂测连接接管，不再重复提交普通同步连接；`facWifiMac`不接管启动WiFi连接。

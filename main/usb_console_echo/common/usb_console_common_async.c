@@ -6,6 +6,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "memory_policy.h"
 #include "tdx_cfg.h"
 #include "usb_console_http_text.h"
 #include "usb_console_worker.h"
@@ -104,7 +105,7 @@ esp_err_t UsbConsoleCommon_SubmitAsyncRequest(const usb_console_http_request_t *
     }
 
     if (request->body_len > 0) {
-        job->body = (char *)malloc(request->body_len + 1);
+        job->body = (char *)MemoryPolicy_AllocBuffer(request->body_len + 1);
         if (job->body == NULL) {
             free_async_request(job);
             return ESP_ERR_NO_MEM;

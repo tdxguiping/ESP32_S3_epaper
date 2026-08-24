@@ -30,6 +30,7 @@ static StaticSemaphore_t s_state_mutex_control;
 static SemaphoreHandle_t s_state_mutex;
 static image_business_command_t s_pending_command;
 static image_business_owner_t s_current_owner;
+static image_business_owner_t s_exclusive_owner;
 static bool s_initialized;
 
 static const char *owner_name(image_business_owner_t owner)
@@ -49,6 +50,8 @@ static const char *owner_name(image_business_owner_t owner)
         return "USB_CAST";
     case IMAGE_BUSINESS_OWNER_USB_CAST2PIC:
         return "USB_CAST2PIC";
+    case IMAGE_BUSINESS_OWNER_FACTORY_TEST:
+        return "FACTORY_TEST";
     case IMAGE_BUSINESS_OWNER_FACTORY_RESET:
         return "FACTORY_RESET";
     default:
@@ -104,6 +107,12 @@ static void image_business_worker_task(void *arg)
 
         if (xSemaphoreTake(s_state_mutex, portMAX_DELAY) == pdTRUE) {
             s_current_owner = IMAGE_BUSINESS_OWNER_NONE;
+            // Release an exclusive owner only after its latest queued command finishes.
+            if (s_exclusive_owner == command.owner &&
+                (!s_pending_command.valid ||
+                 s_pending_command.owner != command.owner)) {
+                s_exclusive_owner = IMAGE_BUSINESS_OWNER_NONE;
+            }
             xSemaphoreGive(s_state_mutex);
         }
         log_stack_usage(command.owner, command.generation, ret);
@@ -192,6 +201,20 @@ esp_err_t ImageBusinessWorker_SubmitReplacingPendingUnlessBusy(
     }
     if (xSemaphoreTake(s_state_mutex, portMAX_DELAY) != pdTRUE) {
         return ESP_ERR_INVALID_STATE;
+    }
+    if (s_exclusive_owner != IMAGE_BUSINESS_OWNER_NONE &&
+        owner != s_exclusive_owner &&
+        owner != IMAGE_BUSINESS_OWNER_FACTORY_RESET) {
+        ESP_LOGW(TAG,
+                 "submit blocked by exclusive owner=%s requested=%s",
+                 owner_name(s_exclusive_owner),
+                 owner_name(owner));
+        xSemaphoreGive(s_state_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+    // Factory Reset always has priority and ends any lower-priority exclusive mode.
+    if (owner == IMAGE_BUSINESS_OWNER_FACTORY_RESET) {
+        s_exclusive_owner = IMAGE_BUSINESS_OWNER_NONE;
     }
     if (owner != IMAGE_BUSINESS_OWNER_FACTORY_RESET &&
         (s_current_owner == IMAGE_BUSINESS_OWNER_FACTORY_RESET ||
@@ -380,4 +403,38 @@ bool ImageBusinessWorker_WaitInterruptible(TickType_t timeout_ticks)
         return false;
     }
     return ulTaskNotifyTake(pdTRUE, timeout_ticks) > 0U;
+}
+
+esp_err_t ImageBusinessWorker_SetExclusiveOwner(image_business_owner_t owner)
+{
+    if (!s_initialized || s_state_mutex == NULL ||
+        owner <= IMAGE_BUSINESS_OWNER_NONE ||
+        owner >= IMAGE_BUSINESS_OWNER_FACTORY_RESET) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (xSemaphoreTake(s_state_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t ret = ESP_OK;
+    if (s_exclusive_owner != IMAGE_BUSINESS_OWNER_NONE &&
+        s_exclusive_owner != owner) {
+        ret = ESP_ERR_INVALID_STATE;
+    } else {
+        s_exclusive_owner = owner;
+    }
+    xSemaphoreGive(s_state_mutex);
+    return ret;
+}
+
+void ImageBusinessWorker_ClearExclusiveOwner(image_business_owner_t owner)
+{
+    if (!s_initialized || s_state_mutex == NULL ||
+        xSemaphoreTake(s_state_mutex, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+    if (s_exclusive_owner == owner) {
+        s_exclusive_owner = IMAGE_BUSINESS_OWNER_NONE;
+    }
+    xSemaphoreGive(s_state_mutex);
+    ImageBusinessWorker_Wake();
 }

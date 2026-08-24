@@ -19,6 +19,7 @@
 #include "freertos/FreeRTOS.h"
 #include "led_status.h"
 #include "local_image_browsing.h"
+#include "memory_policy.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "server_network_sta_slideshow.h"
 #include "tdx_cfg.h"
@@ -119,7 +120,7 @@ static esp_err_t write_file_exact(const char *path, const char *data, size_t len
              (unsigned int)USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
     void *io_buf = NULL;
 #if USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE > 0
-    io_buf = malloc(USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
+    io_buf = MemoryPolicy_AllocBuffer(USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
     if (io_buf != NULL) {
         if (setvbuf(fp, io_buf, _IOFBF, USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE) != 0) {
             ESP_LOGW(TAG,

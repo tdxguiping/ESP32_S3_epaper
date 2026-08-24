@@ -1,7 +1,57 @@
-# CH583/CH585 与 WiFi 模组 UART 通讯协议 V2.2
+﻿# CH583/CH585 与 WiFi 模组 UART 通讯协议 V2.3
+
+<a id="summary"></a>
 
 ## Summary
-本协议用于 CH583/CH585 与 WiFi 模组之间的 UART 通讯。CH583/CH585 负责 BLE 低功耗连接、唤醒 WiFi、转发前端数据、接收 WiFi 控制命令，并在 WiFi 需要时把配网结果/IP 原文 notify 给前端。V2.2 沿用 V2.1 的 DEVICE_INFO 必达握手和 wake_reason 字段，并新增 PB1 长按按键唤醒渠道；WIFI_VER 保留为 WiFi 版本上报命令，组合版本信息继续通过 BLE 私有广播字段发布。
+本协议用于 CH583/CH585 与 WiFi 模组之间的 UART 通讯。CH583/CH585 负责 BLE 低功耗连接、唤醒 WiFi、转发前端数据、接收 WiFi 控制命令，并在 WiFi 需要时把配网结果/IP 原文 notify 给前端。V2.3 沿用 V2.2 的 DEVICE_INFO 必达握手、wake_reason 字段、PB1 长按按键唤醒渠道和 WIFI_VER 版本上报，并新增出厂产测透传命令 `FACTORY_DATA` / `FACTORY_RESULT`；广播复合状态位低 4bit 新增 `0011 = 本地图片浏览`。
+
+## 目录
+
+- [1. 通讯基础](#sec-1)
+- [2. 标准帧格式](#sec-2)
+- [3. CRC / LEN / PART 校验](#sec-3)
+- [4. ACK 与 ERR](#sec-4)
+- [5. DEVICE_INFO 必达握手](#sec-5)
+  - [5.1 屏幕类型编码](#sec-5-1)
+  - [5.2 板卡信息编码](#sec-5-2)
+- [6. 普通心跳](#sec-6)
+- [7. 前端到 WiFi 透传](#sec-7)
+- [8. WiFi 到前端透传](#sec-8)
+  - [8.1 CH585 出厂产测透传](#sec-8-1)
+- [9. WiFi 配网状态上报与广播复合状态位](#sec-9)
+- [10. 版本交换与私有广播版本字段](#sec-10)
+  - [10.1 BLE 版本上报规则](#sec-10-1)
+  - [10.2 WiFi 上报 WiFi 版本](#sec-10-2)
+- [11. GPIO 控制](#sec-11)
+- [12. GPIO 读取](#sec-12)
+- [13. LED 闪烁控制](#sec-13)
+  - [13.1 开始闪烁](#sec-13-1)
+  - [13.2 停止闪烁并关闭 LED](#sec-13-2)
+  - [13.3 与 GPIO / 低功耗的关系](#sec-13-3)
+- [14. 禁止操作的 GPIO](#sec-14)
+- [15. WiFi 网络时间同步与备份时间](#sec-15)
+  - [15.1 设置网络时间](#sec-15-1)
+  - [15.2 查询备份时间](#sec-15-2)
+  - [15.3 DataFlash 保存策略](#sec-15-3)
+- [16. WiFi 定时唤醒配置](#sec-16)
+  - [16.1 开启定时唤醒](#sec-16-1)
+  - [16.2 关闭定时唤醒](#sec-16-2)
+  - [16.3 错误返回](#sec-16-3)
+  - [16.4 分段定时规则](#sec-16-4)
+  - [16.5 WiFi 推荐低功耗流程](#sec-16-5)
+- [17. NFC 内容管理](#sec-17)
+  - [17.1 写入 NFC 展示 JSON](#sec-17-1)
+  - [17.2 清空 NFC 展示内容](#sec-17-2)
+  - [17.3 查询 NFC 状态](#sec-17-3)
+  - [17.4 与手机 NFC 授权写入的关系](#sec-17-4)
+  - [17.5 推荐 WiFi 使用流程](#sec-17-5)
+- [18. WiFi 主动关电 / 低功耗](#sec-18)
+- [19. PB1/PB2 按键事件上报](#sec-19)
+- [20. WiFi 发送建议](#sec-20)
+- [21. V2.3 必须实现的命令](#sec-21)
+- [22. 接收方处理原则](#sec-22)
+
+<a id="sec-1"></a>
 
 ## 1. 通讯基础
 
@@ -24,6 +74,8 @@ WiFi 电源/唤醒控制：CH585 当前方案为 PA6；旧 CH583 方案为 PB8�
 ```
 
 CH583 只解析 `@#` 和 `^&` 包起来的数据。普通日志如果不在该格式内，CH583 忽略。
+
+<a id="sec-2"></a>
 
 ## 2. 标准帧格式
 
@@ -50,6 +102,8 @@ CRC     CRC16 校验值，4 位大写十六进制
 PART=1
 TOTAL=1
 ```
+
+<a id="sec-3"></a>
 
 ## 3. CRC / LEN / PART 校验
 
@@ -90,6 +144,8 @@ PART <= TOTAL
 普通命令 PART=1,TOTAL=1
 ```
 
+<a id="sec-4"></a>
+
 ## 4. ACK 与 ERR
 
 ACK 表示“收到并执行成功”。
@@ -125,6 +181,8 @@ BLE_NOTIFY_DISABLED  前端未开启 notify
 BLE_NOTIFY_FAIL      notify 发送失败
 DEVICE_INFO_REQUIRED DEVICE_INFO 未 ACK 前，不接受会改变状态或进入业务流程的命令
 ```
+
+<a id="sec-5"></a>
 
 ## 5. DEVICE_INFO 必达握手
 
@@ -166,6 +224,7 @@ BLE_CONNECT  BLE 连接后唤醒 WiFi
 BLE_WRITE    BLE 写入数据时唤醒 WiFi
 NFC          NFC 授权后唤醒 WiFi
 TIMER        WAKE_TIMER 定时到期唤醒 WiFi
+FACTORY      CH585 产测流程唤醒 WiFi，用于发送 FACTORY_DATA
 UNKNOWN      未识别或默认唤醒原因
 ```
 
@@ -175,7 +234,7 @@ UNKNOWN      未识别或默认唤醒原因
 Mac[5] Mac[4] Mac[3] Mac[2] Mac[1] Mac[0]
 ```
 
-WiFi 收到 `DEVICE_INFO` 后必须完成字段解析和合法性检查，解析成功后回复 ACK。V2.2 按 5 个字段解析 `mac,ble_ver_dec,screen_type,board_info_hex,wake_reason`；如需兼容旧 V2.0 固件，可允许 4 字段 DEVICE_INFO，并把缺失的 `wake_reason` 按 `UNKNOWN` 处理。
+WiFi 收到 `DEVICE_INFO` 后必须完成字段解析和合法性检查，解析成功后回复 ACK。V2.3 按 5 个字段解析 `mac,ble_ver_dec,screen_type,board_info_hex,wake_reason`；如需兼容旧 V2.0 固件，可允许 4 字段 DEVICE_INFO，并把缺失的 `wake_reason` 按 `UNKNOWN` 处理。
 
 ```text
 @#V1|SEQ=<seq>|CMD=ACK|LEN=<len>|PART=1|TOTAL=1|ARG=<device_info_seq>|CRC=<crc>^&
@@ -206,6 +265,8 @@ USB 供电场景沿用现有逻辑继续等待
 
 WiFi 必须等 DEVICE_INFO ACK 流程完成后，再执行后续业务。
 
+<a id="sec-5-1"></a>
+
 ### 5.1 屏幕类型编码
 
 屏幕类型是 1 个可见 ASCII 字符，由 `EPD_GetScreenType()` 返回，同时放入 BLE 名第 2 位和 `DEVICE_INFO.screen_type` 字段。
@@ -224,6 +285,8 @@ e = 7.09 寸 HD 6 色屏
 前端需要结合 screen_type 和 board_info_hex 才能准确选择图片处理算法
 后续新增屏幕类型时，继续按 EPD_GetScreenType() 的字符表维护
 ```
+
+<a id="sec-5-2"></a>
 
 ### 5.2 板卡信息编码
 
@@ -265,6 +328,8 @@ EPD_GetBoardInfo() 放在各屏驱动文件中维护，参考 EPD_GetScreenType(
 只有现有宏无法区分真实厂家时，才新增明确厂家宏；不因为板卡信息拆分共用驱动
 ```
 
+<a id="sec-6"></a>
+
 ## 6. 普通心跳
 
 DEVICE_INFO 握手成功后，CH583/CH585 才开始普通 PING/PONG 心跳。CH583/CH585 每 10 秒发送一次：
@@ -293,6 +358,8 @@ ARG 等于对应 PING 的 SEQ
 
 连续超时后 CH583 会拉低 WiFi 电源/唤醒控制脚，关闭 WiFi，并进入低功耗。
 
+<a id="sec-7"></a>
+
 ## 7. 前端到 WiFi 透传
 
 前端通过 BLE 写给 CH583 的数据，CH583 不解析业务含义，只封装成 UART 协议帧发给 WiFi。
@@ -316,6 +383,8 @@ CMD=BLE_DATA
 ```
 
 WiFi 端按 `PART/TOTAL` 顺序处理。
+
+<a id="sec-8"></a>
 
 ## 8. WiFi 到前端透传
 
@@ -378,6 +447,81 @@ LEN > 256：ERR,BAD_LEN
 PART/TOTAL 不是 1/1：ERR,BAD_PART
 ```
 
+<a id="sec-8-1"></a>
+
+### 8.1 CH585 出厂产测透传
+
+该功能用于产线测试时，CH585 通过 UART1 把上位机的 WiFi 产测命令透传给 WiFi 模组，并把 WiFi 模组的产测结果原样转回上位机。UART1 仍使用本协议标准帧格式和 CRC 规则。
+
+CH585 发给 WiFi：
+
+```text
+CMD=FACTORY_DATA
+```
+
+格式：
+
+```text
+@#V1|SEQ=<seq>|CMD=FACTORY_DATA|LEN=<len>|PART=1|TOTAL=1|ARG=<factory_payload>|CRC=<crc>^&
+```
+
+字段说明：
+
+```text
+factory_payload 为上位机 UART0 行协议中去掉 "wifi " 目标前缀后的完整内容
+CH585 不解析 SSID、密码、WiFi MAC、WiFi 版本号或 WiFi 结果 CRC
+WiFi 收到 FACTORY_DATA 后必须按出厂产测逻辑处理，不按普通 BLE_DATA 业务处理
+```
+
+示例：
+
+```text
+@#V1|SEQ=260|CMD=FACTORY_DATA|LEN=10|PART=1|TOTAL=1|ARG=facWifiMac|CRC=XXXX^&
+@#V1|SEQ=261|CMD=FACTORY_DATA|LEN=23|PART=1|TOTAL=1|ARG=facWifiCon ssid key|CRC=XXXX^&
+```
+
+CH585 发送 `FACTORY_DATA` 前会保证 WiFi 已经上电并完成 `DEVICE_INFO` ACK。若 WiFi 未上电，CH585 会以 `wake_reason=FACTORY` 唤醒 WiFi；若 WiFi 正在启动或尚未完成 `DEVICE_INFO` ACK，CH585 只保留最后一条 pending `FACTORY_DATA`，待 ACK 后发送。
+
+WiFi 回复 CH585：
+
+```text
+CMD=FACTORY_RESULT
+```
+
+格式：
+
+```text
+@#V1|SEQ=<seq>|CMD=FACTORY_RESULT|LEN=<len>|PART=1|TOTAL=1|ARG=<factory_result_line>|CRC=<crc>^&
+```
+
+字段说明：
+
+```text
+factory_result_line 为 WiFi 产测结果整行内容，不包含 UART0 行尾 \n
+如果 WiFi 结果本身需要业务 CRC，该 CRC 由 WiFi 端生成并放在 ARG 内
+CH585 不解析、不校验、不重算 factory_result_line 内部业务字段或业务 CRC
+CH585 只校验 UART1 外层协议 CRC/LEN/PART/TOTAL
+CH585 收到合法 FACTORY_RESULT 后 ACK WiFi，并把 ARG 原样输出到 UART0，末尾补 \n
+```
+
+示例：
+
+```text
+@#V1|SEQ=270|CMD=FACTORY_RESULT|LEN=32|PART=1|TOTAL=1|ARG=facWifiMac 112233445566,100,2f5b|CRC=XXXX^&
+@#V1|SEQ=271|CMD=FACTORY_RESULT|LEN=28|PART=1|TOTAL=1|ARG=facWifiCon success ssid -30|CRC=XXXX^&
+```
+
+CH583/CH585 回复 WiFi：
+
+```text
+FACTORY_RESULT 合法：ACK
+LEN > 300：ERR,BAD_LEN
+PART/TOTAL 不是 1/1：ERR,BAD_PART
+CRC 错误：ERR,BAD_CRC
+```
+
+<a id="sec-9"></a>
+
 ## 9. WiFi 配网状态上报与广播复合状态位
 
 该命令用于 WiFi 在启动或配网成功后，向 CH583/CH585 上报当前配网状态。CH583/CH585 收到合法状态后先进入 pending 队列并立即 ACK，随后异步保存到 DataFlash，并刷新 TDX 蓝牙广播名第 21 位中的复合状态。BOE 广播名不受影响。
@@ -415,7 +559,7 @@ CH583/CH585 行为：
 校验 CRC/LEN/PART/TOTAL
 只接受 2 位十六进制 ARG
 高 4bit 只接受 4 或 5
-低 4bit 当前只接受 0、1、2
+低 4bit 当前只接受 0、1、2、3
 合法配网状态进入 pending 队列
 合法工作模式进入 pending 队列
 立即回复 ACK，避免阻塞后续 UART 收帧
@@ -458,7 +602,8 @@ scanRspData[22] = (provision_name_nibble << 4) | frame_work_mode
 0000 = 普通模式
 0001 = 轮播模式
 0010 = 每日更新模式
-0011..1111 = 保留
+0011 = 本地图片浏览
+0100..1111 = 保留
 ```
 
 示例：
@@ -468,7 +613,9 @@ scanRspData[22] = (provision_name_nibble << 4) | frame_work_mode
 0x50 = 已配网 + 普通模式，ASCII 'P'
 0x51 = 已配网 + 轮播模式，ASCII 'Q'
 0x52 = 已配网 + 每日更新模式，ASCII 'R'
+0x53 = 已配网 + 本地图片浏览，ASCII 'S'
 0x42 = 未配网 + 每日更新模式，ASCII 'B'
+0x43 = 未配网 + 本地图片浏览，ASCII 'C'
 ```
 
 扩展示例：
@@ -477,10 +624,10 @@ scanRspData[22] = (provision_name_nibble << 4) | frame_work_mode
 40~4F = 未配网 + 16 种工作模式，均为可见 ASCII
 50~5F = 已配网 + 16 种工作模式，均为可见 ASCII
 
-0x53 = 已配网 + 第 4 种工作模式，ASCII 'S'
+0x53 = 已配网 + 本地图片浏览，ASCII 'S'
 0x54 = 已配网 + 第 5 种工作模式，ASCII 'T'
 0x5F = 已配网 + 第 16 种工作模式，ASCII '_'
-0x43 = 未配网 + 第 4 种工作模式，ASCII 'C'
+0x43 = 未配网 + 本地图片浏览，ASCII 'C'
 0x4F = 未配网 + 第 16 种工作模式，ASCII 'O'
 ```
 
@@ -496,6 +643,8 @@ scanRspData[22] = (provision_name_nibble << 4) | frame_work_mode
 scanRspData[20] 保持原有逻辑，不因该复合状态规则改变
 ```
 
+<a id="sec-10"></a>
+
 ## 10. 版本交换与私有广播版本字段
 
 该功能用于 CH583/CH585 与 WiFi 模组互相同步固件版本。BLE 固件版本由 DEVICE_INFO 第一时间携带上报，不再使用独立命令；WiFi 固件版本仍由 WiFi 后续通过 WIFI_VER 上报。
@@ -509,6 +658,8 @@ byte1：WiFi 版本高字节
 byte2：WiFi 版本低字节
 WiFi 版本范围 0..65535
 ```
+
+<a id="sec-10-1"></a>
 
 ### 10.1 BLE 版本上报规则
 
@@ -533,6 +684,8 @@ CH583/CH585 不因为 WIFI_VER 未返回而继续积压前端数据
 WIFI_VER 晚到也可以正常处理和刷新广播
 保留现有 pending 溢出保护，版本交换不能扩大 BLE_DATA 溢出风险
 ```
+
+<a id="sec-10-2"></a>
 
 ### 10.2 WiFi 上报 WiFi 版本
 
@@ -621,6 +774,8 @@ WIFI_VER=65536          => ERR,BAD_ARG，不更新广播，不写 DataFlash
 6. WiFi 业务完成后发送 POWER_OFF 或 LOWPOWER
 ```
 
+<a id="sec-11"></a>
+
 ## 11. GPIO 控制
 
 ```text
@@ -649,6 +804,8 @@ mode=IN_PU / IN_PD / IN_FLOAT 时，level 必须是 KEEP
 @#V1|SEQ=100|CMD=GPIO|LEN=13|PART=1|TOTAL=1|ARG=PA,3,OUT,HIGH|CRC=XXXX^&
 ```
 
+<a id="sec-12"></a>
+
 ## 12. GPIO 读取
 
 WiFi 发送：
@@ -669,6 +826,8 @@ CH583 回复：
 @#V1|SEQ=31|CMD=GPIO_VALUE|LEN=13|PART=1|TOTAL=1|ARG=130,PA,3,HIGH|CRC=XXXX^&
 ```
 
+<a id="sec-13"></a>
+
 ## 13. LED 闪烁控制
 
 该命令用于让 CH583 本地控制红绿 LED 闪烁，避免 WiFi 为了闪烁而高频发送 GPIO 指令。
@@ -679,6 +838,8 @@ CH583 回复：
 RED    PB5，低电平点亮，高电平关闭
 GREEN  PB6，低电平点亮，高电平关闭
 ```
+
+<a id="sec-13-1"></a>
 
 ### 13.1 开始闪烁
 
@@ -719,6 +880,8 @@ CH583 回复：
 未知 LED、BOTH、interval_ms 小于 1 或大于 10000、参数数量错误：ERR,BAD_ARG
 ```
 
+<a id="sec-13-2"></a>
+
 ### 13.2 停止闪烁并关闭 LED
 
 WiFi 发送：
@@ -754,6 +917,8 @@ CH583 回复：
 未知 LED、BOTH、参数数量错误：ERR,BAD_ARG
 ```
 
+<a id="sec-13-3"></a>
+
 ### 13.3 与 GPIO / 低功耗的关系
 
 ```text
@@ -761,6 +926,8 @@ CH583 回复：
 进入低功耗或 WiFi 主动关电流程时，CH583 会停止红绿两个 LED 闪烁，并关闭两个 LED
 GPIO_READ 只读取当前引脚电平，不改变 LED 闪烁状态
 ```
+
+<a id="sec-14"></a>
 
 ## 14. 禁止操作的 GPIO
 
@@ -780,6 +947,8 @@ PB13  充电检测/CHARGE_LED
 ```text
 ERR,<received_seq>,DENY_GPIO
 ```
+
+<a id="sec-15"></a>
 
 ## 15. WiFi 网络时间同步与备份时间
 
@@ -803,6 +972,8 @@ DataFlash 保存发生在 WiFi POWER_OFF / LOWPOWER 收尾阶段
 复位后如果只能读取到 DataFlash 中最后保存的时间，TIME_GET 返回 STALE
 从未成功 TIME_SET 且没有可用保存值时，TIME_GET 返回 INVALID
 ```
+
+<a id="sec-15-1"></a>
 
 ### 15.1 设置网络时间
 
@@ -856,6 +1027,8 @@ CRC 错误：ERR,BAD_CRC
 2026-07-07,24:00:00  ERR,<received_seq>,BAD_TIME
 ```
 
+<a id="sec-15-2"></a>
+
 ### 15.2 查询备份时间
 
 WiFi 发送：
@@ -895,6 +1068,8 @@ INVALID 从未成功 TIME_SET，且没有可用备份时间
 @#V1|SEQ=20|CMD=TIME_STATUS|LEN=7|PART=1|TOTAL=1|ARG=INVALID|CRC=XXXX^&
 ```
 
+<a id="sec-15-3"></a>
+
 ### 15.3 DataFlash 保存策略
 
 ```text
@@ -917,6 +1092,8 @@ WiFi 发送 POWER_OFF / LOWPOWER 并收到 ACK 后，CH583/CH585 在关闭 WiFi 
 6. CH583/CH585 在关闭 WiFi 前统一保存时间和运行状态
 ```
 
+<a id="sec-16"></a>
+
 ## 16. WiFi 定时唤醒配置
 
 该命令用于让 WiFi 在进入低功耗前，告诉 CH583/CH585 下一次需要唤醒 WiFi 的时间。
@@ -924,6 +1101,8 @@ WiFi 发送 POWER_OFF / LOWPOWER 并收到 ACK 后，CH583/CH585 在关闭 WiFi 
 CH583/CH585 收到合法配置后先更新本轮 WiFi 会话的 RAM 状态并立即 ACK，不在 `WAKE_TIMER` 中立即写 DataFlash。WiFi 后续发送 `POWER_OFF` / `LOWPOWER` 后，CH583/CH585 根据本轮是否收到合法 `WAKE_TIMER` 决定是否启动定时器。定时时间到后，CH583/CH585 拉高 WiFi 唤醒脚唤醒 WiFi。
 
 当前 CH585 方案使用 `PA6` 唤醒 WiFi；旧 CH583 方案如仍使用 `PB8`，以硬件版本为准。
+
+<a id="sec-16-1"></a>
 
 ### 16.1 开启定时唤醒
 
@@ -960,6 +1139,8 @@ CH583/CH585 校验并更新本轮 RAM 状态成功后回复：
 ACK,<received_seq>
 ```
 
+<a id="sec-16-2"></a>
+
 ### 16.2 关闭定时唤醒
 
 WiFi 发送：
@@ -974,6 +1155,8 @@ CH583/CH585 校验并更新本轮 RAM 状态成功后回复：
 ACK,<received_seq>
 ```
 
+<a id="sec-16-3"></a>
+
 ### 16.3 错误返回
 
 ```text
@@ -985,6 +1168,8 @@ OFF,1           ERR,<received_seq>,BAD_TIME
 PART/TOTAL 错误 ERR,<received_seq>,BAD_PART
 LEN 错误         ERR,<received_seq>,BAD_LEN
 ```
+
+<a id="sec-16-4"></a>
 
 ### 16.4 分段定时规则
 
@@ -1028,6 +1213,8 @@ relative_remaining_seconds = seconds
 4 小时分段事件只用于内部检查，不会拉高 WiFi 唤醒脚，也不会写 DataFlash
 ```
 
+<a id="sec-16-5"></a>
+
 ### 16.5 WiFi 推荐低功耗流程
 
 需要定时唤醒时：
@@ -1066,6 +1253,8 @@ WAKE_TIMER 发出后未收到 ACK，最多重发 5 次。
 仍无 ACK 时，WiFi 可以直接发送 POWER_OFF/LOWPOWER。
 ```
 
+<a id="sec-17"></a>
+
 ## 17. NFC 内容管理
 
 该功能用于 WiFi 在被唤醒后，把需要给手机 NFC 读取的设备信息写入 CH585。CH585 保存该内容，并在手机靠近触发 NFC-only 会话时，以普通 NDEF Text JSON 形式提供给手机读取。
@@ -1078,6 +1267,8 @@ WAKE_TIMER 发出后未收到 ACK，最多重发 5 次。
 NFC 展示数据会保存到 CH585 DataFlash，软复位/断电重启后仍可恢复
 手机读取 NFC 时读取的是 CH585 RAM 中模拟的 Type2 Tag/NDEF 缓存，不是每次直接读 Flash
 ```
+
+<a id="sec-17-1"></a>
 
 ### 17.1 写入 NFC 展示 JSON
 
@@ -1132,6 +1323,8 @@ LEN 错误：ERR,<received_seq>,BAD_LEN
 CRC 错误：ERR,<received_seq>,BAD_CRC
 ```
 
+<a id="sec-17-2"></a>
+
 ### 17.2 清空 NFC 展示内容
 
 WiFi 发送：
@@ -1154,6 +1347,8 @@ CH585 行为：
 ```json
 {"mac":"4706145E0CD0","wifi":"sleep","nfc":"ready"}
 ```
+
+<a id="sec-17-3"></a>
 
 ### 17.3 查询 NFC 状态
 
@@ -1182,6 +1377,8 @@ last_auth_result  NONE / OK / BAD_FORMAT / BAD_TOKEN
 ```text
 @#V1|SEQ=88|CMD=NFC_STATUS|LEN=12|PART=1|TOTAL=1|ARG=IDLE,51,NONE|CRC=XXXX^&
 ```
+
+<a id="sec-17-4"></a>
 
 ### 17.4 与手机 NFC 授权写入的关系
 
@@ -1239,6 +1436,8 @@ CH585 校验 token 后立即从 RAM 备份恢复原 NFC 展示 JSON
 
 因此，WiFi 通过 NFC_SET 写入的真实展示数据不会被手机授权写入长期覆盖。
 
+<a id="sec-17-5"></a>
+
 ### 17.5 推荐 WiFi 使用流程
 
 WiFi 被唤醒后，如果需要更新 NFC 展示内容：
@@ -1260,6 +1459,8 @@ WiFi 被唤醒后，如果需要更新 NFC 展示内容：
 仍失败时，本轮可以跳过 NFC 内容更新，避免影响 WiFi 低功耗流程
 ```
 
+<a id="sec-18"></a>
+
 ## 18. WiFi 主动关电 / 低功耗
 
 WiFi 任务完成后，如果允许 CH583/CH585 关闭 WiFi 电源，发送 `POWER_OFF` 或 `LOWPOWER`：
@@ -1279,6 +1480,8 @@ CH583/CH585 收到并校验通过后：
 关闭 WiFi 电源
 CH583/CH585 进入低功耗
 ```
+
+<a id="sec-19"></a>
 
 ## 19. PB1/PB2 按键事件上报
 
@@ -1328,6 +1531,8 @@ WiFi 未完成 DEVICE_INFO ACK 前发生 PB1/PB2 按键事件时，CH583/CH585 �
 WiFi 睡眠时由 PB1/PB2 唤醒，只通过 DEVICE_INFO.wake_reason 上报，不额外发送 KEY_EVENT
 ```
 
+<a id="sec-20"></a>
+
 ## 20. WiFi 发送建议
 
 由于 UART 无硬件流控，WiFi 发送重要协议帧时建议：
@@ -1339,7 +1544,9 @@ WiFi 睡眠时由 PB1/PB2 唤醒，只通过 DEVICE_INFO.wake_reason 上报，�
 发送协议帧后 200ms 再恢复普通日志
 ```
 
-## 21. V2.2 必须实现的命令
+<a id="sec-21"></a>
+
+## 21. V2.3 必须实现的命令
 
 ```text
 DEVICE_INFO
@@ -1363,10 +1570,14 @@ NFC_CLEAR
 NFC_STATUS
 BLE_DATA
 WIFI_DATA
+FACTORY_DATA
+FACTORY_RESULT
 WIFI_PROVISION
 WIFI_VER
 KEY_EVENT
 ```
+
+<a id="sec-22"></a>
 
 ## 22. 接收方处理原则
 
@@ -1381,3 +1592,6 @@ CMD 不支持：不执行，返回 BAD_CMD
 校验全部通过：执行命令
 执行成功：返回 ACK 或对应响应
 ```
+
+
+

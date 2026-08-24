@@ -442,7 +442,8 @@ static esp_err_t load_file(const char *file_name, uint8_t **buffer, size_t *size
 
     uint8_t *loaded = (uint8_t *)heap_caps_malloc(
         (size_t)file_stat.st_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (loaded == NULL) {
+    if (loaded == NULL &&
+        (size_t)file_stat.st_size <= USER_INTERNAL_RAM_FALLBACK_MAX_SIZE) {
         loaded = (uint8_t *)heap_caps_malloc((size_t)file_stat.st_size,
                                              MALLOC_CAP_8BIT);
     }

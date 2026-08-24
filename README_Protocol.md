@@ -2541,3 +2541,48 @@ ESP32-C5无论DEVICE_INFO是否完成，都严格接受合法的 `PB1,PRESS` 和
 ESP32启动时UART可能早于本地浏览模块就绪。该窗口内首次DEVICE_INFO携带的合法PB2请求进入长度为10的启动FIFO；模块初始化时执行正常EPD预约判断。初始化完成与事件入队使用同一临界区，事件不会卡在初始化交界点。PB1不进入该FIFO，只进入Factory Reset单请求RAM状态。
 
 本地浏览只读取 `/data/bin_img/<fileName>.bin`，每次请求单遍扫描目录并按稳定文件名顺序选择当前项和下一项，不在RAM或SD建立完整索引。目标文件在扫描后消失时重新扫描后继项并继续本次请求；其他 SD I/O、内存、解压或 EPD 错误中止本次请求。
+
+## One-shot WiFi hard recovery protocol behavior (2026-08)
+
+No UART frame or APP JSON format is added. After one independent 20-second cold-start connection window expires without an IP, and only while EPD is `IDLE`, ESP32 uses the existing CH583 sequence:
+
+```text
+WAKE_TIMER ON,1
+POWER_OFF
+```
+
+The wake timer is configured before `POWER_OFF`. A persistent one-shot marker prevents another automatic power cycle on the recovery boot; the normal WiFi manager continues retrying. `GOT_IP` cancels pending shutdown, and HTTP/mDNS-only failures never trigger it.
+
+For `wifi_wakeup` received while the manager is already connecting, the existing immediate `result=0`, `message=WiFi operation in progress` reply remains. A read-only observer then waits at most 10 seconds and sends `wifi_info_result` on READY, or exactly one final `wifi_wakeup_result` with result `1307`. This notification deadline is independent from the 20-second hard-recovery deadline.
+
+## CH583/CH585 WiFi出厂产测协议
+
+ESP32-C5接收单包 `CMD=FACTORY_DATA`，仅允许 `PART=1,TOTAL=1`。外层LEN始终等于ARG实际字节数，外层CRC继续使用现有CRC16-CCITT-FALSE；示例中的SEQ和LEN不作为固定值。
+
+支持的ARG：
+
+```text
+facWifiMac
+facWifiCon <ssid> <key>
+```
+
+`facWifiCon`的SSID和key不得包含空格；允许范围为ASCII `0x21~0x7E`，但UART保留字符 `|`、`^`、`&` 禁止使用。SSID为1~32字节，key为1~63字节。参数合法且独占状态准入成功后ESP32-C5先回复ACK，ACK发送成功后才提交并唤醒统一任务，因此`FACTORY_RESULT`不得早于请求ACK；参数非法回复`ERR,BAD_ARG`，Factory Reset或资源冲突回复`ERR,BUSY`。
+
+MAC结果格式：
+
+```text
+@#V1|SEQ=<wifi_seq>|CMD=FACTORY_RESULT|LEN=<actual_len>|PART=1|TOTAL=1|ARG=facWifiMac <wifi_sta_mac>,<app_version>,<business_crc>|CRC=<outer_crc>^&
+```
+
+`wifi_sta_mac`来自`esp_read_mac(..., ESP_MAC_WIFI_STA)`，为12位大写十六进制且不带冒号；`app_version`来自`esp_app_get_description()->version`。内部业务CRC与外层协议复用同一个CRC16-CCITT-FALSE实现，但输入仅为`wifi_sta_mac + app_version`，不包含两个逗号，输出为4位小写十六进制。外层CRC仍覆盖完整V1 Body并输出4位大写十六进制。
+
+配网结果格式：
+
+```text
+@#V1|SEQ=<wifi_seq>|CMD=FACTORY_RESULT|LEN=<actual_len>|PART=1|TOTAL=1|ARG=facWifiCon success <ssid> <rssi>|CRC=<outer_crc>^&
+@#V1|SEQ=<wifi_seq>|CMD=FACTORY_RESULT|LEN=<actual_len>|PART=1|TOTAL=1|ARG=facWifiCon failed <ssid> <rssi>|CRC=<outer_crc>^&
+```
+
+厂测凭据复用现有WiFi manager连接流程，但采用独立的15秒观察期限，每500ms检查一次，并在期限边界再检查一次。只有凭据generation和连接generation都相对请求前发生变化，并且取得非零STA IP，才判定本次凭据连接成功；旧连接保留的IP或RSSI不能作为成功依据。成功不等待HTTP、mDNS或SNTP，RSSI来自当前AP；失败固定返回0，不复用旧AP的RSSI。厂测凭据会清除旧恢复标记，但不启动20秒WiFi硬恢复窗口，厂测失败后不会因此自动掉电重启。
+
+每个发送端继续使用自己的递增SEQ。新合法厂测请求覆盖旧请求；旧请求发现generation变化后不发送旧结果，EPD BUSY状态在两个请求之间保持连续。Factory Reset拥有更高优先级，会使当前或pending厂测generation立即失效并接管统一任务。厂测期间网络和USB ping通过公共UploadGate返回`EPD=BUSY`，厂测结果发送后工作模式切换为NORMAL并恢复`EPD=IDLE`，此前停止的轮播、每日一图和本地图片浏览不自动恢复。若启动早期已提交`facWifiCon`，正常启动流程不再重复提交同步WiFi连接，由厂测的新凭据manager流程负责本次启动连接。

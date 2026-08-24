@@ -14,6 +14,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "file_serving_example_common.h"
+#include "memory_policy.h"
 #include "server_network_sta_slideshow.h"
 #include "server_network_sta_time.h"
 #include "tdx_cfg.h"
@@ -303,7 +304,7 @@ esp_err_t ServerNetworkStaSnapshot_ProcessJson(httpd_req_t *req,
         return ESP_ERR_NOT_SUPPORTED;
     }
 
-    char *json = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
+    char *json = (char *)MemoryPolicy_AllocBuffer(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
     if (json == NULL) {
         char error_json[144];
         snprintf(error_json, sizeof(error_json),

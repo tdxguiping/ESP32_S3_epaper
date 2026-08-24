@@ -4,7 +4,12 @@ idf_component_register(SRCS "tdx_shared_spi.c" "main.c" "app_nvs.c" "file_server
                     EMBED_FILES "favicon.ico" "upload_script.html" "../DOC/welcome.bin")
 
 target_sources(${COMPONENT_LIB} PRIVATE "epd_display/epd_display_mode.c")
+target_sources(${COMPONENT_LIB} PRIVATE "common/memory_monitor.c")
+target_sources(${COMPONENT_LIB} PRIVATE "common/memory_policy.c")
+target_include_directories(${COMPONENT_LIB} PRIVATE "common")
 target_sources(${COMPONENT_LIB} PRIVATE "server_network_sta/upload/server_network_sta_upload_gate.c")
+target_sources(${COMPONENT_LIB} PRIVATE "server_network_sta/wifi_recovery/server_network_sta_wifi_recovery.c")
+target_include_directories(${COMPONENT_LIB} PRIVATE "server_network_sta/wifi_recovery")
 target_sources(${COMPONENT_LIB} PRIVATE "epd_display/epd_type_1600_1200_133_DKE.cpp")
 target_sources(${COMPONENT_LIB} PRIVATE "epd_sd_power_test/epd_sd_power_test.c")
 target_include_directories(${COMPONENT_LIB} PRIVATE "epd_sd_power_test")
@@ -14,3 +19,5 @@ target_sources(${COMPONENT_LIB} PRIVATE "persistent_state/app_persistent_state.c
 target_include_directories(${COMPONENT_LIB} PRIVATE "persistent_state")
 target_sources(${COMPONENT_LIB} PRIVATE "image_business_worker/image_business_worker.c")
 target_include_directories(${COMPONENT_LIB} PRIVATE "image_business_worker")
+target_sources(${COMPONENT_LIB} PRIVATE "ch583_uart/factory_test/ch583_factory_test.c")
+target_include_directories(${COMPONENT_LIB} PRIVATE "ch583_uart/factory_test")

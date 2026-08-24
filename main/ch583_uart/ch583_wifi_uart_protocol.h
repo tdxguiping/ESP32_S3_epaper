@@ -42,6 +42,10 @@ extern "C" {
 void ch583_wifi_uart_process_bytes(const uint8_t *data, size_t len, ch583_wifi_ble_data_callback_t ble_data_callback);
 int ch583_wifi_uart_protocol_init(void);
 int ch583_wifi_uart_send_wifi_data(const char *message);
+// Send one factory result through the normal V1 frame and ACK tracking path.
+int ch583_wifi_uart_send_factory_result(const char *result);
+// Share the protocol CRC implementation with the inner factory-result CRC.
+uint16_t ch583_wifi_uart_crc16(const void *data, size_t len);
 int ch583_wifi_uart_send_wifi_provision_status(uint8_t status);
 int ch583_wifi_uart_send_current_wifi_provision_status(void);
 int ch583_wifi_uart_send_wifi_provision_before_power_off(bool slideshow_enabled);

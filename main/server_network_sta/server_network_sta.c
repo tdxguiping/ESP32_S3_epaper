@@ -43,6 +43,7 @@ typedef enum {
 typedef struct {
     wifi_manager_event_type_t type;
     bool force_reconnect;
+    bool suppress_password_log;
     uint32_t request_id;
     uint8_t request_slot;
     int reason;
@@ -640,7 +641,7 @@ static esp_err_t read_nvs_string(nvs_handle_t handle, const char *key,
     return ret;
 }
 
-static wifi_credential_t read_saved_wifi(void)
+static wifi_credential_t read_saved_wifi(bool suppress_password_log)
 {
     wifi_credential_t credential = {0};
     nvs_handle_t handle = 0;
@@ -654,8 +655,13 @@ static wifi_credential_t read_saved_wifi(void)
         if (ssid_ret == ESP_OK && pass_ret == ESP_OK && credential.ssid[0] != '\0') {
             credential.is_valid = true;
 #if SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT
-            ESP_LOGI(TAG, "WiFi credential loaded ssid=%s password=%s",
-                     credential.ssid, credential.password);
+            if (!suppress_password_log) {
+                ESP_LOGI(TAG, "WiFi credential loaded ssid=%s password=%s",
+                         credential.ssid, credential.password);
+            } else {
+                ESP_LOGI(TAG, "WiFi credential loaded ssid=%s",
+                         credential.ssid);
+            }
 #else
             ESP_LOGI(TAG, "WiFi credential loaded ssid=%s",
                      credential.ssid);
@@ -676,8 +682,13 @@ static wifi_credential_t read_saved_wifi(void)
     credential.is_valid = ssid_ret == ESP_OK && pass_ret == ESP_OK && credential.ssid[0] != '\0';
     if (credential.is_valid) {
 #if SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT
-        ESP_LOGI(TAG, "WiFi credential loaded ssid=%s password=%s",
-                 credential.ssid, credential.password);
+        if (!suppress_password_log) {
+            ESP_LOGI(TAG, "WiFi credential loaded ssid=%s password=%s",
+                     credential.ssid, credential.password);
+        } else {
+            ESP_LOGI(TAG, "WiFi credential loaded ssid=%s",
+                     credential.ssid);
+        }
 #else
         ESP_LOGI(TAG, "WiFi credential loaded ssid=%s",
                  credential.ssid);
@@ -1219,7 +1230,7 @@ static void server_network_sta_manager_task(void *arg)
             if (event.base_path[0] != '\0') {
                 strlcpy(base_path, event.base_path, sizeof(base_path));
             }
-            credential = read_saved_wifi();
+            credential = read_saved_wifi(event.suppress_password_log);
             connection_enabled = true;
             if (new_credential) {
                 context.credential_generation++;
@@ -1719,6 +1730,27 @@ void ServerNetworkSta_RequestProvisioning(void)
         .type = WIFI_MANAGER_EVENT_PROVISIONING,
     };
     post_manager_event(&event);
+}
+
+esp_err_t ServerNetworkSta_RequestNewCredentialAsync(const char *base_path)
+{
+    esp_err_t ret = ServerNetworkSta_Init();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    wifi_manager_event_t event = {
+        .type = WIFI_MANAGER_EVENT_NEW_CREDENTIAL,
+        .force_reconnect = true,
+        .suppress_password_log = false,
+        .request_slot = SERVER_NETWORK_STA_INVALID_REQUEST_SLOT,
+    };
+    strlcpy(event.base_path,
+            base_path != NULL ? base_path : "/data",
+            sizeof(event.base_path));
+    if (xQueueSend(s_wifi_manager_queue, &event, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
 }
 
 static uint8_t submit_connect(const char *base_path, bool force_reconnect,

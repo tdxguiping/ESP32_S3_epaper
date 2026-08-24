@@ -669,7 +669,7 @@ esp_err_t example_start_file_server(const char *base_path)
 
     /* Limit concurrent sockets to reduce memory pressure during large uploads. */
     /* 限制并发连接数量，降低大文件上传期间的内存压力。 */
-    config.max_open_sockets = 4;
+    config.max_open_sockets = 3;
 
     /* Keep enough URI handlers for static files, /dataUP, /ota and /ota_upload. */
     /* 保留足够 handler，支持静态文件、/dataUP、/ota 和 /ota_upload。 */

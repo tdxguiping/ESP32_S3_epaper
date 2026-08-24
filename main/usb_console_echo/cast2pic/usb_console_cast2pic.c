@@ -7,6 +7,7 @@
 #include "cast_core.h"
 #include "epd_display_mode.h"
 #include "image_business_worker.h"
+#include "memory_policy.h"
 #include "local_image_browsing.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "esp_log.h"
@@ -216,8 +217,8 @@ static void cast2pic_submit_background(const tdx_image_transfer_item_t *item)
         ESP_LOGE(TAG, "cast2pic received but background job alloc failed");
         return;
     }
-    job->bin_data = (char *)malloc(item->bin_part.len);
-    job->image_data = (char *)malloc(item->image_part.len);
+    job->bin_data = (char *)MemoryPolicy_AllocBuffer(item->bin_part.len);
+    job->image_data = (char *)MemoryPolicy_AllocBuffer(item->image_part.len);
     if (job->bin_data == NULL || job->image_data == NULL) {
         ESP_LOGE(TAG, "cast2pic received but background data alloc failed");
         cast2pic_background_free(job);

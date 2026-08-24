@@ -68,6 +68,8 @@ typedef struct {
 
 esp_err_t ServerNetworkSta_Init(void);
 void ServerNetworkSta_RequestProvisioning(void);
+// Submit new saved credentials without using a synchronous request slot.
+esp_err_t ServerNetworkSta_RequestNewCredentialAsync(const char *base_path);
 uint8_t User_Network_mode_app_init(const char *base_path);
 uint8_t User_Network_mode_app_init_force(const char *base_path);
 uint8_t User_Network_mode_app_new_credential(const char *base_path);

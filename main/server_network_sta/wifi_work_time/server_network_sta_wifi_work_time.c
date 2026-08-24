@@ -20,6 +20,7 @@
 #include "epd_sd_power_test.h"
 #include "led_status.h"
 #include "local_image_browsing.h"
+#include "server_network_sta.h"
 #include "server_network_sta_slideshow.h"
 #include "server_network_sta_daily_image.h"
 #include "tdx_cfg.h"
@@ -48,6 +49,7 @@ static uint32_t s_one_shot_restore_continue_time = USER_WORK_STATE_DEFAULT_CONTI
 static uint32_t s_one_shot_restore_standby_time = USER_WORK_STATE_DEFAULT_STANDBY_SECONDS;
 static bool s_factory_reset_guard_active = false;
 static uint32_t s_factory_reset_wake_seconds = 0;
+static uint32_t s_wifi_recovery_wake_seconds = 0;
 static bool s_image_save_in_progress = false;
 static uint32_t s_image_transfer_pending_count = 0;
 static bool s_daily_image_in_progress = false;
@@ -485,7 +487,8 @@ static bool should_skip_or_cancel_one_shot_power_off(void)
 }
 
 static bool configure_ch583_wake_timer_before_power_off(bool *slideshow_enabled_out,
-                                                        uint32_t factory_reset_wake_seconds)
+                                                        uint32_t forced_wake_seconds,
+                                                        const char *forced_reason)
 {
     uint32_t interval = TDX_SLIDESHOW_INTERVAL_MIN_SECONDS;
     bool random = false;
@@ -503,17 +506,19 @@ static bool configure_ch583_wake_timer_before_power_off(bool *slideshow_enabled_
         *slideshow_enabled_out = slideshow_on;
     }
 
-    if (factory_reset_wake_seconds > 0) {
+    if (forced_wake_seconds > 0) {
         if (slideshow_enabled_out != NULL) {
             *slideshow_enabled_out = false;
         }
         ESP_LOGI(TAG,
-                 "factory reset wake timer on interval=%lu",
-                 (unsigned long)factory_reset_wake_seconds);
-        wake_ret = ch583_wifi_uart_send_wake_timer_on(factory_reset_wake_seconds);
+                 "%s wake timer on interval=%lu",
+                 forced_reason != NULL ? forced_reason : "forced power cycle",
+                 (unsigned long)forced_wake_seconds);
+        wake_ret = ch583_wifi_uart_send_wake_timer_on(forced_wake_seconds);
         if (wake_ret < 0) {
             ESP_LOGE(TAG,
-                     "factory reset power off postponed because CH583 wake timer failed ret=%d",
+                     "%s power off postponed because CH583 wake timer failed ret=%d",
+                     forced_reason != NULL ? forced_reason : "forced power cycle",
                      wake_ret);
             return false;
         }
@@ -722,6 +727,11 @@ static void work_state_task(void *arg)
         uint32_t factory_reset_wake_seconds =
             __atomic_load_n(&s_factory_reset_wake_seconds, __ATOMIC_ACQUIRE);
         bool factory_reset_power_cycle_pending = factory_reset_wake_seconds > 0;
+        uint32_t wifi_recovery_wake_seconds =
+            __atomic_load_n(&s_wifi_recovery_wake_seconds, __ATOMIC_ACQUIRE);
+        bool wifi_recovery_power_cycle_pending = wifi_recovery_wake_seconds > 0;
+        bool forced_power_cycle_pending =
+            factory_reset_power_cycle_pending || wifi_recovery_power_cycle_pending;
         uint32_t elapsed = update_working_time_seconds();
         uint8_t one_shot_state =
             __atomic_load_n(&s_one_shot_power_off_state, __ATOMIC_ACQUIRE);
@@ -815,7 +825,7 @@ static void work_state_task(void *arg)
 
         bool work_time_expired = is_work_time_expired(
             elapsed, server_required_continue_work_time, local_image_one_shot);
-        if (factory_reset_power_cycle_pending || work_time_expired) {
+        if (forced_power_cycle_pending || work_time_expired) {
             uint32_t ota_hold_flags = __atomic_load_n(&s_ota_hold_flags, __ATOMIC_ACQUIRE);
             if (ota_hold_flags != 0) {
                 if (counter == 0) {
@@ -831,7 +841,8 @@ static void work_state_task(void *arg)
                 TickType_t retry_interval_ticks = pdMS_TO_TICKS(20000);
                 uint32_t wifi_connect_guard_remaining_ms =
                     ServerNetworkStaWifiWorkTime_GetWifiConnectGuardRemainingMs();
-                if (wifi_connect_guard_remaining_ms > 0) {
+                if (!wifi_recovery_power_cycle_pending &&
+                    wifi_connect_guard_remaining_ms > 0) {
                     uint32_t old_log_flags =
                         __atomic_fetch_or(&s_guard_log_flags,
                                           USER_WORK_STATE_GUARD_LOG_WIFI_CONNECT_BIT,
@@ -882,7 +893,7 @@ static void work_state_task(void *arg)
                     continue;
                 }
                 uint32_t http_hold_remaining =
-                    factory_reset_power_cycle_pending ? 0 :
+                    forced_power_cycle_pending ? 0 :
                     http_activity_hold_remaining_seconds(now);
                 if (http_hold_remaining > 0) {
                     uint32_t old_log_flags = __atomic_fetch_or(&s_guard_log_flags,
@@ -902,7 +913,7 @@ static void work_state_task(void *arg)
                                          ~USER_WORK_STATE_GUARD_LOG_HTTP_BIT,
                                          __ATOMIC_ACQ_REL);
                 uint32_t ch583_hold_remaining =
-                    factory_reset_power_cycle_pending ? 0 :
+                    forced_power_cycle_pending ? 0 :
                     ch583_activity_hold_remaining_seconds(now);
                 if (ch583_hold_remaining > 0) {
                     uint32_t old_log_flags = __atomic_fetch_or(&s_guard_log_flags,
@@ -943,7 +954,7 @@ static void work_state_task(void *arg)
                 }
                 s_last_power_off_send_tick = now;
 
-                if (!factory_reset_power_cycle_pending &&
+                if (!forced_power_cycle_pending &&
                     should_skip_or_cancel_one_shot_power_off()) {
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
                     continue;
@@ -952,6 +963,10 @@ static void work_state_task(void *arg)
                     ESP_LOGW(TAG,
                              "factory reset complete, evaluate CH583 power cycle wake_seconds=%lu",
                              (unsigned long)factory_reset_wake_seconds);
+                } else if (wifi_recovery_power_cycle_pending) {
+                    ESP_LOGW(TAG,
+                             "WiFi recovery evaluate CH583 power cycle wake_seconds=%lu epd=IDLE",
+                             (unsigned long)wifi_recovery_wake_seconds);
                 } else {
                     ESP_LOGI(TAG,
                              "working_time timeout, evaluate CH583 power off elapsed=%lu target=%lu standby=%lu",
@@ -962,9 +977,14 @@ static void work_state_task(void *arg)
                 bool slideshow_enabled_before_power_off = false;
                 if (!configure_ch583_wake_timer_before_power_off(
                         &slideshow_enabled_before_power_off,
-                        factory_reset_power_cycle_pending ?
-                            factory_reset_wake_seconds : 0)) {
-                    s_last_power_off_send_tick = 0;
+                        factory_reset_power_cycle_pending ? factory_reset_wake_seconds :
+                        (wifi_recovery_power_cycle_pending ?
+                            wifi_recovery_wake_seconds : 0),
+                        factory_reset_power_cycle_pending ? "factory reset" :
+                        (wifi_recovery_power_cycle_pending ?
+                            "WiFi recovery" : NULL))) {
+                    s_last_power_off_send_tick =
+                        wifi_recovery_power_cycle_pending ? now : 0;
                     vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
                     continue;
                 }
@@ -1000,17 +1020,46 @@ static void work_state_task(void *arg)
                     !factory_reset_power_cycle_pending &&
                     __atomic_load_n(&s_factory_reset_wake_seconds,
                                     __ATOMIC_ACQUIRE) > 0;
+                uint32_t final_wifi_recovery_wake_seconds =
+                    __atomic_load_n(&s_wifi_recovery_wake_seconds,
+                                    __ATOMIC_ACQUIRE);
+                bool final_wifi_recovery_request_changed =
+                    final_wifi_recovery_wake_seconds != wifi_recovery_wake_seconds;
+                if (wifi_recovery_power_cycle_pending) {
+                    server_network_sta_status_t final_wifi_status = {0};
+                    esp_err_t final_wifi_status_ret =
+                        ServerNetworkSta_GetStatus(&final_wifi_status);
+                    if (final_wifi_status_ret != ESP_OK) {
+                        final_wifi_recovery_request_changed = true;
+                        ESP_LOGE(TAG,
+                                 "WiFi recovery final status read failed ret=%s",
+                                 esp_err_to_name(final_wifi_status_ret));
+                    } else if (final_wifi_status.has_ip &&
+                               final_wifi_status.ip[0] != '\0') {
+                        __atomic_store_n(&s_wifi_recovery_wake_seconds,
+                                         0,
+                                         __ATOMIC_RELEASE);
+                        final_wifi_recovery_request_changed = true;
+                        ESP_LOGI(TAG,
+                                 "WiFi recovery power cycle canceled at final guard ip=%s",
+                                 final_wifi_status.ip);
+                    }
+                }
                 bool final_timer_active =
-                    !factory_reset_power_cycle_pending &&
+                    !forced_power_cycle_pending &&
                     !is_work_time_expired(final_elapsed,
                                           server_required_continue_work_time,
                                           local_image_one_shot);
-                if (factory_reset_power_cycle_pending) {
+                if (forced_power_cycle_pending) {
                     final_http_hold_remaining = 0;
                     final_ch583_hold_remaining = 0;
                 }
+                if (wifi_recovery_power_cycle_pending) {
+                    final_wifi_connect_guard_remaining_ms = 0;
+                }
                 if (final_factory_reset_guard ||
                     final_factory_reset_request_changed ||
+                    final_wifi_recovery_request_changed ||
                     final_timer_active ||
                      final_ota_hold_flags != 0 ||
                      final_epd_busy ||
@@ -1096,17 +1145,46 @@ static void work_state_task(void *arg)
                     !factory_reset_power_cycle_pending &&
                     __atomic_load_n(&s_factory_reset_wake_seconds,
                                     __ATOMIC_ACQUIRE) > 0;
+                uint32_t locked_wifi_recovery_wake_seconds =
+                    __atomic_load_n(&s_wifi_recovery_wake_seconds,
+                                    __ATOMIC_ACQUIRE);
+                bool locked_wifi_recovery_request_changed =
+                    locked_wifi_recovery_wake_seconds != wifi_recovery_wake_seconds;
+                if (wifi_recovery_power_cycle_pending) {
+                    server_network_sta_status_t locked_wifi_status = {0};
+                    esp_err_t locked_wifi_status_ret =
+                        ServerNetworkSta_GetStatus(&locked_wifi_status);
+                    if (locked_wifi_status_ret != ESP_OK) {
+                        locked_wifi_recovery_request_changed = true;
+                        ESP_LOGE(TAG,
+                                 "WiFi recovery locked status read failed ret=%s",
+                                 esp_err_to_name(locked_wifi_status_ret));
+                    } else if (locked_wifi_status.has_ip &&
+                               locked_wifi_status.ip[0] != '\0') {
+                        __atomic_store_n(&s_wifi_recovery_wake_seconds,
+                                         0,
+                                         __ATOMIC_RELEASE);
+                        locked_wifi_recovery_request_changed = true;
+                        ESP_LOGI(TAG,
+                                 "WiFi recovery power cycle canceled under SPI lock ip=%s",
+                                 locked_wifi_status.ip);
+                    }
+                }
                 bool locked_timer_active =
-                    !factory_reset_power_cycle_pending &&
+                    !forced_power_cycle_pending &&
                     !is_work_time_expired(locked_elapsed,
                                           server_required_continue_work_time,
                                           local_image_one_shot);
-                if (factory_reset_power_cycle_pending) {
+                if (forced_power_cycle_pending) {
                     locked_http_hold_remaining = 0;
                     locked_ch583_hold_remaining = 0;
                 }
+                if (wifi_recovery_power_cycle_pending) {
+                    locked_wifi_connect_guard_remaining_ms = 0;
+                }
                 if (locked_factory_reset_guard ||
                     locked_factory_reset_request_changed ||
+                    locked_wifi_recovery_request_changed ||
                     locked_timer_active ||
                      locked_ota_hold_flags != 0 ||
                      locked_epd_busy ||
@@ -1160,6 +1238,52 @@ static void work_state_task(void *arg)
                     vTaskDelay(pdMS_TO_TICKS(100));
                 }
 
+                if (wifi_recovery_power_cycle_pending) {
+                    server_network_sta_status_t commit_wifi_status = {0};
+                    uint32_t commit_recovery_wake_seconds =
+                        __atomic_load_n(&s_wifi_recovery_wake_seconds,
+                                        __ATOMIC_ACQUIRE);
+                    bool commit_status_ok =
+                        ServerNetworkSta_GetStatus(&commit_wifi_status) == ESP_OK;
+                    bool commit_has_ip =
+                        commit_status_ok && commit_wifi_status.has_ip &&
+                        commit_wifi_status.ip[0] != '\0';
+                    bool commit_epd_idle =
+                        !ServerNetworkStaEpdDisplay_IsBusy();
+                    if (!commit_status_ok ||
+                        commit_recovery_wake_seconds != wifi_recovery_wake_seconds ||
+                        commit_has_ip || !commit_epd_idle) {
+                        if (commit_has_ip) {
+                            __atomic_store_n(&s_wifi_recovery_wake_seconds,
+                                             0,
+                                             __ATOMIC_RELEASE);
+                        }
+                        ESP_LOGW(TAG,
+                                 "WiFi recovery POWER_OFF canceled before commit status_ok=%d changed=%d ip=%d epd=%s",
+                                 commit_status_ok ? 1 : 0,
+                                 commit_recovery_wake_seconds !=
+                                     wifi_recovery_wake_seconds ? 1 : 0,
+                                 commit_has_ip ? 1 : 0,
+                                 commit_epd_idle ? "IDLE" : "BUSY");
+                        TdxSharedSpi_Unlock();
+                        (void)__atomic_fetch_or(
+                            &s_runtime_state_flags,
+                            USER_WORK_STATE_RUNTIME_LED_CANCEL_PENDING_BIT,
+                            __ATOMIC_ACQ_REL);
+                        if (!retry_pending_led_power_off_cancel()) {
+                            ESP_LOGE(TAG,
+                                     "pre-commit guard failed to release LED power-off lock");
+                        }
+                        if (!retry_pending_wake_timer_cancel()) {
+                            ESP_LOGE(TAG,
+                                     "pre-commit guard failed to cancel CH583 wake timer");
+                        }
+                        s_last_power_off_send_tick = 0;
+                        vTaskDelay(pdMS_TO_TICKS(USER_WORK_STATE_TASK_INTERVAL_MS));
+                        continue;
+                    }
+                }
+
                 esp_err_t power_decision_ret =
                     EpdSdPowerTest_CommitImmediatePowerOff();
                 if (power_decision_ret != ESP_OK) {
@@ -1207,6 +1331,11 @@ static void work_state_task(void *arg)
                 } else {
                     if (factory_reset_power_cycle_pending) {
                         __atomic_store_n(&s_factory_reset_wake_seconds,
+                                         0,
+                                         __ATOMIC_RELEASE);
+                    }
+                    if (wifi_recovery_power_cycle_pending) {
+                        __atomic_store_n(&s_wifi_recovery_wake_seconds,
                                          0,
                                          __ATOMIC_RELEASE);
                     }
@@ -1639,6 +1768,41 @@ void ServerNetworkStaWifiWorkTime_RequestFactoryResetPowerCycle(uint32_t wake_se
     ESP_LOGW(TAG,
              "factory reset CH583 power cycle requested wake_seconds=%lu",
              (unsigned long)wake_seconds);
+}
+
+esp_err_t ServerNetworkStaWifiWorkTime_RequestWifiRecoveryPowerCycle(
+    uint32_t wake_seconds)
+{
+    if (wake_seconds == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    __atomic_store_n(&s_wifi_recovery_wake_seconds,
+                     wake_seconds,
+                     __ATOMIC_RELEASE);
+    s_last_power_off_send_tick = 0;
+    UserLedStatus_SetPowerOffPending(true);
+    ESP_LOGW(TAG,
+             "WiFi recovery CH583 power cycle requested wake_seconds=%lu",
+             (unsigned long)wake_seconds);
+    return ESP_OK;
+}
+
+void ServerNetworkStaWifiWorkTime_CancelWifiRecoveryPowerCycle(
+    const char *reason)
+{
+    uint32_t old_wake_seconds =
+        __atomic_exchange_n(&s_wifi_recovery_wake_seconds,
+                            0,
+                            __ATOMIC_ACQ_REL);
+    if (old_wake_seconds == 0) {
+        return;
+    }
+    s_last_power_off_send_tick = 0;
+    UserLedStatus_SetPowerOffPending(false);
+    ESP_LOGI(TAG,
+             "WiFi recovery CH583 power cycle canceled reason=%s",
+             reason != NULL ? reason : "unspecified");
 }
 
 void ServerNetworkStaWifiWorkTime_SetImageSaveInProgress(bool in_progress)

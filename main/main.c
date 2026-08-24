@@ -25,6 +25,7 @@
 #include "nvs_flash.h"
 #include "app_persistent_state.h"
 #include "ch583_uart_app.h"
+#include "ch583_factory_test.h"
 #include "cast_core.h"
 #include "debug_output.h"
 #include "epd_display_app.h"
@@ -41,6 +42,7 @@
 #include "server_network_sta_slideshow.h"
 #include "server_network_sta_time.h"
 #include "server_network_sta_wifi_work_time.h"
+#include "server_network_sta_wifi_recovery.h"
 #include "network_ota_boot.h"
 #include "tdx_zlib_epd_test.h"
 #include "tdx_cfg.h"
@@ -347,6 +349,7 @@ void app_main(void)
     ESP_ERROR_CHECK(ServerNetworkStaTime_Init());
     ESP_ERROR_CHECK(TdxSharedSpi_Init());
     ESP_ERROR_CHECK(ServerNetworkStaWifiWorkTime_Init());
+    ESP_ERROR_CHECK(ServerNetworkStaWifiRecovery_Init());
     if (ota_boot_ret != ESP_OK) {
         /*
          * Retry before optional first-boot modules so a transient early otadata
@@ -381,7 +384,9 @@ void app_main(void)
     // Start CH583 UART before LED status because C5 status LEDs are controlled by CH583 GPIO.
     // 先启动 CH583 串口再初始化 LED 状态，因为 C5 状态灯由 CH583 GPIO 控制。
     ESP_ERROR_CHECK(Ch583UartApp_Init());
-    reconcile_persistent_slideshow_mode();
+    if (!Ch583FactoryTest_IsBusy()) {
+        reconcile_persistent_slideshow_mode();
+    }
     ESP_ERROR_CHECK(UsbConsoleEcho_Init());
 
     if (NetworkOtaBoot_IsPendingVerify()) {
@@ -457,29 +462,35 @@ void app_main(void)
     }
     // Force the old read_value=0x02 path here: Server Network STA only, then start the HTTP file server.
     // 中文：在这里固定旧工程 read_value=0x02 路径：只进入 Server Network STA，然后启动 HTTP 文件服务器。
+    ESP_ERROR_CHECK(ServerNetworkStaWifiRecovery_Start());
     (void)ServerNetworkStaWifiWorkTime_StartWifiConnectGuardIfInactive(
         WIFI_CONNECT_POWER_GUARD_MAX_MS);
-    uint8_t network_ret = User_Network_mode_app_init(base_path);
+    bool factory_wifi_owned = Ch583FactoryTest_ManagesWifiThisBoot();
+    uint8_t network_ret = factory_wifi_owned ? SERVER_NETWORK_STA_OK :
+                          User_Network_mode_app_init(base_path);
     server_network_sta_status_t startup_wifi_status = {0};
     esp_err_t startup_status_ret =
         ServerNetworkSta_GetStatus(&startup_wifi_status);
-    if (network_ret == SERVER_NETWORK_STA_OK) {
-        ServerNetworkStaWifiWorkTime_ClearWifiConnectGuard(
-            "startup_ready");
-    } else if (startup_status_ret == ESP_OK &&
-               !startup_wifi_status_is_progressing(&startup_wifi_status)) {
-        ServerNetworkStaWifiWorkTime_ClearWifiConnectGuard(
-            "startup_terminal");
-    } else if (startup_status_ret != ESP_OK) {
-        ESP_LOGE(TAG,
-                 "startup WiFi status read failed; power guard remains bounded ret=%s",
-                 esp_err_to_name(startup_status_ret));
+    if (!factory_wifi_owned) {
+        if (network_ret == SERVER_NETWORK_STA_OK) {
+            ServerNetworkStaWifiWorkTime_ClearWifiConnectGuard(
+                "startup_ready");
+        } else if (startup_status_ret == ESP_OK &&
+                   !startup_wifi_status_is_progressing(&startup_wifi_status)) {
+            ServerNetworkStaWifiWorkTime_ClearWifiConnectGuard(
+                "startup_terminal");
+        } else if (startup_status_ret != ESP_OK) {
+            ESP_LOGE(TAG,
+                     "startup WiFi status read failed; power guard remains bounded ret=%s",
+                     esp_err_to_name(startup_status_ret));
+        }
     }
-    if (network_ret != SERVER_NETWORK_STA_OK) {
+    if (factory_wifi_owned) {
+        ESP_LOGI(TAG, "network startup delegated to factory WiFi manager flow");
+    } else if (network_ret != SERVER_NETWORK_STA_OK) {
         ESP_LOGE(TAG, "network init failed ret=0x%02x", network_ret);
         //return;
-    }
-    else    {
+    } else {
         ESP_LOGI(TAG, "network ready ret=0x%02x", network_ret);
     }
 

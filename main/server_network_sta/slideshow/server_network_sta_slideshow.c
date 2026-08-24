@@ -921,7 +921,8 @@ static esp_err_t slideshow_load_file(const char *base_path,
     }
 
     uint8_t *buf = (uint8_t *)heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (buf == NULL && allow_internal_fallback) {
+    if (buf == NULL && allow_internal_fallback &&
+        (size_t)st.st_size <= USER_INTERNAL_RAM_FALLBACK_MAX_SIZE) {
         buf = (uint8_t *)heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_8BIT);
     }
     if (buf == NULL) {

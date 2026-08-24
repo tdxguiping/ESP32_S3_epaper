@@ -13,6 +13,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "memory_policy.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 #include "usb_console_common.h"
@@ -190,7 +191,7 @@ static esp_err_t save_raw_body_to_path(const char *path, const char *body, size_
              (unsigned int)USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
 #if USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE > 0
     // Use the same file buffer policy as multipart upload so SD writes are comparable.
-    io_buf = malloc(USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
+    io_buf = MemoryPolicy_AllocBuffer(USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE);
     if (io_buf != NULL) {
         if (setvbuf(fp, io_buf, _IOFBF, USB_CONSOLE_FILE_SAVE_STREAM_BUF_SIZE) != 0) {
             ESP_LOGW(TAG,

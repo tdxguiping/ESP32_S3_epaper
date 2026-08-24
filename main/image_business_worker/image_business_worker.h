@@ -20,6 +20,7 @@ typedef enum {
     IMAGE_BUSINESS_OWNER_CAST2PIC,
     IMAGE_BUSINESS_OWNER_USB_CAST,
     IMAGE_BUSINESS_OWNER_USB_CAST2PIC,
+    IMAGE_BUSINESS_OWNER_FACTORY_TEST,
     IMAGE_BUSINESS_OWNER_FACTORY_RESET,
 } image_business_owner_t;
 
@@ -64,6 +65,9 @@ esp_err_t ImageBusinessWorker_WaitOwnerIdle(image_business_owner_t owner,
 bool ImageBusinessWorker_IsCurrentTask(void);
 void ImageBusinessWorker_Wake(void);
 bool ImageBusinessWorker_WaitInterruptible(TickType_t timeout_ticks);
+// Reject other owners until the exclusive owner's latest command finishes.
+esp_err_t ImageBusinessWorker_SetExclusiveOwner(image_business_owner_t owner);
+void ImageBusinessWorker_ClearExclusiveOwner(image_business_owner_t owner);
 
 #ifdef __cplusplus
 }

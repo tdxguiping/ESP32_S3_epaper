@@ -11,6 +11,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "memory_policy.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "usb_console_epd_type.h"
@@ -64,7 +65,7 @@ static bool grow_request_buffer(char **buffer, size_t *capacity, size_t required
         return true;
     }
 
-    new_buffer = (char *)realloc(*buffer, new_capacity);
+    new_buffer = (char *)MemoryPolicy_ReallocBuffer(*buffer, new_capacity);
     if (new_buffer == NULL) {
         return false;
     }
@@ -168,7 +169,7 @@ static void UsbConsoleEcho_Task(void *arg)
     int64_t last_idle_log_us = 0;
     size_t next_progress_bytes = USB_CONSOLE_RX_PROGRESS_STEP_BYTES;
 
-    request_buffer = (char *)malloc(request_capacity);
+    request_buffer = (char *)MemoryPolicy_AllocBuffer(request_capacity);
     if (request_buffer == NULL) {
         ESP_LOGE(TAG, "alloc USB request buffer failed size=%u", (unsigned int)request_capacity);
         vTaskDelete(NULL);

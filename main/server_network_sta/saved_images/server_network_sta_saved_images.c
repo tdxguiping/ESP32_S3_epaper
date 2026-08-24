@@ -9,6 +9,7 @@
 
 #include "esp_log.h"
 #include "file_serving_example_common.h"
+#include "memory_policy.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
@@ -142,7 +143,7 @@ esp_err_t ServerNetworkStaSavedImages_ProcessJson(httpd_req_t *req,
         return send_saved_images_error(req);
     }
 
-    char *json = (char *)malloc(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
+    char *json = (char *)MemoryPolicy_AllocBuffer(SERVER_NETWORK_STA_SAVED_IMAGES_JSON_MAX);
     if (json == NULL) {
         closedir(dir);
         TdxSharedSpi_Unlock();

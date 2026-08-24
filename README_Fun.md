@@ -29,6 +29,7 @@
 - [3. NVS 配置读写](#sec-03)
 - [4. 存储挂载：SD / SPIFFS](#sec-04)
 - [Local Image Browsing 本地图片浏览](#sec-local-image-browsing)
+- [CH583/CH585 WiFi出厂产测](#sec-factory-test)
 - [7. 网络 HTTP 功能汇总](#sec-07)
   - [7.1 cast：投屏业务模块](#sec-07-1)
   - [7.2 cast2pic：投屏转图片缓存 / 显示](#sec-07-2)
@@ -2881,3 +2882,55 @@ EPD和SD共用SPI总线，`USER_SHARED_SPI_MAX_TRANSFER_SIZE=1024` 同时用于E
 CH583 UART可能早于本模块初始化。启动早期首次DEVICE_INFO中收到并成功ACK的PB2进入现有启动FIFO，本模块初始化完成后提交；重复DEVICE_INFO不重复入队，正常运行阶段BUSY事件不缓存。PB1不进入浏览FIFO，只进入Factory Reset单请求RAM状态。Factory Reset清除local_img_state并把epd_mode恢复默认值。
 
 [⬆ 返回目录](#toc)
+
+## WiFi one-shot hard recovery (2026-08)
+
+- Cold-start WiFi keeps the existing manager, retry, authentication, DHCP and 45-second synchronous rules unchanged. A separate `wifi_recovery` module observes one absolute 20-second window.
+- If no usable IP exists after 20 seconds, the state is still a WiFi connection/retry state, and EPD is `IDLE`, the module persists one `attempted` marker and requests the centralized `wifi_work_time` shutdown chain to send `WAKE_TIMER ON,1` followed by `POWER_OFF`.
+- The recovery deadline is not refreshed by manager retry, `RETRY_WAIT`, DHCP recovery or repeated `wifi_wakeup`. If EPD is busy at the boundary, recovery waits for EPD to become idle and rechecks WiFi before requesting shutdown.
+- After the CH583 power cycle, the persistent marker prevents another automatic power cycle. The existing WiFi manager remains powered and continues retrying. Stable `READY` for the existing 30-second stability window, a successfully saved new credential, or Factory Reset clears the marker.
+- `GOT_IP` cancels a pending recovery immediately. HTTP and mDNS failures do not trigger this hard recovery.
+- An existing-progress `wifi_wakeup` now gets one isolated 10-second observer: it sends `wifi_info_result` if READY is reached, otherwise exactly one final `wifi_wakeup_result/1307`. The observer does not change WiFi manager state.
+
+## CH583/CH585 WiFi出厂产测 <span id="sec-factory-test"></span>
+
+```text
+CH583/CH585 FACTORY_DATA
+└─ UART外层协议校验
+   ├─ CRC、LEN、PART/TOTAL错误
+   │  └─ 返回对应ERR，不进入厂测状态
+   └─ 合法facWifiMac / facWifiCon
+      ├─ 准入后提交永久常驻统一图片业务任务
+      │  ├─ 使用FACTORY_TEST owner，不创建新任务
+      │  ├─ 新请求覆盖旧请求，generation变化后旧请求停止
+      │  ├─ 先保留独占状态并回复ACK
+      │  └─ ACK发送成功后才提交并唤醒统一任务
+      ├─ 进入厂测状态
+      │  ├─ Ch583FactoryTest_IsBusy() = true
+      │  ├─ 7.6网络/USB ping通过UploadGate返回EPD=BUSY
+      │  ├─ 手机APP停止cast、cast2pic、upload及EPD操作
+      │  ├─ 设备端UploadGate拒绝绕过ping的大文件请求
+      │  ├─ 停止轮播、每日一图和本地图片浏览
+      │  └─ 统一图片任务拒绝新的普通图片owner
+      ├─ facWifiMac
+      │  ├─ 读取ESP32-C5 WiFi STA MAC，输出12位大写十六进制
+      │  ├─ 从esp_app_get_description()->version读取软件版本
+      │  ├─ 对MAC+版本计算内部业务CRC，输入不含逗号
+      │  └─ 动态LEN发送FACTORY_RESULT
+      ├─ facWifiCon <ssid> <key>
+      │  ├─ SSID/key允许0x21~0x7E，禁止空格、|、^、&
+      │  ├─ SSID最多32字节，key最多63字节
+      │  ├─ 保存凭据并异步提交现有WiFi manager新凭据流程
+      │  ├─ 不启动20秒WiFi硬恢复观察窗口
+      │  ├─ 每500ms检查一次，最多15秒，边界再检查一次
+      │  ├─ 凭据与连接generation均更新且取得非零IP：success + 当前AP RSSI
+      │  └─ 未取得本次连接IP：failed + 0，不复用旧AP RSSI
+      └─ 厂测结束
+         ├─ 先发送FACTORY_RESULT
+         ├─ EpdDisplayMode设置为NORMAL
+         ├─ 不自动恢复轮播、每日一图或本地图片浏览
+         ├─ 清除FACTORY_TEST独占状态
+         ├─ Ch583FactoryTest_IsBusy() = false
+         ├─ Factory Reset可使当前厂测立即失效并接管统一任务
+         └─ 7.6网络/USB ping恢复EPD=IDLE，允许后续cast通常业务
+```

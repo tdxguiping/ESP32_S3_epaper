@@ -4,6 +4,7 @@
 
 #include "epd_sd_power_test.h"
 #include "factory_reset.h"
+#include "ch583_factory_test.h"
 #include "image_business_worker.h"
 #include "network_ota_upload.h"
 #include "server_network_sta_wifi_work_time.h"
@@ -43,6 +44,9 @@ static const char *busy_reason(bool include_reservation)
     }
     if (FactoryReset_IsBusy()) {
         return "factory_reset";
+    }
+    if (Ch583FactoryTest_IsBusy()) {
+        return "factory_test";
     }
     if (NetworkOtaUpload_IsRestartPending() ||
         ServerNetworkStaWifiWorkTime_IsOtaBusy()) {
@@ -146,6 +150,8 @@ esp_err_t ServerNetworkStaUploadGate_TryReserve(
     const char *final_reason = owner_busy_reason();
     if (FactoryReset_IsBusy()) {
         final_reason = "factory_reset";
+    } else if (Ch583FactoryTest_IsBusy()) {
+        final_reason = "factory_test";
     } else if (NetworkOtaUpload_IsRestartPending() ||
                ServerNetworkStaWifiWorkTime_IsOtaBusy()) {
         final_reason = "ota_busy";

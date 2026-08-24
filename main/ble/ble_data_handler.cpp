@@ -21,6 +21,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "server_network_sta.h"
+#include "server_network_sta_wifi_recovery.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "user_app.h"
@@ -402,6 +403,7 @@ static json_sender_t s_wifi_connect_reply_sender = NULL;
 static bool s_wifi_connect_notify_result = false;
 static const char *s_wifi_connect_result_func = NULL;
 static bool s_wifi_connect_new_credential = false;
+static bool s_wifi_wakeup_observer_active = false;
 // Only a wifi_wakeup-owned worker accepts one latest saved credential as pending work.
 static portMUX_TYPE s_wifi_connect_flow_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_wifi_connect_submit_in_progress = false;
@@ -786,6 +788,87 @@ static bool notify_wifi_info_if_ip_ready(json_sender_t reply_sender,
     return false;
 }
 
+typedef struct {
+    json_sender_t reply_sender;
+    TickType_t request_start_tick;
+} wifi_wakeup_observer_context_t;
+
+static void wifi_wakeup_existing_progress_observer_task(void *arg)
+{
+    wifi_wakeup_observer_context_t *context =
+        static_cast<wifi_wakeup_observer_context_t *>(arg);
+    json_sender_t reply_sender = context != NULL ? context->reply_sender : NULL;
+    TickType_t request_start_tick = context != NULL ?
+                                    context->request_start_tick :
+                                    xTaskGetTickCount();
+    free(context);
+
+    server_network_sta_status_t final_status = {};
+    int wait_result = wait_wifi_wakeup_ready_during_grace(
+        request_start_tick, &final_status);
+    if (wait_result == WIFI_WAKEUP_WAIT_READY) {
+        (void)notify_wifi_info_if_ip_ready(reply_sender,
+                                           "wifi_wakeup_existing_progress",
+                                           false,
+                                           NULL);
+    } else if (wait_result != WIFI_WAKEUP_WAIT_CONFIG_QUEUED) {
+        ESP_LOGW(TAG,
+                 "wifi_wakeup existing progress final result=1307 state=%s reason=%d",
+                 ServerNetworkSta_StateName(final_status.state),
+                 final_status.disconnect_reason);
+        send_simple_result_with_sender(reply_sender,
+                                       "wifi_wakeup_result",
+                                       TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT,
+                                       "WiFi connect timed out");
+    }
+
+    portENTER_CRITICAL(&s_wifi_connect_flow_lock);
+    s_wifi_wakeup_observer_active = false;
+    portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t start_wifi_wakeup_existing_progress_observer(
+    json_sender_t reply_sender)
+{
+    wifi_wakeup_observer_context_t *context =
+        static_cast<wifi_wakeup_observer_context_t *>(
+            calloc(1, sizeof(*context)));
+    if (context == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    context->reply_sender = reply_sender;
+    context->request_start_tick = xTaskGetTickCount();
+
+    portENTER_CRITICAL(&s_wifi_connect_flow_lock);
+    if (s_wifi_wakeup_observer_active) {
+        portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+        free(context);
+        return ESP_OK;
+    }
+    s_wifi_wakeup_observer_active = true;
+    portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+
+    BaseType_t task_ret = xTaskCreate(
+        wifi_wakeup_existing_progress_observer_task,
+        "wifi_wakeup_observe",
+        4096,
+        context,
+        4,
+        NULL);
+    if (task_ret != pdPASS) {
+        portENTER_CRITICAL(&s_wifi_connect_flow_lock);
+        s_wifi_wakeup_observer_active = false;
+        portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+        free(context);
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG,
+             "wifi_wakeup existing progress observer started timeout_ms=%u",
+             WIFI_WAKEUP_EARLY_1307_GRACE_MS);
+    return ESP_OK;
+}
+
 static void wifi_connect_task(void *arg)
 {
     (void)arg;
@@ -1126,6 +1209,13 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
                                                "save WiFi config failed");
                 return 0;
             }
+            esp_err_t recovery_ret =
+                ServerNetworkStaWifiRecovery_OnCredentialsChanged();
+            if (recovery_ret != ESP_OK) {
+                ESP_LOGE(TAG,
+                         "WiFi recovery reset after credential save failed ret=%s",
+                         esp_err_to_name(recovery_ret));
+            }
 
             if (pending_reservation != 0) {
                 if (finish_wifi_config_reservation(pending_reservation, true)) {
@@ -1232,7 +1322,7 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
          * This path observes an existing manager attempt and does not create
          * wifi_connect_task, so use the bounded auto-expiring guard directly.
          */
-        ServerNetworkStaWifiWorkTime_StartWifiConnectGuard(
+        (void)ServerNetworkStaWifiWorkTime_StartWifiConnectGuardIfInactive(
             WIFI_CONNECT_POWER_GUARD_MAX_MS);
         char reply_json[256];
         snprintf(reply_json, sizeof(reply_json),
@@ -1248,6 +1338,17 @@ int parse_wifi_wakeup_json(const char *json_str, wifi_config_json_t *out)
         ESP_LOGI(TAG, "WiFi wakeup reports existing state=%s retry_ms=%lu",
                  ServerNetworkSta_StateName(status.state),
                  (unsigned long)wifi_retry_after_ms(status));
+        esp_err_t observer_ret =
+            start_wifi_wakeup_existing_progress_observer(s_active_send_json);
+        if (observer_ret != ESP_OK) {
+            ESP_LOGE(TAG,
+                     "wifi_wakeup existing progress observer start failed ret=%s",
+                     esp_err_to_name(observer_ret));
+            send_simple_result_with_sender(s_active_send_json,
+                                           "wifi_wakeup_result",
+                                           TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT,
+                                           "WiFi connect timed out");
+        }
     }
     else if (status.state == SERVER_NETWORK_STA_STATE_AUTH_FAILED)
     {

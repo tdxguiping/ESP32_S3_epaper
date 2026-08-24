@@ -22,9 +22,11 @@
 #include "local_image_browsing.h"
 #include "nvs.h"
 #include "ch583_wifi_uart_protocol.h"
+#include "ch583_factory_test.h"
 #include "server_network_sta_slideshow.h"
 #include "server_network_sta_daily_image.h"
 #include "server_network_sta_wifi_work_time.h"
+#include "server_network_sta_wifi_recovery.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 
@@ -466,6 +468,12 @@ static void factory_reset_clear_persistent_state(factory_reset_result_t *result)
     if (one_ret != ESP_OK && ret == ESP_OK) {
         ret = one_ret;
     }
+    if (one_ret == ESP_OK) {
+        one_ret = ServerNetworkStaWifiRecovery_Clear();
+        if (one_ret != ESP_OK && ret == ESP_OK) {
+            ret = one_ret;
+        }
+    }
 
     if (result != NULL) {
         result->nvs_ret = ret;
@@ -695,6 +703,7 @@ static esp_err_t factory_reset_worker_run(const void *payload,
 static esp_err_t factory_reset_submit_claimed(factory_reset_trigger_t trigger,
                                               uint16_t protocol_seq)
 {
+    Ch583FactoryTest_CancelForFactoryReset();
     factory_reset_worker_request_t request = {
         .trigger = trigger,
         .protocol_seq = protocol_seq,
@@ -708,7 +717,8 @@ static esp_err_t factory_reset_submit_claimed(factory_reset_trigger_t trigger,
         IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_CAST) |
         IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_CAST2PIC) |
         IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_USB_CAST) |
-        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_USB_CAST2PIC);
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_USB_CAST2PIC) |
+        IMAGE_BUSINESS_OWNER_MASK(IMAGE_BUSINESS_OWNER_FACTORY_TEST);
     esp_err_t ret = ImageBusinessWorker_SubmitReplacingPending(
         IMAGE_BUSINESS_OWNER_FACTORY_RESET,
         factory_reset_worker_run,
@@ -849,6 +859,7 @@ esp_err_t FactoryReset_Request(factory_reset_trigger_t trigger,
     taskEXIT_CRITICAL(&s_factory_reset_request_mux);
 
     if (accepted) {
+        Ch583FactoryTest_CancelForFactoryReset();
         ESP_LOGW(TAG,
                  "factory reset request pending source=%s seq=%u",
                  factory_reset_trigger_to_string(trigger),

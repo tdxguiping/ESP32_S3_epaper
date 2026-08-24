@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include "esp_log.h"
+#include "memory_policy.h"
 #include "tdx_cfg.h"
 #include "zlib.h"
 
@@ -52,8 +53,8 @@ esp_err_t TdxZlibFile_Compress(const char *source_path,
         return ESP_FAIL;
     }
 
-    uint8_t *input_buffer = malloc(USER_ZLIB_STREAM_BUFFER_SIZE);
-    uint8_t *output_buffer = malloc(USER_ZLIB_STREAM_BUFFER_SIZE);
+    uint8_t *input_buffer = MemoryPolicy_AllocBuffer(USER_ZLIB_STREAM_BUFFER_SIZE);
+    uint8_t *output_buffer = MemoryPolicy_AllocBuffer(USER_ZLIB_STREAM_BUFFER_SIZE);
     if (input_buffer == NULL || output_buffer == NULL) {
         ESP_LOGE(TAG, "allocate stream buffers failed size=%u",
                  (unsigned int)USER_ZLIB_STREAM_BUFFER_SIZE);
@@ -167,8 +168,8 @@ esp_err_t TdxZlibFile_Decompress(const char *compressed_path,
         return ESP_FAIL;
     }
 
-    uint8_t *input_buffer = malloc(USER_ZLIB_STREAM_BUFFER_SIZE);
-    uint8_t *output_buffer = malloc(USER_ZLIB_STREAM_BUFFER_SIZE);
+    uint8_t *input_buffer = MemoryPolicy_AllocBuffer(USER_ZLIB_STREAM_BUFFER_SIZE);
+    uint8_t *output_buffer = MemoryPolicy_AllocBuffer(USER_ZLIB_STREAM_BUFFER_SIZE);
     if (input_buffer == NULL || output_buffer == NULL) {
         ESP_LOGE(TAG, "allocate stream buffers failed size=%u",
                  (unsigned int)USER_ZLIB_STREAM_BUFFER_SIZE);

@@ -30,7 +30,7 @@ extern "C" {
 #define ESP_RST_need_Disp_EPD 0xFD
 
 // Keep large buffer fallback limit here so HTTP and EPD avoid exhausting internal RAM.
-#define USER_INTERNAL_RAM_FALLBACK_MAX_SIZE (128 * 1024)
+#define USER_INTERNAL_RAM_FALLBACK_MAX_SIZE (4 * 1024)
 
 // Auto Light-sleep is disabled for reliable CH583 UART, USB, and HTTP receive paths.
 // CPU frequency is controlled by sdkconfig/app_auto_light_sleep_init; keep this at 0.
@@ -971,7 +971,7 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 
 // Keep EPD task settings here so display latency and stack pressure can be tuned in one place.
-#define USER_EPD_DISPLAY_QUEUE_LENGTH 2
+#define USER_EPD_DISPLAY_QUEUE_LENGTH 1
 // Task stack size for USER EPD DISPLAY TASK STACK SIZE; tune with runtime stack high-water data.
 #define USER_EPD_DISPLAY_TASK_STACK_SIZE (8 * 1024)
 // FreeRTOS task priority for USER EPD DISPLAY TASK PRIORITY; keep scheduler side effects in mind when changing it.

@@ -3171,3 +3171,48 @@ main/led_status/led_status.h
 main/tdx_cfg.h
 main/ch583_uart/ch583_wifi_uart_protocol.c
 ```
+
+## `wifi_recovery` module reference (2026-08)
+
+`main/server_network_sta/wifi_recovery/` owns the one-shot hard-recovery policy and its configuration. Its macros are intentionally kept in `server_network_sta_wifi_recovery.h`, not in the already large `tdx_cfg.h`. The default window is 20000 ms, polling is 200 ms, and CH583 wake time is one second.
+
+The module stores `attempted` in the `wifi_recovery` NVS namespace before submitting shutdown. On the recovery boot it does not submit another shutdown and only observes until the existing manager reaches stable READY. New credentials and Factory Reset clear the marker. Failure to persist the marker prevents power-off, avoiding an accidental reboot loop.
+
+`wifi_work_time` exposes a dedicated WiFi-recovery request instead of reusing the Factory Reset API. A recovery request bypasses the ordinary work timer, CH583/HTTP activity holds and the legacy 45-second WiFi power guard, but retains OTA, Factory Reset, image-save, daily-image, mandatory EPD/SD, shared-SPI and EPD-busy protection. EPD must be idle at the initial, final, SPI-locked and immediate pre-commit checks. WiFi IP is rechecked after wake-timer setup, while the shared SPI lock is held, and immediately before committing `POWER_OFF`; a late IP cancels the request and rolls back the wake timer.
+
+The original WiFi manager timeouts remain unchanged. The 20-second recovery deadline is absolute for one cold-start session and is not a replacement for `SERVER_NETWORK_STA_CONNECT_FLOW_TIMEOUT_MS`, `SERVER_NETWORK_STA_SYNC_REQUEST_TIMEOUT_MS` or `WIFI_CONNECT_POWER_GUARD_MAX_MS`.
+
+## CH583/CH585 WiFi出厂产测源码参考
+
+独立厂测模块：
+
+```text
+main/ch583_uart/factory_test/ch583_factory_test.c
+main/ch583_uart/factory_test/ch583_factory_test.h
+```
+
+相关公共模块：
+
+```text
+main/ch583_uart/ch583_wifi_uart_protocol.c/.h
+main/image_business_worker/image_business_worker.c/.h
+main/server_network_sta/server_network_sta.c/.h
+main/server_network_sta/upload/server_network_sta_upload_gate.c/.h
+main/server_network_sta/wifi_recovery/server_network_sta_wifi_recovery.c/.h
+main/epd_display/epd_display_mode.c/.h
+```
+
+ESP-IDF 5.5.3接口依据：
+
+| 用途 | 接口 | SDK位置 |
+|---|---|---|
+| ESP32-C5 WiFi STA MAC | `esp_read_mac(mac, ESP_MAC_WIFI_STA)` | `components/esp_hw_support/include/esp_mac.h` |
+| 当前应用版本 | `esp_app_get_description()->version` | `components/esp_app_format/include/esp_app_desc.h` |
+| 当前AP RSSI | `esp_wifi_sta_get_ap_info()` | `components/esp_wifi/include/esp_wifi.h` |
+| 当前连接/IP状态 | `ServerNetworkSta_GetStatus()` | 工程`main/server_network_sta/server_network_sta.h` |
+
+厂测不创建新任务，使用永久常驻`image_business_worker`的`FACTORY_TEST` owner和现有640字节静态pending payload。UART处理采用`Admit -> ACK -> Commit`，避免快速MAC结果早于请求ACK。网络管理器增加非阻塞新凭据提交入口；厂测同时比较`credential_generation`和`connection_generation`，防止旧IP误判。普通BLE JSON配网和原45秒同步调用保持不变，启动早期的`facWifiCon`则接管本次启动连接。
+
+`Ch583FactoryTest_IsBusy()`是7.6 ping厂测BUSY的状态来源。公共UploadGate在厂测期间返回`factory_test`，网络和USB ping因此输出`EPD=BUSY`，同时最终上传预约也拒绝绕过ping的请求。该状态是APP业务门禁，不操作EPD硬件BUSY输入脚。`FACTORY_RESULT`发送后模块将EPD工作模式保存为NORMAL并清除状态，ping恢复`EPD=IDLE`。
+
+Factory Reset提交前调用厂测取消接口，使当前和pending厂测立即失效。厂测凭据使用独立的WiFi recovery入口，只清除旧marker和已预约掉电，不启动新的20秒hard recovery。当前开发阶段UART方向日志和WiFi manager凭据加载日志明文输出`facWifiCon`密码，方便产测核对；正式发布前必须重新评估并关闭密码明文日志。

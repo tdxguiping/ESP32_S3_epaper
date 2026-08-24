@@ -13,6 +13,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "led_status.h"
+#include "memory_monitor.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
@@ -24,7 +25,9 @@ static const char *TAG = "epd_display";
 
 typedef struct {
     SemaphoreHandle_t done;
+    StaticSemaphore_t done_control;
     volatile uint32_t refs;
+    volatile bool in_use;
     esp_err_t result;
 } epd_display_completion_t;
 
@@ -34,6 +37,7 @@ typedef struct {
     uint8_t epd_which_one;
     epd_display_completion_t *completion;
     bool pending_counted;
+    bool uses_persistent_frame_buffer;
 } epd_display_job_t;
 
 uint16_t sleep_time = 0;
@@ -42,31 +46,46 @@ EventGroupHandle_t sleep_group = NULL;
 static QueueHandle_t s_epd_display_queue = NULL;
 static TaskHandle_t s_epd_display_task = NULL;
 static SemaphoreHandle_t s_epd_display_admission_mutex = NULL;
+static StaticSemaphore_t s_epd_frame_buffer_available_control;
+static SemaphoreHandle_t s_epd_frame_buffer_available = NULL;
+static uint8_t *s_epd_frame_buffer = NULL;
+static size_t s_epd_frame_buffer_capacity = 0;
+#define EPD_DISPLAY_COMPLETION_POOL_SIZE 2U
+static epd_display_completion_t
+    s_epd_display_completions[EPD_DISPLAY_COMPLETION_POOL_SIZE];
 static volatile uint32_t s_epd_display_pending_jobs = 0;
 static volatile bool s_epd_display_active = false;
 static volatile bool s_epd_display_idle_reserved = false;
 
 static epd_display_completion_t *create_completion(void)
 {
-    epd_display_completion_t *completion = (epd_display_completion_t *)calloc(1, sizeof(*completion));
-    if (completion == NULL) {
-        return NULL;
+    for (size_t i = 0; i < EPD_DISPLAY_COMPLETION_POOL_SIZE; ++i) {
+        epd_display_completion_t *completion = &s_epd_display_completions[i];
+        bool expected = false;
+        if (completion->done == NULL ||
+            !__atomic_compare_exchange_n(&completion->in_use,
+                                         &expected,
+                                         true,
+                                         false,
+                                         __ATOMIC_ACQ_REL,
+                                         __ATOMIC_ACQUIRE)) {
+            continue;
+        }
+        while (xSemaphoreTake(completion->done, 0) == pdTRUE) {
+        }
+        completion->refs = 2;
+        completion->result = ESP_FAIL;
+        return completion;
     }
-    completion->done = xSemaphoreCreateBinary();
-    if (completion->done == NULL) {
-        free(completion);
-        return NULL;
-    }
-    completion->refs = 2;
-    completion->result = ESP_FAIL;
-    return completion;
+    return NULL;
 }
 
 static void release_completion(epd_display_completion_t *completion)
 {
     if (completion != NULL && __atomic_sub_fetch(&completion->refs, 1U, __ATOMIC_ACQ_REL) == 0U) {
-        vSemaphoreDelete(completion->done);
-        free(completion);
+        while (xSemaphoreTake(completion->done, 0) == pdTRUE) {
+        }
+        __atomic_store_n(&completion->in_use, false, __ATOMIC_RELEASE);
     }
 }
 
@@ -101,20 +120,41 @@ esp_err_t ServerNetworkStaEpdDisplay_RestoreRailIoAfterPowerTestOn(void)
 static void release_epd_job(epd_display_job_t *job)
 {
     if (job != NULL && job->data != NULL) {
-        heap_caps_free(job->data);
+        if (job->uses_persistent_frame_buffer) {
+            xSemaphoreGive(s_epd_frame_buffer_available);
+        } else {
+            heap_caps_free(job->data);
+        }
         job->data = NULL;
         job->size = 0;
+        job->uses_persistent_frame_buffer = false;
     }
 }
 
-static uint8_t *allocate_display_buffer(size_t display_size)
+static esp_err_t reserve_persistent_frame_buffer(size_t display_size,
+                                                 uint8_t **buffer)
 {
-    uint8_t *buffer = (uint8_t *)heap_caps_malloc(
-        display_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (buffer == NULL && display_size <= USER_INTERNAL_RAM_FALLBACK_MAX_SIZE) {
-        buffer = (uint8_t *)heap_caps_malloc(display_size, MALLOC_CAP_8BIT);
+    if (buffer == NULL || s_epd_frame_buffer_available == NULL ||
+        display_size == 0) {
+        return ESP_ERR_INVALID_ARG;
     }
-    return buffer;
+    *buffer = NULL;
+    if (xSemaphoreTake(s_epd_frame_buffer_available, 0) != pdTRUE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_epd_frame_buffer_capacity < display_size) {
+        heap_caps_free(s_epd_frame_buffer);
+        s_epd_frame_buffer = (uint8_t *)heap_caps_malloc(
+            display_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_epd_frame_buffer_capacity = s_epd_frame_buffer != NULL ? display_size : 0;
+    }
+    if (s_epd_frame_buffer == NULL) {
+        xSemaphoreGive(s_epd_frame_buffer_available);
+        return ESP_ERR_NO_MEM;
+    }
+    *buffer = s_epd_frame_buffer;
+    return ESP_OK;
 }
 
 static esp_err_t prepare_display_buffer(epd_display_job_t *job,
@@ -136,12 +176,16 @@ static esp_err_t prepare_display_buffer(epd_display_job_t *job,
         prepared_size = config->display_size;
     }
 
-    uint8_t *copy = allocate_display_buffer(prepared_size);
-    if (copy == NULL) {
-        ESP_LOGE(TAG, "display buffer alloc failed size=%u",
-                 (unsigned int)prepared_size);
-        return ESP_ERR_NO_MEM;
+    uint8_t *copy = NULL;
+    esp_err_t reserve_ret = reserve_persistent_frame_buffer(prepared_size, &copy);
+    if (reserve_ret != ESP_OK) {
+        ESP_LOGW(TAG, "display frame unavailable size=%u ret=%s",
+                 (unsigned int)prepared_size, esp_err_to_name(reserve_ret));
+        return reserve_ret;
     }
+    job->data = copy;
+    job->size = prepared_size;
+    job->uses_persistent_frame_buffer = true;
 
     if (input_is_zlib) {
         int64_t start_us = esp_timer_get_time();
@@ -160,7 +204,7 @@ static esp_err_t prepare_display_buffer(epd_display_job_t *job,
                      (unsigned int)prepared_size,
                      esp_err_to_name(ret != ESP_OK ? ret : ESP_ERR_INVALID_SIZE),
                      (unsigned long long)(elapsed_us / 1000U));
-            heap_caps_free(copy);
+            release_epd_job(job);
             return ret != ESP_OK ? ret : ESP_ERR_INVALID_SIZE;
         }
         ESP_LOGI(TAG,
@@ -176,8 +220,6 @@ static esp_err_t prepare_display_buffer(epd_display_job_t *job,
         memcpy(copy, display_buf, display_size);
     }
 
-    job->data = copy;
-    job->size = prepared_size;
     return ESP_OK;
 }
 
@@ -257,6 +299,7 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
         }
 
         ServerNetworkStaWifiWorkTime_OnNetworkData();
+        MemoryMonitor_Dump("before_epd");
         int64_t display_start_us = esp_timer_get_time();
         wifi_ps_type_t saved_ps = WIFI_PS_NONE;
         bool restore_wifi_ps = epd_display_enter_wifi_power_save(&saved_ps);
@@ -303,6 +346,7 @@ static void ServerNetworkStaEpdDisplay_Task(void *arg)
                  (long long)((esp_timer_get_time() - display_start_us) / 1000));
         epd_display_completion_t *completion = job.completion;
         release_epd_job(&job);
+        MemoryMonitor_Dump("after_epd_frame_reuse_ready");
         if (completion != NULL) {
             completion->result = display_ret;
             xSemaphoreGive(completion->done);
@@ -339,6 +383,47 @@ esp_err_t ServerNetworkStaEpdDisplay_Init(void)
     // Load the saved EPD type before USB or network code reports the current display profile.
     // 在 USB 或网络代码上报当前屏幕配置前读取保存的 EPD 类型。
     ESP_ERROR_CHECK(EpdType_LoadSavedOrDefault());
+
+    const epd_type_config_t *startup_config = EpdType_GetCurrentConfig();
+    if (startup_config == NULL || startup_config->display_size == 0) {
+        ESP_LOGE(TAG, "persistent frame buffer rejected because EPD type is invalid");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_epd_frame_buffer_available == NULL) {
+        s_epd_frame_buffer_available = xSemaphoreCreateBinaryStatic(
+            &s_epd_frame_buffer_available_control);
+        if (s_epd_frame_buffer_available == NULL ||
+            xSemaphoreGive(s_epd_frame_buffer_available) != pdTRUE) {
+            ESP_LOGE(TAG, "persistent frame buffer semaphore init failed");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    uint8_t *startup_frame = NULL;
+    esp_err_t frame_ret = reserve_persistent_frame_buffer(
+        startup_config->display_size, &startup_frame);
+    if (frame_ret != ESP_OK) {
+        ESP_LOGE(TAG, "persistent frame buffer init failed bytes=%u ret=%s",
+                 (unsigned int)startup_config->display_size,
+                 esp_err_to_name(frame_ret));
+        return frame_ret;
+    }
+    xSemaphoreGive(s_epd_frame_buffer_available);
+    ESP_LOGI(TAG, "persistent frame buffer ready ptr=%p bytes=%u",
+             startup_frame, (unsigned int)s_epd_frame_buffer_capacity);
+    MemoryMonitor_Dump("epd_buffers_ready");
+
+    for (size_t i = 0; i < EPD_DISPLAY_COMPLETION_POOL_SIZE; ++i) {
+        epd_display_completion_t *completion = &s_epd_display_completions[i];
+        if (completion->done == NULL) {
+            completion->done = xSemaphoreCreateBinaryStatic(
+                &completion->done_control);
+            if (completion->done == NULL) {
+                ESP_LOGE(TAG, "static display completion init failed slot=%u",
+                         (unsigned int)i);
+                return ESP_ERR_NO_MEM;
+            }
+        }
+    }
 
     if (sleep_group == NULL) {
         sleep_group = xEventGroupCreate();
@@ -453,8 +538,8 @@ static esp_err_t queue_to_screen_and_wait_internal(const uint8_t *display_buf,
 
     epd_display_completion_t *completion = create_completion();
     if (completion == NULL) {
-        ESP_LOGE(TAG, "display wait semaphore alloc failed");
-        return ESP_ERR_NO_MEM;
+        ESP_LOGW(TAG, "display completion busy");
+        return ESP_ERR_INVALID_STATE;
     }
 
     epd_display_job_t job = {};
@@ -589,7 +674,7 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueReservedToScreenAndWait(
     EpdSdPowerTest_OnEpdTaskRequested();
     epd_display_completion_t *completion = create_completion();
     if (completion == NULL) {
-        return ESP_ERR_NO_MEM;
+        return ESP_ERR_INVALID_STATE;
     }
     epd_display_job_t job = {};
     esp_err_t ret = prepare_display_buffer(
@@ -671,15 +756,17 @@ esp_err_t ServerNetworkStaEpdDisplay_QueueReservedSolidColorAndWait(
     EpdSdPowerTest_OnEpdTaskRequested();
     epd_display_completion_t *completion = create_completion();
     if (completion == NULL) {
-        return ESP_ERR_NO_MEM;
+        return ESP_ERR_INVALID_STATE;
     }
     epd_display_job_t job = {};
-    job.data = allocate_display_buffer(config->display_size);
-    if (job.data == NULL) {
+    esp_err_t reserve_ret = reserve_persistent_frame_buffer(
+        config->display_size, &job.data);
+    if (reserve_ret != ESP_OK) {
         release_completion(completion);
         release_completion(completion);
-        return ESP_ERR_NO_MEM;
+        return reserve_ret;
     }
+    job.uses_persistent_frame_buffer = true;
     memset(job.data, color, config->display_size);
     job.size = config->display_size;
     job.epd_which_one = epd_which_one == 2 ? 2 : 1;
