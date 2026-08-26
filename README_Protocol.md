@@ -2451,6 +2451,8 @@ wifi_standby
 
 后台 READY 且 HTTP ready 后再返回 `wifi_info_result`，字段包括 `stage=<IP>`、`WiFi=<当前SSID>`、`version=<ESP版本>:<CH583版本>`、`date` 和 `running`。连接失败通过 `wifi_result` 返回 `1307/1308/1309`。
 
+普通 `wifi` 新凭据的 `1307` 是整次配网的最终超时，不是单轮连接失败。绝对30秒从有效JSON完成解析、准备保存新凭据时开始计算，NVS保存和底层同步等待已经消耗的时间都计入其中。底层因 `NO_AP_FOUND` 提前返回1307时，BLE/CH583通知层不改变manager连接或退避，只继续读取状态；30秒内READY改发 `wifi_info_result`，明确认证失败可提前返回1308，只有边界复查后仍未READY才发送一次 `wifi_result/result=1307`。30秒结果尚未处理期间，一次断电恢复不得抢先请求CH583关机。底层同步请求和通用连接guard仍保持45秒，普通新配网worker会在30秒最终结果处理后主动清除自己的guard。
+
 ### 11.3 wifi_wakeup：使用已保存配置连接 <span id="sec-11-3"></span>
 
 请求只需要：
@@ -2476,7 +2478,7 @@ AUTH_FAILED                   -> wifi_wakeup_result/1308
 
 `wifi_wakeup` 尚未完成时允许手机提交普通 `wifi` 新配置。BLE层在写NVS前原子预留pending状态，保存成功后再发布READY；worker看到SAVING会等待，避免保存期间从wakeup切换后出现“配置已经写入但返回BUSY”。配置成功返回 `wifi_result/result=0`、`message=WiFi config saved and queued`；只保留最新一条pending配置，取消旧 `wifi_wakeup` 的尚未发送最终通知，并在当前同步调用返回后使用原 `NEW_CREDENTIAL` 路径应用最新配置。普通 `wifi` 自身正在连接时仍按原规则返回BUSY。
 
-冷启动自动联网以及BLE/CH583发起的WiFi连接具有独立的绝对关机保护窗口，单次请求最长45秒且不随重试续期；worker路径在READY、明确终止或到期后解除。若手机请求先于 `app_main()` 自动联网到达，冷启动使用原子 `StartWifiConnectGuardIfInactive()` 复用已有deadline，不把同一joined连接重新延长45秒。若收到 `wifi_wakeup` 时manager已经在连接，只设置同一自动到期guard，不重复提交连接。新 `wifi` 替代旧 `wifi_wakeup` 时，新请求按自身接收时间计算45秒上限。guard不得短于现有45秒同步请求超时，编译期会检查该关系；该保护只禁止关机，不修改manager、认证、DHCP或退避规则。
+冷启动自动联网以及BLE/CH583发起的WiFi连接具有独立的绝对关机保护窗口，通用上限45秒且不随重试续期；worker路径在READY、明确终止或自身结果期限到达后解除。若手机请求先于 `app_main()` 自动联网到达，冷启动使用原子 `StartWifiConnectGuardIfInactive()` 复用已有deadline，不把同一joined连接重新延长45秒。若收到 `wifi_wakeup` 时manager已经在连接，只设置同一自动到期guard，不重复提交连接。新 `wifi` 替代旧 `wifi_wakeup` 时，新请求从自身接收时间计算30秒结果期限并在结果完成后主动清除guard；冷启动、底层同步请求和 `wifi_wakeup` 的通用guard上限仍为45秒。guard不得短于现有45秒同步请求超时，编译期会检查该关系；该保护只禁止关机，不修改manager、认证、DHCP或退避规则。
 
 当前开发阶段 `SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT=1`，WiFi凭据加载日志输出SSID和明文password，便于核对配网数据；设为0时只输出SSID。该开关不改变NVS保存格式、通信JSON或连接配置，正式发布前必须关闭。
 
@@ -2544,7 +2546,7 @@ ESP32启动时UART可能早于本地浏览模块就绪。该窗口内首次DEVIC
 
 ## One-shot WiFi hard recovery protocol behavior (2026-08)
 
-No UART frame or APP JSON format is added. After one independent 20-second cold-start connection window expires without an IP, and only while EPD is `IDLE`, ESP32 uses the existing CH583 sequence:
+No UART frame or APP JSON format is added. After one independent 30-second cold-start connection window expires without an IP, and only while EPD is `IDLE`, ESP32 uses the existing CH583 sequence:
 
 ```text
 WAKE_TIMER ON,1
@@ -2553,7 +2555,7 @@ POWER_OFF
 
 The wake timer is configured before `POWER_OFF`. A persistent one-shot marker prevents another automatic power cycle on the recovery boot; the normal WiFi manager continues retrying. `GOT_IP` cancels pending shutdown, and HTTP/mDNS-only failures never trigger it.
 
-For `wifi_wakeup` received while the manager is already connecting, the existing immediate `result=0`, `message=WiFi operation in progress` reply remains. A read-only observer then waits at most 10 seconds and sends `wifi_info_result` on READY, or exactly one final `wifi_wakeup_result` with result `1307`. This notification deadline is independent from the 20-second hard-recovery deadline.
+For `wifi_wakeup` received while the manager is already connecting, the existing immediate `result=0`, `message=WiFi operation in progress` reply remains. A read-only observer then waits at most 10 seconds and sends `wifi_info_result` on READY, or exactly one final `wifi_wakeup_result` with result `1307`. This notification deadline is independent from the 30-second hard-recovery deadline.
 
 ## CH583/CH585 WiFi出厂产测协议
 
@@ -2583,6 +2585,6 @@ MAC结果格式：
 @#V1|SEQ=<wifi_seq>|CMD=FACTORY_RESULT|LEN=<actual_len>|PART=1|TOTAL=1|ARG=facWifiCon failed <ssid> <rssi>|CRC=<outer_crc>^&
 ```
 
-厂测凭据复用现有WiFi manager连接流程，但采用独立的15秒观察期限，每500ms检查一次，并在期限边界再检查一次。只有凭据generation和连接generation都相对请求前发生变化，并且取得非零STA IP，才判定本次凭据连接成功；旧连接保留的IP或RSSI不能作为成功依据。成功不等待HTTP、mDNS或SNTP，RSSI来自当前AP；失败固定返回0，不复用旧AP的RSSI。厂测凭据会清除旧恢复标记，但不启动20秒WiFi硬恢复窗口，厂测失败后不会因此自动掉电重启。
+厂测凭据复用现有WiFi manager连接流程，但采用独立的15秒观察期限，每500ms检查一次，并在期限边界再检查一次。只有凭据generation和连接generation都相对请求前发生变化，并且取得非零STA IP，才判定本次凭据连接成功；旧连接保留的IP或RSSI不能作为成功依据。成功不等待HTTP、mDNS或SNTP，RSSI来自当前AP；失败固定返回0，不复用旧AP的RSSI。厂测凭据会清除旧恢复标记，但不启动30秒WiFi硬恢复窗口，厂测失败后不会因此自动掉电重启。
 
 每个发送端继续使用自己的递增SEQ。新合法厂测请求覆盖旧请求；旧请求发现generation变化后不发送旧结果，EPD BUSY状态在两个请求之间保持连续。Factory Reset拥有更高优先级，会使当前或pending厂测generation立即失效并接管统一任务。厂测期间网络和USB ping通过公共UploadGate返回`EPD=BUSY`，厂测结果发送后工作模式切换为NORMAL并恢复`EPD=IDLE`，此前停止的轮播、每日一图和本地图片浏览不自动恢复。若启动早期已提交`facWifiCon`，正常启动流程不再重复提交同步WiFi连接，由厂测的新凭据manager流程负责本次启动连接。

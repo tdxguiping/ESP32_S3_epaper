@@ -742,6 +742,8 @@ wifi_info_result
 
 对 `wifi_wakeup_result`，底层 manager 仍处于连接或重试状态时不立即发送过早 `1307`。通知 task 从该过早结果起观察 10 秒；期间 READY 改发 `wifi_info_result`，10 秒到期仍未 READY 才发送 `1307`。若期间收到普通 `wifi` 新配置，BLE层先预留pending再保存，旧wakeup最终通知取消，新配置返回现有 `wifi_result/result=0` 并进入最新单槽pending；保存失败仍使用现有 `1305`，普通worker忙仍使用现有 `1007`。冷启动和这些请求的关机guard不新增返回码，也不改变底层WiFi重试逻辑。
 
+对普通新凭据 `wifi_result`，`1307` 只表示从有效请求接收起绝对30秒仍未READY。第一次 `NO_AP_FOUND` 或底层同步请求提前返回失败不能直接产生该返回码；通知worker继续只读观察原manager，30秒内恢复则改发 `wifi_info_result`，明确认证失败仍可提前发送 `1308`。NVS保存与此前同步等待计入同一30秒，不允许在早期失败后重新开始30秒。
+
 冷启动复用已有WiFi guard deadline以及开发阶段的password日志开关都属于内部调试规则，不新增或改变任何正式返回码；password只进入本地调试日志，不进入返回JSON。
 
 [⬆ 返回目录](#toc)
@@ -904,6 +906,8 @@ PhotoPainter:epd_mode
 
 `1307~1309` 是异步连接结果码。BLE / CH583 的 `wifi` 与 `wifi_wakeup` 在 worker 完成后分别通过 `wifi_result`、`wifi_wakeup_result` 通知连接超时、认证失败或取 IP 失败；USB `/wifi` 原请求仍只返回保存/worker 提交结果。`1354` 已用于工作状态任务尚未初始化、运行时参数无法应用的路径。
 
+BLE / CH583 普通 `wifi_result/result=1307` 必须由该请求的绝对30秒期限产生；单轮 `NO_AP_FOUND` 不是协议超时。`wifi_wakeup_result/result=1307` 仍使用独立10秒通知观察规则。
+
 [⬆ 返回目录](#toc)
 
 ### 6.5 图片 / ping / 快照 result 编码 <span id="sec-06-5"></span>
@@ -1059,7 +1063,7 @@ zlib模式下，cast、cast2pic和upload的 `bin_size` 是压缩后的实际传�
 
 - No new result code is introduced for the one-shot CH583 power cycle; it is an internal recovery action.
 - `wifi_wakeup_result/result=1307` is the final result of the independent 10-second notification observer when WiFi is still not READY. Sending 1307 does not stop the WiFi manager and does not itself request power-off.
-- The separate 20-second cold-start recovery may request one CH583 power cycle only when no IP exists, the state is a recoverable WiFi connection state, EPD is `IDLE`, and the persistent one-shot marker is clear.
+- The separate 30-second cold-start recovery may request one CH583 power cycle only when no IP exists, the state is a recoverable WiFi connection state, EPD is `IDLE`, and the persistent one-shot marker is clear.
 
 ## CH583/CH585 WiFi出厂产测返回规则
 
@@ -1075,4 +1079,4 @@ zlib模式下，cast、cast2pic和upload的 `bin_size` 是压缩后的实际传�
 | `ERR,<received_seq>,BUSY` | Factory Reset或统一业务资源拒绝厂测请求 |
 | `ERR,<received_seq>,NO_MEM` | 必要资源不可用 |
 
-ACK只表示厂测事件已被设备接收，不表示MAC读取或WiFi连接已经成功；`FACTORY_RESULT`不得早于该请求ACK。正式业务结果由后续`CMD=FACTORY_RESULT`中的`facWifiMac ...`、`facWifiCon success ...`或`facWifiCon failed ...`表达。`facWifiCon success`必须对应本次新凭据和新连接generation取得的非零IP；失败RSSI为0，不使用旧连接RSSI。Factory Reset抢占和厂测抑制20秒hard recovery均为内部控制，不增加返回码。
+ACK只表示厂测事件已被设备接收，不表示MAC读取或WiFi连接已经成功；`FACTORY_RESULT`不得早于该请求ACK。正式业务结果由后续`CMD=FACTORY_RESULT`中的`facWifiMac ...`、`facWifiCon success ...`或`facWifiCon failed ...`表达。`facWifiCon success`必须对应本次新凭据和新连接generation取得的非零IP；失败RSSI为0，不使用旧连接RSSI。Factory Reset抢占和厂测抑制30秒hard recovery均为内部控制，不增加返回码。

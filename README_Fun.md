@@ -235,6 +235,7 @@ main/main.c
    │  └─ server_network_sta/server_network_sta.c 启动 STA / HTTP
    │     └─ CH583/BLE 的 wifi_wakeup 若提前取得 1307、但 manager 仍处于连接或重试状态，通知 task 只观察现有状态并暂缓 10 秒；期间 READY 则返回 wifi_info_result，超时仍按原 1307 返回
    │        ├─ wifi_wakeup 尚未完成时收到普通 wifi，BLE层先原子预留单槽 pending，再保存配置并发布READY；worker在保存完成前不退出，最新配置覆盖旧 pending，不返回 BUSY
+   │        ├─ 普通 wifi 新凭据若提前取得 1307，通知 task 不把单轮 NO_AP_FOUND 当作最终超时；从有效请求接收时刻起只读观察至绝对30秒，期间 READY 返回 wifi_info_result，明确认证失败返回1308，只有30秒仍未READY才发送1307
    │        └─ 冷启动自动联网及BLE/CH583 WiFi请求使用独立绝对关机guard，最长45秒；冷启动遇到已有有效guard时只复用原deadline、不刷新，worker路径在READY、明确终止或到期时解除，manager的连接和重试逻辑不变
    └─ 当前开发阶段启用 `SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT=1`，读取有效WiFi凭据时打印SSID和明文password；正式发布前必须改为0
    ├─ ServerNetworkStaDailyImage_StartSaved()
@@ -2885,12 +2886,13 @@ CH583 UART可能早于本模块初始化。启动早期首次DEVICE_INFO中收�
 
 ## WiFi one-shot hard recovery (2026-08)
 
-- Cold-start WiFi keeps the existing manager, retry, authentication, DHCP and 45-second synchronous rules unchanged. A separate `wifi_recovery` module observes one absolute 20-second window.
+- Cold-start WiFi keeps the existing manager, retry, authentication, DHCP and 45-second synchronous rules unchanged. A separate `wifi_recovery` module observes one absolute 30-second window.
 - If no usable IP exists after 20 seconds, the state is still a WiFi connection/retry state, and EPD is `IDLE`, the module persists one `attempted` marker and requests the centralized `wifi_work_time` shutdown chain to send `WAKE_TIMER ON,1` followed by `POWER_OFF`.
 - The recovery deadline is not refreshed by manager retry, `RETRY_WAIT`, DHCP recovery or repeated `wifi_wakeup`. If EPD is busy at the boundary, recovery waits for EPD to become idle and rechecks WiFi before requesting shutdown.
 - After the CH583 power cycle, the persistent marker prevents another automatic power cycle. The existing WiFi manager remains powered and continues retrying. Stable `READY` for the existing 30-second stability window, a successfully saved new credential, or Factory Reset clears the marker.
 - `GOT_IP` cancels a pending recovery immediately. HTTP and mDNS failures do not trigger this hard recovery.
 - An existing-progress `wifi_wakeup` now gets one isolated 10-second observer: it sends `wifi_info_result` if READY is reached, otherwise exactly one final `wifi_wakeup_result/1307`. The observer does not change WiFi manager state.
+- A BLE/CH583 `wifi` new-credential request owns one absolute 30-second result window beginning when the valid request is accepted. An early manager 1307 is deferred without changing manager retries; READY sends `wifi_info_result`, confirmed authentication failure sends 1308, and only the absolute deadline can send 1307. The one-shot 30-second hard-recovery observer waits until this final result has been handled.
 
 ## CH583/CH585 WiFi出厂产测 <span id="sec-factory-test"></span>
 
@@ -2921,7 +2923,7 @@ CH583/CH585 FACTORY_DATA
       │  ├─ SSID/key允许0x21~0x7E，禁止空格、|、^、&
       │  ├─ SSID最多32字节，key最多63字节
       │  ├─ 保存凭据并异步提交现有WiFi manager新凭据流程
-      │  ├─ 不启动20秒WiFi硬恢复观察窗口
+      │  ├─ 不启动30秒WiFi硬恢复观察窗口
       │  ├─ 每500ms检查一次，最多15秒，边界再检查一次
       │  ├─ 凭据与连接generation均更新且取得非零IP：success + 当前AP RSSI
       │  └─ 未取得本次连接IP：failed + 0，不复用旧AP RSSI

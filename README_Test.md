@@ -686,13 +686,17 @@ wifi_info_result
 - 从命令受理到 READY 之间不得发送 `wifi_wakeup_result/result=1307`。
 - 过早 1307 后 10 秒内 READY 时，最终通知必须是 `wifi_info_result`。
 - AP 持续不可用且 10 秒宽限到期时，仍应只发送一次原 `wifi_wakeup_result/result=1307`。
-- 普通 `wifi` 配网的 `wifi_result` 行为必须保持不变。
+- 普通 `wifi` 新凭据使用独立的绝对30秒结果窗口；不得套用 `wifi_wakeup` 的10秒规则。
+
+普通新配网1307时序测试：发送 `{"func":"wifi","ssid":"...","key":"..."}` 后记录有效请求接收时刻。让第一次连接在约10秒产生 `NO_AP_FOUND`，但让manager继续重试并在约26秒进入READY。预期先收到保存/提交的 `wifi_result/result=0`，早期失败时只打印一次 `WiFi config early 1307 deferred`，不得向CH583发送1307；READY后应打印 `WiFi config connected before deadline` 并只发送一次 `wifi_info_result`。随后保持AP不可用，确认前29秒不发送1307，绝对30秒边界复查仍未READY时才打印一次 `WiFi config final timeout` 并发送一次1307。同步调用、NVS保存耗时必须计入30秒，不能从早期1307重新计时。
+
+恢复冲突测试：普通新配网持续失败且EPD为IDLE，确认30秒最终结果处理前硬恢复观察器没有请求 `POWER_OFF`；最终成功、1308或30秒1307完成后才释放恢复门控。30秒内成功不得断电，30秒失败后仍只允许既有的一次断电恢复。边界测试分别在29.8秒和30秒附近注入READY，确认最终复查不会同时发送成功与1307，并确认1307的 `WIFI_DATA` 在 `WAKE_TIMER` 和 `POWER_OFF` 之前提交。
 
 立即重新配网测试：在 `wifi_wakeup` 的 CONNECTING、RETRY_WAIT 和10秒宽限阶段分别发送新的 `{"func":"wifi","ssid":"...","key":"..."}`。预期不返回BUSY，而是返回 `wifi_result/result=0`、`message=WiFi config saved and queued`；旧wakeup不再发送尚未产生的1307或成功通知，worker随后只应用最新保存的配置。通过测试钩子延长NVS保存时间，使wakeup worker恰好在保存期间完成，预期worker等待SAVING发布为READY，不得出现“配置已保存但返回BUSY”。普通 `wifi` worker自身忙时仍应返回原BUSY。
 
 并发提交测试：让BLE和CH583在同一调度窗口分别提交WiFi请求，只允许一方占用 `submit_in_progress` 并创建worker；另一方返回BUSY且不得清除成功请求的WiFi connect guard。日志中只应出现一条对应受理请求的guard启动记录。
 
-关机保护测试：冷启动时保持AP不可用并把工作时间设为20秒，确认同步联网尚在45秒窗口内时不得出现 `POWER_OFF`；快速READY或明确终止应清除启动guard。再让手机 `wifi` 或 `wifi_wakeup` 在 `app_main()` 自动联网前先建立guard，预期冷启动只打印 `power guard reused remaining_ms=...`，不得再次打印新的45秒started日志，最终deadline仍从手机请求开始计算。对BLE/CH583请求同样让工作时间先达到20秒，45秒绝对窗口到期前不得出现 `POWER_OFF`，应只打印一次 `power off postponed by WiFi connect guard`；worker路径在READY或明确终止时应立即清除guard。还要先让manager进入CONNECTING/RETRY_WAIT，再发送 `wifi_wakeup`，确认未创建新连接请求但同样设置最多45秒的自动到期guard。持续失败时，guard从单次请求接收起不得超过45秒。还需分别在初始关机判断、LED关机准备和SPI锁前制造并发请求，验证三层guard都能阻止或取消关机。
+关机保护测试：冷启动时保持AP不可用并把工作时间设为20秒，确认同步联网尚在45秒窗口内时不得出现 `POWER_OFF`；快速READY或明确终止应清除启动guard。再让手机 `wifi` 或 `wifi_wakeup` 在 `app_main()` 自动联网前先建立guard，预期冷启动只打印 `power guard reused remaining_ms=...`，不得再次打印新的45秒started日志，最终deadline仍从手机请求开始计算。普通新配网在绝对30秒结果处理前不得出现 `POWER_OFF`，结果完成后应清除其guard并才允许一次恢复；`wifi_wakeup` 和冷启动仍使用最多45秒的通用guard。还要先让manager进入CONNECTING/RETRY_WAIT，再发送 `wifi_wakeup`，确认未创建新连接请求但同样设置最多45秒的自动到期guard。通用guard从单次请求接收起不得超过45秒。还需分别在初始关机判断、LED关机准备和SPI锁前制造并发请求，验证三层guard都能阻止或取消关机。
 
 凭据日志测试：当前开发配置 `SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT=1`，分别从 `wifi` namespace和 `nvs.net80211` fallback读取有效配置，日志应出现 `WiFi credential loaded ssid=<SSID> password=<PASSWORD>`。把宏改为0后，日志只能输出SSID。正式发布检查必须确认宏为0。
 
@@ -768,13 +772,13 @@ SD共享SPI回归测试：EPD启用的正常启动必须出现`SDSPI shared bus 
 ## WiFi one-shot hard recovery tests (2026-08)
 
 1. With the AP available, verify WiFi obtains an IP before 20 seconds and neither `WAKE_TIMER ON,1` nor `POWER_OFF` is sent.
-2. With the AP unavailable on the first boot, verify the absolute 20-second deadline is not refreshed by retries. With EPD `IDLE`, verify the NVS marker is committed, then CH583 receives `WAKE_TIMER ON,1` before `POWER_OFF` and powers the ESP32 back after one second.
+2. With the AP unavailable on the first boot, verify the absolute 30-second deadline is not refreshed by retries. With EPD `IDLE`, verify the NVS marker is committed, then CH583 receives `WAKE_TIMER ON,1` before `POWER_OFF` and powers the ESP32 back after one second.
 3. Keep the AP unavailable after the recovery boot. Verify no second automatic `POWER_OFF` is sent and the existing WiFi manager continues retrying while powered.
 4. Enable the AP later on the second boot. Verify `GOT_IP` prevents shutdown and stable `READY` clears the one-shot marker.
-5. Keep EPD busy across the 20-second boundary. Verify recovery is postponed, no wake timer or power-off command is sent, and the request is evaluated only after EPD becomes `IDLE`.
+5. Keep EPD busy across the 30-second boundary. Verify recovery is postponed, no wake timer or power-off command is sent, and the request is evaluated only after EPD becomes `IDLE`.
 6. Produce `GOT_IP` while shutdown preparation is running. Verify the final, SPI-locked or immediate pre-commit check cancels shutdown and rolls back the armed wake timer.
 7. Use wrong credentials or no saved credentials. Verify terminal `AUTH_FAILED`/`NO_CONFIG` does not request a hard recovery.
-8. Save a new SSID/password after a previous recovery. Verify the marker clears and the new credential receives a fresh 20-second one-shot window.
+8. Save a new SSID/password after a previous recovery. Verify the marker clears and the new credential receives a fresh 30-second one-shot window.
 9. Inject NVS marker-save failure. Verify the ESP32 remains powered and no `POWER_OFF` is sent.
 10. For `wifi_wakeup` received during `CONNECTING`/WiFi `RETRY_WAIT`, verify the immediate progress reply is followed within 10 seconds by either `wifi_info_result` or exactly one final 1307.
 
@@ -786,7 +790,7 @@ SD共享SPI回归测试：EPD启用的正常启动必须出现`SDSPI shared bus 
 4. 厂测开始后分别访问网络和USB ping，确认都通过公共UploadGate返回`EPD=BUSY`；直接绕过ping提交cast、cast2pic或upload，确认设备仍拒绝请求且不接收大body。
 5. 厂测前启动轮播、每日一图或本地浏览，确认合法`FACTORY_DATA`使它们停止；正在执行的EPD/SPI事务只在安全点结束，不发生强制中断或SPI冲突。
 6. 设备原先已连接其他AP时执行合法`facWifiCon`，确认旧IP和旧RSSI不会被误判；日志必须先进入reconfigure/connecting，凭据generation和连接generation都更新并取得新非零IP后，才在15秒内返回`success`及当前AP真实RSSI，不等待HTTP、mDNS或SNTP READY。
-7. 使用不存在的AP或错误密码，确认每500ms检查一次，15秒边界再次检查后返回`failed`和RSSI `0`，不得返回厂测开始前旧AP的RSSI；厂测结束20秒后不得因本次失败触发WiFi hard recovery掉电。
+7. 使用不存在的AP或错误密码，确认每500ms检查一次，15秒边界再次检查后返回`failed`和RSSI `0`，不得返回厂测开始前旧AP的RSSI；厂测结束30秒后不得因本次失败触发WiFi hard recovery掉电。
 8. 分别测试空SSID、空key、SSID超过32字节、key超过63字节、控制字符、空格及`|`、`^`、`&`，确认不进入厂测并返回协议错误。
 9. 在第一个`facWifiCon`等待期间连续发送新请求，确认最新请求覆盖旧请求，旧请求最多500ms内退出且不发送旧结果，EPD状态在覆盖期间持续BUSY。
 10. 厂测完成并尝试发送结果后，确认EPD工作模式保存为NORMAL，网络和USB ping恢复`EPD=IDLE`，后续cast通常业务可提交；轮播、每日一图和本地浏览不自动恢复。

@@ -19,6 +19,7 @@ static bool s_power_cycle_attempted;
 static uint32_t s_window_start_tick_encoded;
 static bool s_factory_session_suppressed;
 static bool s_factory_session_finished;
+static bool s_credential_result_pending;
 
 static esp_err_t save_attempted_marker(bool attempted)
 {
@@ -82,6 +83,7 @@ esp_err_t ServerNetworkStaWifiRecovery_OnReadyStable(void)
 
 esp_err_t ServerNetworkStaWifiRecovery_OnCredentialsChanged(void)
 {
+    __atomic_store_n(&s_credential_result_pending, true, __ATOMIC_RELEASE);
     __atomic_store_n(&s_factory_session_finished, false, __ATOMIC_RELEASE);
     __atomic_store_n(&s_factory_session_suppressed, false, __ATOMIC_RELEASE);
     ServerNetworkStaWifiWorkTime_CancelWifiRecoveryPowerCycle(
@@ -100,8 +102,21 @@ esp_err_t ServerNetworkStaWifiRecovery_OnCredentialsChanged(void)
     return ServerNetworkStaWifiRecovery_Start();
 }
 
+void ServerNetworkStaWifiRecovery_OnCredentialResultStarted(void)
+{
+    __atomic_store_n(&s_credential_result_pending, true, __ATOMIC_RELEASE);
+    ServerNetworkStaWifiWorkTime_CancelWifiRecoveryPowerCycle(
+        "credential_result_started");
+}
+
+void ServerNetworkStaWifiRecovery_OnCredentialResultFinished(void)
+{
+    __atomic_store_n(&s_credential_result_pending, false, __ATOMIC_RELEASE);
+}
+
 esp_err_t ServerNetworkStaWifiRecovery_OnFactoryCredentialsChanged(void)
 {
+    __atomic_store_n(&s_credential_result_pending, false, __ATOMIC_RELEASE);
     __atomic_store_n(&s_factory_session_finished, false, __ATOMIC_RELEASE);
     __atomic_store_n(&s_factory_session_suppressed, true, __ATOMIC_RELEASE);
     ServerNetworkStaWifiWorkTime_CancelWifiRecoveryPowerCycle(
@@ -123,6 +138,7 @@ void ServerNetworkStaWifiRecovery_OnFactoryTestFinished(void)
 
 esp_err_t ServerNetworkStaWifiRecovery_Clear(void)
 {
+    __atomic_store_n(&s_credential_result_pending, false, __ATOMIC_RELEASE);
     __atomic_store_n(&s_factory_session_finished, false, __ATOMIC_RELEASE);
     __atomic_store_n(&s_factory_session_suppressed, false, __ATOMIC_RELEASE);
     ServerNetworkStaWifiWorkTime_CancelWifiRecoveryPowerCycle(
@@ -167,6 +183,16 @@ static void wifi_recovery_task(void *arg)
                                 __ATOMIC_ACQUIRE)) {
                 break;
             }
+            vTaskDelay(poll_ticks);
+            continue;
+        }
+
+        /*
+         * A new credential owns the full protocol result window. Do not let
+         * hard recovery power-cycle CH583 before its final result is handled.
+         */
+        if (__atomic_load_n(&s_credential_result_pending,
+                            __ATOMIC_ACQUIRE)) {
             vTaskDelay(poll_ticks);
             continue;
         }

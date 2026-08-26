@@ -8,13 +8,17 @@ extern "C" {
 
 // One cold-start connection window is observed without changing WiFi manager retries.
 #define WIFI_RECOVERY_POWER_CYCLE_ENABLE       1
-#define WIFI_RECOVERY_CONNECT_WINDOW_MS        20000U
+#define WIFI_RECOVERY_CONNECT_WINDOW_MS        30000U
 #define WIFI_RECOVERY_WAKE_SECONDS             1U
 #define WIFI_RECOVERY_STATUS_POLL_MS           200U
 #define WIFI_RECOVERY_TASK_STACK_SIZE          3072U
 #define WIFI_RECOVERY_TASK_PRIORITY            4U
 #define WIFI_RECOVERY_NVS_NAMESPACE            "wifi_recovery"
 #define WIFI_RECOVERY_NVS_ATTEMPTED_KEY        "attempted"
+
+// BLE/CH583 new-credential results use one absolute request-to-result window.
+#define WIFI_CONFIG_RESULT_TIMEOUT_MS           30000U
+#define WIFI_CONFIG_RESULT_STATUS_POLL_MS       200U
 
 #if WIFI_RECOVERY_CONNECT_WINDOW_MS < 20000U
 #error "WiFi recovery window must allow association and DHCP recovery"
@@ -32,6 +36,12 @@ esp_err_t ServerNetworkStaWifiRecovery_Start(void);
 
 // A successfully saved credential is a new recovery session.
 esp_err_t ServerNetworkStaWifiRecovery_OnCredentialsChanged(void);
+
+// Defer hard recovery as soon as a valid new-credential request is accepted.
+void ServerNetworkStaWifiRecovery_OnCredentialResultStarted(void);
+
+// Release hard-recovery deferral after the new-credential final result is handled.
+void ServerNetworkStaWifiRecovery_OnCredentialResultFinished(void);
 
 // Clear recovery state for factory credentials without arming a hard recovery.
 esp_err_t ServerNetworkStaWifiRecovery_OnFactoryCredentialsChanged(void);

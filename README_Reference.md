@@ -235,6 +235,8 @@ WiFi 重试间隔固定为 `1000/2000/3000/3500/4000/4500 ms`，第6次以后保
 
 CH583/BLE 的 `wifi_wakeup` 结果通知在 `ble_data_handler.cpp` 层单独防止过早 `1307`：旧同步调用先返回失败、但状态快照仍为 CONNECTING、DISCONNECTING、WAITING_IP、RETRY_WAIT、GOT_IP 或 STARTING_SERVICES 时，通知 task 从取得该结果起最多 10 秒、每 200 ms 只读一次状态。READY 且已有 IP、HTTP ready 时发送 `wifi_info_result`；明确终止或 10 秒到期才按原结果发送。该观察逻辑不调用 connect/disconnect，不修改 manager、退避、认证或 DHCP 状态机。
 
+CH583/BLE 的普通新凭据 `wifi_result` 使用独立的 `wait_wifi_config_result_until_deadline()`：请求起点在有效JSON解析完成、保存NVS之前记录，worker取得早期1307后每200 ms只读manager状态，扣除保存和同步调用已消耗时间，最多观察到绝对30秒。READY且IP/HTTP ready时发送 `wifi_info_result`，AUTH_FAILED发送1308，边界再次读取仍未READY才发送一次1307。`WIFI_CONFIG_RESULT_TIMEOUT_MS` 与 `WIFI_CONFIG_RESULT_STATUS_POLL_MS` 位于 `server_network_sta_wifi_recovery.h`；编译期要求30秒结果窗口不得超过通用45秒电源guard。
+
 同一BLE worker内维护一个只用于wakeup流程的最新配置pending槽，状态为NONE/SAVING/READY。`wifi_wakeup` 尚未完成时，普通 `wifi` 在flow lock内先预留SAVING及generation，再写NVS，成功后只把匹配generation发布为READY；worker检测到SAVING时等待，检测到READY后取消旧wakeup尚未发送的最终通知，并使用相同任务进入现有 `User_Network_mode_app_new_credential()`。重复请求只保留最新generation，普通 `wifi` worker忙时仍保留原BUSY规则。
 
 BLE/CH583 worker提交使用同一flow lock发布 `submit_in_progress`，成功占用提交状态后才启动对应关机guard，再创建task并发布handle。并发BUSY请求不启动或清除guard，避免失败请求误清除另一条已受理请求的保护。
@@ -3174,13 +3176,15 @@ main/ch583_uart/ch583_wifi_uart_protocol.c
 
 ## `wifi_recovery` module reference (2026-08)
 
-`main/server_network_sta/wifi_recovery/` owns the one-shot hard-recovery policy and its configuration. Its macros are intentionally kept in `server_network_sta_wifi_recovery.h`, not in the already large `tdx_cfg.h`. The default window is 20000 ms, polling is 200 ms, and CH583 wake time is one second.
+`main/server_network_sta/wifi_recovery/` owns the one-shot hard-recovery policy and its configuration. Its macros are intentionally kept in `server_network_sta_wifi_recovery.h`, not in the already large `tdx_cfg.h`. The default window is 30000 ms, polling is 200 ms, and CH583 wake time is one second.
+
+For an accepted BLE/CH583 new-credential request, recovery also owns a RAM-only `credential_result_pending` gate. The gate is set before NVS save and cancels a not-yet-committed recovery request. The 30-second observer continues polling but cannot request a power cycle until save failure or the BLE worker's final success, authentication failure, or absolute 30-second timeout has been handled. Factory credential/reset paths clear this gate. This coordination does not change WiFi manager retries.
 
 The module stores `attempted` in the `wifi_recovery` NVS namespace before submitting shutdown. On the recovery boot it does not submit another shutdown and only observes until the existing manager reaches stable READY. New credentials and Factory Reset clear the marker. Failure to persist the marker prevents power-off, avoiding an accidental reboot loop.
 
 `wifi_work_time` exposes a dedicated WiFi-recovery request instead of reusing the Factory Reset API. A recovery request bypasses the ordinary work timer, CH583/HTTP activity holds and the legacy 45-second WiFi power guard, but retains OTA, Factory Reset, image-save, daily-image, mandatory EPD/SD, shared-SPI and EPD-busy protection. EPD must be idle at the initial, final, SPI-locked and immediate pre-commit checks. WiFi IP is rechecked after wake-timer setup, while the shared SPI lock is held, and immediately before committing `POWER_OFF`; a late IP cancels the request and rolls back the wake timer.
 
-The original WiFi manager timeouts remain unchanged. The 20-second recovery deadline is absolute for one cold-start session and is not a replacement for `SERVER_NETWORK_STA_CONNECT_FLOW_TIMEOUT_MS`, `SERVER_NETWORK_STA_SYNC_REQUEST_TIMEOUT_MS` or `WIFI_CONNECT_POWER_GUARD_MAX_MS`.
+The original WiFi manager timeouts remain unchanged. The 30-second recovery deadline is absolute for one cold-start session and is not a replacement for `SERVER_NETWORK_STA_CONNECT_FLOW_TIMEOUT_MS`, `SERVER_NETWORK_STA_SYNC_REQUEST_TIMEOUT_MS` or `WIFI_CONNECT_POWER_GUARD_MAX_MS`.
 
 ## CH583/CH585 WiFi出厂产测源码参考
 
@@ -3215,4 +3219,4 @@ ESP-IDF 5.5.3接口依据：
 
 `Ch583FactoryTest_IsBusy()`是7.6 ping厂测BUSY的状态来源。公共UploadGate在厂测期间返回`factory_test`，网络和USB ping因此输出`EPD=BUSY`，同时最终上传预约也拒绝绕过ping的请求。该状态是APP业务门禁，不操作EPD硬件BUSY输入脚。`FACTORY_RESULT`发送后模块将EPD工作模式保存为NORMAL并清除状态，ping恢复`EPD=IDLE`。
 
-Factory Reset提交前调用厂测取消接口，使当前和pending厂测立即失效。厂测凭据使用独立的WiFi recovery入口，只清除旧marker和已预约掉电，不启动新的20秒hard recovery。当前开发阶段UART方向日志和WiFi manager凭据加载日志明文输出`facWifiCon`密码，方便产测核对；正式发布前必须重新评估并关闭密码明文日志。
+Factory Reset提交前调用厂测取消接口，使当前和pending厂测立即失效。厂测凭据使用独立的WiFi recovery入口，只清除旧marker和已预约掉电，不启动新的30秒hard recovery。当前开发阶段UART方向日志和WiFi manager凭据加载日志明文输出`facWifiCon`密码，方便产测核对；正式发布前必须重新评估并关闭密码明文日志。
