@@ -1319,18 +1319,21 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
         return;
     }
 
-    CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
-           (unsigned int)frame.seq, frame.cmd, frame.arg);
-    CH583_WIFI_DEBUG_PRINTF("CH583_PROTO rx seq=%u cmd=%s len=%u part=%u total=%u crc=%04X arg=%s\r\n",
-           (unsigned int)frame.seq,
-           frame.cmd,
-           (unsigned int)frame.arg_len,
-           (unsigned int)frame.part,
-           (unsigned int)frame.total,
-           crc_received,
-           frame.arg);
+    // PING/PONG runs continuously. Suppress its routine direction/debug output,
+    // while keeping parsing, validation, PONG replies, and error logs unchanged.
+    if (strcmp(frame.cmd, "PING") != 0) {
+        CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
+               (unsigned int)frame.seq, frame.cmd, frame.arg);
+        CH583_WIFI_DEBUG_PRINTF("CH583_PROTO rx seq=%u cmd=%s len=%u part=%u total=%u crc=%04X arg=%s\r\n",
+               (unsigned int)frame.seq,
+               frame.cmd,
+               (unsigned int)frame.arg_len,
+               (unsigned int)frame.part,
+               (unsigned int)frame.total,
+               crc_received,
+               frame.arg);
+    }
 
-    // WiFi -> CH583: seq=9 cmd=PING arg=24  // 除了心跳，其他都打印
     if (!ch583_wifi_validate_len_and_part(&frame)) {
         return;
     }
