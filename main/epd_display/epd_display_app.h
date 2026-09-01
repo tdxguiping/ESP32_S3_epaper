@@ -41,6 +41,7 @@ esp_err_t test_epd_display_and_wait(void);
 void test_epd_display_EPD_1600_1200_79(void);
 void test_epd_display_EPD_1600_1200_133(void);
 void test_epd_display_EPD_1600_1200_133_DKE(void);
+void test_epd_display_EPD_1208_1600_1243_BOE(void);
 void test_epd_display_EPD_EPD_1024_600(void);
 void test_epd_display_EPD_800_480(void);
 void test_epd_display_EPD_1360_480_1085(void);

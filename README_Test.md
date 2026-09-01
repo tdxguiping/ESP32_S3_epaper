@@ -782,6 +782,20 @@ SD共享SPI回归测试：EPD启用的正常启动必须出现`SDSPI shared bus 
 9. Inject NVS marker-save failure. Verify the ESP32 remains powered and no `POWER_OFF` is sent.
 10. For `wifi_wakeup` received during `CONNECTING`/WiFi `RETRY_WAIT`, verify the immediate progress reply is followed within 10 seconds by either `wifi_info_result` or exactly one final 1307.
 
+## WiFi UTF-8 credential tests (2026-08)
+
+Run the same credential cases through CH583 `BLE_DATA` with `func=wifi` and through the USB `func=wifi` request. Use an AP whose SSID and WPA passphrase contain Chinese UTF-8 text.
+
+1. Verify valid Chinese SSIDs at 30, 31 and exactly 32 UTF-8 bytes save and connect without truncation. Verify 33 bytes returns `wifi_result/result=1303` and leaves the previous NVS credential unchanged.
+2. Verify a valid Chinese password whose encoded length is 8..63 bytes connects. Verify 1..7 bytes and 64 bytes return `1304`; a 64-character raw hexadecimal PSK is also rejected by this product protocol.
+3. Verify an empty password can be saved for an open AP. A missing `key` must still return `1302`, which is different from an explicitly empty string.
+4. Send malformed UTF-8, ASCII control bytes, and UTF-8 cut in the middle of a multibyte character. SSID failures return `1303`, password failures return `1304`, and neither NVS namespace may be partially updated.
+   Also send an active JSON `\u0000` escape and a raw NUL byte. BLE/CH583 must return `ble_json_result/1203`; USB must return `wifi_result/1001` with `error=embedded_nul`. A literal text sequence written as `\\u0000` must not be mistaken for an active escape.
+5. Use an SSID containing Chinese plus `"` and `\`. After READY, verify `wifi_info_result.WiFi` decodes back to the exact SSID and the returned JSON is valid.
+6. Reboot after saving a Chinese credential. Verify both NVS read paths preserve the bytes, the manager connects to the same AP, and startup does not log `credential ignored`.
+7. Regression-test ASCII secured and open networks, wrong-password `1308`, absolute 30-second config timeout, 10-second `wifi_wakeup` observer, and one-shot recovery. Their timing and retry behavior must not change.
+8. Verify factory `facWifiCon` still accepts only its documented printable-ASCII, space-delimited format; Chinese input remains `ERR,BAD_ARG`.
+
 ## CH583/CH585 WiFi出厂产测测试
 
 1. 发送合法`facWifiMac`，确认先收到外层ACK，再收到`FACTORY_RESULT`；MAC为ESP32-C5 WiFi STA MAC的12位大写十六进制，版本等于`esp_app_get_description()->version`。
@@ -791,7 +805,7 @@ SD共享SPI回归测试：EPD启用的正常启动必须出现`SDSPI shared bus 
 5. 厂测前启动轮播、每日一图或本地浏览，确认合法`FACTORY_DATA`使它们停止；正在执行的EPD/SPI事务只在安全点结束，不发生强制中断或SPI冲突。
 6. 设备原先已连接其他AP时执行合法`facWifiCon`，确认旧IP和旧RSSI不会被误判；日志必须先进入reconfigure/connecting，凭据generation和连接generation都更新并取得新非零IP后，才在15秒内返回`success`及当前AP真实RSSI，不等待HTTP、mDNS或SNTP READY。
 7. 使用不存在的AP或错误密码，确认每500ms检查一次，15秒边界再次检查后返回`failed`和RSSI `0`，不得返回厂测开始前旧AP的RSSI；厂测结束30秒后不得因本次失败触发WiFi hard recovery掉电。
-8. 分别测试空SSID、空key、SSID超过32字节、key超过63字节、控制字符、空格及`|`、`^`、`&`，确认不进入厂测并返回协议错误。
+8. 分别测试空SSID、空key、key为1～7字节、SSID超过32字节、key超过63字节、控制字符、空格及`|`、`^`、`&`，确认不进入厂测并返回协议错误。
 9. 在第一个`facWifiCon`等待期间连续发送新请求，确认最新请求覆盖旧请求，旧请求最多500ms内退出且不发送旧结果，EPD状态在覆盖期间持续BUSY。
 10. 厂测完成并尝试发送结果后，确认EPD工作模式保存为NORMAL，网络和USB ping恢复`EPD=IDLE`，后续cast通常业务可提交；轮播、每日一图和本地浏览不自动恢复。
 11. 注入MAC读取、凭据保存、连接提交、结果发送或NORMAL模式保存失败，确认使用对应ESP_LOGE且所有结束路径最终清除厂测BUSY，不永久阻塞APP。

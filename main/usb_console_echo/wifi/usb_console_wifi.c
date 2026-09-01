@@ -3,20 +3,16 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include "cJSON.h"
 #include "esp_log.h"
 #include "nvs.h"
 #include "server_network_sta.h"
+#include "server_network_sta_wifi_credential.h"
 #include "tdx_cfg.h"
 #include "usb_console_common.h"
 #include "usb_console_worker.h"
 
 static const char *TAG = "usb_console_wifi";
-
-static bool wifi_text_is_valid(const char *text, size_t max_len)
-{
-    size_t len = text != NULL ? strlen(text) : 0;
-    return len > 0 && len < max_len;
-}
 
 static esp_err_t save_wifi_namespace(const char *ssid, const char *password)
 {
@@ -59,8 +55,8 @@ static esp_err_t save_net80211_namespace(const char *ssid, const char *password)
 esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
                                 usb_console_http_response_t *response)
 {
-    char ssid[33] = {0};
-    char password[65] = {0};
+    char ssid[SERVER_NETWORK_STA_WIFI_SSID_BUFFER_SIZE] = {0};
+    char password[SERVER_NETWORK_STA_WIFI_PASSWORD_BUFFER_SIZE] = {0};
 
     if (request != NULL && response != NULL &&
         UsbConsoleCommon_JsonFuncEquals(request->body, "wifi_status")) {
@@ -102,25 +98,72 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
             status.disconnect_reason, status.rssi);
     }
 
-    if (request == NULL || response == NULL ||
-        !UsbConsoleCommon_JsonFuncEquals(request->body, "wifi")) {
+    if (request == NULL || response == NULL) {
         return ESP_ERR_NOT_SUPPORTED;
     }
 
-    bool has_ssid = UsbConsoleCommon_JsonString(request->body, "ssid", ssid, sizeof(ssid));
-    bool has_key = UsbConsoleCommon_JsonString(request->body, "key", password, sizeof(password));
-    if (!has_ssid || !has_key || !wifi_text_is_valid(ssid, sizeof(ssid)) || strlen(password) >= sizeof(password)) {
+    if (ServerNetworkStaWifiCredential_JsonHasEmbeddedNul(
+            request->body, request->body_len)) {
+        ESP_LOGW(TAG, "wifi JSON rejected reason=embedded_nul body_len=%u",
+                 (unsigned int)request->body_len);
+        return UsbConsoleCommon_SetJsonf(
+            response,
+            200,
+            "OK",
+            "{\"func\":\"wifi_result\",\"result\":%d,\"message\":\"invalid json\",\"error\":\"embedded_nul\"}",
+            TDX_JSON_RESULT_JSON_INVALID);
+    }
+
+    if (!UsbConsoleCommon_JsonFuncEquals(request->body, "wifi")) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    cJSON *root = cJSON_ParseWithLength(request->body, request->body_len);
+    cJSON *ssid_item = root != NULL
+                           ? cJSON_GetObjectItemCaseSensitive(root, "ssid")
+                           : NULL;
+    cJSON *key_item = root != NULL
+                          ? cJSON_GetObjectItemCaseSensitive(root, "key")
+                          : NULL;
+    bool has_ssid = ssid_item != NULL;
+    bool has_key = key_item != NULL;
+    server_network_sta_wifi_credential_result_t validation =
+        SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK;
+    if (cJSON_IsString(ssid_item) && ssid_item->valuestring != NULL &&
+        cJSON_IsString(key_item) && key_item->valuestring != NULL) {
+        validation = ServerNetworkStaWifiCredential_Validate(
+            ssid_item->valuestring, key_item->valuestring);
+    } else if (has_ssid && has_key) {
+        validation = !cJSON_IsString(ssid_item)
+                         ? SERVER_NETWORK_STA_WIFI_CREDENTIAL_SSID_INVALID_UTF8
+                         : SERVER_NETWORK_STA_WIFI_CREDENTIAL_PASSWORD_INVALID_UTF8;
+    }
+
+    if (!has_ssid || !has_key ||
+        validation != SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
+        bool ssid_error = has_ssid && has_key &&
+                          ServerNetworkStaWifiCredential_ResultIsSsidError(
+                              validation);
         int result = !has_ssid ? TDX_JSON_RESULT_WIFI_SSID_MISSING :
                      !has_key ? TDX_JSON_RESULT_WIFI_KEY_MISSING :
-                     !wifi_text_is_valid(ssid, sizeof(ssid)) ? TDX_JSON_RESULT_WIFI_SSID_INVALID :
+                     ssid_error ? TDX_JSON_RESULT_WIFI_SSID_INVALID :
                      TDX_JSON_RESULT_WIFI_KEY_INVALID;
         const char *error = !has_ssid ? "ssid_missing" :
                             !has_key ? "key_missing" :
-                            !wifi_text_is_valid(ssid, sizeof(ssid)) ? "ssid_invalid" :
+                            ssid_error ? "ssid_invalid" :
                             "key_invalid";
+        size_t ssid_length = cJSON_IsString(ssid_item) &&
+                                     ssid_item->valuestring != NULL
+                                 ? strlen(ssid_item->valuestring)
+                                 : 0U;
+        size_t password_length = cJSON_IsString(key_item) &&
+                                         key_item->valuestring != NULL
+                                     ? strlen(key_item->valuestring)
+                                     : 0U;
         ESP_LOGW(TAG, "wifi invalid request ssid_len=%u password_len=%u",
-                 (unsigned int)strlen(ssid),
-                 (unsigned int)strlen(password));
+                 (unsigned int)ssid_length,
+                 (unsigned int)password_length);
+        cJSON_Delete(root);
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",
@@ -128,6 +171,12 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
                                          result,
                                          error);
     }
+
+    memcpy(ssid, ssid_item->valuestring,
+           strlen(ssid_item->valuestring) + 1U);
+    memcpy(password, key_item->valuestring,
+           strlen(key_item->valuestring) + 1U);
+    cJSON_Delete(root);
 
     ESP_LOGI(TAG, "wifi request ssid=%s password_len=%u body_len=%u",
              ssid,

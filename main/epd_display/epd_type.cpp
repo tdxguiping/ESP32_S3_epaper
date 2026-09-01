@@ -7,6 +7,7 @@
 #include "epd_type_1600_1200_133.h"
 #include "epd_type_1600_1200_133_DKE.h"
 #include "epd_type_1600_1200_79.h"
+#include "boe_1243_bl79703/epd_type_1208_1600_1243_boe.h"
 #include "epd_type_800_480.h"
 #include "epd_type_800_480_4s_75.h"
 #include "epd_type_800_480_4s_75_DKE.h"
@@ -30,6 +31,7 @@ static const epd_type_config_t s_epd_types[] = {
     {EPD_TYPE_800_480_4S_75_2, 800, 480, 96000, "EPD_800_480_4S_75_DKE", BWRY_4_Color},//  4 色 DKE
     {EPD_TYPE_800_480_4S_75_3, 800, 480, 96000, "EPD_800_480_4S_75_mofang", BWRY_4_Color},//  4 色 mofang 墨方
     {EPD_TYPE_1600_1200_133_DKE, 1600, 1200, 960000, "EPD_1600_1200_133_DKE", BWYRBG_6_Color},//  6 色 DKE
+    {EPD_TYPE_1208_1600_1243_BOE, 1208, 1600, 966400, "EPD_1208_1600_1243_BOE", BWYRBG_6_Color},//  6 color BOE
 };
 
 static uint8_t EpdType_GetHardwareVersion(uint8_t type)
@@ -233,6 +235,9 @@ esp_err_t EpdType_DisplayCurrent(ePaperPort &epd, const uint8_t *display_buf, si
         break;
     case EPD_TYPE_1600_1200_133_DKE:
         EpdType16001200_133_DKE_Display(epd, display_buf, display_size);
+        break;
+    case EPD_TYPE_1208_1600_1243_BOE:
+        EpdType12081600_1243_BOE_Display(epd, display_buf, display_size);
         break;
     case EPD_TYPE_1360_480_1085:
         EpdType1360480_1085_Display(epd, display_buf, display_size);

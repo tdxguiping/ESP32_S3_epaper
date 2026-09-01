@@ -22,12 +22,20 @@
 #include "ch583_wifi_uart_protocol.h"
 #include "file_serving_example_common.h"
 #include "led_status.h"
+#include "server_network_sta_wifi_credential.h"
 
 typedef struct {
-    char ssid[33];
-    char password[65];
+    char ssid[SERVER_NETWORK_STA_WIFI_SSID_BUFFER_SIZE];
+    char password[SERVER_NETWORK_STA_WIFI_PASSWORD_BUFFER_SIZE];
     bool is_valid;
 } wifi_credential_t;
+
+_Static_assert(sizeof(((wifi_config_t *)0)->sta.ssid) ==
+                   SERVER_NETWORK_STA_WIFI_SSID_MAX_BYTES,
+               "ESP-IDF WiFi SSID field size changed");
+_Static_assert(sizeof(((wifi_config_t *)0)->sta.password) ==
+                   SERVER_NETWORK_STA_WIFI_PASSWORD_BUFFER_SIZE,
+               "ESP-IDF WiFi password field size changed");
 
 typedef enum {
     WIFI_MANAGER_EVENT_CONNECT = 1,
@@ -617,6 +625,9 @@ static esp_err_t read_nvs_blob_string(nvs_handle_t handle, const char *key,
     if (ret != ESP_OK || blob_len == 0) {
         return ret != ESP_OK ? ret : ESP_ERR_INVALID_SIZE;
     }
+    if (blob_len > out_size) {
+        return ESP_ERR_INVALID_SIZE;
+    }
 
     uint8_t *blob = malloc(blob_len);
     if (blob == NULL) {
@@ -624,7 +635,11 @@ static esp_err_t read_nvs_blob_string(nvs_handle_t handle, const char *key,
     }
     ret = nvs_get_blob(handle, key, blob, &blob_len);
     if (ret == ESP_OK) {
-        parse_zero_terminated_blob(blob, blob_len, out, out_size);
+        if (memchr(blob, '\0', blob_len) == NULL && blob_len >= out_size) {
+            ret = ESP_ERR_INVALID_SIZE;
+        } else {
+            parse_zero_terminated_blob(blob, blob_len, out, out_size);
+        }
     }
     free(blob);
     return ret;
@@ -652,7 +667,11 @@ static wifi_credential_t read_saved_wifi(bool suppress_password_log)
         esp_err_t pass_ret = read_nvs_string(handle, "password", credential.password,
                                              sizeof(credential.password));
         nvs_close(handle);
-        if (ssid_ret == ESP_OK && pass_ret == ESP_OK && credential.ssid[0] != '\0') {
+        server_network_sta_wifi_credential_result_t validation =
+            ServerNetworkStaWifiCredential_Validate(credential.ssid,
+                                                    credential.password);
+        if (ssid_ret == ESP_OK && pass_ret == ESP_OK &&
+            validation == SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
             credential.is_valid = true;
 #if SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT
             if (!suppress_password_log) {
@@ -668,6 +687,14 @@ static wifi_credential_t read_saved_wifi(bool suppress_password_log)
 #endif
             return credential;
         }
+        if (ssid_ret == ESP_OK && pass_ret == ESP_OK) {
+            ESP_LOGW(TAG,
+                     "WiFi credential ignored namespace=wifi reason=%s ssid_len=%u password_len=%u",
+                     ServerNetworkStaWifiCredential_ResultName(validation),
+                     (unsigned int)strlen(credential.ssid),
+                     (unsigned int)strlen(credential.password));
+        }
+        memset(&credential, 0, sizeof(credential));
     }
 
     ret = nvs_open("nvs.net80211", NVS_READONLY, &handle);
@@ -679,7 +706,11 @@ static wifi_credential_t read_saved_wifi(bool suppress_password_log)
     esp_err_t pass_ret = read_nvs_blob_string(handle, "sta.pswd", credential.password,
                                               sizeof(credential.password));
     nvs_close(handle);
-    credential.is_valid = ssid_ret == ESP_OK && pass_ret == ESP_OK && credential.ssid[0] != '\0';
+    server_network_sta_wifi_credential_result_t validation =
+        ServerNetworkStaWifiCredential_Validate(credential.ssid,
+                                                credential.password);
+    credential.is_valid = ssid_ret == ESP_OK && pass_ret == ESP_OK &&
+                          validation == SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK;
     if (credential.is_valid) {
 #if SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT
         if (!suppress_password_log) {
@@ -693,6 +724,12 @@ static wifi_credential_t read_saved_wifi(bool suppress_password_log)
         ESP_LOGI(TAG, "WiFi credential loaded ssid=%s",
                  credential.ssid);
 #endif
+    } else if (ssid_ret == ESP_OK && pass_ret == ESP_OK) {
+        ESP_LOGW(TAG,
+                 "WiFi credential ignored namespace=nvs.net80211 reason=%s ssid_len=%u password_len=%u",
+                 ServerNetworkStaWifiCredential_ResultName(validation),
+                 (unsigned int)strlen(credential.ssid),
+                 (unsigned int)strlen(credential.password));
     }
     return credential;
 }
@@ -867,9 +904,22 @@ static esp_err_t apply_wifi_config(const wifi_credential_t *credential)
     if (credential == NULL || !credential->is_valid) {
         return ESP_ERR_INVALID_ARG;
     }
+    server_network_sta_wifi_credential_result_t validation =
+        ServerNetworkStaWifiCredential_Validate(credential->ssid,
+                                                credential->password);
+    if (validation != SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
+        ESP_LOGE(TAG,
+                 "WiFi credential apply rejected reason=%s ssid_len=%u password_len=%u",
+                 ServerNetworkStaWifiCredential_ResultName(validation),
+                 (unsigned int)strlen(credential->ssid),
+                 (unsigned int)strlen(credential->password));
+        return ESP_ERR_INVALID_ARG;
+    }
+
     wifi_config_t config = {0};
-    strlcpy((char *)config.sta.ssid, credential->ssid, sizeof(config.sta.ssid));
-    strlcpy((char *)config.sta.password, credential->password, sizeof(config.sta.password));
+    memcpy(config.sta.ssid, credential->ssid, strlen(credential->ssid));
+    memcpy(config.sta.password, credential->password,
+           strlen(credential->password));
     config.sta.scan_method = WIFI_FAST_SCAN;
     config.sta.failure_retry_cnt = 0;
     config.sta.channel = SERVER_NETWORK_STA_WIFI_CHANNEL_HINT;
@@ -881,10 +931,22 @@ static esp_err_t apply_wifi_config(const wifi_credential_t *credential)
 static bool same_active_config(const wifi_credential_t *credential)
 {
     wifi_config_t current = {0};
-    return credential != NULL && credential->is_valid &&
-           esp_wifi_get_config(WIFI_IF_STA, &current) == ESP_OK &&
-           strcmp((const char *)current.sta.ssid, credential->ssid) == 0 &&
-           strcmp((const char *)current.sta.password, credential->password) == 0;
+    wifi_config_t expected = {0};
+    if (credential == NULL || !credential->is_valid ||
+        ServerNetworkStaWifiCredential_Validate(
+            credential->ssid, credential->password) !=
+            SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
+        return false;
+    }
+
+    memcpy(expected.sta.ssid, credential->ssid, strlen(credential->ssid));
+    memcpy(expected.sta.password, credential->password,
+           strlen(credential->password));
+    return esp_wifi_get_config(WIFI_IF_STA, &current) == ESP_OK &&
+           memcmp(current.sta.ssid, expected.sta.ssid,
+                  sizeof(current.sta.ssid)) == 0 &&
+           memcmp(current.sta.password, expected.sta.password,
+                  sizeof(current.sta.password)) == 0;
 }
 
 static bool allocate_request_slot(uint8_t *slot_index, uint32_t *request_id)

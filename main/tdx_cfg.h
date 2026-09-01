@@ -845,9 +845,11 @@ extern "C" {
 #define CH583_DEVICE_INFO_ARG_MAX_LEN 33
 #define CH583_DEVICE_INFO_SCREEN_TYPE_133 'd'
 #define CH583_DEVICE_INFO_SCREEN_TYPE_709 'e'
-// board_info_hex is the complete visible ASCII byte: 0x40 vendor 0, 0x41 vendor 1.
+#define CH583_DEVICE_INFO_SCREEN_TYPE_1243 'f'
+// board_info_hex is the complete visible ASCII byte assigned to each panel vendor.
 #define CH583_DEVICE_INFO_BOARD_XINGTAI 0x40
 #define CH583_DEVICE_INFO_BOARD_DKE 0x41
+#define CH583_DEVICE_INFO_BOARD_BOE 0x42
 #define CH583_DEVICE_INFO_ERR_SAVE_FAILED "DEVICE_INFO_SAVE_FAILED"
 // Configuration value for CH583 WIFI NFC JSON MAX LEN; update local references before changing it.
 #define CH583_WIFI_NFC_JSON_MAX_LEN 220

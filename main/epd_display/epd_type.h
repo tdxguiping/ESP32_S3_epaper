@@ -17,6 +17,7 @@ typedef enum {
     EPD_TYPE_800_480_4S_75_2 = 8,
     EPD_TYPE_800_480_4S_75_3 = 9,
     EPD_TYPE_1600_1200_133_DKE = 10,
+    EPD_TYPE_1208_1600_1243_BOE = 11,
 } epd_type_id_t;
 
 typedef enum {

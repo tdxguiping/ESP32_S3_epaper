@@ -880,8 +880,8 @@ CMD=DEVICE_INFO
 ARG=<mac>,<ble_ver_dec>,<screen_type>,<board_info_hex>,<wake_reason>
 mac：CH583 自身 BLE MAC，12 位大写 HEX，不带冒号
 ble_ver_dec：CH583 固件版本，纯十进制文本，范围 0..255
-screen_type：d=13.3 寸 HD 六色屏，e=7.09 寸 HD 六色屏
-board_info_hex：40=兴泰，41=DKE
+screen_type：d=13.3 寸 HD 六色屏，e=7.09 寸 HD 六色屏，f=12.43 寸 BOE 六色屏
+board_info_hex：40=兴泰，41=DKE，42=BOE
 wake_reason：BOOT/USB/KEY_PB1/KEY_PB2/BLE_CONNECT/BLE_WRITE/NFC/TIMER/UNKNOWN
 ble_ver_dec 来自 CH583/CH585 固件宏 VER
 screen_type 和 board_info_hex 由 CH583 在 DEVICE_INFO 中上报
@@ -902,7 +902,7 @@ ESP32可能因USB、看门狗或软件异常独立重启，此时CH583可能仍�
 @#V1|SEQ=20|CMD=DEVICE_INFO|LEN=29|PART=1|TOTAL=1|ARG=AABBCCDDEEFF,100,d,40,KEY_PB1|CRC=XXXX^&
 ```
 
-MAC 使用广播显示顺序 `Mac[5] Mac[4] Mac[3] Mac[2] Mac[1] Mac[0]`，文本必须为 12 位大写 HEX。`board_info_hex` 是完整 byte 的两位大写 HEX，不是单独字符；映射时 `40` 表示厂家 ID 0，`41` 表示厂家 ID 1。
+MAC 使用广播显示顺序 `Mac[5] Mac[4] Mac[3] Mac[2] Mac[1] Mac[0]`，文本必须为 12 位大写 HEX。`board_info_hex` 是完整 byte 的两位大写 HEX，不是单独字符；映射时 `40` 表示厂家 ID 0，`41` 表示厂家 ID 1，`42` 表示厂家 ID 2（BOE）。
 
 屏幕类型编码：
 
@@ -910,6 +910,7 @@ MAC 使用广播显示顺序 `Mac[5] Mac[4] Mac[3] Mac[2] Mac[1] Mac[0]`，文�
 screen_type 是 1 个可见 ASCII 字符，只描述屏幕规格/类型，不描述板卡厂家。
 d = 13.3 寸 HD 六色屏
 e = 7.09 寸 HD 六色屏
+f = 12.43 寸 BOE 六色屏（1208 x 1600）
 前端必须结合 screen_type 和 board_info_hex 选择图片处理算法。
 后续新增屏幕类型时，必须同步更新 CH583 上报字符与 ESP32-C5 的 `ch583_wifi_parse_device_info_arg()` 映射。
 ```
@@ -925,7 +926,7 @@ bit3-bit0：厂家 ID，从 0 开始递增。
 第一组：
 0x40 / '@' = 厂家 ID 0，XT 兴泰
 0x41 / 'A' = 厂家 ID 1，DKE
-0x42 / 'B' = 厂家 ID 2，预留
+0x42 / 'B' = 厂家 ID 2，BOE
 0x43 / 'C' = 厂家 ID 3，预留
 
 第二组：
@@ -963,6 +964,25 @@ screen_type=d, board_info_hex=40 -> EPD_TYPE_1600_1200_133
 screen_type=d, board_info_hex=41 -> EPD_TYPE_1600_1200_133_DKE
 screen_type=e, board_info_hex=40 -> EPD_TYPE_1600_1200_79
 screen_type=e, board_info_hex=41 -> ESP_LOGE 后返回 ERR,<seq>,BAD_ARG
+screen_type=f, board_info_hex=42 -> EPD_TYPE_1208_1600_1243_BOE
+```
+
+BOE 12.43 英寸数据约定：
+
+```text
+EPD 类型：11（EPD_TYPE_1208_1600_1243_BOE）
+原生分辨率：1208 x 1600
+颜色：White / Dark / Red / Yellow / Blue / Green，共 6 色
+解压后显示数据：966400 bytes（1208 / 2 bytes/line x 1600 lines）
+APP 继续发送现有协议定义的压缩数据；ESP32-C5 复用公共解压链路，解压目标长度必须为 966400 bytes。
+APP 负责像素排列、颜色码和 nibble 顺序，ESP32-C5 不旋转、不重排、不转换颜色。
+数据编码及 nibble 顺序与 EPD_TYPE_1600_1200_133_DKE 相同。
+BOE 正式发送方式：仅选择 CSB-M，发送一次命令 0x10，随后连续写入完整 image[0..966399]。
+完整帧按 604 bytes/line x 1600 lines 连续发送，不再拆分为两个 483200 bytes 半帧。
+CSB-M 使用 USER_EPD_CS_PIN；CSB-S 使用 USER_EPD2_CS_PIN（与 USER_EPD_CS2_PIN 为同一 GPIO）。
+CSB-M 的 0x70 芯片 ID 必须为 12 82 01，否则终止显示；CSB-S ID 仅用于诊断，读取失败或不匹配时使用 ESP_LOGW 并继续显示。
+图像数据只通过 CSB-M 发送；PON、DRF、POF 和 Deep Sleep 命令同时选择 CSB-M 与 CSB-S。
+SPI 继续使用公共 20 MHz 配置、公共 DMA 分块和公共压缩/解压链路。
 ```
 
 错误与当前协议处理：
@@ -2441,7 +2461,7 @@ wifi_standby
 {"func":"wifi","ssid":"AP_NAME","key":"PASSWORD"}
 ```
 
-`ssid` 必须是长度 1..32 的字符串；`key` 必须是字符串且长度小于 65，允许空字符串用于开放网络。代码把配置写入 `wifi:ssid/password` 和 `nvs.net80211:sta.ssid/sta.pswd`，然后创建唯一的 `ble_wifi_connect` task。已有连接 task 时返回 `1007`。
+`ssid` 和 `key` 是 UTF-8 文本，长度按编码后的字节数计算，不按字符数计算。`ssid` 必须为 1..32 字节；`key` 为空表示开放网络，否则必须为 8..63 字节。本协议不接收 64 位十六进制 raw PSK。畸形 UTF-8、控制字符、超长或不满足密码长度的请求在写 NVS 前拒绝，不截断。为避免 cJSON 把字符串内的 NUL 解码后交给无长度的 C 字符串，原始 NUL 和有效的 JSON `\u0000` 转义在解析前按非法 JSON 拒绝；表示普通文本 `\u0000` 时，JSON 中使用的 `\\u0000` 形式不受影响。代码把配置写入 `wifi:ssid/password` 和 `nvs.net80211:sta.ssid/sta.pswd`，然后创建唯一的 `ble_wifi_connect` task。已有连接 task 时返回 `1007`。
 
 保存和任务提交成功后先返回：
 
@@ -2450,6 +2470,8 @@ wifi_standby
 ```
 
 后台 READY 且 HTTP ready 后再返回 `wifi_info_result`，字段包括 `stage=<IP>`、`WiFi=<当前SSID>`、`version=<ESP版本>:<CH583版本>`、`date` 和 `running`。连接失败通过 `wifi_result` 返回 `1307/1308/1309`。
+
+中文 SSID 在 `wifi_info_result.WiFi` 中仍以 UTF-8 返回；该结果由 JSON 序列化器生成，因此 SSID 中合法的双引号和反斜杠会被正确转义。USB `func=wifi` 使用相同的凭据规则和返回码。NVS 保存原始 UTF-8 字节，不做字符集转换。
 
 普通 `wifi` 新凭据的 `1307` 是整次配网的最终超时，不是单轮连接失败。绝对30秒从有效JSON完成解析、准备保存新凭据时开始计算，NVS保存和底层同步等待已经消耗的时间都计入其中。底层因 `NO_AP_FOUND` 提前返回1307时，BLE/CH583通知层不改变manager连接或退避，只继续读取状态；30秒内READY改发 `wifi_info_result`，明确认证失败可提前返回1308，只有边界复查后仍未READY才发送一次 `wifi_result/result=1307`。30秒结果尚未处理期间，一次断电恢复不得抢先请求CH583关机。底层同步请求和通用连接guard仍保持45秒，普通新配网worker会在30秒最终结果处理后主动清除自己的guard。
 
@@ -2568,7 +2590,7 @@ facWifiMac
 facWifiCon <ssid> <key>
 ```
 
-`facWifiCon`的SSID和key不得包含空格；允许范围为ASCII `0x21~0x7E`，但UART保留字符 `|`、`^`、`&` 禁止使用。SSID为1~32字节，key为1~63字节。参数合法且独占状态准入成功后ESP32-C5先回复ACK，ACK发送成功后才提交并唤醒统一任务，因此`FACTORY_RESULT`不得早于请求ACK；参数非法回复`ERR,BAD_ARG`，Factory Reset或资源冲突回复`ERR,BUSY`。
+`facWifiCon`的SSID和key不得包含空格；允许范围为ASCII `0x21~0x7E`，但UART保留字符 `|`、`^`、`&` 禁止使用。SSID为1~32字节，key为8~63字节。参数合法且独占状态准入成功后ESP32-C5先回复ACK，ACK发送成功后才提交并唤醒统一任务，因此`FACTORY_RESULT`不得早于请求ACK；参数非法回复`ERR,BAD_ARG`，Factory Reset或资源冲突回复`ERR,BUSY`。
 
 MAC结果格式：
 

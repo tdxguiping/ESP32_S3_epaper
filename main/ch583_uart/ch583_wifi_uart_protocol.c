@@ -695,7 +695,8 @@ static ch583_wifi_device_info_parse_result_t ch583_wifi_parse_device_info_arg(
         !ch583_wifi_parse_u8_dec_arg(fields[1], &device_info->ble_ver) ||
         strlen(fields[2]) != 1 ||
         (fields[2][0] != CH583_DEVICE_INFO_SCREEN_TYPE_133 &&
-         fields[2][0] != CH583_DEVICE_INFO_SCREEN_TYPE_709) ||
+         fields[2][0] != CH583_DEVICE_INFO_SCREEN_TYPE_709 &&
+         fields[2][0] != CH583_DEVICE_INFO_SCREEN_TYPE_1243) ||
         !ch583_wifi_parse_hex_byte(fields[3], &device_info->board_info) ||
         !ch583_wifi_parse_wake_reason(fields[4], &device_info->wake_reason)) {
         return CH583_DEVICE_INFO_PARSE_BAD_ARG;
@@ -713,6 +714,9 @@ static ch583_wifi_device_info_parse_result_t ch583_wifi_parse_device_info_arg(
     } else if (device_info->screen_type == CH583_DEVICE_INFO_SCREEN_TYPE_709 &&
                device_info->board_info == CH583_DEVICE_INFO_BOARD_XINGTAI) {
         device_info->epd_type = EPD_TYPE_1600_1200_79;
+    } else if (device_info->screen_type == CH583_DEVICE_INFO_SCREEN_TYPE_1243 &&
+               device_info->board_info == CH583_DEVICE_INFO_BOARD_BOE) {
+        device_info->epd_type = EPD_TYPE_1208_1600_1243_BOE;
     } else {
         return CH583_DEVICE_INFO_PARSE_UNSUPPORTED_EPD;
     }

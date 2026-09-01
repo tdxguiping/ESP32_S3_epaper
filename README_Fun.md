@@ -2894,6 +2894,16 @@ CH583 UART可能早于本模块初始化。启动早期首次DEVICE_INFO中收�
 - An existing-progress `wifi_wakeup` now gets one isolated 10-second observer: it sends `wifi_info_result` if READY is reached, otherwise exactly one final `wifi_wakeup_result/1307`. The observer does not change WiFi manager state.
 - A BLE/CH583 `wifi` new-credential request owns one absolute 30-second result window beginning when the valid request is accepted. An early manager 1307 is deferred without changing manager retries; READY sends `wifi_info_result`, confirmed authentication failure sends 1308, and only the absolute deadline can send 1307. The one-shot 30-second hard-recovery observer waits until this final result has been handled.
 
+## WiFi UTF-8 credential support (2026-08)
+
+- Normal BLE/CH583 and USB WiFi configuration share one credential validator in `main/server_network_sta/wifi_credential/`.
+- SSID accepts valid UTF-8 text from 1 to 32 bytes. Password accepts an empty string for an open network, or valid UTF-8 text from 8 to 63 bytes for a secured network. Lengths are byte counts, not character counts.
+- Invalid UTF-8, control bytes, over-limit input and unsupported password lengths are rejected before NVS writes. Inputs are never silently truncated.
+- Raw NUL bytes and active JSON `\u0000` escapes are rejected before cJSON parsing, preventing a decoded string from being shortened by C-string semantics.
+- NVS and ESP-IDF receive the original UTF-8 bytes. A full 32-byte SSID is copied into the fixed ESP-IDF field without requiring a trailing NUL in that field.
+- `wifi_info_result` is serialized with cJSON so a Chinese SSID and JSON-sensitive characters are returned safely.
+- The WiFi connection, retry, timeout, recovery and power-control state machines are unchanged. Factory `facWifiCon` keeps its separate printable-ASCII protocol.
+
 ## CH583/CH585 WiFi出厂产测 <span id="sec-factory-test"></span>
 
 ```text
@@ -2921,7 +2931,7 @@ CH583/CH585 FACTORY_DATA
       │  └─ 动态LEN发送FACTORY_RESULT
       ├─ facWifiCon <ssid> <key>
       │  ├─ SSID/key允许0x21~0x7E，禁止空格、|、^、&
-      │  ├─ SSID最多32字节，key最多63字节
+      │  ├─ SSID为1～32字节，key为8～63字节
       │  ├─ 保存凭据并异步提交现有WiFi manager新凭据流程
       │  ├─ 不启动30秒WiFi硬恢复观察窗口
       │  ├─ 每500ms检查一次，最多15秒，边界再检查一次

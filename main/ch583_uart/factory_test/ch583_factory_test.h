@@ -10,6 +10,10 @@
 extern "C" {
 #endif
 
+#define FACTORY_TEST_SSID_MAX_LEN 32U
+#define FACTORY_TEST_KEY_MIN_LEN   8U
+#define FACTORY_TEST_KEY_MAX_LEN  63U
+
 // Reserve one validated FACTORY_DATA request before its UART ACK is sent.
 esp_err_t Ch583FactoryTest_Admit(uint16_t rx_seq,
                                 const char *arg,

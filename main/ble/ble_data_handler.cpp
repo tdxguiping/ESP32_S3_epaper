@@ -21,6 +21,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "server_network_sta.h"
+#include "server_network_sta_wifi_credential.h"
 #include "server_network_sta_wifi_recovery.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
@@ -34,8 +35,8 @@ static_assert(WIFI_CONFIG_RESULT_TIMEOUT_MS <=
 
 typedef struct {
     char func[32];
-    char ssid[64];
-    char key[64];
+    char ssid[SERVER_NETWORK_STA_WIFI_SSID_BUFFER_SIZE];
+    char key[SERVER_NETWORK_STA_WIFI_PASSWORD_BUFFER_SIZE];
 } wifi_config_json_t;
 
 typedef struct {
@@ -167,9 +168,9 @@ static void send_simple_result_with_sender(json_sender_t send_json,
 static bool send_base_info_to_mobile(void)
 {
     char ip_str[sizeof("255.255.255.255")];
-    char json_str[384];
-    char ssid_str[33] = {0};
+    char ssid_str[SERVER_NETWORK_STA_WIFI_SSID_BUFFER_SIZE] = {0};
     char ble_ver_str[4];
+    char version_str[40];
 
     const esp_app_desc_t *app = esp_app_get_description();
     const esp_partition_t *running = esp_ota_get_running_partition();
@@ -192,26 +193,37 @@ static bool send_base_info_to_mobile(void)
     snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip.ip));
 
     if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
-        snprintf(ssid_str, sizeof(ssid_str), "%s", (const char *)ap_info.ssid);
+        size_t ssid_length = strnlen((const char *)ap_info.ssid,
+                                     sizeof(ap_info.ssid));
+        memcpy(ssid_str, ap_info.ssid, ssid_length);
+        ssid_str[ssid_length] = '\0';
     }
     snprintf(ble_ver_str, sizeof(ble_ver_str), "%u", (unsigned int)ble_ver);
+    snprintf(version_str, sizeof(version_str), "%s:%s",
+             app != NULL ? app->version : "", ble_ver_str);
 
-    snprintf(json_str, sizeof(json_str),
-             "{\"func\":\"wifi_info_result\","
-             "\"result\":%d,"
-             "\"message\":\"wifi info\","
-             "\"stage\":\"%s\","
-             "\"WiFi\":\"%s\","
-             "\"version\":\"%s:%s\","
-             "\"date\":\"%s\","
-             "\"running\":\"%s\"}",
-             TDX_JSON_RESULT_OK,
-             ip_str,
-             ssid_str,
-             app != NULL ? app->version : "",
-             ble_ver_str,
-             app != NULL ? app->date : "",
-             running != NULL ? running->label : "");
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL ||
+        cJSON_AddStringToObject(root, "func", "wifi_info_result") == NULL ||
+        cJSON_AddNumberToObject(root, "result", TDX_JSON_RESULT_OK) == NULL ||
+        cJSON_AddStringToObject(root, "message", "wifi info") == NULL ||
+        cJSON_AddStringToObject(root, "stage", ip_str) == NULL ||
+        cJSON_AddStringToObject(root, "WiFi", ssid_str) == NULL ||
+        cJSON_AddStringToObject(root, "version", version_str) == NULL ||
+        cJSON_AddStringToObject(root, "date",
+                               app != NULL ? app->date : "") == NULL ||
+        cJSON_AddStringToObject(root, "running",
+                               running != NULL ? running->label : "") == NULL) {
+        cJSON_Delete(root);
+        ESP_LOGE(TAG, "wifi_info_result JSON allocation failed");
+        return false;
+    }
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json_str == NULL) {
+        ESP_LOGE(TAG, "wifi_info_result JSON serialization failed");
+        return false;
+    }
 
     ESP_LOGI(TAG, "wifi_info_result send start ip=%s len=%u",
              ip_str,
@@ -223,6 +235,7 @@ static bool send_base_info_to_mobile(void)
 #if (USER_BLE_ENABLE == 1)
             UserDebugOutput_Printf("JSON:\n%s\n", json_str);
 #endif
+            cJSON_free(json_str);
             return true;
         }
 
@@ -237,6 +250,7 @@ static bool send_base_info_to_mobile(void)
     ESP_LOGE(TAG, "wifi_info_result send failed ip=%s attempts=%d",
              ip_str,
              WIFI_INFO_NOTIFY_RETRY_COUNT);
+    cJSON_free(json_str);
     return false;
 }
 
@@ -285,22 +299,15 @@ void send_base_info_to_mobile_old(void)
         }
 }
 
-static bool is_valid_wifi_text(const char *text, size_t max_len)
-{
-    size_t len = 0;
-
-    if (text == NULL || text[0] == '\0') {
-        return false;
-    }
-    len = strlen(text);
-    return len > 0 && len < max_len;
-}
-
 static esp_err_t save_wifi_config_to_nvs(const char *ssid, const char *password)
 {
     nvs_handle_t handle = 0;
 
-    if (!is_valid_wifi_text(ssid, 33) || password == NULL || strlen(password) >= 65) {
+    server_network_sta_wifi_credential_result_t validation =
+        ServerNetworkStaWifiCredential_Validate(ssid, password);
+    if (validation != SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
+        ESP_LOGW(TAG, "WiFi config save rejected reason=%s",
+                 ServerNetworkStaWifiCredential_ResultName(validation));
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -396,6 +403,14 @@ public:
 
     esp_err_t Save(const std::string& ssid, const std::string& password)
     {
+        server_network_sta_wifi_credential_result_t validation =
+            ServerNetworkStaWifiCredential_Validate(ssid.c_str(),
+                                                    password.c_str());
+        if (validation != SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
+            ESP_LOGW(TAG, "WiFi credential rejected before NVS reason=%s",
+                     ServerNetworkStaWifiCredential_ResultName(validation));
+            return ESP_ERR_INVALID_ARG;
+        }
         esp_err_t wifi_ret = SsidManager::GetInstance().AddSsid(ssid, password);
         esp_err_t sta_ret = save_wifi_config_to_nvs(ssid.c_str(), password.c_str());
         return wifi_ret != ESP_OK ? wifi_ret : sta_ret;
@@ -1274,7 +1289,6 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
     cJSON *item_func = NULL;
     cJSON *item_ssid = NULL;
     cJSON *item_key = NULL;
-    char reply_json[160];
 
     if (json_str == NULL || out == NULL) {
         LOG_ERROR("Invalid parameter");
@@ -1304,12 +1318,25 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
         return -1;
     }
 
-    /* 涓枃娉ㄩ噴锛?
-       瀹夊叏鎷疯礉鍒拌緭鍑虹粨鏋勪綋
-    */
+    server_network_sta_wifi_credential_result_t validation =
+        ServerNetworkStaWifiCredential_Validate(item_ssid->valuestring,
+                                                item_key->valuestring);
+    if (validation != SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
+        ESP_LOGW(TAG,
+                 "WiFi JSON credential rejected reason=%s ssid_len=%u password_len=%u",
+                 ServerNetworkStaWifiCredential_ResultName(validation),
+                 (unsigned int)strlen(item_ssid->valuestring),
+                 (unsigned int)strlen(item_key->valuestring));
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    // Copy only after validating complete UTF-8 byte sequences and lengths.
     snprintf(out->func, sizeof(out->func), "%s", item_func->valuestring);
-    snprintf(out->ssid, sizeof(out->ssid), "%s", item_ssid->valuestring);
-    snprintf(out->key, sizeof(out->key), "%s", item_key->valuestring);
+    memcpy(out->ssid, item_ssid->valuestring,
+           strlen(item_ssid->valuestring) + 1U);
+    memcpy(out->key, item_key->valuestring,
+           strlen(item_key->valuestring) + 1U);
 
     cJSON_Delete(root);
     Bl_Data_Ready =1;
@@ -1332,20 +1359,6 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
             auto& wifi_ap = WifiConfigurationAp::GetInstance();
             std::string wifi_ssid = out->ssid;
             std::string wifi_password = out->key;
-            // 3. 鎶婄粨鏋勪綋鐨勫€煎杩?JSON            
-            snprintf(reply_json, sizeof(reply_json),
-                     "{\"func\":\"wifi_result\",\"result\":%d,\"message\":\"Find wifi\",\"stage\":\"%s\"}",
-                     TDX_JSON_RESULT_OK,
-                     wifi_cfg.ssid);
-
-            #if(USER_BLE_ENABLE == 1)
-             (void)reply_json;
-            // 杈撳嚭缁撴灉
-             UserDebugOutput_Printf("JSON:\n%s\n", reply_json);
-            #else
-             (void)reply_json;
-            #endif
-
             UserDebugOutput_Printf("The Wifi info parsed ok, save to NVS\n\r");
             SsidManager::GetInstance().Clear();
             esp_err_t save_ret = wifi_ap.Save(wifi_ssid, wifi_password);
@@ -1666,6 +1679,16 @@ static void handle_wifi_json_text_with_sender(const char *json_text,
         return;
     }
 
+    if (ServerNetworkStaWifiCredential_JsonHasEmbeddedNul(
+            json_text, strlen(json_text))) {
+        ESP_LOGW(TAG, "BLE/CH583 JSON rejected reason=embedded_nul");
+        send_simple_result_with_sender(send_json,
+                                       "ble_json_result",
+                                       TDX_JSON_RESULT_BLE_JSON_PARSE_FAILED,
+                                       "invalid json");
+        return;
+    }
+
     ESP_LOGI(TAG, "RX JSON ch583=%d: %s", reply_to_ch583 ? 1 : 0, json_text);
 
     cJSON *root = cJSON_Parse(json_text);
@@ -1699,14 +1722,33 @@ static void handle_wifi_json_text_with_sender(const char *json_text,
         } else if (key_item == NULL) {
             validation_result = TDX_JSON_RESULT_WIFI_KEY_MISSING;
             validation_message = "key missing";
-        } else if (!cJSON_IsString(ssid_item) || ssid_item->valuestring == NULL ||
-                   !is_valid_wifi_text(ssid_item->valuestring, 33)) {
+        } else if (!cJSON_IsString(ssid_item) || ssid_item->valuestring == NULL) {
             validation_result = TDX_JSON_RESULT_WIFI_SSID_INVALID;
             validation_message = "ssid invalid";
-        } else if (!cJSON_IsString(key_item) || key_item->valuestring == NULL ||
-                   strlen(key_item->valuestring) >= 65) {
+        } else if (!cJSON_IsString(key_item) || key_item->valuestring == NULL) {
             validation_result = TDX_JSON_RESULT_WIFI_KEY_INVALID;
             validation_message = "key invalid";
+        } else {
+            server_network_sta_wifi_credential_result_t credential_result =
+                ServerNetworkStaWifiCredential_Validate(
+                    ssid_item->valuestring, key_item->valuestring);
+            if (credential_result != SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
+                bool ssid_error =
+                    ServerNetworkStaWifiCredential_ResultIsSsidError(
+                        credential_result);
+                validation_result = ssid_error
+                                        ? TDX_JSON_RESULT_WIFI_SSID_INVALID
+                                        : TDX_JSON_RESULT_WIFI_KEY_INVALID;
+                validation_message = ssid_error
+                                         ? "ssid invalid"
+                                         : "key invalid";
+                ESP_LOGW(TAG,
+                         "WiFi request rejected reason=%s ssid_len=%u password_len=%u",
+                         ServerNetworkStaWifiCredential_ResultName(
+                             credential_result),
+                         (unsigned int)strlen(ssid_item->valuestring),
+                         (unsigned int)strlen(key_item->valuestring));
+            }
         }
         if (validation_result != TDX_JSON_RESULT_OK) {
             cJSON_Delete(root);

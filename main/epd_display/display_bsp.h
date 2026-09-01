@@ -56,10 +56,10 @@ extern uint8_t EPD_which_one_;
 
 // Keep the second EPD target on shared control pins with its own CS2 line.
 // 第二路墨水屏目标复用控制线，只单独使用 CS2 片选。
-#define EPD2_DC_PIN     USER_EPD2_DC_PIN
-#define EPD2_CS_PIN     USER_EPD2_CS_PIN
-#define EPD2_RST_PIN    USER_EPD2_RST_PIN
-#define EPD2_BUSY_PIN   USER_EPD2_BUSY_PIN
+#define EPD2_DC_PIN     USER_EPD2_DC_PIN     // 与 EPD_DC_PIN 是同一 GPIO
+#define EPD2_CS_PIN     USER_EPD2_CS_PIN     // 与 EPD_CS_PIN_2  是同一 GPIO
+#define EPD2_RST_PIN    USER_EPD2_RST_PIN    // 与 EPD_RST_PIN 是同一 GPIO
+#define EPD2_BUSY_PIN   USER_EPD2_BUSY_PIN  // 与 EPD_BUSY_PIN 是同一 GPIO
 
 #define EPD_SD_Power_PIN GPIO_NUM_4
 
@@ -170,6 +170,8 @@ extern uint8_t EPD_which_one_;
 #define Gate_BITS   480 
 
 
+class Boe1243Bl79703Driver;
+
 class ePaperPort {
     friend void EpdType_DispatchSleep(ePaperPort &epd);
     friend void EpdType_DispatchInit(ePaperPort &epd);
@@ -180,6 +182,7 @@ class ePaperPort {
     friend void EpdType_DispatchNT61522DisplayNet(ePaperPort &epd, const uint8_t *image_data, size_t image_size);
     friend void EpdType1360480_1085_3Color_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
     friend void EpdType16001200_133_DKE_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
+    friend class Boe1243Bl79703Driver;
     friend void EpdType800480_4S_75_DKE_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
     friend void EpdType800480_4S_75_Mofang_Display(ePaperPort &epd, const uint8_t *display_buf, size_t display_size);
 

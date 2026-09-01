@@ -892,8 +892,8 @@ PhotoPainter:epd_mode
 |---:|---|---|
 | `1301` | `TDX_JSON_RESULT_WIFI_SSID_MISSING` | `ssid` 缺失 |
 | `1302` | `TDX_JSON_RESULT_WIFI_KEY_MISSING` | `key` / password 缺失 |
-| `1303` | `TDX_JSON_RESULT_WIFI_SSID_INVALID` | `ssid` 长度或内容非法 |
-| `1304` | `TDX_JSON_RESULT_WIFI_KEY_INVALID` | `key` 长度或内容非法 |
+| `1303` | `TDX_JSON_RESULT_WIFI_SSID_INVALID` | `ssid` 不是有效 UTF-8 文本、含控制字符、为空或超过 32 字节 |
+| `1304` | `TDX_JSON_RESULT_WIFI_KEY_INVALID` | `key` 不是有效 UTF-8 文本、含控制字符，或非空时不在 8..63 字节范围 |
 | `1305` | `TDX_JSON_RESULT_WIFI_SAVE_FAILED` | WiFi 配置保存失败 |
 | `1306` | `TDX_JSON_RESULT_WIFI_CONNECT_SUBMIT_FAILED` | WiFi 连接任务提交失败 |
 | `1307` | `TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT` | WiFi 连接超时 |
@@ -907,6 +907,10 @@ PhotoPainter:epd_mode
 `1307~1309` 是异步连接结果码。BLE / CH583 的 `wifi` 与 `wifi_wakeup` 在 worker 完成后分别通过 `wifi_result`、`wifi_wakeup_result` 通知连接超时、认证失败或取 IP 失败；USB `/wifi` 原请求仍只返回保存/worker 提交结果。`1354` 已用于工作状态任务尚未初始化、运行时参数无法应用的路径。
 
 BLE / CH583 普通 `wifi_result/result=1307` 必须由该请求的绝对30秒期限产生；单轮 `NO_AP_FOUND` 不是协议超时。`wifi_wakeup_result/result=1307` 仍使用独立10秒通知观察规则。
+
+SSID/password 长度统一按 UTF-8 编码后的字节数计算。空 password 用于开放网络；本次不支持 64 位十六进制 raw PSK。普通 BLE/CH583 与 USB 配网入口使用相同校验，非法内容在保存前分别返回现有 `1303` 或 `1304`，不增加新返回码。出厂产测 `facWifiCon` 仍受其独立 ASCII 参数规则约束。
+
+嵌入 NUL 无法由 cJSON 的无长度 `valuestring` 安全表达，因此在解析前作为非法 JSON 拒绝：BLE/CH583 返回现有 `ble_json_result/1203`；USB WiFi 返回现有 `wifi_result/1001` 并带 `error=embedded_nul`。该规则不新增返回码。`facWifiCon` 的 ASCII key 固定为8～63字节，短密码直接返回UART `ERR,BAD_ARG`，不写NVS。
 
 [⬆ 返回目录](#toc)
 
@@ -1072,7 +1076,7 @@ zlib模式下，cast、cast2pic和upload的 `bin_size` 是压缩后的实际传�
 | UART结果 | 条件 |
 |---|---|
 | `ACK,<received_seq>` | ARG合法、FACTORY_TEST独占状态准入成功；ACK发送成功后才提交统一任务 |
-| `ERR,<received_seq>,BAD_ARG` | 未知厂测子命令、SSID/key缺失、超长、包含空格或非有效ASCII；协议保留字符可能先被外层解析判为格式/CRC错误 |
+| `ERR,<received_seq>,BAD_ARG` | 未知厂测子命令、SSID/key缺失、key短于8字节、超长、包含空格或非有效ASCII；协议保留字符可能先被外层解析判为格式/CRC错误 |
 | `ERR,<received_seq>,BAD_LEN` | LEN与ARG实际字节数不一致或超过外层限制 |
 | `ERR,<received_seq>,BAD_PART` | PART/TOTAL不是1/1 |
 | `ERR,<received_seq>,BAD_CRC` | 外层CRC错误 |

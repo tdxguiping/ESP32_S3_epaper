@@ -22,8 +22,6 @@
 
 #define FACTORY_TEST_CONNECT_TIMEOUT_MS 15000U
 #define FACTORY_TEST_STATUS_POLL_MS 500U
-#define FACTORY_TEST_SSID_MAX_LEN 32U
-#define FACTORY_TEST_KEY_MAX_LEN 63U
 
 typedef enum {
     FACTORY_TEST_COMMAND_WIFI_MAC = 0,
@@ -130,7 +128,7 @@ static esp_err_t factory_test_parse_request(const char *arg,
     while (*cursor != '\0' && *cursor != ' ') {
         cursor++;
     }
-    if (*cursor != '\0' ||
+    if (*cursor != '\0' || strlen(key) < FACTORY_TEST_KEY_MIN_LEN ||
         !factory_test_text_is_valid(ssid, FACTORY_TEST_SSID_MAX_LEN) ||
         !factory_test_text_is_valid(key, FACTORY_TEST_KEY_MAX_LEN)) {
         return ESP_ERR_INVALID_ARG;

@@ -3220,3 +3220,18 @@ ESP-IDF 5.5.3接口依据：
 `Ch583FactoryTest_IsBusy()`是7.6 ping厂测BUSY的状态来源。公共UploadGate在厂测期间返回`factory_test`，网络和USB ping因此输出`EPD=BUSY`，同时最终上传预约也拒绝绕过ping的请求。该状态是APP业务门禁，不操作EPD硬件BUSY输入脚。`FACTORY_RESULT`发送后模块将EPD工作模式保存为NORMAL并清除状态，ping恢复`EPD=IDLE`。
 
 Factory Reset提交前调用厂测取消接口，使当前和pending厂测立即失效。厂测凭据使用独立的WiFi recovery入口，只清除旧marker和已预约掉电，不启动新的30秒hard recovery。当前开发阶段UART方向日志和WiFi manager凭据加载日志明文输出`facWifiCon`密码，方便产测核对；正式发布前必须重新评估并关闭密码明文日志。
+
+## WiFi UTF-8 credential module reference (2026-08)
+
+The shared validation module is:
+
+```text
+main/server_network_sta/wifi_credential/server_network_sta_wifi_credential.c
+main/server_network_sta/wifi_credential/server_network_sta_wifi_credential.h
+```
+
+Its header owns the SSID/password byte limits and buffer-size macros. Callers are `main/ble/ble_data_handler.cpp`, `main/usb_console_echo/wifi/usb_console_wifi.c`, and `main/server_network_sta/server_network_sta.c`. The module validates textual UTF-8 and product password policy only; it does not start WiFi, modify retry state, write NVS, or control power.
+
+ESP-IDF 5.5.3 defines `wifi_sta_config_t.ssid` as 32 bytes and `wifi_sta_config_t.password` as 64 bytes in `C:/esp/v5.5.3/esp-idf/components/esp_wifi/include/esp_wifi_types_generic.h`. Project compile-time assertions guard those field sizes. A 32-byte SSID therefore uses all bytes of the SDK field, while the project-owned representation keeps one extra byte for a local terminator. The product password limit is 63 UTF-8 bytes plus a local terminator; 64-byte raw PSK input is intentionally outside this protocol.
+
+The validator uses byte lengths because ESP-IDF and 802.11 fields are byte-oriented. It preserves UTF-8 bytes in both NVS namespaces and rejects invalid data loaded from either namespace. Because ESP-IDF cJSON stores a decoded string as `char *` without its decoded length, `ServerNetworkStaWifiCredential_JsonHasEmbeddedNul()` scans bounded raw JSON before parsing and rejects raw NUL bytes or active `\u0000` escapes. It counts consecutive backslashes so the literal text form `\\u0000` is not rejected. `wifi_info_result` uses cJSON serialization to preserve UTF-8 and escape JSON-sensitive characters. Factory `facWifiCon` does not use this UTF-8 input contract because its UART arguments remain printable-ASCII and space-delimited; its key is validated as 8..63 bytes before admission.

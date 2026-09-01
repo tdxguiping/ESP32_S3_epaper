@@ -86,6 +86,7 @@ const EPD_TYPE_TABLE = [
   { type: 8, width: 800, height: 480, display_size: 96000, name: "EPD_800_480_4S_75_DKE", color_type: 4, color_name: "BWRY_4_Color", color_count: 4, colors: "4 色" },
   { type: 9, width: 800, height: 480, display_size: 96000, name: "EPD_800_480_4S_75_mofang", color_type: 4, color_name: "BWRY_4_Color", color_count: 4, colors: "4 色" },
   { type: 10, width: 1600, height: 1200, display_size: 960000, name: "EPD_1600_1200_133_DKE", color_type: 6, color_name: "BWYRBG_6_Color", color_count: 6, colors: "6 色" },
+  { type: 11, width: 1208, height: 1600, display_size: 966400, name: "EPD_1208_1600_1243_BOE", color_type: 6, color_name: "BWYRBG_6_Color", color_count: 6, colors: "6 色" },
 ];
 const EPD_COLOR_TABLE = {
   BWR_3_Color: [

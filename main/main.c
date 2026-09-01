@@ -558,6 +558,8 @@ void app_main(void)
     ESP_LOGI(TAG, "ble_mac source=CH583 value=%s",
              ble_mac[0] != '\0' ? ble_mac : "<empty>");
 #endif
-     //  test_epd_display();
+
+    // EpdType_Set(EPD_TYPE_1208_1600_1243_BOE);
+    // test_epd_display();
 }
 // vTaskDelay(pdMS_TO_TICKS(1000));

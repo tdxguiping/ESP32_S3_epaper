@@ -1,4 +1,5 @@
 #include "epd_display_app.h"
+#include "boe_1243_bl79703/epd_type_1208_1600_1243_boe.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -954,12 +955,19 @@ static void test_epd_display_type(uint8_t requested_type)
         return;
     }
 
-    for (size_t i = 0; i < block_count; ++i) {
-        memset(test_buf + (i * block_size), block_values[i], block_size);
+    if (requested_type == EPD_TYPE_1208_1600_1243_BOE) {
+        if (!EpdType12081600_1243_BOE_FillMirroredTestPattern(test_buf, test_size)) {
+            heap_caps_free(test_buf);
+            return;
+        }
+    } else {
+        for (size_t i = 0; i < block_count; ++i) {
+            memset(test_buf + (i * block_size), block_values[i], block_size);
+        }
+        memset(test_buf + (block_count * block_size),
+               block_values[block_count - 1],
+               test_size - (block_count * block_size));
     }
-    memset(test_buf + (block_count * block_size),
-           block_values[block_count - 1],
-           test_size - (block_count * block_size));
 
     uint8_t target_count = (requested_type == EPD_TYPE_800_480_4S_75) ? 2U : 1U;
     for (uint8_t target = 1; target <= target_count; ++target) {
@@ -1012,6 +1020,11 @@ void test_epd_display_EPD_1600_1200_133(void)
 void test_epd_display_EPD_1600_1200_133_DKE(void)
 {
     test_epd_display_type(EPD_TYPE_1600_1200_133_DKE);
+}
+
+void test_epd_display_EPD_1208_1600_1243_BOE(void)
+{
+    test_epd_display_type(EPD_TYPE_1208_1600_1243_BOE);
 }
 
 
@@ -1362,6 +1375,10 @@ void test_epd_display(void)
 
     case EPD_TYPE_1600_1200_133_DKE:
         test_epd_display_EPD_1600_1200_133_DKE();
+        break;
+
+    case EPD_TYPE_1208_1600_1243_BOE:
+        test_epd_display_EPD_1208_1600_1243_BOE();
         break;
 
     case EPD_TYPE_1360_480_1085:
