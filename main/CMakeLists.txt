@@ -12,6 +12,12 @@ target_sources(${COMPONENT_LIB} PRIVATE "server_network_sta/wifi_recovery/server
 target_include_directories(${COMPONENT_LIB} PRIVATE "server_network_sta/wifi_recovery")
 target_sources(${COMPONENT_LIB} PRIVATE "server_network_sta/wifi_credential/server_network_sta_wifi_credential.c")
 target_include_directories(${COMPONENT_LIB} PRIVATE "server_network_sta/wifi_credential")
+target_sources(${COMPONENT_LIB} PRIVATE
+    "server_network_sta/wifi_ssid_candidate/server_network_sta_wifi_ssid_candidate.c"
+    "server_network_sta/wifi_ssid_candidate/server_network_sta_wifi_ssid_candidate_store.c"
+    "server_network_sta/wifi_ssid_candidate/server_network_sta_wifi_ssid_candidate_scan.c")
+target_include_directories(${COMPONENT_LIB} PRIVATE
+    "server_network_sta/wifi_ssid_candidate")
 target_sources(${COMPONENT_LIB} PRIVATE "epd_display/epd_type_1600_1200_133_DKE.cpp")
 target_sources(${COMPONENT_LIB} PRIVATE "epd_display/boe_1243_bl79703/epd_type_1208_1600_1243_boe.cpp")
 target_include_directories(${COMPONENT_LIB} PRIVATE "epd_display/boe_1243_bl79703")

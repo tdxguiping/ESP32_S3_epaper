@@ -70,7 +70,7 @@
 | 功能 | 存数据位置 | 写入条件 / 限制 | 读取条件 / 取数据来源 |
 |---|---|---|---|
 | `app_nvs` 通用 NVS | `PhotoPainter` namespace | `key != NULL`；写字符串时 `value != NULL`；写入后必须 `nvs_commit()`；`read_u8` 发现 key 不存在时会写入默认值 | `read_u8` 要求 `out_value != NULL`；`read_str` 要求 `value != NULL` 且 `value_size > 0`；打开失败或读取失败时按默认值回退 |
-| WiFi 配网 NVS | `wifi:ssid/password`，`nvs.net80211:sta.ssid/sta.pswd` | USB、BLE、CH583 配网都要求 `func=wifi`、`ssid` 可解析且长度 1..32、`key` 可解析且长度小于 65；两个 namespace 都写入成功后才提交 worker 连接 | STA 启动时从保存的 WiFi 配置恢复连接；请求侧只负责保存和提交 worker，真正连接在 `User_Network_mode_app_init()` / `server_network_sta.c` |
+| WiFi 配网 NVS | USB/产测：`wifi:ssid/password`、`nvs.net80211:sta.ssid/sta.pswd`；BLE/CH583：`wifi_ssid_cand:config`，命中后同步 `nvs.net80211` | 手机协议要求 `func=wifi`、UTF-8 `ssid`、固定顺序 `ssidHex`、`key` 和可选 `country`；USB/产测保持独立原协议 | STA 启动优先恢复有效候选配置；真正的扫描、选择和连接只在 `server_network_sta.c` 的 manager 中执行 |
 | `cast` 图片保存 | `/data/cast_img/<fileName>.bin`、`/data/cast_img/<fileName>.jpg`；最后投图名保存到默认 NVS `image_state:last_cast` | `func=cast`；`fileName` 非空、无 `..`、无 `/`、无 `\`，且加扩展名后不超过限制；`bin_size/image_size > 0`；实际 `bin/image` 长度必须等于声明长度；zlib模式下`bin_size`是压缩后的实际传输长度，不要求等于屏幕原始长度；当前源码要求 `save=true`，`save=false` 返回 `save_required_for_last_cast`；目录可用；剩余空间大于待写长度 + `SERVER_NETWORK_STA_CAST_SAVE_RESERVE_BYTES`；写临时文件后校验大小再 rename；新 bin/jpg 和 NVS last-cast 记录成功后，清理 `/data/cast_img` 中非本次文件名的旧 `.bin/.jpg` | `show=true && save=true` 时先成功停止轮播，再显示、保存并记录 last cast；启动时不读取或显示 last_cast |
 | `cast2pic` 数据接收 | 一次接收一组 `fileName/bin_size/image_size/bin/image` | 网络和 USB 只接受 `screen=a/b`；`ab` 和缺少 `screen` 返回 `1617`；字段完整、文件名安全且实际传输长度等于声明长度后返回 `result=0`；zlib模式不把压缩BIN长度与屏幕原始长度比较 | `result=0` 只表示数据接收校验成功；显示和保存由后台处理，结果只写日志 |
 | `upload` 图片保存 | `/data/bin_img/<fileName>.bin`，`/data/jpg_img/<fileName>.jpg` | network upload只接受 `show=false && save=true`；字段、文件名安全、实际传输长度等于声明长度、目录和剩余空间条件与cast类似；zlib模式不要求压缩BIN等于屏幕原始长度 | 资源空闲并取得不等待业务完成的EPD/Shared SPI预约后，在HTTP当前上下文同步保存；`show=true` 或 `save=false` 拒绝；图片列表、轮播、快照从 jpg/bin 目录取数据 |
@@ -81,7 +81,7 @@
 | OTA | OTA update partition；boot partition 选择 | 请求必须被识别为 `/ota` 或 `/ota_upload`；body 不超过 `SERVER_NETWORK_STA_OTA_UPLOAD_MAX_BODY_SIZE=6MB`；meta/firmware 字段可解析；固件 magic、app_desc、版本、长度和目标分区大小检查通过；写入成功后才设置 boot partition；成功响应固定以 `ota_result` 作为最后一条 JSON，HTTP handler 返回后由 OTA 专用任务延时自动复位 | 读取 meta JSON、firmware/bin 字段、running partition、next update partition、app desc 和 OTA 状态；OTA 接收与写入使用独立 power hold，任一阶段进行中都不发送 `POWER_OFF`；等待复位期间保留 OTA 成功状态 |
 | EPD 类型 | `PhotoPainter:epd_type` | 只允许保存 `EpdType_GetConfig(type)` 能找到的合法type；未变化时跳过写入；非法type返回 `ESP_ERR_INVALID_ARG` | 启动优先读取 `epd_type`；不存在或无效时回退 `USER_EPD_TYPE_DEFAULT`；DEVICE_INFO上报类型只保存供下次启动使用，不切换本次运行的显示驱动 |
 | EPD 显示队列 | RAM 队列 `s_epd_display_queue` | 队列长度受 `USER_EPD_DISPLAY_QUEUE_LENGTH=2` 限制；入队前需要分配/复制 display buffer；显示数据大小应匹配当前屏幕 `display_size`；队列满或内存不足则失败 | `ServerNetworkStaEpdDisplay_Task()` 从队列取 buffer，根据 EPD type 调用具体驱动 |
-| CH583 DEVICE_INFO | `PhotoPainter:ch583_ble_mac`、`PhotoPainter:ch583_ble_ver`、`PhotoPainter:epd_type` | 收到合法 `DEVICE_INFO` 后解析并保存MAC、CH583版本和映射后的EPD类型；EPD类型通过 `EpdType_SaveForNextBoot()` 保存，全部成功后回复ACK；首次ACK后 `KEY_PB2` 浏览本地图片、`KEY_PB1` 请求恢复出厂 | 本次启动的EPD驱动始终采用启动时NVS合法值或默认值，迟到DEVICE_INFO不在运行中切换驱动；重复DEVICE_INFO只重发ACK，不重复按键业务。合法KEY_EVENT不依赖DEVICE_INFO；启动依赖未就绪时PB2进入本地浏览FIFO，PB1进入Factory Reset单请求状态。完整通信规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image) |
+| CH583 DEVICE_INFO | `PhotoPainter:ch583_ble_mac`、`PhotoPainter:ch583_ble_ver`、`PhotoPainter:epd_type` | 收到合法 `DEVICE_INFO` 后解析并保存MAC、CH583版本和映射后的EPD类型；`f + 40`唯一映射为`EPD_TYPE_1208_1600_1243_BOE`，不兼容`f + 42`；EPD类型通过 `EpdType_SaveForNextBoot()` 保存，全部成功后回复ACK；首次ACK后 `KEY_PB2` 浏览本地图片、`KEY_PB1` 请求恢复出厂 | 本次启动的EPD驱动始终采用启动时NVS合法值或默认值，迟到DEVICE_INFO不在运行中切换驱动；重复DEVICE_INFO只重发ACK，不重复按键业务。合法KEY_EVENT不依赖DEVICE_INFO；启动依赖未就绪时PB2进入本地浏览FIFO，PB1进入Factory Reset单请求状态。完整通信规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image) |
 | USB请求 | RAM request buffer、response buffer；无独立worker queue | 请求头/body受 `USB_CONSOLE_HTTP_HEADER_MAX`、`USB_CONSOLE_HTTP_BODY_MAX` 限制；普通handler在USB接收任务当前上下文执行，投屏提交统一图片任务 | `UsbConsoleEcho_Task()` 读取USB Serial/JTAG数据并由router分发 |
 
 图片显示与保存说明：
@@ -2092,6 +2092,7 @@ seconds WiFi 工作时长，单位秒，网络 HTTP 只接受该字段和严格�
 - work_state_task() 读取 RAM 中计时值；CH583 UART 初始化完成前禁止关机，DEVICE_INFO 是否到达不参与关电判断；超时后如果最近一次 HTTP 或 CH583 合法业务活动不足 20 秒、OTA 接收/写入忙、EPD task 忙或图片保存忙则推迟；所有保护解除后才先配置 CH583 WAKE_TIMER，再发送 CH583 POWER_OFF。
 - ServerNetworkStaWifiWorkTime_OnHttpNetworkActivity() 只记录 HTTP 活动 tick；请求入口、每次成功接收 HTTP body 数据块以及长文件、目录列表、缩略图成功发送数据块时刷新，20 秒保护只在 RAM 中生效，不重置保存的完整工作时间。原 ServerNetworkStaWifiWorkTime_OnNetworkData() 继续供 BLE/CH583、EPD 等原调用方使用。
 - wifi_work_time 初始化时只设置 CH583 UART startup-pending guard，该 guard 不受 20 秒超时限制；`ServerNetworkStaWifiWorkTime_OnCh583Initialized()` 清除 UART guard，并开始新的 20 秒 CH583 活动保护。
+- CH583 UART初始化成功后立即主动发送一次当前`WIFI_VER`，不等待`DEVICE_INFO`；合法`DEVICE_INFO`成功ACK后的原有`WIFI_VER`重放继续保留，用于共同启动时的同步补偿。其他DEVICE_INFO后的设备信息保存、WIFI_PROVISION重放、LED校准、时间备份和唤醒按键动作不变。
 - ServerNetworkStaWifiWorkTime_OnCh583Activity() 只记录 CH583 活动 tick；合法 DEVICE_INFO、单帧及每个有效 BLE_DATA 分片刷新。PING/PONG、ACK/ERR、GPIO_VALUE、TIME_STATUS、NFC_STATUS 不刷新。正常 PING 接收和 PONG 发送都不输出方向/调试日志，协议解析、PONG 回复及发送失败 `ESP_LOGE` 保持不变。
 - LED 关机准备完成后立即执行 final guard；若工作计时已被 USB/BLE 等活动重置，或此时出现 HTTP、CH583、OTA、EPD、图片保存活动，则设置 LED cancel-pending 状态并调用 `UserLedStatus_CancelPowerOffSync()`，同时把本次已开启的 CH583 WAKE_TIMER 回滚为 `OFF,0`。LED 或 WAKE_TIMER 取消失败时，`work_state_task()` 后续每轮都优先重试；两项都取消成功前不进入普通活动保护或新的关机流程。LED 准备失败或 `POWER_OFF` 发送失败时也执行相同的 WAKE_TIMER 回滚，避免 ESP32 继续运行期间遗留旧唤醒定时器。
 - TdxImageTransfer_ProcessItems() 在 cast/upload/cast2pic 发现本次需要保存图片时设置 image_save_busy，并覆盖后续 EPD 显示、保存和 cleanup；显示失败、保存成功、保存失败或 cleanup 后都会清除。work_state_task() 在所有 POWER_OFF 前检查 image_save_busy，busy 时不发送 WAKE_TIMER / LED 关闭 / POWER_OFF，只推迟到保存完成后的下一轮继续关机判断。
@@ -2896,13 +2897,27 @@ CH583 UART可能早于本模块初始化。启动早期首次DEVICE_INFO中收�
 
 ## WiFi UTF-8 credential support (2026-08)
 
-- Normal BLE/CH583 and USB WiFi configuration share one credential validator in `main/server_network_sta/wifi_credential/`.
+- BLE/CH583 and USB still share the UTF-8 display/password validator in `main/server_network_sta/wifi_credential/`, but only BLE/CH583 additionally requires the new ordered `ssidHex` candidate protocol.
 - SSID accepts valid UTF-8 text from 1 to 32 bytes. Password accepts an empty string for an open network, or valid UTF-8 text from 8 to 63 bytes for a secured network. Lengths are byte counts, not character counts.
 - Invalid UTF-8, control bytes, over-limit input and unsupported password lengths are rejected before NVS writes. Inputs are never silently truncated.
 - Raw NUL bytes and active JSON `\u0000` escapes are rejected before cJSON parsing, preventing a decoded string from being shortened by C-string semantics.
-- NVS and ESP-IDF receive the original UTF-8 bytes. A full 32-byte SSID is copied into the fixed ESP-IDF field without requiring a trailing NUL in that field.
+- Only an invalid SSID UTF-8 result adds one warning with the received SSID bytes in hexadecimal; valid requests and password data do not add diagnostic output.
+- USB continues to pass its validated UTF-8 SSID directly. BLE/CH583 passes the raw UTF-8 or GBK candidate selected by scanning; a full 32-byte SSID is copied with an explicit length and does not require a trailing NUL in the ESP-IDF field.
 - `wifi_info_result` is serialized with cJSON so a Chinese SSID and JSON-sensitive characters are returned safely.
 - The WiFi connection, retry, timeout, recovery and power-control state machines are unchanged. Factory `facWifiCon` keeps its separate printable-ASCII protocol.
+
+## BLE/CH583 SSID 双编码候选配网（2026-09）
+
+- 手机配网只接受新协议：`ssid`、`ssidHex`、`key`，以及可省略且默认 `CN` 的 `country`；不兼容缺少 `ssidHex` 的旧 BLE/CH583 格式。
+- `ssid` 始终是合法 UTF-8 显示名称。纯 ASCII SSID 的 `ssidHex` 只能有一个 UTF-8候选；非 ASCII SSID 必须依次提供 UTF-8、GBK 两个候选。候选在 NVS 写入前完整校验，不截断、不自动转码。
+- 新配置由 `wifi_ssid_candidate` 子模块独立保存。唯一 WiFi manager 在断开旧连接后设置国家码和双频自动模式，一次主动扫描该国家码允许的全部2.4GHz和5GHz信道，再按候选数组顺序匹配。命中后根据AP记录的实际主信道判定频段，并把候选原始字节交给原 ESP-IDF STA连接逻辑。
+- 扫描、连接、退避和服务启动共享原请求的绝对30秒结果期限。扫描不建立新期限，不改变 `wifi_wakeup` 的10秒观察、manager连接状态机、一次断电恢复或45秒底层电源guard。
+- 冷启动若候选已选定，直接复用上次选定的原始SSID；没有选定值时先扫描。连接返回 `NO_AP_FOUND` 时，下轮原退避到期可重新选择候选，仍不得延长30秒APP期限。
+- `wifi_info_result.WiFi` 返回原 UTF-8显示SSID，即使路由器实际广播的是GBK字节。USB配网、`facWifiCon` 和 Factory Reset保持独立：前两者保存自己的凭据后清除候选配置，Factory Reset同时清除候选配置。
+- 每次实际准备候选WiFi射频配置时固定打印一条 `WiFi radio ready country=<CC> band_mode=AUTO(2.4GHz+5GHz)`；其余关键日志只记录双频扫描完成、候选命中或扫描失败，不逐AP打印，不新增密码日志。
+- 新凭据成功保存后会使独立的旧 `wifi_wakeup` 10秒观察任务失效；旧任务不再发送过期的 `wifi_wakeup_result/1307`，新凭据worker独占后续结果通知。
+- CH583 `WIFI_DATA` 发送层把非ASCII UTF-8转换为标准JSON Unicode转义后再计算LEN和CRC，例如中文 `我也来` 在线上表示为 `\u6211\u4E5F\u6765`。CRC算法和UART帧格式不变，手机解析后的中文仍为 `我也来`；只含ASCII的通知完全沿用原字节。
+- CH583 UART所有收到或发出的 `CMD=ERR` 均固定使用 `ESP_LOGE`；`BAD_CRC` 的CRC计算差异、每次重试和停止重试也使用 `ESP_LOGE`。正常ACK和普通方向日志等级不变。
 
 ## CH583/CH585 WiFi出厂产测 <span id="sec-factory-test"></span>
 

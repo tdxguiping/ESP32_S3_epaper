@@ -350,6 +350,12 @@ esp_err_t Ch583UartApp_Init(void)
     (void)ch583_wifi_uart_get_ble_mac();
 
     s_ch583_uart_started = true;
+    // Announce the ESP32 firmware version once as soon as UART is usable. This
+    // also covers an ESP32-only restart where CH583 does not resend DEVICE_INFO.
+    int wifi_ver_ret = ch583_wifi_uart_send_current_wifi_ver();
+    if (wifi_ver_ret != 0) {
+        ESP_LOGE(TAG, "startup WIFI_VER send failed ret=%d", wifi_ver_ret);
+    }
     ServerNetworkStaWifiWorkTime_OnCh583Initialized();
     ESP_LOGI(TAG, "CH583 UART started port=%d tx=%d rx=%d baud=%d rx_buf=%d tx_buf=%d event_queue=%d",
              USER_CH583_UART_PORT,

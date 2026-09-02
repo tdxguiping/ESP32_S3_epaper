@@ -1,4 +1,4 @@
-﻿# CH583/CH585 与 WiFi 模组 UART 通讯协议 V2.3
+﻿# CH583/CH585 与 WiFi 模组 UART 通讯协议 V2.4
 
 <a id="summary"></a>
 
@@ -276,6 +276,7 @@ WiFi 必须等 DEVICE_INFO ACK 流程完成后，再执行后续业务。
 ```text
 d = 13.3 寸 HD 6 色屏
 e = 7.09 寸 HD 6 色屏
+f = 12.43 寸 HD 6 色屏
 ```
 
 说明：
@@ -290,42 +291,60 @@ e = 7.09 寸 HD 6 色屏
 
 ### 5.2 板卡信息编码
 
-板卡信息是 1 个 byte，同时要求落在可见 ASCII 范围，便于放入 BLE 广播名和串口日志。
+板卡信息是 1 个 byte，由 `EPD_GetBoardInfo()` 返回，同时要求落在可见 ASCII 范围，便于放入 BLE 广播名、`DEVICE_INFO.board_info_hex` 和串口日志。
+
+当前实现参考 `BackupUpgrade_OTA/APP/include/epd_product_info.h`，由编译脚本同时选择：
+
+```text
+一个 EPD_SCREEN_* 屏幕/尺寸宏
+一个 EPD_VENDOR_* 厂家宏
+```
+
+厂家 ID 按屏幕型号局部解释，每一种屏幕尺寸/型号维护独立厂家表。`board_info_hex` 不能单独当成全局厂家 ID 使用，WiFi/前端必须结合 `screen_type + board_info_hex` 判断真实屏幕和厂家。
 
 位定义：
 
 ```text
-bit7-bit5 固定为 010，保证落在可见 ASCII 区间
-bit4      保留旧分组兼容位
-bit3-bit0 表示厂家 ID，从 0 开始递增
+bit7-bit4 固定为 0100，当前基值为 0x40，保证落在可见 ASCII 区间
+bit3-bit0 表示当前屏幕型号下的厂家 ID，范围 0x00..0x0F，从 0 开始递增
+board_info = 0x40 | (vendor_id & 0x0F)
 ```
 
-第一组厂家 ID：
+当前已定义板卡信息表：
 
 ```text
-0x40 / '@' = 第一组，厂家 ID 0，XT 兴泰
-0x41 / 'A' = 第一组，厂家 ID 1，DKE
-0x42 / 'B' = 第一组，厂家 ID 2，预留
-0x43 / 'C' = 第一组，厂家 ID 3，预留
+screen_type='d'，EPD_SCREEN_13D3_1200X1600_C6，13.3 寸 1200x1600 6 色屏
+  0x40 / '@' = vendor_id 0x00，XT T133A01，文件后缀 XT00，IC: NT61522/PVT61522 x2 + EK73601 x1
+  0x41 / 'A' = vendor_id 0x01，DKE DEPG1330RTE133F5HP，文件后缀 DKE01，IC: NT61522 x2 + EK73601BA x1
+  0x42..0x4F = 当前 13.3 寸屏预留厂家 ID
+
+screen_type='e'，EPD_SCREEN_7D09_1200X1600_C6，7.09 寸 1200x1600 6 色屏
+  0x40 / '@' = vendor_id 0x00，BOE/XT 24116-01390，文件后缀 XT00，IC: TBD
+  0x41..0x4F = 当前 7.09 寸屏预留厂家 ID
+
+screen_type='f'，EPD_SCREEN_12D43_1208X1600_C6，12.43 寸 1208x1600 6 色屏
+  0x40 / '@' = vendor_id 0x00，BOE，文件后缀 BOE00，IC: BL79709AA
+  0x41..0x4F = 当前 12.43 寸屏预留厂家 ID
 ```
 
-第二组厂家 ID：
+组合解释示例：
 
 ```text
-0x50 / 'P' = 第二组，厂家 ID 0，预留
-0x51 / 'Q' = 第二组，厂家 ID 1，预留
-0x52 / 'R' = 第二组，厂家 ID 2，预留
-0x53 / 'S' = 第二组，厂家 ID 3，预留
+screen_type='d' + board_info_hex=40 表示 13.3 寸 XT
+screen_type='d' + board_info_hex=41 表示 13.3 寸 DKE
+screen_type='e' + board_info_hex=40 表示 7.09 寸 BOE/XT
+screen_type='f' + board_info_hex=40 表示 12.43 寸 BOE
 ```
 
 说明：
 
 ```text
-已确定的厂家 ID 直接按上表绑定，未确定的厂家 ID 保留为预留编号
-厂家 ID 表后续确定后，只更新对应 ID 的厂家名称和驱动返回值
-EPD_GetBoardInfo() 放在各屏驱动文件中维护，参考 EPD_GetScreenType()
-如果一个驱动文件共用多个厂家版本，优先用现有屏幕/厂家编译宏在 EPD_GetBoardInfo() 内区分
-只有现有宏无法区分真实厂家时，才新增明确厂家宏；不因为板卡信息拆分共用驱动
+相同 board_info_hex 在不同 screen_type 下可以表示不同厂家，不能跨尺寸复用解释
+已确定的厂家 ID 直接按对应屏幕型号表绑定，未确定的 ID 在该屏幕型号内保留
+新增厂家时，只更新对应屏幕型号下的厂家表、EPD_VENDOR_* 编译宏和 EPD_PRODUCT_VENDOR_ID
+新增屏幕尺寸/型号时，新增独立的 EPD_SCREEN_* 分支，并在该分支内重新从 vendor_id 0x00 建立厂家表
+编译配置必须且只能定义一个 EPD_SCREEN_* 和一个 EPD_VENDOR_*；不支持的屏幕/厂家组合应在编译期报错
+0x50..0x5F 当前不作为板卡信息编码使用；如后续扩展高半字节，需要同步更新本节和固件基值定义
 ```
 
 <a id="sec-6"></a>

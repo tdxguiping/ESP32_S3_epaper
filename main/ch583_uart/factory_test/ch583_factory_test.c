@@ -10,6 +10,7 @@
 #include "esp_mac.h"
 #include "esp_wifi.h"
 #include "factory_reset.h"
+#include "server_network_sta_wifi_ssid_candidate_store.h"
 #include "freertos/FreeRTOS.h"
 #include "image_business_worker.h"
 #include "local_image_browsing.h"
@@ -182,12 +183,16 @@ static esp_err_t factory_test_save_wifi_credentials(const char *ssid,
     if (ret != ESP_OK) {
         return ret;
     }
-    return factory_test_save_namespace_string("nvs.net80211",
-                                              "sta.ssid",
-                                              "sta.pswd",
-                                              ssid,
-                                              key,
-                                              true);
+    ret = factory_test_save_namespace_string("nvs.net80211",
+                                             "sta.ssid",
+                                             "sta.pswd",
+                                             ssid,
+                                             key,
+                                             true);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    return ServerNetworkStaWifiSsidCandidateStore_Clear();
 }
 
 static int factory_test_connected_rssi(const server_network_sta_status_t *status)

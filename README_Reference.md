@@ -229,11 +229,13 @@ SERVER_NETWORK_STA_OTA_RESTART_TASK_PRIORITY=5
 | WiFi 连接事件通知 | `1308` | WiFi 认证失败 |
 | WiFi 连接事件通知 | `1309` | WiFi 获取 IP 失败 |
 
-WiFi、DHCP、HTTP 与 mDNS 由唯一的 `wifi_manager` Task 管理。BLE / CH583 和 USB 的普通 `wifi` 配网请求先保存配置，再通过一个 `NEW_CREDENTIAL` 命令交给 manager；调用者不再先发送 PROVISIONING 后再发送 FORCE_CONNECT。后台结果仍使用 `1307`（连接超时）、`1308`（连续认证失败）和 `1309`（已关联但未取得 IP）。`wifi_wakeup` 会识别 CONNECTING、DISCONNECTING、WAITING_IP、RETRY_WAIT、GOT_IP、STARTING_SERVICES、READY、AUTH_FAILED、NO_CONFIG 和 FAILED；已有连接、主动断线或恢复流程时只返回当前 stage，不重复强制重连。进入 DISCONNECTING 时立即清除旧 IP、HTTP ready 和 mDNS ready。USB `/wifi` 仍只同步返回保存和 worker 提交结果，`wifi_status` 可查询完整状态快照及 last_result、连接/凭据代次、断线目的和 READY 稳定窗口剩余时间。
+WiFi、DHCP、HTTP 与 mDNS 由唯一的 `wifi_manager` Task 管理。BLE / CH583 新协议先保存SSID候选，USB仍保存普通凭据，随后都通过一个 `NEW_CREDENTIAL` 命令交给manager；候选扫描和选择也只在manager中执行。调用者不再先发送PROVISIONING后再发送FORCE_CONNECT。后台结果仍使用 `1307`（连接超时）、`1308`（连续认证失败）和 `1309`（已关联但未取得 IP）。`wifi_wakeup` 会识别 CONNECTING、DISCONNECTING、WAITING_IP、RETRY_WAIT、GOT_IP、STARTING_SERVICES、READY、AUTH_FAILED、NO_CONFIG 和 FAILED；已有连接、主动断线或恢复流程时只返回当前 stage，不重复强制重连。进入 DISCONNECTING 时立即清除旧 IP、HTTP ready 和 mDNS ready。USB `/wifi` 仍只同步返回保存和 worker 提交结果，`wifi_status` 可查询完整状态快照及 last_result、连接/凭据代次、断线目的和 READY 稳定窗口剩余时间。
 
 WiFi 重试间隔固定为 `1000/2000/3000/3500/4000/4500 ms`，第6次以后保持4500 ms。进入 READY 后必须连续稳定30秒才清零连接、抖动和认证累计计数，因此短时间反复掉线会逐级退避；稳定30秒后的第一次掉线仍从1000 ms开始。driver 的 `failure_retry_cnt=0`，不存在第二套 driver 重试。
 
 CH583/BLE 的 `wifi_wakeup` 结果通知在 `ble_data_handler.cpp` 层单独防止过早 `1307`：旧同步调用先返回失败、但状态快照仍为 CONNECTING、DISCONNECTING、WAITING_IP、RETRY_WAIT、GOT_IP 或 STARTING_SERVICES 时，通知 task 从取得该结果起最多 10 秒、每 200 ms 只读一次状态。READY 且已有 IP、HTTP ready 时发送 `wifi_info_result`；明确终止或 10 秒到期才按原结果发送。该观察逻辑不调用 connect/disconnect，不修改 manager、退避、认证或 DHCP 状态机。
+
+已有manager进度使用的独立观察task带有本地generation。普通 `wifi` 新凭据成功写入NVS后递增generation；旧task在下一次200ms轮询或最终发送前发现generation失效便退出，因此不会把旧1307混入新凭据流程。保存失败不取消旧观察。
 
 CH583/BLE 的普通新凭据 `wifi_result` 使用独立的 `wait_wifi_config_result_until_deadline()`：请求起点在有效JSON解析完成、保存NVS之前记录，worker取得早期1307后每200 ms只读manager状态，扣除保存和同步调用已消耗时间，最多观察到绝对30秒。READY且IP/HTTP ready时发送 `wifi_info_result`，AUTH_FAILED发送1308，边界再次读取仍未READY才发送一次1307。`WIFI_CONFIG_RESULT_TIMEOUT_MS` 与 `WIFI_CONFIG_RESULT_STATUS_POLL_MS` 位于 `server_network_sta_wifi_recovery.h`；编译期要求30秒结果窗口不得超过通用45秒电源guard。
 
@@ -3186,6 +3188,24 @@ The module stores `attempted` in the `wifi_recovery` NVS namespace before submit
 
 The original WiFi manager timeouts remain unchanged. The 30-second recovery deadline is absolute for one cold-start session and is not a replacement for `SERVER_NETWORK_STA_CONNECT_FLOW_TIMEOUT_MS`, `SERVER_NETWORK_STA_SYNC_REQUEST_TIMEOUT_MS` or `WIFI_CONNECT_POWER_GUARD_MAX_MS`.
 
+## BLE/CH583 SSID 双编码候选源码参考（2026-09）
+
+| 职责 | 文件/接口 |
+|---|---|
+| 新协议解析、固定候选顺序、默认country、同步错误响应 | `main/ble/ble_data_handler.cpp::parse_wifi_candidate_config()` |
+| 候选hex解码、数量/UTF-8一致性、国家码白名单 | `main/server_network_sta/wifi_ssid_candidate/server_network_sta_wifi_ssid_candidate.c` |
+| 版本化候选NVS、选中索引、向 `nvs.net80211` 写入原始SSID字节 | `server_network_sta_wifi_ssid_candidate_store.c` |
+| 一次2.4GHz+5GHz阻塞主动扫描、实际信道分类及候选比较 | `server_network_sta_wifi_ssid_candidate_scan.c` |
+| 串行断开、扫描、应用配置、连接和原退避 | `main/server_network_sta/server_network_sta.c` 的唯一 `wifi_manager` |
+
+候选NVS namespace为 `wifi_ssid_cand`，blob带magic、版本和结构大小；新请求保存时 `selected_index=-1`，扫描命中并成功写入ESP-IDF兼容凭据后才持久化索引。冷启动优先加载有效候选配置；USB/出厂产测成功保存和Factory Reset会清除该namespace，防止不相关入口被旧候选覆盖。
+
+扫描实现依据本机 ESP-IDF v5.5.3 的 `esp_wifi_set_country_code()`、`esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO)`、`wifi_scan_config_t.channel_bitmap` 与阻塞式 `esp_wifi_scan_start(..., true)`。同一次scan同时设置完整2.4GHz和5GHz位图，最终允许信道由driver按country过滤；每信道active max为120ms。`esp_wifi_scan_get_ap_records()`按RSSI降序返回记录，代码仍以候选数组为外层优先级，并从 `wifi_ap_record_t.primary` 判定实际频段：1～14为2.4GHz，SDK定义的36～177信道为5GHz，未知信道作为错误拒绝。扫描运行在manager上下文，不新增永久task、queue或并行driver控制者。
+
+`ServerNetworkStaWifiSsidCandidateScan_PrepareRadio()`在setter成功或现有值已经正确时统一打印一次最终目标：`country=<CC>`、`band_mode=AUTO(2.4GHz+5GHz)` 和 `ieee80211d=1`。新配置待扫描时由扫描入口准备和打印；冷启动复用已选候选时由manager直接准备和打印，避免同一流程重复日志。
+
+ESP-IDF `wifi_config_t.sta.ssid` 是32字节原始字段，不要求其中的SSID本身是UTF-8；本模块用显式 `ssid_length` 复制命中候选，避免对GBK字节调用 `strlen` 或UTF-8校验。显示、JSON输出和密码校验继续使用UTF-8 `display_ssid`。连接、DHCP、HTTP/mDNS、30秒APP最终结果、10秒wakeup观察和一次断电恢复仍由原模块负责。
+
 ## CH583/CH585 WiFi出厂产测源码参考
 
 独立厂测模块：
@@ -3234,4 +3254,8 @@ Its header owns the SSID/password byte limits and buffer-size macros. Callers ar
 
 ESP-IDF 5.5.3 defines `wifi_sta_config_t.ssid` as 32 bytes and `wifi_sta_config_t.password` as 64 bytes in `C:/esp/v5.5.3/esp-idf/components/esp_wifi/include/esp_wifi_types_generic.h`. Project compile-time assertions guard those field sizes. A 32-byte SSID therefore uses all bytes of the SDK field, while the project-owned representation keeps one extra byte for a local terminator. The product password limit is 63 UTF-8 bytes plus a local terminator; 64-byte raw PSK input is intentionally outside this protocol.
 
-The validator uses byte lengths because ESP-IDF and 802.11 fields are byte-oriented. It preserves UTF-8 bytes in both NVS namespaces and rejects invalid data loaded from either namespace. Because ESP-IDF cJSON stores a decoded string as `char *` without its decoded length, `ServerNetworkStaWifiCredential_JsonHasEmbeddedNul()` scans bounded raw JSON before parsing and rejects raw NUL bytes or active `\u0000` escapes. It counts consecutive backslashes so the literal text form `\\u0000` is not rejected. `wifi_info_result` uses cJSON serialization to preserve UTF-8 and escape JSON-sensitive characters. Factory `facWifiCon` does not use this UTF-8 input contract because its UART arguments remain printable-ASCII and space-delimited; its key is validated as 8..63 bytes before admission.
+The validator uses byte lengths because ESP-IDF and 802.11 fields are byte-oriented. It preserves UTF-8 bytes in both NVS namespaces and rejects invalid data loaded from either namespace. Because ESP-IDF cJSON stores a decoded string as `char *` without its decoded length, `ServerNetworkStaWifiCredential_JsonHasEmbeddedNul()` scans bounded raw JSON before parsing and rejects raw NUL bytes or active `\u0000` escapes. It counts consecutive backslashes so the literal text form `\\u0000` is not rejected. `wifi_info_result` uses cJSON serialization to preserve UTF-8 and escape JSON-sensitive characters. Before a JSON notification enters CH583 `WIFI_DATA`, the protocol module validates UTF-8 and converts non-ASCII code points to JSON `\uXXXX` (or a surrogate pair), then calculates LEN/CRC over that ASCII wire representation; for example, `我也来` becomes `\u6211\u4E5F\u6765` on the wire and parses back to `我也来` on the phone. Factory `facWifiCon` does not use this conversion or UTF-8 input contract because its UART arguments remain printable-ASCII and space-delimited; its key is validated as 8..63 bytes before admission.
+
+CH583 UART protocol error diagnostics do not depend on the optional direction/debug macros: every received or transmitted `CMD=ERR` uses `ESP_LOGE`. A local CRC mismatch, matching-frame retry and retry-limit message also use `ESP_LOGE`. The retry state machine itself is unchanged.
+
+`main/ble/ble_data_handler.cpp` owns the local `log_invalid_wifi_ssid_bytes()` diagnostic. It runs only for `SERVER_NETWORK_STA_WIFI_CREDENTIAL_SSID_INVALID_UTF8`, emits one `ESP_LOGW`, caps output at the 32-byte SSID limit, and never prints password bytes.

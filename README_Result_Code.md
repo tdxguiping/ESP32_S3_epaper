@@ -711,7 +711,7 @@ wifi
 wifi_result
 ```
 
-同步保存/提交结果使用 `1301~1306`；后台连接完成后可继续通过 `wifi_result` 通知 `1307~1309`，详见 [6.4](#sec-06-4)。
+同步协议校验/保存/提交结果使用 `1301~1306` 和 `1310`；后台连接完成后可继续通过 `wifi_result` 通知 `1307~1309`，详见 [6.4](#sec-06-4)。
 
 [⬆ 返回目录](#toc)
 
@@ -741,6 +741,10 @@ wifi_info_result
 | `1309` | `TDX_JSON_RESULT_WIFI_GOT_IP_FAILED` | 获取 IP 失败 |
 
 对 `wifi_wakeup_result`，底层 manager 仍处于连接或重试状态时不立即发送过早 `1307`。通知 task 从该过早结果起观察 10 秒；期间 READY 改发 `wifi_info_result`，10 秒到期仍未 READY 才发送 `1307`。若期间收到普通 `wifi` 新配置，BLE层先预留pending再保存，旧wakeup最终通知取消，新配置返回现有 `wifi_result/result=0` 并进入最新单槽pending；保存失败仍使用现有 `1305`，普通worker忙仍使用现有 `1007`。冷启动和这些请求的关机guard不新增返回码，也不改变底层WiFi重试逻辑。
+
+独立观察已有manager连接进度的 `wifi_wakeup` 同样遵守新凭据优先规则：普通 `wifi` 凭据成功保存后立即使旧观察代次失效，旧观察不再产生1307，也不新增返回码。
+
+中文 `wifi_info_result` 的CH583 UART线缆表示不新增返回码：发送前使用标准JSON Unicode转义，例如 `我也来` 表示为 `\u6211\u4E5F\u6765`，手机JSON解析后仍为原中文 `我也来`。
 
 对普通新凭据 `wifi_result`，`1307` 只表示从有效请求接收起绝对30秒仍未READY。第一次 `NO_AP_FOUND` 或底层同步请求提前返回失败不能直接产生该返回码；通知worker继续只读观察原manager，30秒内恢复则改发 `wifi_info_result`，明确认证失败仍可提前发送 `1308`。NVS保存与此前同步等待计入同一30秒，不允许在早期失败后重新开始30秒。
 
@@ -899,6 +903,7 @@ PhotoPainter:epd_mode
 | `1307` | `TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT` | WiFi 连接超时 |
 | `1308` | `TDX_JSON_RESULT_WIFI_AUTH_FAILED` | WiFi 认证失败 |
 | `1309` | `TDX_JSON_RESULT_WIFI_GOT_IP_FAILED` | WiFi 获取 IP 失败 |
+| `1310` | `TDX_JSON_RESULT_WIFI_COUNTRY_INVALID` | `country` 不是支持的两位国家/地区码 |
 | `1351` | `TDX_JSON_RESULT_WIFI_WORK_TIME_MISSING` | 网络 HTTP / USB 的 `seconds` 缺失或无效；BLE / CH583 入口仍按原协议兼容 `seconds` / `time` |
 | `1352` | `TDX_JSON_RESULT_WIFI_WORK_TIME_RANGE` | 工作时间超出范围 |
 | `1353` | `TDX_JSON_RESULT_WIFI_WORK_TIME_SAVE_FAILED` | 工作时间保存失败 |
@@ -908,9 +913,13 @@ PhotoPainter:epd_mode
 
 BLE / CH583 普通 `wifi_result/result=1307` 必须由该请求的绝对30秒期限产生；单轮 `NO_AP_FOUND` 不是协议超时。`wifi_wakeup_result/result=1307` 仍使用独立10秒通知观察规则。
 
-SSID/password 长度统一按 UTF-8 编码后的字节数计算。空 password 用于开放网络；本次不支持 64 位十六进制 raw PSK。普通 BLE/CH583 与 USB 配网入口使用相同校验，非法内容在保存前分别返回现有 `1303` 或 `1304`，不增加新返回码。出厂产测 `facWifiCon` 仍受其独立 ASCII 参数规则约束。
+BLE/CH583 手机配网必须带 `ssidHex`：纯 ASCII SSID 恰好一个 UTF-8 候选，非 ASCII SSID恰好两个候选且固定为 `[UTF-8, GBK]`。缺少/多余候选、非法十六进制、长度错误、内含NUL、重复候选或 `[0]` 与 UTF-8 `ssid` 不一致均返回现有 `1303`；缺少 `country` 默认 `CN`，显式国家码非法返回 `1310`。空 password 用于开放网络；本次不支持64位十六进制raw PSK。USB和出厂产测维持独立协议与校验规则。
+
+射频准备日志中的country和双频模式仅用于开发调试。2.4GHz与5GHz改为一次双频扫描，实际频段由命中AP的主信道判定；该扫描方式不增加或改变任何正式返回码。
 
 嵌入 NUL 无法由 cJSON 的无长度 `valuestring` 安全表达，因此在解析前作为非法 JSON 拒绝：BLE/CH583 返回现有 `ble_json_result/1203`；USB WiFi 返回现有 `wifi_result/1001` 并带 `error=embedded_nul`。该规则不新增返回码。`facWifiCon` 的 ASCII key 固定为8～63字节，短密码直接返回UART `ERR,BAD_ARG`，不写NVS。
+
+SSID UTF-8 非法时新增的十六进制诊断日志只用于定位传输编码，仍返回现有 `1303`，不增加或改变任何正式返回码。
 
 [⬆ 返回目录](#toc)
 
@@ -1080,6 +1089,8 @@ zlib模式下，cast、cast2pic和upload的 `bin_size` 是压缩后的实际传�
 | `ERR,<received_seq>,BAD_LEN` | LEN与ARG实际字节数不一致或超过外层限制 |
 | `ERR,<received_seq>,BAD_PART` | PART/TOTAL不是1/1 |
 | `ERR,<received_seq>,BAD_CRC` | 外层CRC错误 |
+
+UART `CMD=ERR` 不新增业务返回码；ESP32侧收发任何ERR均使用 `ESP_LOGE`。检测到本地CRC不一致、执行匹配帧重试或停止重试时也统一使用 `ESP_LOGE`。
 | `ERR,<received_seq>,BUSY` | Factory Reset或统一业务资源拒绝厂测请求 |
 | `ERR,<received_seq>,NO_MEM` | 必要资源不可用 |
 

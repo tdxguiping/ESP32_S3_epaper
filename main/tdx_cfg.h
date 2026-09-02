@@ -129,6 +129,8 @@ extern "C" {
 #define TDX_JSON_RESULT_WIFI_AUTH_FAILED 1308
 // Public JSON result code for TDX JSON RESULT WIFI GOT IP FAILED; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_GOT_IP_FAILED 1309
+// Public JSON result code for an unsupported or malformed WiFi country code.
+#define TDX_JSON_RESULT_WIFI_COUNTRY_INVALID 1310
 // Public JSON result code for TDX JSON RESULT WIFI WORK TIME MISSING; keep the numeric value stable for clients.
 #define TDX_JSON_RESULT_WIFI_WORK_TIME_MISSING 1351
 // Public JSON result code for TDX JSON RESULT WIFI WORK TIME RANGE; keep the numeric value stable for clients.
@@ -846,10 +848,11 @@ extern "C" {
 #define CH583_DEVICE_INFO_SCREEN_TYPE_133 'd'
 #define CH583_DEVICE_INFO_SCREEN_TYPE_709 'e'
 #define CH583_DEVICE_INFO_SCREEN_TYPE_1243 'f'
-// board_info_hex is the complete visible ASCII byte assigned to each panel vendor.
+// board_info_hex must be interpreted together with screen_type. Value 0x40
+// means XingTai for d/e screens and BOE for the f screen.
 #define CH583_DEVICE_INFO_BOARD_XINGTAI 0x40
 #define CH583_DEVICE_INFO_BOARD_DKE 0x41
-#define CH583_DEVICE_INFO_BOARD_BOE 0x42
+#define CH583_DEVICE_INFO_BOARD_BOE 0x40
 #define CH583_DEVICE_INFO_ERR_SAVE_FAILED "DEVICE_INFO_SAVE_FAILED"
 // Configuration value for CH583 WIFI NFC JSON MAX LEN; update local references before changing it.
 #define CH583_WIFI_NFC_JSON_MAX_LEN 220

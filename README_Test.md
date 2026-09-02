@@ -781,20 +781,36 @@ SD共享SPI回归测试：EPD启用的正常启动必须出现`SDSPI shared bus 
 8. Save a new SSID/password after a previous recovery. Verify the marker clears and the new credential receives a fresh 30-second one-shot window.
 9. Inject NVS marker-save failure. Verify the ESP32 remains powered and no `POWER_OFF` is sent.
 10. For `wifi_wakeup` received during `CONNECTING`/WiFi `RETRY_WAIT`, verify the immediate progress reply is followed within 10 seconds by either `wifi_info_result` or exactly one final 1307.
+11. 在上述10秒观察期间发送并成功保存新的 `wifi` 凭据，确认打印一次旧观察任务取消日志，且此后不得再出现旧请求的 `wifi_wakeup_result/1307`；最终结果只能属于新凭据。
 
 ## WiFi UTF-8 credential tests (2026-08)
 
-Run the same credential cases through CH583 `BLE_DATA` with `func=wifi` and through the USB `func=wifi` request. Use an AP whose SSID and WPA passphrase contain Chinese UTF-8 text.
+Run the common UTF-8 display/password validation cases through CH583 `BLE_DATA` and USB. CH583 must use the required new `ssidHex` protocol; USB keeps its independent `ssid`/`key` request. Use an AP whose SSID and WPA passphrase contain Chinese UTF-8 text.
 
 1. Verify valid Chinese SSIDs at 30, 31 and exactly 32 UTF-8 bytes save and connect without truncation. Verify 33 bytes returns `wifi_result/result=1303` and leaves the previous NVS credential unchanged.
 2. Verify a valid Chinese password whose encoded length is 8..63 bytes connects. Verify 1..7 bytes and 64 bytes return `1304`; a 64-character raw hexadecimal PSK is also rejected by this product protocol.
 3. Verify an empty password can be saved for an open AP. A missing `key` must still return `1302`, which is different from an explicitly empty string.
 4. Send malformed UTF-8, ASCII control bytes, and UTF-8 cut in the middle of a multibyte character. SSID failures return `1303`, password failures return `1304`, and neither NVS namespace may be partially updated.
    Also send an active JSON `\u0000` escape and a raw NUL byte. BLE/CH583 must return `ble_json_result/1203`; USB must return `wifi_result/1001` with `error=embedded_nul`. A literal text sequence written as `\\u0000` must not be mistaken for an active escape.
+   For an invalid SSID, verify exactly one key warning contains `WiFi invalid SSID bytes len=... hex=...`. For the known broken low-byte conversion of `我也来MERCURY_A662`, the expected prefix is `11 5F 65`; a correct UTF-8 sender must instead deliver `E6 88 91 E4 B9 9F E6 9D A5`.
 5. Use an SSID containing Chinese plus `"` and `\`. After READY, verify `wifi_info_result.WiFi` decodes back to the exact SSID and the returned JSON is valid.
+6. 使用中文SSID取得READY，确认ESP32打印一次 `WIFI_DATA Unicode escaped for CH583 CRC`，且发送给CH583的 `wifi_info_result` 将 `我也来` 表示为 `\u6211\u4E5F\u6765`。CH583必须对该 `WIFI_DATA` 返回匹配ACK而不是重复 `BAD_CRC`；手机JSON解析后的 `WiFi` 必须仍等于原中文SSID `我也来`。再用纯英文SSID确认不打印该转换日志且原ASCII传输不变。
+7. 注入一帧CRC错误以及让CH583返回 `ERR,<seq>,BAD_CRC`，确认所有收发 `CMD=ERR`、CRC差异、重试和达到上限停止重试的日志全部带ESP-IDF错误级别前缀 `E`；再检查 `BAD_ARG/BAD_LEN/BUSY/BLE_NOTIFY_DISABLED` 等非CRC ERR同样使用 `ESP_LOGE`，不得改变原匹配SEQ重发次数。
 6. Reboot after saving a Chinese credential. Verify both NVS read paths preserve the bytes, the manager connects to the same AP, and startup does not log `credential ignored`.
 7. Regression-test ASCII secured and open networks, wrong-password `1308`, absolute 30-second config timeout, 10-second `wifi_wakeup` observer, and one-shot recovery. Their timing and retry behavior must not change.
 8. Verify factory `facWifiCon` still accepts only its documented printable-ASCII, space-delimited format; Chinese input remains `ERR,BAD_ARG`.
+
+## BLE/CH583 SSID 双编码候选测试（2026-09）
+
+1. 发送纯ASCII SSID及一个与 `ssid` 完全一致的 UTF-8 hex，分别让AP位于2.4GHz和5GHz；确认每次只启动一次双频扫描，并在30秒内返回唯一成功通知。2.4GHz信道1～14必须打印 `band=2.4GHz`，5GHz信道36～177必须打印 `band=5GHz`；例如信道48不得标记为2.4GHz。
+2. 使用 `我也来MERCURY_A662`，按 `[UTF-8, GBK]` 顺序发送两个候选。分别让路由器广播UTF-8字节和GBK字节，确认命中索引、编码、频段和信道日志正确，`wifi_info_result.WiFi` 两次均为原UTF-8显示名称。
+3. 验证新协议是强制的：缺少 `ssidHex`、ASCII传两个候选、中文只传一个候选、顺序颠倒、`[0]` 与 `ssid` 不一致、奇数hex、非hex字符、解码后0/33字节、内含00或两个候选重复，均返回 `wifi_result/result=1303`，且原NVS候选配置不变。
+4. 分别省略 `country`、传 `CN` 和传项目白名单内其他国家码；每次实际准备射频配置时应恰好打印一条 `WiFi radio ready country=<CC> band_mode=AUTO(2.4GHz+5GHz) ieee80211d=1`，省略country时其中必须为CN。传长度不是2或不受支持的码返回 `1310`，不得保存、扫描或改变现有连接。
+5. 将同一候选AP只放在国家码允许信道的边界信道；确认一次扫描同时配置完整2.4GHz和5GHz位图，并由ESP-IDF按国家码过滤。关闭AP时每轮只能出现一次 `dual-band scan completed ... matched=0`，随后进入原退避；最终1307仍从请求接收起绝对30秒产生，扫描不能重新计时。
+6. 新配置到达时保持旧WiFi连接，确认先完成受控断开再扫描，WiFi driver操作仍只发生在manager任务。扫描或NVS选择保存失败时只保留关键W/E日志，不能连接未验证候选。
+7. 成功连接GBK候选后重启，确认冷启动直接复用持久化选中索引；把选中索引清为未选择状态后重启，确认先扫描再连接。`NO_AP_FOUND` 后恢复AP，确认按原退避重新选择并可在30秒边界前成功。
+8. 分别通过USB WiFi和 `facWifiCon` 保存普通凭据，确认候选NVS被清除且这些独立协议行为不变；Factory Reset后确认旧 `wifi`、`nvs.net80211` 和候选NVS均无有效凭据。
+9. 回归开放网络、8/63字节密码、非法UTF-8、嵌入NUL、wifi_wakeup 10秒最终通知、普通配网30秒最终通知、一次断电恢复、OTA、EPD和关机guard，确认没有第二套连接任务或超时窗口。
 
 ## CH583/CH585 WiFi出厂产测测试
 

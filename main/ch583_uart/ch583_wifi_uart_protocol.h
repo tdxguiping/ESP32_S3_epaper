@@ -53,6 +53,7 @@ int ch583_wifi_uart_send_wifi_provision_mode_before_power_off(uint8_t mode);
 const char *ch583_wifi_uart_get_ble_mac(void);
 uint8_t ch583_wifi_uart_get_ble_ver(void);
 int ch583_wifi_uart_send_wifi_ver(uint16_t wifi_ver);
+int ch583_wifi_uart_send_current_wifi_ver(void);
 int ch583_wifi_uart_send_wake_timer_on(uint32_t seconds);
 int ch583_wifi_uart_send_wake_timer_off(void);
 int ch583_wifi_uart_send_power_off(void);

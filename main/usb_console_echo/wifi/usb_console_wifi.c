@@ -8,6 +8,7 @@
 #include "nvs.h"
 #include "server_network_sta.h"
 #include "server_network_sta_wifi_credential.h"
+#include "server_network_sta_wifi_ssid_candidate_store.h"
 #include "tdx_cfg.h"
 #include "usb_console_common.h"
 #include "usb_console_worker.h"
@@ -185,13 +186,18 @@ esp_err_t UsbConsoleWifi_Handle(const usb_console_http_request_t *request,
 
     esp_err_t old_ret = save_wifi_namespace(ssid, password);
     esp_err_t net_ret = save_net80211_namespace(ssid, password);
-    ESP_LOGI(TAG, "wifi nvs result wifi=%s net80211=%s",
+    esp_err_t candidate_ret = old_ret == ESP_OK && net_ret == ESP_OK
+                                  ? ServerNetworkStaWifiSsidCandidateStore_Clear()
+                                  : ESP_OK;
+    ESP_LOGI(TAG, "wifi nvs result wifi=%s net80211=%s candidate_clear=%s",
              esp_err_to_name(old_ret),
-             esp_err_to_name(net_ret));
-    if (old_ret != ESP_OK || net_ret != ESP_OK) {
-        ESP_LOGE(TAG, "wifi save failed wifi=%s net80211=%s",
+             esp_err_to_name(net_ret),
+             esp_err_to_name(candidate_ret));
+    if (old_ret != ESP_OK || net_ret != ESP_OK || candidate_ret != ESP_OK) {
+        ESP_LOGE(TAG, "wifi save failed wifi=%s net80211=%s candidate_clear=%s",
                  esp_err_to_name(old_ret),
-                 esp_err_to_name(net_ret));
+                 esp_err_to_name(net_ret),
+                 esp_err_to_name(candidate_ret));
         return UsbConsoleCommon_SetJsonf(response,
                                          200,
                                          "OK",

@@ -6,7 +6,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <string>
 
 #include "cJSON.h"
 #include "ch583_wifi_uart_protocol.h"
@@ -23,11 +22,41 @@
 #include "server_network_sta.h"
 #include "server_network_sta_wifi_credential.h"
 #include "server_network_sta_wifi_recovery.h"
+#include "server_network_sta_wifi_ssid_candidate.h"
+#include "server_network_sta_wifi_ssid_candidate_store.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "tdx_cfg.h"
 #include "user_app.h"
 
 static const char *TAG = "ble_data";
+
+static void log_invalid_wifi_ssid_bytes(const char *ssid)
+{
+    if (ssid == NULL) {
+        return;
+    }
+
+    size_t ssid_length = strlen(ssid);
+    char hex_text[SERVER_NETWORK_STA_WIFI_SSID_MAX_BYTES * 3U + 1U] = {0};
+    size_t output_offset = 0;
+    for (size_t index = 0;
+         index < ssid_length &&
+         index < SERVER_NETWORK_STA_WIFI_SSID_MAX_BYTES;
+         index++) {
+        int written = snprintf(hex_text + output_offset,
+                               sizeof(hex_text) - output_offset,
+                               index + 1U < ssid_length ? "%02X " : "%02X",
+                               (unsigned int)(uint8_t)ssid[index]);
+        if (written <= 0 || (size_t)written >=
+                                sizeof(hex_text) - output_offset) {
+            break;
+        }
+        output_offset += (size_t)written;
+    }
+
+    ESP_LOGW(TAG, "WiFi invalid SSID bytes len=%u hex=%s",
+             (unsigned int)ssid_length, hex_text);
+}
 
 static_assert(WIFI_CONFIG_RESULT_TIMEOUT_MS <=
                   WIFI_CONNECT_POWER_GUARD_MAX_MS,
@@ -37,6 +66,7 @@ typedef struct {
     char func[32];
     char ssid[SERVER_NETWORK_STA_WIFI_SSID_BUFFER_SIZE];
     char key[SERVER_NETWORK_STA_WIFI_PASSWORD_BUFFER_SIZE];
+    server_network_sta_ssid_candidate_config_t candidate_config;
 } wifi_config_json_t;
 
 typedef struct {
@@ -52,6 +82,110 @@ uint8_t net_connect_OK = 0;
 bool WiFi_config_net = false;
 bool WiFi_config_from_ch583 = false;
 bool WiFi_config_from_ble = false;
+
+static int parse_wifi_candidate_config(
+    const cJSON *root,
+    server_network_sta_ssid_candidate_config_t *config,
+    const char **message)
+{
+    if (root == NULL || config == NULL || message == NULL) {
+        return TDX_JSON_RESULT_WIFI_SSID_INVALID;
+    }
+    memset(config, 0, sizeof(*config));
+    config->selected_index = -1;
+    *message = "ssid invalid";
+
+    const cJSON *ssid_item = cJSON_GetObjectItemCaseSensitive(root, "ssid");
+    const cJSON *key_item = cJSON_GetObjectItemCaseSensitive(root, "key");
+    const cJSON *hex_item = cJSON_GetObjectItemCaseSensitive(root, "ssidHex");
+    const cJSON *country_item = cJSON_GetObjectItemCaseSensitive(root, "country");
+    if (ssid_item == NULL) {
+        *message = "ssid missing";
+        return TDX_JSON_RESULT_WIFI_SSID_MISSING;
+    }
+    if (key_item == NULL) {
+        *message = "key missing";
+        return TDX_JSON_RESULT_WIFI_KEY_MISSING;
+    }
+    if (!cJSON_IsString(ssid_item) || ssid_item->valuestring == NULL) {
+        return TDX_JSON_RESULT_WIFI_SSID_INVALID;
+    }
+    if (!cJSON_IsString(key_item) || key_item->valuestring == NULL) {
+        *message = "key invalid";
+        return TDX_JSON_RESULT_WIFI_KEY_INVALID;
+    }
+
+    server_network_sta_wifi_credential_result_t credential_result =
+        ServerNetworkStaWifiCredential_Validate(ssid_item->valuestring,
+                                                key_item->valuestring);
+    if (credential_result != SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
+        bool ssid_error = ServerNetworkStaWifiCredential_ResultIsSsidError(
+            credential_result);
+        *message = ssid_error ? "ssid invalid" : "key invalid";
+        return ssid_error ? TDX_JSON_RESULT_WIFI_SSID_INVALID
+                          : TDX_JSON_RESULT_WIFI_KEY_INVALID;
+    }
+    strlcpy(config->display_ssid, ssid_item->valuestring,
+            sizeof(config->display_ssid));
+    strlcpy(config->password, key_item->valuestring,
+            sizeof(config->password));
+
+    if (country_item == NULL) {
+        strlcpy(config->country, SERVER_NETWORK_STA_WIFI_DEFAULT_COUNTRY,
+                sizeof(config->country));
+    } else if (!cJSON_IsString(country_item) ||
+               country_item->valuestring == NULL ||
+               strlen(country_item->valuestring) != 2U) {
+        *message = "country invalid";
+        return TDX_JSON_RESULT_WIFI_COUNTRY_INVALID;
+    } else {
+        strlcpy(config->country, country_item->valuestring,
+                sizeof(config->country));
+    }
+    if (!ServerNetworkStaWifiSsidCandidate_IsCountrySupported(
+            config->country)) {
+        *message = "country invalid";
+        return TDX_JSON_RESULT_WIFI_COUNTRY_INVALID;
+    }
+
+    if (!cJSON_IsArray(hex_item)) {
+        return TDX_JSON_RESULT_WIFI_SSID_INVALID;
+    }
+    int candidate_count = cJSON_GetArraySize(hex_item);
+    int required_count =
+        ServerNetworkStaWifiSsidCandidate_DisplayNeedsGbk(
+            config->display_ssid) ? 2 : 1;
+    if (candidate_count != required_count) {
+        return TDX_JSON_RESULT_WIFI_SSID_INVALID;
+    }
+    config->candidate_count = (uint8_t)candidate_count;
+    for (int index = 0; index < candidate_count; index++) {
+        const cJSON *candidate_item = cJSON_GetArrayItem(hex_item, index);
+        if (!cJSON_IsString(candidate_item) ||
+            candidate_item->valuestring == NULL) {
+            return TDX_JSON_RESULT_WIFI_SSID_INVALID;
+        }
+        server_network_sta_ssid_candidate_result_t decode_result =
+            ServerNetworkStaWifiSsidCandidate_DecodeHex(
+                candidate_item->valuestring,
+                index == 0 ? SERVER_NETWORK_STA_SSID_ENCODING_UTF8
+                           : SERVER_NETWORK_STA_SSID_ENCODING_GBK,
+                &config->candidates[index]);
+        if (decode_result != SERVER_NETWORK_STA_SSID_CANDIDATE_OK) {
+            return TDX_JSON_RESULT_WIFI_SSID_INVALID;
+        }
+    }
+    server_network_sta_ssid_candidate_result_t validation =
+        ServerNetworkStaWifiSsidCandidate_ValidateConfig(config);
+    if (validation != SERVER_NETWORK_STA_SSID_CANDIDATE_OK) {
+        if (validation == SERVER_NETWORK_STA_SSID_CANDIDATE_INVALID_COUNTRY) {
+            *message = "country invalid";
+            return TDX_JSON_RESULT_WIFI_COUNTRY_INVALID;
+        }
+        return TDX_JSON_RESULT_WIFI_SSID_INVALID;
+    }
+    return TDX_JSON_RESULT_OK;
+}
 
 #define WIFI_INFO_NOTIFY_RETRY_COUNT 3
 #define WIFI_INFO_NOTIFY_RETRY_DELAY_MS 150
@@ -136,6 +270,9 @@ static bool nvs_has_nonempty_blob_string(const char *name_space, const char *key
 
 static bool ble_has_saved_wifi_info(void)
 {
+    if (ServerNetworkStaWifiSsidCandidateStore_HasConfig()) {
+        return true;
+    }
     if (nvs_has_nonempty_str("wifi", "ssid")) {
         return true;
     }
@@ -192,7 +329,11 @@ static bool send_base_info_to_mobile(void)
 
     snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip.ip));
 
-    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+    if (ServerNetworkStaWifiSsidCandidateStore_GetDisplaySsid(
+            ssid_str, sizeof(ssid_str)) == ESP_OK) {
+        /* Candidate connections can use GBK bytes on air; JSON always uses
+         * the separately stored UTF-8 display SSID. */
+    } else if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
         size_t ssid_length = strnlen((const char *)ap_info.ssid,
                                      sizeof(ap_info.ssid));
         memcpy(ssid_str, ap_info.ssid, ssid_length);
@@ -299,124 +440,6 @@ void send_base_info_to_mobile_old(void)
         }
 }
 
-static esp_err_t save_wifi_config_to_nvs(const char *ssid, const char *password)
-{
-    nvs_handle_t handle = 0;
-
-    server_network_sta_wifi_credential_result_t validation =
-        ServerNetworkStaWifiCredential_Validate(ssid, password);
-    if (validation != SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
-        ESP_LOGW(TAG, "WiFi config save rejected reason=%s",
-                 ServerNetworkStaWifiCredential_ResultName(validation));
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    esp_err_t ret = nvs_open("nvs.net80211", NVS_READWRITE, &handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "open nvs.net80211 failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    ret = nvs_set_blob(handle, "sta.ssid", ssid, strlen(ssid) + 1);
-    if (ret == ESP_OK) {
-        ret = nvs_set_blob(handle, "sta.pswd", password, strlen(password) + 1);
-    }
-    if (ret == ESP_OK) {
-        ret = nvs_commit(handle);
-    }
-    nvs_close(handle);
-
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "WiFi config save failed ret=%s", esp_err_to_name(ret));
-    }
-    return ret;
-}
-
-class SsidManager {
-public:
-    static SsidManager& GetInstance()
-    {
-        static SsidManager instance;
-        return instance;
-    }
-
-    void Clear()
-    {
-        nvs_handle_t nvs_handle = 0;
-        esp_err_t ret = nvs_open("wifi", NVS_READWRITE, &nvs_handle);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "SsidManager Clear open wifi failed: %s", esp_err_to_name(ret));
-            return;
-        }
-
-        for (int i = 0; i < 10; i++) {
-            char ssid_key[16];
-            char password_key[16];
-            if (i == 0) {
-                snprintf(ssid_key, sizeof(ssid_key), "ssid");
-                snprintf(password_key, sizeof(password_key), "password");
-            } else {
-                snprintf(ssid_key, sizeof(ssid_key), "ssid%d", i);
-                snprintf(password_key, sizeof(password_key), "password%d", i);
-            }
-            (void)nvs_erase_key(nvs_handle, ssid_key);
-            (void)nvs_erase_key(nvs_handle, password_key);
-        }
-        ret = nvs_commit(nvs_handle);
-        nvs_close(nvs_handle);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "SsidManager Clear failed: %s", esp_err_to_name(ret));
-        }
-    }
-
-    esp_err_t AddSsid(const std::string& ssid, const std::string& password)
-    {
-        nvs_handle_t nvs_handle = 0;
-        esp_err_t ret = nvs_open("wifi", NVS_READWRITE, &nvs_handle);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "SsidManager AddSsid open wifi failed: %s", esp_err_to_name(ret));
-            return ret;
-        }
-
-        ret = nvs_set_str(nvs_handle, "ssid", ssid.c_str());
-        if (ret == ESP_OK) {
-            ret = nvs_set_str(nvs_handle, "password", password.c_str());
-        }
-        if (ret == ESP_OK) {
-            ret = nvs_commit(nvs_handle);
-        }
-        nvs_close(nvs_handle);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "SsidManager AddSsid failed: %s", esp_err_to_name(ret));
-        }
-        return ret;
-    }
-};
-
-class WifiConfigurationAp {
-public:
-    static WifiConfigurationAp& GetInstance()
-    {
-        static WifiConfigurationAp instance;
-        return instance;
-    }
-
-    esp_err_t Save(const std::string& ssid, const std::string& password)
-    {
-        server_network_sta_wifi_credential_result_t validation =
-            ServerNetworkStaWifiCredential_Validate(ssid.c_str(),
-                                                    password.c_str());
-        if (validation != SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
-            ESP_LOGW(TAG, "WiFi credential rejected before NVS reason=%s",
-                     ServerNetworkStaWifiCredential_ResultName(validation));
-            return ESP_ERR_INVALID_ARG;
-        }
-        esp_err_t wifi_ret = SsidManager::GetInstance().AddSsid(ssid, password);
-        esp_err_t sta_ret = save_wifi_config_to_nvs(ssid.c_str(), password.c_str());
-        return wifi_ret != ESP_OK ? wifi_ret : sta_ret;
-    }
-};
-
 static TaskHandle_t s_wifi_connect_task = NULL;
 static json_sender_t s_wifi_connect_reply_sender = NULL;
 static bool s_wifi_connect_notify_result = false;
@@ -424,6 +447,7 @@ static const char *s_wifi_connect_result_func = NULL;
 static bool s_wifi_connect_new_credential = false;
 static TickType_t s_wifi_connect_request_start_tick = 0;
 static bool s_wifi_wakeup_observer_active = false;
+static uint32_t s_wifi_wakeup_observer_generation = 0;
 // Only a wifi_wakeup-owned worker accepts one latest saved credential as pending work.
 static portMUX_TYPE s_wifi_connect_flow_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_wifi_connect_submit_in_progress = false;
@@ -441,6 +465,39 @@ static bool wifi_connect_task_is_active(void)
              s_wifi_connect_submit_in_progress;
     portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
     return active;
+}
+
+static bool wifi_wakeup_observer_is_current(uint32_t generation)
+{
+    bool current = false;
+    portENTER_CRITICAL(&s_wifi_connect_flow_lock);
+    current = s_wifi_wakeup_observer_active &&
+              generation != 0 &&
+              generation == s_wifi_wakeup_observer_generation;
+    portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+    return current;
+}
+
+static bool cancel_wifi_wakeup_observer_for_new_credential(void)
+{
+    bool cancelled = false;
+    portENTER_CRITICAL(&s_wifi_connect_flow_lock);
+    if (s_wifi_wakeup_observer_active) {
+        /* Invalidate only the read-only observer; the WiFi manager is untouched. */
+        s_wifi_wakeup_observer_generation++;
+        if (s_wifi_wakeup_observer_generation == 0) {
+            s_wifi_wakeup_observer_generation++;
+        }
+        s_wifi_wakeup_observer_active = false;
+        cancelled = true;
+    }
+    portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
+
+    if (cancelled) {
+        ESP_LOGI(TAG,
+                 "wifi_wakeup existing progress observer cancelled by new credential");
+    }
+    return cancelled;
 }
 
 static uint32_t reserve_wifi_config_behind_wakeup(
@@ -672,7 +729,8 @@ static wifi_config_observe_result_t wait_wifi_config_result_until_deadline(
 
 static int wait_wifi_wakeup_ready_during_grace(
     TickType_t request_start_tick,
-    server_network_sta_status_t *final_status)
+    server_network_sta_status_t *final_status,
+    uint32_t observer_generation)
 {
     const TickType_t total_timeout_ticks =
         pdMS_TO_TICKS(WIFI_CONNECT_POWER_GUARD_MAX_MS);
@@ -684,6 +742,13 @@ static int wait_wifi_wakeup_ready_during_grace(
     server_network_sta_status_t status = {};
 
     while (true) {
+        if (observer_generation != 0 &&
+            !wifi_wakeup_observer_is_current(observer_generation)) {
+            if (final_status != NULL) {
+                *final_status = status;
+            }
+            return WIFI_WAKEUP_WAIT_CONFIG_QUEUED;
+        }
         if (wifi_config_is_queued_behind_wakeup()) {
             if (final_status != NULL) {
                 *final_status = status;
@@ -896,6 +961,7 @@ static bool notify_wifi_info_if_ip_ready(json_sender_t reply_sender,
 typedef struct {
     json_sender_t reply_sender;
     TickType_t request_start_tick;
+    uint32_t generation;
 } wifi_wakeup_observer_context_t;
 
 static void wifi_wakeup_existing_progress_observer_task(void *arg)
@@ -906,29 +972,35 @@ static void wifi_wakeup_existing_progress_observer_task(void *arg)
     TickType_t request_start_tick = context != NULL ?
                                     context->request_start_tick :
                                     xTaskGetTickCount();
+    uint32_t generation = context != NULL ? context->generation : 0;
     free(context);
 
     server_network_sta_status_t final_status = {};
     int wait_result = wait_wifi_wakeup_ready_during_grace(
-        request_start_tick, &final_status);
-    if (wait_result == WIFI_WAKEUP_WAIT_READY) {
-        (void)notify_wifi_info_if_ip_ready(reply_sender,
-                                           "wifi_wakeup_existing_progress",
-                                           false,
-                                           NULL);
-    } else if (wait_result != WIFI_WAKEUP_WAIT_CONFIG_QUEUED) {
-        ESP_LOGW(TAG,
-                 "wifi_wakeup existing progress final result=1307 state=%s reason=%d",
-                 ServerNetworkSta_StateName(final_status.state),
-                 final_status.disconnect_reason);
-        send_simple_result_with_sender(reply_sender,
-                                       "wifi_wakeup_result",
-                                       TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT,
-                                       "WiFi connect timed out");
+        request_start_tick, &final_status, generation);
+    bool observer_current = wifi_wakeup_observer_is_current(generation);
+    if (observer_current) {
+        if (wait_result == WIFI_WAKEUP_WAIT_READY) {
+            (void)notify_wifi_info_if_ip_ready(reply_sender,
+                                               "wifi_wakeup_existing_progress",
+                                               false,
+                                               NULL);
+        } else if (wait_result != WIFI_WAKEUP_WAIT_CONFIG_QUEUED) {
+            ESP_LOGW(TAG,
+                     "wifi_wakeup existing progress final result=1307 state=%s reason=%d",
+                     ServerNetworkSta_StateName(final_status.state),
+                     final_status.disconnect_reason);
+            send_simple_result_with_sender(reply_sender,
+                                           "wifi_wakeup_result",
+                                           TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT,
+                                           "WiFi connect timed out");
+        }
     }
 
     portENTER_CRITICAL(&s_wifi_connect_flow_lock);
-    s_wifi_wakeup_observer_active = false;
+    if (generation == s_wifi_wakeup_observer_generation) {
+        s_wifi_wakeup_observer_active = false;
+    }
     portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
     vTaskDelete(NULL);
 }
@@ -951,6 +1023,11 @@ static esp_err_t start_wifi_wakeup_existing_progress_observer(
         free(context);
         return ESP_OK;
     }
+    s_wifi_wakeup_observer_generation++;
+    if (s_wifi_wakeup_observer_generation == 0) {
+        s_wifi_wakeup_observer_generation++;
+    }
+    context->generation = s_wifi_wakeup_observer_generation;
     s_wifi_wakeup_observer_active = true;
     portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
 
@@ -963,7 +1040,9 @@ static esp_err_t start_wifi_wakeup_existing_progress_observer(
         NULL);
     if (task_ret != pdPASS) {
         portENTER_CRITICAL(&s_wifi_connect_flow_lock);
-        s_wifi_wakeup_observer_active = false;
+        if (context->generation == s_wifi_wakeup_observer_generation) {
+            s_wifi_wakeup_observer_active = false;
+        }
         portEXIT_CRITICAL(&s_wifi_connect_flow_lock);
         free(context);
         return ESP_ERR_NO_MEM;
@@ -1031,7 +1110,8 @@ static void wifi_connect_task(void *arg)
                          (unsigned long)wifi_retry_after_ms(wakeup_status));
                 wakeup_wait_result =
                     wait_wifi_wakeup_ready_during_grace(request_start_tick,
-                                                        &wakeup_status);
+                                                        &wakeup_status,
+                                                        0);
                 wakeup_ready_after_wait =
                     wakeup_wait_result == WIFI_WAKEUP_WAIT_READY;
                 cancel_wakeup_for_config =
@@ -1287,8 +1367,6 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
 {
     cJSON *root = NULL;
     cJSON *item_func = NULL;
-    cJSON *item_ssid = NULL;
-    cJSON *item_key = NULL;
 
     if (json_str == NULL || out == NULL) {
         LOG_ERROR("Invalid parameter");
@@ -1305,38 +1383,29 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
     }
 
     item_func = cJSON_GetObjectItem(root, "func");
-    item_ssid = cJSON_GetObjectItem(root, "ssid");
-    item_key = cJSON_GetObjectItem(root, "key");
 
     /* 涓枃娉ㄩ噴锛?      妫€鏌ュ瓧娈垫槸鍚﹀瓨鍦ㄤ笖鏄瓧绗︿覆    */
 
-    if (!cJSON_IsString(item_func) || item_func->valuestring == NULL ||
-        !cJSON_IsString(item_ssid) || item_ssid->valuestring == NULL ||
-        !cJSON_IsString(item_key) || item_key->valuestring == NULL) {
+    if (!cJSON_IsString(item_func) || item_func->valuestring == NULL) {
         cJSON_Delete(root);
-                LOG_Purple("%s>%d  Invalid JSON",__func__,__LINE__);
+        LOG_Purple("%s>%d  Invalid JSON",__func__,__LINE__);
         return -1;
     }
 
-    server_network_sta_wifi_credential_result_t validation =
-        ServerNetworkStaWifiCredential_Validate(item_ssid->valuestring,
-                                                item_key->valuestring);
-    if (validation != SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
-        ESP_LOGW(TAG,
-                 "WiFi JSON credential rejected reason=%s ssid_len=%u password_len=%u",
-                 ServerNetworkStaWifiCredential_ResultName(validation),
-                 (unsigned int)strlen(item_ssid->valuestring),
-                 (unsigned int)strlen(item_key->valuestring));
+    const char *validation_message = "ssid invalid";
+    int validation_result = parse_wifi_candidate_config(
+        root, &out->candidate_config, &validation_message);
+    if (validation_result != TDX_JSON_RESULT_OK) {
+        ESP_LOGW(TAG, "WiFi candidate JSON rejected result=%d message=%s",
+                 validation_result, validation_message);
         cJSON_Delete(root);
         return -1;
     }
 
     // Copy only after validating complete UTF-8 byte sequences and lengths.
     snprintf(out->func, sizeof(out->func), "%s", item_func->valuestring);
-    memcpy(out->ssid, item_ssid->valuestring,
-           strlen(item_ssid->valuestring) + 1U);
-    memcpy(out->key, item_key->valuestring,
-           strlen(item_key->valuestring) + 1U);
+    strlcpy(out->ssid, out->candidate_config.display_ssid, sizeof(out->ssid));
+    strlcpy(out->key, out->candidate_config.password, sizeof(out->key));
 
     cJSON_Delete(root);
     Bl_Data_Ready =1;
@@ -1356,12 +1425,9 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
                 return 0;
             }
             ServerNetworkStaWifiRecovery_OnCredentialResultStarted();
-            auto& wifi_ap = WifiConfigurationAp::GetInstance();
-            std::string wifi_ssid = out->ssid;
-            std::string wifi_password = out->key;
             UserDebugOutput_Printf("The Wifi info parsed ok, save to NVS\n\r");
-            SsidManager::GetInstance().Clear();
-            esp_err_t save_ret = wifi_ap.Save(wifi_ssid, wifi_password);
+            esp_err_t save_ret = ServerNetworkStaWifiSsidCandidateStore_Save(
+                &out->candidate_config);
             if (save_ret != ESP_OK) {
                 (void)finish_wifi_config_reservation(pending_reservation,
                                                      false);
@@ -1372,6 +1438,12 @@ int parse_wifi_config_json(const char *json_str, wifi_config_json_t *out)
                                                "save WiFi config failed");
                 return 0;
             }
+            ESP_LOGI(TAG,
+                     "WiFi SSID candidates saved ssid=%s count=%u country=%s",
+                     out->candidate_config.display_ssid,
+                     (unsigned int)out->candidate_config.candidate_count,
+                     out->candidate_config.country);
+            (void)cancel_wifi_wakeup_observer_for_new_credential();
             esp_err_t recovery_ret =
                 ServerNetworkStaWifiRecovery_OnCredentialsChanged();
             if (recovery_ret != ESP_OK) {
@@ -1712,45 +1784,24 @@ static void handle_wifi_json_text_with_sender(const char *json_text,
     char func[32];
     strlcpy(func, func_item->valuestring, sizeof(func));
     if (strcmp(func, "wifi") == 0) {
-        cJSON *ssid_item = cJSON_GetObjectItemCaseSensitive(root, "ssid");
-        cJSON *key_item = cJSON_GetObjectItemCaseSensitive(root, "key");
-        int validation_result = TDX_JSON_RESULT_OK;
-        const char *validation_message = NULL;
-        if (ssid_item == NULL) {
-            validation_result = TDX_JSON_RESULT_WIFI_SSID_MISSING;
-            validation_message = "ssid missing";
-        } else if (key_item == NULL) {
-            validation_result = TDX_JSON_RESULT_WIFI_KEY_MISSING;
-            validation_message = "key missing";
-        } else if (!cJSON_IsString(ssid_item) || ssid_item->valuestring == NULL) {
-            validation_result = TDX_JSON_RESULT_WIFI_SSID_INVALID;
-            validation_message = "ssid invalid";
-        } else if (!cJSON_IsString(key_item) || key_item->valuestring == NULL) {
-            validation_result = TDX_JSON_RESULT_WIFI_KEY_INVALID;
-            validation_message = "key invalid";
-        } else {
-            server_network_sta_wifi_credential_result_t credential_result =
-                ServerNetworkStaWifiCredential_Validate(
-                    ssid_item->valuestring, key_item->valuestring);
-            if (credential_result != SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
-                bool ssid_error =
-                    ServerNetworkStaWifiCredential_ResultIsSsidError(
-                        credential_result);
-                validation_result = ssid_error
-                                        ? TDX_JSON_RESULT_WIFI_SSID_INVALID
-                                        : TDX_JSON_RESULT_WIFI_KEY_INVALID;
-                validation_message = ssid_error
-                                         ? "ssid invalid"
-                                         : "key invalid";
-                ESP_LOGW(TAG,
-                         "WiFi request rejected reason=%s ssid_len=%u password_len=%u",
-                         ServerNetworkStaWifiCredential_ResultName(
-                             credential_result),
-                         (unsigned int)strlen(ssid_item->valuestring),
-                         (unsigned int)strlen(key_item->valuestring));
-            }
-        }
+        server_network_sta_ssid_candidate_config_t candidate_config = {};
+        const char *validation_message = "ssid invalid";
+        int validation_result = parse_wifi_candidate_config(
+            root, &candidate_config, &validation_message);
         if (validation_result != TDX_JSON_RESULT_OK) {
+            const cJSON *ssid_item =
+                cJSON_GetObjectItemCaseSensitive(root, "ssid");
+            if (cJSON_IsString(ssid_item) && ssid_item->valuestring != NULL) {
+                server_network_sta_wifi_credential_result_t ssid_validation =
+                    ServerNetworkStaWifiCredential_Validate(
+                        ssid_item->valuestring, "");
+                if (ssid_validation ==
+                    SERVER_NETWORK_STA_WIFI_CREDENTIAL_SSID_INVALID_UTF8) {
+                    log_invalid_wifi_ssid_bytes(ssid_item->valuestring);
+                }
+            }
+            ESP_LOGW(TAG, "WiFi request rejected result=%d message=%s",
+                     validation_result, validation_message);
             cJSON_Delete(root);
             send_simple_result_with_sender(send_json,
                                            "wifi_result",

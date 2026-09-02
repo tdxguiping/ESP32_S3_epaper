@@ -23,9 +23,14 @@
 #include "file_serving_example_common.h"
 #include "led_status.h"
 #include "server_network_sta_wifi_credential.h"
+#include "server_network_sta_wifi_ssid_candidate.h"
+#include "server_network_sta_wifi_ssid_candidate_scan.h"
+#include "server_network_sta_wifi_ssid_candidate_store.h"
 
 typedef struct {
     char ssid[SERVER_NETWORK_STA_WIFI_SSID_BUFFER_SIZE];
+    uint8_t ssid_length;
+    char display_ssid[SERVER_NETWORK_STA_WIFI_SSID_BUFFER_SIZE];
     char password[SERVER_NETWORK_STA_WIFI_PASSWORD_BUFFER_SIZE];
     bool is_valid;
 } wifi_credential_t;
@@ -656,6 +661,67 @@ static esp_err_t read_nvs_string(nvs_handle_t handle, const char *key,
     return ret;
 }
 
+static bool credential_from_candidate_config(
+    const server_network_sta_ssid_candidate_config_t *config,
+    wifi_credential_t *credential)
+{
+    if (config == NULL || credential == NULL || config->selected_index < 0 ||
+        config->selected_index >= config->candidate_count ||
+        ServerNetworkStaWifiSsidCandidate_ValidateConfig(config) !=
+            SERVER_NETWORK_STA_SSID_CANDIDATE_OK) {
+        return false;
+    }
+
+    const server_network_sta_ssid_candidate_t *selected =
+        &config->candidates[(uint8_t)config->selected_index];
+    memset(credential, 0, sizeof(*credential));
+    memcpy(credential->ssid, selected->bytes, selected->length);
+    credential->ssid_length = selected->length;
+    strlcpy(credential->display_ssid, config->display_ssid,
+            sizeof(credential->display_ssid));
+    strlcpy(credential->password, config->password,
+            sizeof(credential->password));
+    credential->is_valid = true;
+    return true;
+}
+
+static esp_err_t select_candidate_credential(
+    server_network_sta_ssid_candidate_config_t *config,
+    wifi_credential_t *credential)
+{
+    server_network_sta_ssid_scan_result_t scan_result = {0};
+    esp_err_t ret = ServerNetworkStaWifiSsidCandidateScan_Select(
+        config, &scan_result);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "WiFi SSID candidate not selected country=%s elapsed_ms=%lu ret=%s",
+                 config->country, (unsigned long)scan_result.elapsed_ms,
+                 esp_err_to_name(ret));
+        return ret;
+    }
+    ret = ServerNetworkStaWifiSsidCandidateStore_Select(
+        config, scan_result.selected_index);
+    if (ret == ESP_OK &&
+        !credential_from_candidate_config(config, credential)) {
+        ret = ESP_FAIL;
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi SSID candidate save failed index=%u ret=%s",
+                 (unsigned int)scan_result.selected_index,
+                 esp_err_to_name(ret));
+        return ret;
+    }
+    ESP_LOGI(TAG,
+             "WiFi SSID selected display=%s encoding=%s band=%s channel=%u rssi=%d elapsed_ms=%lu",
+             credential->display_ssid,
+             ServerNetworkStaWifiSsidCandidate_EncodingName(
+                 config->candidates[scan_result.selected_index].encoding),
+             scan_result.is_5ghz ? "5GHz" : "2.4GHz",
+             (unsigned int)scan_result.channel,
+             (int)scan_result.rssi,
+             (unsigned long)scan_result.elapsed_ms);
+    return ESP_OK;
+}
+
 static wifi_credential_t read_saved_wifi(bool suppress_password_log)
 {
     wifi_credential_t credential = {0};
@@ -672,6 +738,9 @@ static wifi_credential_t read_saved_wifi(bool suppress_password_log)
                                                     credential.password);
         if (ssid_ret == ESP_OK && pass_ret == ESP_OK &&
             validation == SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
+            credential.ssid_length = strlen(credential.ssid);
+            strlcpy(credential.display_ssid, credential.ssid,
+                    sizeof(credential.display_ssid));
             credential.is_valid = true;
 #if SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT
             if (!suppress_password_log) {
@@ -712,6 +781,9 @@ static wifi_credential_t read_saved_wifi(bool suppress_password_log)
     credential.is_valid = ssid_ret == ESP_OK && pass_ret == ESP_OK &&
                           validation == SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK;
     if (credential.is_valid) {
+        credential.ssid_length = strlen(credential.ssid);
+        strlcpy(credential.display_ssid, credential.ssid,
+                sizeof(credential.display_ssid));
 #if SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT
         if (!suppress_password_log) {
             ESP_LOGI(TAG, "WiFi credential loaded ssid=%s password=%s",
@@ -901,23 +973,25 @@ static esp_err_t ensure_wifi_stack(void)
 
 static esp_err_t apply_wifi_config(const wifi_credential_t *credential)
 {
-    if (credential == NULL || !credential->is_valid) {
+    if (credential == NULL || !credential->is_valid ||
+        credential->ssid_length == 0U ||
+        credential->ssid_length > SERVER_NETWORK_STA_WIFI_SSID_MAX_BYTES) {
         return ESP_ERR_INVALID_ARG;
     }
     server_network_sta_wifi_credential_result_t validation =
-        ServerNetworkStaWifiCredential_Validate(credential->ssid,
+        ServerNetworkStaWifiCredential_Validate(credential->display_ssid,
                                                 credential->password);
     if (validation != SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
         ESP_LOGE(TAG,
                  "WiFi credential apply rejected reason=%s ssid_len=%u password_len=%u",
                  ServerNetworkStaWifiCredential_ResultName(validation),
-                 (unsigned int)strlen(credential->ssid),
+                 (unsigned int)credential->ssid_length,
                  (unsigned int)strlen(credential->password));
         return ESP_ERR_INVALID_ARG;
     }
 
     wifi_config_t config = {0};
-    memcpy(config.sta.ssid, credential->ssid, strlen(credential->ssid));
+    memcpy(config.sta.ssid, credential->ssid, credential->ssid_length);
     memcpy(config.sta.password, credential->password,
            strlen(credential->password));
     config.sta.scan_method = WIFI_FAST_SCAN;
@@ -933,13 +1007,15 @@ static bool same_active_config(const wifi_credential_t *credential)
     wifi_config_t current = {0};
     wifi_config_t expected = {0};
     if (credential == NULL || !credential->is_valid ||
+        credential->ssid_length == 0U ||
+        credential->ssid_length > SERVER_NETWORK_STA_WIFI_SSID_MAX_BYTES ||
         ServerNetworkStaWifiCredential_Validate(
-            credential->ssid, credential->password) !=
+            credential->display_ssid, credential->password) !=
             SERVER_NETWORK_STA_WIFI_CREDENTIAL_OK) {
         return false;
     }
 
-    memcpy(expected.sta.ssid, credential->ssid, strlen(credential->ssid));
+    memcpy(expected.sta.ssid, credential->ssid, credential->ssid_length);
     memcpy(expected.sta.password, credential->password,
            strlen(credential->password));
     return esp_wifi_get_config(WIFI_IF_STA, &current) == ESP_OK &&
@@ -1014,6 +1090,11 @@ static void server_network_sta_manager_task(void *arg)
     uint32_t mdns_retry_count = 0;
     TickType_t connection_deadline = 0;
     bool connection_enabled = false;
+    server_network_sta_ssid_candidate_config_t candidate_config = {
+        .selected_index = -1,
+    };
+    bool candidate_config_valid = false;
+    bool candidate_selection_pending = false;
 
     while (true) {
         TickType_t wait_ticks = portMAX_DELAY;
@@ -1109,7 +1190,17 @@ static void server_network_sta_manager_task(void *arg)
                                  (unsigned long)context.credential_generation);
                         continue;
                     }
-                    esp_err_t ret = apply_wifi_config(&credential);
+                    esp_err_t ret = ESP_OK;
+                    if (candidate_selection_pending) {
+                        ret = select_candidate_credential(&candidate_config,
+                                                          &credential);
+                        if (ret == ESP_OK) {
+                            candidate_selection_pending = false;
+                        }
+                    }
+                    if (ret == ESP_OK) {
+                        ret = apply_wifi_config(&credential);
+                    }
                     if (ret == ESP_OK) {
                         begin_connection_attempt(&context);
                         set_wifi_ps(WIFI_PS_NONE, "reconfigure_timeout");
@@ -1194,6 +1285,28 @@ static void server_network_sta_manager_task(void *arg)
                         }
                     }
                 } else {
+                    if (candidate_config_valid &&
+                        !candidate_selection_pending &&
+                        ServerNetworkStaWifiSsidCandidateScan_PrepareRadio(
+                            candidate_config.country) != ESP_OK) {
+                        uint32_t retry_count = 0;
+                        uint32_t delay_ms = next_wifi_retry(
+                            &context, false, &retry_count);
+                        status_enter_wifi_retry(retry_count, delay_ms, -1, 0);
+                        continue;
+                    }
+                    if (candidate_selection_pending) {
+                        esp_err_t select_ret = select_candidate_credential(
+                            &candidate_config, &credential);
+                        if (select_ret != ESP_OK) {
+                            uint32_t retry_count = 0;
+                            uint32_t delay_ms = next_wifi_retry(
+                                &context, false, &retry_count);
+                            status_enter_wifi_retry(retry_count, delay_ms, -1, 0);
+                            continue;
+                        }
+                        candidate_selection_pending = false;
+                    }
                     status_enter_connecting();
                     UserLedStatus_Set(USER_LED_STATE_WIFI_CONNECTING);
                     set_wifi_ps(WIFI_PS_NONE, "connecting");
@@ -1292,7 +1405,39 @@ static void server_network_sta_manager_task(void *arg)
             if (event.base_path[0] != '\0') {
                 strlcpy(base_path, event.base_path, sizeof(base_path));
             }
-            credential = read_saved_wifi(event.suppress_password_log);
+            memset(&candidate_config, 0, sizeof(candidate_config));
+            candidate_config.selected_index = -1;
+            candidate_config_valid =
+                ServerNetworkStaWifiSsidCandidateStore_Load(&candidate_config) ==
+                ESP_OK;
+            candidate_selection_pending = candidate_config_valid &&
+                (new_credential || candidate_config.selected_index < 0);
+            if (candidate_config_valid && !candidate_selection_pending) {
+                (void)credential_from_candidate_config(&candidate_config,
+                                                       &credential);
+#if SERVER_NETWORK_STA_LOG_PASSWORD_PLAINTEXT
+                if (!event.suppress_password_log) {
+                    ESP_LOGI(TAG,
+                             "WiFi candidate credential loaded ssid=%s password=%s index=%d",
+                             credential.display_ssid, credential.password,
+                             (int)candidate_config.selected_index);
+                } else {
+                    ESP_LOGI(TAG,
+                             "WiFi candidate credential loaded ssid=%s index=%d",
+                             credential.display_ssid,
+                             (int)candidate_config.selected_index);
+                }
+#else
+                ESP_LOGI(TAG,
+                         "WiFi candidate credential loaded ssid=%s index=%d",
+                         credential.display_ssid,
+                         (int)candidate_config.selected_index);
+#endif
+            } else if (candidate_config_valid) {
+                memset(&credential, 0, sizeof(credential));
+            } else {
+                credential = read_saved_wifi(event.suppress_password_log);
+            }
             connection_enabled = true;
             if (new_credential) {
                 context.credential_generation++;
@@ -1306,7 +1451,7 @@ static void server_network_sta_manager_task(void *arg)
             mdns_retry_count = 0;
             status_clear_retries();
             status_set_last_result(TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT);
-            if (!credential.is_valid) {
+            if (!credential.is_valid && !candidate_selection_pending) {
                 connection_enabled = false;
                 status_enter_terminal(SERVER_NETWORK_STA_STATE_NO_CONFIG,
                                       TDX_JSON_RESULT_WIFI_CONNECT_TIMEOUT, 0, 0);
@@ -1342,6 +1487,57 @@ static void server_network_sta_manager_task(void *arg)
             UserLedStatus_Set(USER_LED_STATE_WIFI_CONNECTING);
             UserLedStatus_SetWifiNoConfig(false);
             UserLedStatus_SetWifiAuthFailed(false);
+            if (candidate_config_valid && !candidate_selection_pending) {
+                ret = ServerNetworkStaWifiSsidCandidateScan_PrepareRadio(
+                    candidate_config.country);
+                if (ret != ESP_OK) {
+                    uint32_t retry_count = 0;
+                    uint32_t delay_ms = next_wifi_retry(
+                        &context, false, &retry_count);
+                    status_enter_wifi_retry(retry_count, delay_ms, -1, 0);
+                    ESP_LOGE(TAG,
+                             "WiFi candidate radio prepare failed retry=%lu ret=%s",
+                             (unsigned long)retry_count, esp_err_to_name(ret));
+                    complete_pending_requests(
+                        &pending_request_slot, &pending_request_id,
+                        &coalesced_request_slot, &coalesced_request_id,
+                        SERVER_NETWORK_STA_CONNECT_FAIL);
+                    continue;
+                }
+            }
+            if (candidate_selection_pending) {
+                wifi_ap_record_t active_ap = {0};
+                bool active_or_connecting =
+                    esp_wifi_sta_get_ap_info(&active_ap) == ESP_OK ||
+                    state_is_connect_flow(snapshot.state);
+                if (active_or_connecting) {
+                    ret = start_expected_disconnect(
+                        &context, SERVER_NETWORK_STA_DISCONNECT_RECONFIGURE);
+                    if (ret == ESP_OK) {
+                        ESP_LOGI(TAG,
+                                 "WiFi candidate selection waiting for disconnect credential_gen=%lu",
+                                 (unsigned long)context.credential_generation);
+                        continue;
+                    }
+                }
+                ret = select_candidate_credential(&candidate_config, &credential);
+                if (ret != ESP_OK) {
+                    uint32_t retry_count = 0;
+                    uint32_t delay_ms = next_wifi_retry(
+                        &context, false, &retry_count);
+                    status_enter_wifi_retry(retry_count, delay_ms, -1, 0);
+                    ESP_LOGW(TAG,
+                             "WiFi candidate scan pending retry=%lu delay_ms=%lu",
+                             (unsigned long)retry_count,
+                             (unsigned long)delay_ms);
+                    complete_pending_requests(
+                        &pending_request_slot, &pending_request_id,
+                        &coalesced_request_slot, &coalesced_request_id,
+                        SERVER_NETWORK_STA_CONNECT_FAIL);
+                    continue;
+                }
+                candidate_selection_pending = false;
+            }
             esp_ip4_addr_t current_ip = {0};
             if (!event.force_reconnect && same_active_config(&credential) &&
                 physical_link_has_ip(&current_ip)) {
@@ -1383,7 +1579,8 @@ static void server_network_sta_manager_task(void *arg)
                                               SERVER_NETWORK_STA_CONNECT_FAIL);
                     continue;
                 }
-                ESP_LOGI(TAG, "WiFi connect start ssid=%s", credential.ssid);
+                ESP_LOGI(TAG, "WiFi connect start ssid=%s",
+                         credential.display_ssid);
                 continue;
             }
         }
@@ -1556,7 +1753,17 @@ static void server_network_sta_manager_task(void *arg)
                     atomic_store(&s_resync_required, true);
                     continue;
                 }
-                esp_err_t ret = apply_wifi_config(&credential);
+                esp_err_t ret = ESP_OK;
+                if (candidate_selection_pending) {
+                    ret = select_candidate_credential(&candidate_config,
+                                                      &credential);
+                    if (ret == ESP_OK) {
+                        candidate_selection_pending = false;
+                    }
+                }
+                if (ret == ESP_OK) {
+                    ret = apply_wifi_config(&credential);
+                }
                 if (ret == ESP_OK) {
                     begin_connection_attempt(&context);
                     set_wifi_ps(WIFI_PS_NONE, "connecting");
@@ -1617,7 +1824,7 @@ static void server_network_sta_manager_task(void *arg)
                          event.reason, disconnect_reason_name(event.reason),
                          (unsigned long)context.hard_auth_failure_count,
                          (unsigned long)context.transient_auth_failure_count,
-                         credential.ssid);
+                         credential.display_ssid);
                 complete_pending_requests(&pending_request_slot, &pending_request_id,
                                           &coalesced_request_slot, &coalesced_request_id,
                                           SERVER_NETWORK_STA_CONNECT_FAIL);
@@ -1625,6 +1832,10 @@ static void server_network_sta_manager_task(void *arg)
             }
 
             uint32_t retry_count = 0;
+            if (candidate_config_valid &&
+                event.reason == WIFI_REASON_NO_AP_FOUND) {
+                candidate_selection_pending = true;
+            }
             uint32_t delay_ms = next_wifi_retry(&context, was_ready, &retry_count);
             status_enter_wifi_retry(retry_count, delay_ms, event.reason, event.rssi);
             UserLedStatus_Set(USER_LED_STATE_WIFI_CONNECTING);

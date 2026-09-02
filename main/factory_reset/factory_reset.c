@@ -27,6 +27,7 @@
 #include "server_network_sta_daily_image.h"
 #include "server_network_sta_wifi_work_time.h"
 #include "server_network_sta_wifi_recovery.h"
+#include "server_network_sta_wifi_ssid_candidate_store.h"
 #include "tdx_cfg.h"
 #include "tdx_shared_spi.h"
 
@@ -366,10 +367,14 @@ static esp_err_t factory_reset_clear_wifi_credentials(void)
 {
     esp_err_t wifi_ret = factory_reset_erase_wifi_namespace();
     esp_err_t net80211_ret = factory_reset_erase_net80211_credentials();
+    esp_err_t candidate_ret = ServerNetworkStaWifiSsidCandidateStore_Clear();
     if (wifi_ret != ESP_OK) {
         return wifi_ret;
     }
-    return net80211_ret;
+    if (net80211_ret != ESP_OK) {
+        return net80211_ret;
+    }
+    return candidate_ret;
 }
 
 static esp_err_t factory_reset_save_welcome_pending(void)

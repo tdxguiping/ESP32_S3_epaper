@@ -667,6 +667,8 @@ CH583 串口通信协议汇总
 
 所有 WiFi -> CH583 命令共用同一个 TX mutex。锁覆盖 SEQ 分配、整帧组包、按 SEQ 管理的待确认队列、UART 写入和 SEQ 自增，禁止 LED、WIFI_DATA、GPIO、POWER_OFF、ACK 等命令并发取得相同 SEQ。最多保留 8 条需要回复的待确认帧；ACK/ERR 只完成匹配 SEQ，BAD_CRC 只重发匹配帧。ACK、ERR、PONG 不进入待确认队列；POWER_OFF 沿用原发送方式，不进入待确认队列。协议发送接口成功时统一返回 `0`，失败返回负值。
 
+所有收到或发出的 `CMD=ERR` 都使用 `ESP_LOGE`。对于 `BAD_CRC`，本地CRC计算不一致、匹配帧重试及停止重试也全部使用 `ESP_LOGE`。该日志等级规则不改变CRC算法、SEQ匹配或重试次数。
+
 ---
 
 存 / 取信息（含条件限制）：
@@ -881,7 +883,7 @@ ARG=<mac>,<ble_ver_dec>,<screen_type>,<board_info_hex>,<wake_reason>
 mac：CH583 自身 BLE MAC，12 位大写 HEX，不带冒号
 ble_ver_dec：CH583 固件版本，纯十进制文本，范围 0..255
 screen_type：d=13.3 寸 HD 六色屏，e=7.09 寸 HD 六色屏，f=12.43 寸 BOE 六色屏
-board_info_hex：40=兴泰，41=DKE，42=BOE
+board_info_hex：必须结合screen_type解释；d/e配合40表示兴泰，d配合41表示DKE，f配合40表示BOE
 wake_reason：BOOT/USB/KEY_PB1/KEY_PB2/BLE_CONNECT/BLE_WRITE/NFC/TIMER/UNKNOWN
 ble_ver_dec 来自 CH583/CH585 固件宏 VER
 screen_type 和 board_info_hex 由 CH583 在 DEVICE_INFO 中上报
@@ -902,7 +904,7 @@ ESP32可能因USB、看门狗或软件异常独立重启，此时CH583可能仍�
 @#V1|SEQ=20|CMD=DEVICE_INFO|LEN=29|PART=1|TOTAL=1|ARG=AABBCCDDEEFF,100,d,40,KEY_PB1|CRC=XXXX^&
 ```
 
-MAC 使用广播显示顺序 `Mac[5] Mac[4] Mac[3] Mac[2] Mac[1] Mac[0]`，文本必须为 12 位大写 HEX。`board_info_hex` 是完整 byte 的两位大写 HEX，不是单独字符；映射时 `40` 表示厂家 ID 0，`41` 表示厂家 ID 1，`42` 表示厂家 ID 2（BOE）。
+MAC 使用广播显示顺序 `Mac[5] Mac[4] Mac[3] Mac[2] Mac[1] Mac[0]`，文本必须为 12 位大写 HEX。`board_info_hex` 是完整 byte 的两位大写 HEX，不是单独字符；它不是脱离屏幕类型的全局厂家编号，必须与 `screen_type` 组合解释。
 
 屏幕类型编码：
 
@@ -921,12 +923,12 @@ f = 12.43 寸 BOE 六色屏（1208 x 1600）
 board_info 是 1 个 byte，并保持在可见 ASCII 范围，DEVICE_INFO 中使用两位大写 HEX 文本传输。
 bit7-bit5：固定为 010，保证落在可见 ASCII 区间。
 bit4：保留旧分组兼容位。
-bit3-bit0：厂家 ID，从 0 开始递增。
+bit3-bit0：板卡信息编号，必须结合screen_type解释。
 
 第一组：
-0x40 / '@' = 厂家 ID 0，XT 兴泰
+0x40 / '@' = d/e屏为XT兴泰，f屏为BOE
 0x41 / 'A' = 厂家 ID 1，DKE
-0x42 / 'B' = 厂家 ID 2，BOE
+0x42 / 'B' = 当前预留
 0x43 / 'C' = 厂家 ID 3，预留
 
 第二组：
@@ -964,7 +966,8 @@ screen_type=d, board_info_hex=40 -> EPD_TYPE_1600_1200_133
 screen_type=d, board_info_hex=41 -> EPD_TYPE_1600_1200_133_DKE
 screen_type=e, board_info_hex=40 -> EPD_TYPE_1600_1200_79
 screen_type=e, board_info_hex=41 -> ESP_LOGE 后返回 ERR,<seq>,BAD_ARG
-screen_type=f, board_info_hex=42 -> EPD_TYPE_1208_1600_1243_BOE
+screen_type=f, board_info_hex=40 -> EPD_TYPE_1208_1600_1243_BOE
+screen_type=f, board_info_hex=42 -> ESP_LOGE 后返回 ERR,<seq>,BAD_ARG（不兼容）
 ```
 
 BOE 12.43 英寸数据约定：
@@ -1041,8 +1044,9 @@ wifi_ver_dec 为十进制文本，范围 0..65535
 当前 ESP32-C5 行为：
 
 ```text
-收到合法 DEVICE_INFO 并成功 ACK 后，立即上报一次 WIFI_VER。
-PING/PONG与DEVICE_INFO信息同步相互独立；PING早于DEVICE_INFO时ESP32直接回复PONG，不额外补发WIFI_VER。
+CH583 UART初始化成功后，ESP32立即主动上报一次WIFI_VER，不依赖DEVICE_INFO。
+收到合法DEVICE_INFO并成功ACK后，保留原有WIFI_VER重放作为同步补偿；ESP32与CH583同时启动时允许上报相同版本两次。
+PING/PONG与DEVICE_INFO信息同步相互独立；PING早于DEVICE_INFO时ESP32直接回复PONG，WIFI_VER已经由UART启动路径主动发送，不由PING触发。
 WIFI_VER 来自当前 app version，按 <high_dec>.<low_dec> 解析为 (high_dec << 8) | low_dec。
 high_dec 和 low_dec 都是十进制数值，范围分别为 0..255；代码不要求每段固定为三位。
 例如 PROJECT_VER "000.003" 上报 WIFI_VER=3。
@@ -1295,7 +1299,9 @@ LEN <= 256
 PART=1
 TOTAL=1
 不支持分包
+ESP32发送前把JSON中的非ASCII UTF-8字符转换为等价的JSON `\uXXXX` 转义，例如 `我也来` 转换为 `\u6211\u4E5F\u6765`；LEN和CRC按转换后的ASCII字节计算
 CH583 收到合法 WIFI_DATA 后，如果 BLE 连接且 notify 已开启，则把 ARG 原样 notify 给前端
+手机JSON解析后仍得到原Unicode文本，例如 `\u6211\u4E5F\u6765` 还原为“我也来”
 前端收到 WiFi 回传消息后，不需要 ACK
 ```
 
@@ -2458,10 +2464,23 @@ wifi_standby
 请求：
 
 ```json
-{"func":"wifi","ssid":"AP_NAME","key":"PASSWORD"}
+{
+  "func":"wifi",
+  "ssid":"我也来MERCURY_A662",
+  "ssidHex":[
+    "E68891E4B99FE69DA54D4552435552595F41363632",
+    "CED2D2B2C0B44D4552435552595F41363632"
+  ],
+  "key":"12345678",
+  "country":"CN"
+}
 ```
 
-`ssid` 和 `key` 是 UTF-8 文本，长度按编码后的字节数计算，不按字符数计算。`ssid` 必须为 1..32 字节；`key` 为空表示开放网络，否则必须为 8..63 字节。本协议不接收 64 位十六进制 raw PSK。畸形 UTF-8、控制字符、超长或不满足密码长度的请求在写 NVS 前拒绝，不截断。为避免 cJSON 把字符串内的 NUL 解码后交给无长度的 C 字符串，原始 NUL 和有效的 JSON `\u0000` 转义在解析前按非法 JSON 拒绝；表示普通文本 `\u0000` 时，JSON 中使用的 `\\u0000` 形式不受影响。代码把配置写入 `wifi:ssid/password` 和 `nvs.net80211:sta.ssid/sta.pswd`，然后创建唯一的 `ble_wifi_connect` task。已有连接 task 时返回 `1007`。
+BLE/CH583 配网只接受该新协议，不兼容缺少 `ssidHex` 的旧格式。`ssid` 是用于显示和校验的 UTF-8 文本，长度为 1..32 字节；`ssidHex` 是真实 SSID 字节候选数组，固定按数组顺序匹配：`[0]` 必须与 `ssid` 的 UTF-8 字节完全一致，中文等非 ASCII SSID 的 `[1]` 是 GBK 字节。纯 ASCII SSID 只能传一个候选，非 ASCII SSID 必须传两个候选；每项必须为偶数长度十六进制、解码后 1..32 字节且不得包含 NUL。`country` 缺失时默认为 `CN`，存在时必须是 ESP-IDF 支持的两位国家/地区码。`key` 为空表示开放网络，否则必须为 8..63 字节。本协议不接收 64 位十六进制 raw PSK。
+
+设备先保存整个候选配置，再由唯一 WiFi manager 设置国家码和 `WIFI_BAND_MODE_AUTO`。一次主动扫描同时覆盖该国家码允许的2.4GHz和5GHz信道，扫描结果按 `ssidHex` 数组顺序匹配；命中后根据AP实际主信道记录频段，并将候选原始字节写入ESP-IDF STA配置。原连接、重试、DHCP、30秒最终通知和一次断电恢复逻辑保持不变。扫描时间包含在原绝对30秒内，不另行延长。未命中继续由原 manager 退避重试，最终仍由30秒边界决定 `1307`。
+
+畸形 UTF-8、控制字符、超长、候选数量/顺序/十六进制错误、UTF-8候选与 `ssid` 不一致或不满足密码长度的请求均在写 NVS 前拒绝且不截断。原始 NUL 和有效 JSON `\u0000` 转义仍按非法 JSON 拒绝。USB和出厂产测是独立入口，继续使用各自原协议；它们保存成功后清除手机协议候选配置，避免旧候选覆盖新配置。
 
 保存和任务提交成功后先返回：
 
@@ -2471,7 +2490,9 @@ wifi_standby
 
 后台 READY 且 HTTP ready 后再返回 `wifi_info_result`，字段包括 `stage=<IP>`、`WiFi=<当前SSID>`、`version=<ESP版本>:<CH583版本>`、`date` 和 `running`。连接失败通过 `wifi_result` 返回 `1307/1308/1309`。
 
-中文 SSID 在 `wifi_info_result.WiFi` 中仍以 UTF-8 返回；该结果由 JSON 序列化器生成，因此 SSID 中合法的双引号和反斜杠会被正确转义。USB `func=wifi` 使用相同的凭据规则和返回码。NVS 保存原始 UTF-8 字节，不做字符集转换。
+中文 SSID 在 `wifi_info_result.WiFi` 中始终返回请求里的 UTF-8 `ssid` 显示值，与实际命中的 UTF-8/GBK候选无关；JSON 序列化器会正确转义双引号和反斜杠。通过CH583返回时，UART `WIFI_DATA` 传输层进一步把非ASCII字符改写为等价的JSON Unicode转义，例如 `我也来` 在线上变为 `\u6211\u4E5F\u6765`，避免高位原始字节参与CH583 CRC；手机解析后的字段值仍为 `我也来`。
+
+BLE/CH583 普通配网只在 SSID UTF-8 校验失败时增加一条诊断警告，格式为 `WiFi invalid SSID bytes len=<n> hex=<bytes>`。该日志最多输出32个SSID字节，不包含密码，也不改变协议返回。
 
 普通 `wifi` 新凭据的 `1307` 是整次配网的最终超时，不是单轮连接失败。绝对30秒从有效JSON完成解析、准备保存新凭据时开始计算，NVS保存和底层同步等待已经消耗的时间都计入其中。底层因 `NO_AP_FOUND` 提前返回1307时，BLE/CH583通知层不改变manager连接或退避，只继续读取状态；30秒内READY改发 `wifi_info_result`，明确认证失败可提前返回1308，只有边界复查后仍未READY才发送一次 `wifi_result/result=1307`。30秒结果尚未处理期间，一次断电恢复不得抢先请求CH583关机。底层同步请求和通用连接guard仍保持45秒，普通新配网worker会在30秒最终结果处理后主动清除自己的guard。
 

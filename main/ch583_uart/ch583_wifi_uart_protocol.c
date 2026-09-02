@@ -198,6 +198,121 @@ uint16_t ch583_wifi_uart_crc16(const void *data, size_t len)
     return crc;
 }
 
+/* Keep WIFI_DATA JSON semantically unchanged while making its CRC input ASCII. */
+static bool ch583_wifi_decode_utf8_codepoint(const uint8_t *input,
+                                              size_t remaining,
+                                              uint32_t *codepoint,
+                                              size_t *consumed)
+{
+    if (input == NULL || codepoint == NULL || consumed == NULL || remaining == 0) {
+        return false;
+    }
+
+    uint8_t first = input[0];
+    if (first < 0x80U) {
+        *codepoint = first;
+        *consumed = 1;
+        return true;
+    }
+
+    size_t length = 0;
+    uint32_t value = 0;
+    uint32_t minimum = 0;
+    if ((first & 0xE0U) == 0xC0U) {
+        length = 2;
+        value = first & 0x1FU;
+        minimum = 0x80U;
+    } else if ((first & 0xF0U) == 0xE0U) {
+        length = 3;
+        value = first & 0x0FU;
+        minimum = 0x800U;
+    } else if ((first & 0xF8U) == 0xF0U) {
+        length = 4;
+        value = first & 0x07U;
+        minimum = 0x10000U;
+    } else {
+        return false;
+    }
+    if (remaining < length) {
+        return false;
+    }
+    for (size_t index = 1; index < length; index++) {
+        if ((input[index] & 0xC0U) != 0x80U) {
+            return false;
+        }
+        value = (value << 6) | (input[index] & 0x3FU);
+    }
+    if (value < minimum || value > 0x10FFFFU ||
+        (value >= 0xD800U && value <= 0xDFFFU)) {
+        return false;
+    }
+
+    *codepoint = value;
+    *consumed = length;
+    return true;
+}
+
+static int ch583_wifi_json_to_ascii_wire(const char *json,
+                                         char *output,
+                                         size_t output_size,
+                                         bool *escaped)
+{
+    if (json == NULL || output == NULL || output_size == 0 || escaped == NULL) {
+        return -1;
+    }
+
+    const uint8_t *input = (const uint8_t *)json;
+    size_t input_length = strlen(json);
+    size_t input_offset = 0;
+    size_t output_offset = 0;
+    *escaped = false;
+
+    while (input_offset < input_length) {
+        if (input[input_offset] < 0x80U) {
+            if (output_offset + 1 >= output_size) {
+                return -1;
+            }
+            output[output_offset++] = (char)input[input_offset++];
+            continue;
+        }
+
+        uint32_t codepoint = 0;
+        size_t consumed = 0;
+        if (!ch583_wifi_decode_utf8_codepoint(input + input_offset,
+                                               input_length - input_offset,
+                                               &codepoint,
+                                               &consumed)) {
+            return -2;
+        }
+
+        int written = 0;
+        if (codepoint <= 0xFFFFU) {
+            written = snprintf(output + output_offset,
+                               output_size - output_offset,
+                               "\\u%04X",
+                               (unsigned int)codepoint);
+        } else {
+            uint32_t scalar = codepoint - 0x10000U;
+            uint16_t high = (uint16_t)(0xD800U + (scalar >> 10));
+            uint16_t low = (uint16_t)(0xDC00U + (scalar & 0x3FFU));
+            written = snprintf(output + output_offset,
+                               output_size - output_offset,
+                               "\\u%04X\\u%04X",
+                               (unsigned int)high,
+                               (unsigned int)low);
+        }
+        if (written <= 0 || (size_t)written >= output_size - output_offset) {
+            return -1;
+        }
+        output_offset += (size_t)written;
+        input_offset += consumed;
+        *escaped = true;
+    }
+
+    output[output_offset] = '\0';
+    return (int)output_offset;
+}
+
 static void ch583_wifi_load_device_info_from_nvs(void)
 {
     char saved_mac[CH583_DEVICE_INFO_MAC_HEX_LEN + 1] = {0};
@@ -307,17 +422,19 @@ static int ch583_wifi_retry_pending_frame_locked(ch583_wifi_pending_tx_t *pendin
     }
 
     if (pending->bad_crc_retry_count >= CH583_WIFI_UART_BAD_CRC_RETRY_MAX) {
-        UserDebugOutput_Printf("CH583_PROTO retry stop seq=%u count=%u\r\n",
-               (unsigned int)pending->seq,
-               (unsigned int)pending->bad_crc_retry_count);
+        ESP_LOGE(TAG,
+                 "CH583_PROTO BAD_CRC retry stopped seq=%u count=%u",
+                 (unsigned int)pending->seq,
+                 (unsigned int)pending->bad_crc_retry_count);
         pending->valid = false;
         return -1;
     }
 
     pending->bad_crc_retry_count++;
-    UserDebugOutput_Printf("CH583_PROTO retry BAD_CRC seq=%u count=%u\r\n",
-           (unsigned int)pending->seq,
-           (unsigned int)pending->bad_crc_retry_count);
+    ESP_LOGE(TAG,
+             "CH583_PROTO retry BAD_CRC seq=%u count=%u",
+             (unsigned int)pending->seq,
+             (unsigned int)pending->bad_crc_retry_count);
     return ch583_wifi_write_frame_text(pending->frame, pending->frame_len);
 }
 
@@ -371,8 +488,17 @@ static int ch583_wifi_send_frame(const char *cmd, const char *arg, uint8_t need_
     }
 
     if (need_printf == 1) {
-        CH583_WIFI_DIRECTION_PRINTF("WiFi -> CH583: seq=%u cmd=%s arg=%s\r\n",
-                                    (unsigned int)current_seq, cmd, arg ? arg : "");
+        if (strcmp(cmd, "ERR") == 0) {
+            ESP_LOGE(TAG,
+                     "WiFi -> CH583: seq=%u cmd=ERR arg=%s",
+                     (unsigned int)current_seq,
+                     arg ? arg : "");
+        } else {
+            CH583_WIFI_DIRECTION_PRINTF("WiFi -> CH583: seq=%u cmd=%s arg=%s\r\n",
+                                        (unsigned int)current_seq,
+                                        cmd,
+                                        arg ? arg : "");
+        }
     }
 
     ret = ch583_wifi_write_frame_text(frame_text, (size_t)frame_len);
@@ -460,7 +586,7 @@ static int ch583_wifi_send_err(uint16_t received_seq, const char *reason)
     char arg[32];
 
     snprintf(arg, sizeof(arg), "%u,%s", (unsigned int)received_seq, reason ? reason : "BAD_FORMAT");
-    return ch583_wifi_send_frame("ERR", arg,1);
+    return ch583_wifi_send_frame("ERR", arg, 1);
 }
 
 static uint16_t ch583_wifi_find_seq_for_error(const char *body)
@@ -845,10 +971,11 @@ static bool ch583_wifi_parse_frame(char *body, ch583_wifi_frame_t *frame, uint16
     crc_calc = ch583_wifi_uart_crc16(body, crc_input_len);
     *crc_received = (uint16_t)crc_value;
     if (crc_calc != *crc_received) {
-        CH583_WIFI_DEBUG_PRINTF("CH583_PROTO bad crc calc=%04X recv=%04X body_len=%u\r\n",
-               crc_calc,
-               *crc_received,
-               (unsigned int)crc_input_len);
+        ESP_LOGE(TAG,
+                 "CH583_PROTO BAD_CRC calc=%04X recv=%04X body_len=%u",
+                 crc_calc,
+                 *crc_received,
+                 (unsigned int)crc_input_len);
         if (error_reason != NULL) {
             *error_reason = "BAD_CRC";
         }
@@ -1325,7 +1452,12 @@ static void ch583_wifi_handle_frame_body(const char *body, ch583_wifi_ble_data_c
 
     // PING/PONG runs continuously. Suppress its routine direction/debug output,
     // while keeping parsing, validation, PONG replies, and error logs unchanged.
-    if (strcmp(frame.cmd, "PING") != 0) {
+    if (strcmp(frame.cmd, "ERR") == 0) {
+        ESP_LOGE(TAG,
+                 "CH583 -> WiFi: seq=%u cmd=ERR arg=%s",
+                 (unsigned int)frame.seq,
+                 frame.arg);
+    } else if (strcmp(frame.cmd, "PING") != 0) {
         CH583_WIFI_DIRECTION_PRINTF("CH583 -> WiFi: seq=%u cmd=%s arg=%s\r\n",
                (unsigned int)frame.seq, frame.cmd, frame.arg);
         CH583_WIFI_DEBUG_PRINTF("CH583_PROTO rx seq=%u cmd=%s len=%u part=%u total=%u crc=%04X arg=%s\r\n",
@@ -1453,24 +1585,41 @@ void ch583_wifi_uart_process_bytes(const uint8_t *data, size_t len, ch583_wifi_b
 int ch583_wifi_uart_send_wifi_data(const char *message)
 {
     size_t len = 0;
+    char ascii_message[CH583_WIFI_MAX_WIFI_DATA_LEN + 1];
+    bool escaped = false;
 
     if (message == NULL) {
         return -1;
     }
 
-    len = strlen(message);
+    int wire_length = ch583_wifi_json_to_ascii_wire(message,
+                                                     ascii_message,
+                                                     sizeof(ascii_message),
+                                                     &escaped);
+    if (wire_length < 0) {
+        UserDebugOutput_Printf("CH583_PROTO WIFI_DATA JSON ASCII encode failed reason=%s\r\n",
+                               wire_length == -2 ? "invalid_utf8" : "too_long");
+        return -1;
+    }
+    len = (size_t)wire_length;
     if (len > CH583_WIFI_MAX_WIFI_DATA_LEN) {
         UserDebugOutput_Printf("CH583_PROTO WIFI_DATA too long len=%u max=%u\r\n",
                (unsigned int)len,
                (unsigned int)CH583_WIFI_MAX_WIFI_DATA_LEN);
         return -1;
     }
+    if (escaped) {
+        ESP_LOGI(TAG,
+                 "WIFI_DATA Unicode escaped for CH583 CRC raw_len=%u wire_len=%u",
+                 (unsigned int)strlen(message),
+                 (unsigned int)len);
+    }
     bool activity_active = len >= USER_LED_UART_LARGE_DATA_THRESHOLD;
     if (activity_active) {
         UserLedStatus_ActivityBegin(USER_LED_ACTIVITY_UART_TX);
     }
     // Send WiFi-to-frontend data as one WIFI_DATA frame.
-    int ret = ch583_wifi_send_frame("WIFI_DATA", message,1);
+    int ret = ch583_wifi_send_frame("WIFI_DATA", ascii_message,1);
     if (activity_active) {
         UserLedStatus_ActivityEnd(USER_LED_ACTIVITY_UART_TX);
     }
@@ -1571,6 +1720,13 @@ int ch583_wifi_uart_send_wifi_ver(uint16_t wifi_ver)
 
     snprintf(arg, sizeof(arg), "%u", (unsigned int)wifi_ver);
     return ch583_wifi_send_frame("WIFI_VER", arg, 1);
+}
+
+int ch583_wifi_uart_send_current_wifi_ver(void)
+{
+    // Keep app-version parsing inside the protocol module so every caller uses
+    // exactly the same WIFI_VER decimal encoding.
+    return ch583_wifi_uart_send_wifi_ver(ch583_wifi_get_current_wifi_ver());
 }
 
 int ch583_wifi_uart_send_wake_timer_on(uint32_t seconds)
