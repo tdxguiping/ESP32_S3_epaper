@@ -1,13 +1,11 @@
 /********************************** (C) COPYRIGHT *******************************
- * File Name          : CH58x_SPI.h
+ * File Name          : CH57x_SPI.h
  * Author             : WCH
  * Version            : V1.2
  * Date               : 2021/11/17
- * Description        : head file(ch585/ch584)
- *********************************************************************************
+ * Description
  * Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
- * Attention: This software (modified or not) and binary are used for 
- * microcontroller manufactured by Nanjing Qinheng Microelectronics.
+ * SPDX-License-Identifier: Apache-2.0
  *******************************************************************************/
 
 #ifndef __CH58x_SPI_H__
@@ -112,54 +110,15 @@ void SPI0_MasterDMATrans(uint8_t *pbuf, uint16_t len);
  */
 void SPI0_MasterDMARecv(uint8_t *pbuf, uint16_t len);
 
-/**
- * @brief   主机模式默认初始化：模式0+3线全双工+8MHz
- */
-void SPI1_MasterDefInit(void);
+void SPI1_MasterDefInit(void);             /* 主机模式默认初始化：模式0+3线全双工+8MHz */
+void SPI1_CLKCfg(UINT8 c);                 /* SPI1 基准时钟配置，= d*Tsys */
+void SPI1_DataMode(ModeBitOrderTypeDef m); /* 设置数据流模式 */
 
-/**
- * @brief   SPI1 基准时钟配置，= d*Tsys
- *
- * @param   c       - 时钟分频系数
- */
-void SPI1_CLKCfg(uint8_t c);
+void  SPI1_MasterSendByte(UINT8 d); /* 发送单字节 (buffer) */
+UINT8 SPI1_MasterRecvByte(void);    /* 接收单字节 (buffer) */
 
-/**
- * @brief   设置数据流模式
- *
- * @param   m       - 数据流模式 refer to ModeBitOrderTypeDef
- */
-void SPI1_DataMode(ModeBitOrderTypeDef m);
-
-/**
- * @brief   发送单字节 (buffer)
- *
- * @param   d       - 发送字节
- */
-void  SPI1_MasterSendByte(uint8_t d);
-
-/**
- * @brief   接收单字节 (buffer)
- *
- * @param   none
- */
-uint8_t SPI1_MasterRecvByte(void);
-
-/**
- * @brief   使用FIFO连续发送多字节
- *
- * @param   pbuf    - 待发送的数据内容首地址
- * @param   len     - 请求发送的数据长度，最大4095
- */
-void SPI1_MasterTrans(uint8_t *pbuf, uint16_t len);
-
-/**
- * @brief   使用FIFO连续接收多字节
- *
- * @param   pbuf    - 待接收的数据首地址
- * @param   len     - 待接收的数据长度，最大4095
- */
-void SPI1_MasterRecv(uint8_t *pbuf, uint16_t len);
+void SPI1_MasterTrans(UINT8 *pbuf, UINT16 len); /* 使用FIFO连续发送多字节 */
+void SPI1_MasterRecv(UINT8 *pbuf, UINT16 len);  /* 使用FIFO连续接收多字节 */
 
 /**
  * @brief   设备模式默认初始化，建议设置MISO的GPIO对应为输入模式
@@ -240,11 +199,6 @@ void SPI0_SlaveDMARecv(uint8_t *pbuf, uint16_t len);
  * @param   f       - refer to SPI0 interrupt bit define
  */
 #define SPI0_ClearITFlag(f)    (R8_SPI0_INT_FLAG = f)
-
-/**
- * @brief   关闭SPI0
- */
-#define SPI0_Disable()         (R8_SPI0_CTRL_MOD &= ~(RB_SPI_MOSI_OE | RB_SPI_SCK_OE | RB_SPI_MISO_OE))
 
 #ifdef __cplusplus
 }

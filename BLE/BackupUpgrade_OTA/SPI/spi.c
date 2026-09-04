@@ -43,27 +43,15 @@ void delay_xms(unsigned int xms)
 // 单字节发送
 void Spi_Write_1byte(UINT8 i)
 {
-    R8_SPI0_CTRL_MOD &= ~RB_SPI_FIFO_DIR;
-    R8_SPI0_BUFFER = i;
-
-    uint32_t timeout = 0;
-    while(!(R8_SPI0_INT_FLAG & RB_SPI_FREE))
-    {
-        timeout++;
-        if(timeout > 10000)
-        {
-            break;
-        }
-    }
+  	SPI0_MasterSendByte(i);
 }
 //├────────────────────────────────────────────────────────────────────────
 //├────────────────────────────────────────────────────────────────────────
 UINT8 Spi_Read_1byte(void)
 {
-    R8_SPI0_CTRL_MOD &= ~RB_SPI_FIFO_DIR;
-    R8_SPI0_BUFFER = 0xFF;
-    while(!(R8_SPI0_INT_FLAG & RB_SPI_FREE));
-    return R8_SPI0_BUFFER;
+    UINT8 i;
+    i = SPI0_MasterRecvByte();
+    return i;
 }
 
 //├────────────────────────────────────────────────────────────────────────
@@ -88,16 +76,6 @@ UINT8 Spi_Read_nbyte(UINT8* _Spi_Buf,UINT16 Len)
 void Set_Spi0_Input_all_input(void)
 {
     GPIOA_ModeCfg(GPIO_Pin_13 | GPIO_Pin_15, GPIO_ModeIN_Floating); 
-}
-
-void SPI0_MasterDefInit_output(void)
-{
-    R8_SPI0_CLOCK_DIV = 16;
-    R8_SPI0_CTRL_MOD = RB_SPI_ALL_CLEAR;
-    R8_SPI0_CTRL_MOD |= RB_SPI_2WIRE_MOD;
-    R8_SPI0_CTRL_MOD = RB_SPI_SCK_OE | RB_SPI_MISO_OE;
-    R8_SPI0_CTRL_CFG |= RB_SPI_AUTO_IF;
-    R8_SPI0_CTRL_CFG &= ~RB_SPI_DMA_ENABLE;
 }
 
 //Mode0_LowBitINFront = 0, // 模式0，低位在前

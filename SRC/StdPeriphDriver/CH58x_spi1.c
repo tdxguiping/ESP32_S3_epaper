@@ -3,7 +3,7 @@
  * Author             : WCH
  * Version            : V1.0
  * Date               : 2018/12/15
- * Description        : source file(ch585/ch584)
+ * Description
  *********************************************************************************
  * Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
  * Attention: This software (modified or not) and binary are used for 
@@ -23,10 +23,41 @@
  */
 void SPI1_MasterDefInit(void)
 {
-    R8_SPI1_CLOCK_DIV = 4; // 主频时钟4分频
+    R8_SPI1_CLOCK_DIV = 4;//8; //16; //4 主频时钟4分频
     R8_SPI1_CTRL_MOD = RB_SPI_ALL_CLEAR;
-    R8_SPI1_CTRL_MOD = RB_SPI_MOSI_OE | RB_SPI_SCK_OE;
+    R8_SPI1_CTRL_MOD |= RB_SPI_2WIRE_MOD;  // 2 line mode    
+    R8_SPI1_CTRL_MOD = RB_SPI_SCK_OE | RB_SPI_MISO_OE;//RB_SPI1_SDO_OE | RB_SPI_SCK_OE;
     R8_SPI1_CTRL_CFG |= RB_SPI_AUTO_IF; // 访问BUFFER/FIFO自动清除IF_BYTE_END标志
+    R8_SPI1_CTRL_CFG &= ~RB_SPI_DMA_ENABLE; // 不启动DMA方式    
+
+}
+
+/*********************************************************************
+ * @fn      SPI1_MasterDefInit_Input
+ *
+ * @brief   主机模式默认初始化：模式0+2线全双工+8MHz
+ *
+ * @param   none
+ *
+ * @return  none
+ */
+
+void SPI1_MasterDefInit_output(void)
+{
+    //(6)、2 线模式下 SCK 不变， RB_SPI_MOSI_OE =0，不用 MOSI，由 MISO 半双工实现输入（同 3 线模式，
+    // RB_SPI_MISO_OE=0 且引脚置为输入）和输出（ RB_SPI_MISO_OE =1     且引脚置为输出），手工切换方向；
+
+    R8_SPI1_CLOCK_DIV = 16; //128 ; // 主频时钟4分频        0xFF  40  (16 140ns , 这是最快的速度， 不可以再快。 否则读取数会出错)
+    R8_SPI1_CTRL_MOD = RB_SPI_ALL_CLEAR;
+    //R8_SPI1_CTRL_MOD |= RB_SPI_2WIRE_MOD;  // 2 line mode
+    R8_SPI1_CTRL_MOD = RB_SPI_SCK_OE | RB_SPI_MISO_OE;
+    R8_SPI1_CTRL_CFG |= RB_SPI_AUTO_IF;     // 访问BUFFER/FIFO自动清除IF_BYTE_END标志
+    //R8_SPI1_CTRL_CFG &= ~RB_SPI_DMA_ENABLE; // 不启动DMA方式
+
+	/*R8_SPI1_CLOCK_DIV = 16; // 主频时钟4分频
+    R8_SPI1_CTRL_MOD = RB_SPI_ALL_CLEAR;
+    R8_SPI1_CTRL_MOD = RB_SPI1_SDO_OE | RB_SPI_SCK_OE;
+    R8_SPI1_CTRL_CFG |= RB_SPI_AUTO_IF; // 访问BUFFER/FIFO自动清除IF_BYTE_END标志*/
 }
 
 /*********************************************************************
@@ -97,8 +128,7 @@ void SPI1_DataMode(ModeBitOrderTypeDef m)
 void SPI1_MasterSendByte(uint8_t d)
 {
     R8_SPI1_CTRL_MOD &= ~RB_SPI_FIFO_DIR;
-    R16_SPI1_TOTAL_CNT = 1;         // 设置要发送的数据长度
-    R8_SPI1_FIFO = d;
+    R8_SPI1_BUFFER = d;
     while(!(R8_SPI1_INT_FLAG & RB_SPI_FREE));
 }
 
@@ -113,7 +143,7 @@ void SPI1_MasterSendByte(uint8_t d)
  */
 uint8_t SPI1_MasterRecvByte(void)
 {
-    R8_SPI1_CTRL_MOD |= RB_SPI_FIFO_DIR; // 设置数据方向为输入
+    R8_SPI1_CTRL_MOD &= ~RB_SPI_FIFO_DIR;
     R8_SPI1_BUFFER = 0xFF; // 启动传输
     while(!(R8_SPI1_INT_FLAG & RB_SPI_FREE));
     return (R8_SPI1_BUFFER);
@@ -177,3 +207,25 @@ void SPI1_MasterRecv(uint8_t *pbuf, uint16_t len)
         }
     }
 }
+
+// 只写 0xFF 或 0x00
+
+void SPI1_MasterTrans_0xFF(uint8_t uchr,uint16_t len)
+{
+    uint16_t sendlen;
+	
+    sendlen = len;
+    R8_SPI1_CTRL_MOD &= ~RB_SPI_FIFO_DIR; // 设置数据方向为输出
+    R16_SPI1_TOTAL_CNT = sendlen;         // 设置要发送的数据长度
+    R8_SPI1_INT_FLAG = RB_SPI_IF_CNT_END;
+    while(sendlen)
+    {
+        if(R8_SPI1_FIFO_COUNT < SPI_FIFO_SIZE)
+        {
+            R8_SPI1_FIFO = uchr;
+            sendlen--;
+        }
+    }
+    while(R8_SPI1_FIFO_COUNT != 0); // 等待FIFO中的数据全部发送完成
+}
+
