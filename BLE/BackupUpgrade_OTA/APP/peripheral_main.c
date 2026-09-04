@@ -206,41 +206,92 @@ void Main_Circulation()
 
 void  low_power_IIO_New(void)
 {
-#ifndef ENABLE_INK_SCREEN_UC8279_800X480_COLOR_3
 	ControlEPDPower(Is_Off);
-#endif
 	mDelaymS(500);
 
 	GPIOA_ModeCfg(GPIO_Pin_All, GPIO_ModeIN_Floating);
 	GPIOB_ModeCfg(GPIO_Pin_All, GPIO_ModeIN_Floating);
-	
-    GPIOB_SetBits(GPIO_Pin_5 |GPIO_Pin_6 |GPIO_Pin_7);
-    GPIOB_ModeCfg(GPIO_Pin_5 |GPIO_Pin_6 |GPIO_Pin_7, GPIO_ModeOut_PP_5mA);
-    
-    
-    // CS �?浮空差异小，低电平更确定，且不能拉高
-    GPIOB_ResetBits(GPIO_Pin_12 | GPIO_Pin_14);
-    GPIOB_ModeCfg(GPIO_Pin_12 | GPIO_Pin_14, GPIO_ModeOut_PP_5mA);
+
+#ifdef ENABLE_SCREEN_COLOR_6
+    /*
+     * 6-color hardware:
+     * CLK-1/CLK-2: PA13, DATA-1/DATA-2: PA15, CS-1: PA12, CD-1: PA5,
+     * BUSY-1: PA4, RST-1: PA3, CS-2: PB14, CD-2: PB15, BUSY-2: PA9, RST-2: PA11,
+     * LED1/LED2: PB5/PB6, POWER-1/POWER-2: PA6, ADC: PA7, CHARGE: PB13,
+     * FLASH-DATA/FLASH-CLK/FLASH-CS: PA2/PA0/PB12.
+     */
+
+    // LED1/LED2 off. PB7 keeps the original 6-color low-power state.
+    GPIOB_SetBits(GPIO_Pin_5 | GPIO_Pin_6 | GPIO_Pin_7);
+    GPIOB_ModeCfg(GPIO_Pin_5 | GPIO_Pin_6 | GPIO_Pin_7, GPIO_ModeOut_PP_5mA);
+
+    // CS-1, CS-2 and FLASH-CS low.
     GPIOA_ResetBits(GPIO_Pin_12);
     GPIOA_ModeCfg(GPIO_Pin_12, GPIO_ModeOut_PP_5mA);
-    
-    // BUSY 不能上拉，PD �?floating 都行，建�?PD
+    GPIOB_ResetBits(GPIO_Pin_12 | GPIO_Pin_14);
+    GPIOB_ModeCfg(GPIO_Pin_12 | GPIO_Pin_14, GPIO_ModeOut_PP_5mA);
+
+    // BUSY-1/BUSY-2 pull-down inputs.
     GPIOA_ModeCfg(GPIO_Pin_4 | GPIO_Pin_9, GPIO_ModeIN_PD);
-    
-    // PB13 差异小，建议 PD
+
+    // CHARGE detect pull-down input.
     GPIOB_ModeCfg(GPIO_Pin_13, GPIO_ModeIN_PD);
-    
-    // 建议低电平确定�?
+
+    // FLASH-CLK, RST-1, CD-1, RST-2 and CLK low.
     GPIOA_ResetBits(GPIO_Pin_0 | GPIO_Pin_3 | GPIO_Pin_5 | GPIO_Pin_11 | GPIO_Pin_13);
     GPIOA_ModeCfg(GPIO_Pin_0 | GPIO_Pin_3 | GPIO_Pin_5 | GPIO_Pin_11 | GPIO_Pin_13, GPIO_ModeOut_PP_5mA);
-    
-    // 这些输出低略高，保持浮空
+
+    // FLASH-DATA, DATA and CD-2 stay floating.
     GPIOA_ModeCfg(GPIO_Pin_2 | GPIO_Pin_15, GPIO_ModeIN_Floating);
     GPIOB_ModeCfg(GPIO_Pin_15, GPIO_ModeIN_Floating);
-    
-    // ADC 保持上拉输入
-    
+
+    // ADC pull-up input.
     GPIOA_ModeCfg(GPIO_Pin_7, GPIO_ModeIN_PU);
+
+#ifdef ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6
+    // M009FT extra slave CS pins.
+    GPIOA_ResetBits(GPIO_Pin_1);
+    GPIOA_ModeCfg(GPIO_Pin_1, GPIO_ModeOut_PP_5mA);
+    GPIOB_ResetBits(GPIO_Pin_9);
+    GPIOB_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA);
+#endif
+#else
+    /*
+     * Non-6-color hardware:
+     * CLK-1/CLK-2: PA13, DATA-1/DATA-2: PA15, CS-1: PA12, CD-1: PA5,
+     * BUSY-1: PA14, RST-1: PA4, CS-2: PB14, CD-2: PB15, BUSY-2: PB16, RST-2: PA9,
+     * LED1/LED2: PB5/PB6, POWER-1/POWER-2: PA6, ADC: PA7, CHARGE: PB13,
+     * FLASH-DATA/FLASH-CLK/FLASH-CS: PA2/PA0/PB12.
+     */
+
+    // LED1/LED2 off. PB7 keeps the original low-power state.
+    GPIOB_SetBits(GPIO_Pin_5 | GPIO_Pin_6 | GPIO_Pin_7);
+    GPIOB_ModeCfg(GPIO_Pin_5 | GPIO_Pin_6 | GPIO_Pin_7, GPIO_ModeOut_PP_5mA);
+
+    // CS-1, CS-2 and FLASH-CS low.
+    GPIOA_ResetBits(GPIO_Pin_12);
+    GPIOA_ModeCfg(GPIO_Pin_12, GPIO_ModeOut_PP_5mA);
+    GPIOB_ResetBits(GPIO_Pin_12 | GPIO_Pin_14);
+    GPIOB_ModeCfg(GPIO_Pin_12 | GPIO_Pin_14, GPIO_ModeOut_PP_5mA);
+
+    // BUSY-1/BUSY-2 pull-down inputs.
+    GPIOA_ModeCfg(GPIO_Pin_14, GPIO_ModeIN_PD);
+    GPIOB_ModeCfg(GPIO_Pin_16, GPIO_ModeIN_PD);
+
+    // CHARGE detect pull-down input.
+    GPIOB_ModeCfg(GPIO_Pin_13, GPIO_ModeIN_PD);
+
+    // FLASH-CLK, RST-1, CD-1, RST-2 and CLK low.
+    GPIOA_ResetBits(GPIO_Pin_0 | GPIO_Pin_4 | GPIO_Pin_5 | GPIO_Pin_9 | GPIO_Pin_13);
+    GPIOA_ModeCfg(GPIO_Pin_0 | GPIO_Pin_4 | GPIO_Pin_5 | GPIO_Pin_9 | GPIO_Pin_13, GPIO_ModeOut_PP_5mA);
+
+    // FLASH-DATA, DATA and CD-2 stay floating.
+    GPIOA_ModeCfg(GPIO_Pin_2 | GPIO_Pin_15, GPIO_ModeIN_Floating);
+    GPIOB_ModeCfg(GPIO_Pin_15, GPIO_ModeIN_Floating);
+
+    // ADC pull-up input.
+    GPIOA_ModeCfg(GPIO_Pin_7, GPIO_ModeIN_PU);
+#endif
 
 }
 

@@ -172,11 +172,13 @@ void initPicSave(int type, int room, int group){
 
 void cleanPresaveScreen(int type, int room, int group){
 	unsigned char szGroupInfo[GROUPINFO_Len];
+	unsigned char isCleaned = Is_No;
 
 	if(type == SCREEN_CLEAN_SCRREN_ALL)
 	{
 		global_DEVICE_STATUS.fInitDriver = Is_Yes;
 		cleanDisplayColor(SCREEN_COLOR_WHITE, Is_Yes);
+		isCleaned = Is_Yes;
 	}else if(type == SCREEN_CLEAN_SCRREN_ROOM || type == SCREEN_CLEAN_ROOM)
 	{
 		memset(szGroupInfo, 0, GROUPINFO_Len);
@@ -186,6 +188,8 @@ void cleanPresaveScreen(int type, int room, int group){
 				PRINT("clean room i=%d\r\n",i);	
 				global_DEVICE_STATUS.fInitDriver = Is_Yes;
 				cleanDisplayColor(SCREEN_COLOR_WHITE, Is_Yes);
+				isCleaned = Is_Yes;
+				break;
 			}
 		}
 	}else if(type == SCREEN_CLEAN_ROOM_AND_GROUP)
@@ -198,10 +202,15 @@ void cleanPresaveScreen(int type, int room, int group){
 				PRINT("clean room and group MATCHED i=%d\r\n",i);	
 				global_DEVICE_STATUS.fInitDriver = Is_Yes;
 				cleanDisplayColor(SCREEN_COLOR_WHITE, Is_Yes);
+				isCleaned = Is_Yes;
+				break;
 			}
 		}
 	}
 	// 关键：只有这里能设置全局清屏标志为已清屏状态
+	if(isCleaned != Is_Yes){
+		return;
+	}
 	global_screen_cleared_flag = SCREEN_ALREADY_CLEARED;
 	saveLastRefreshInfo(//只保存是否清屏的标志位
 						SAVE_KEEP_U8,  // type keep
