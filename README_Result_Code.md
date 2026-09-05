@@ -152,7 +152,7 @@ DAILY、SLIDESHOW和LOCAL_IMAGE显示完成后的owner one-shot、WAIT_DECISION�
 
 合法KEY_EVENT不依赖DEVICE_INFO状态，ESP32独立重启后提前到达也正常ACK并执行业务，不使用UART帧级 `ERR,DEVICE_INFO_REQUIRED`。启动依赖未就绪属于ESP32内部FIFO或单请求RAM状态调度，不新增正式JSON result code。BLE_DATA队列无法接收时使用UART帧级`ERR,BUSY`，内存申请失败时使用UART帧级`ERR,NO_MEM`；这些都不是BLE/WiFi JSON正式返回码。完整通信规则见 [README_Protocol.md](README_Protocol.md#sec-13-local-image)。
 
-GPIO28、`DEVICE_INFO(KEY_PB1)` 和 `KEY_EVENT(PB1,PRESS)` 共用同一个Factory Reset执行逻辑，不返回JSON，也不新增result code。文件和NVS清理成功后保存欢迎图待显示标志、显示白屏并上报未配网 `WIFI_PROVISION 40`；ESP32继续运行，不发送Factory Reset专用 `WAKE_TIMER`、`POWER_OFF`，也不自动重启。客人以后正常开机时显示固件内置欢迎图，成功后删除标志。实际文件删除、必要NVS操作、标志保存、白屏或启动欢迎图显示失败只记录本地错误，不映射新的正式result code。
+GPIO28、`DEVICE_INFO(KEY_PB1)` 和 `KEY_EVENT(PB1,PRESS)` 共用同一个Factory Reset执行逻辑，不返回JSON，也不新增result code。文件和NVS清理成功后保存欢迎图待显示标志、显示白屏并上报未配网 `WIFI_PROVISION 40`；ESP32继续运行，不发送Factory Reset专用 `WAKE_TIMER`、`POWER_OFF`，也不自动重启。客人以后正常开机时从SD卡 `/data/welcome` 选择编号最大的合法welcome文件；SD读取或显示失败时改为同步显示彩条，welcome或彩条成功后删除标志。实际文件删除、必要NVS操作、标志保存、白屏、welcome和彩条显示失败只记录本地错误，不映射新的正式result code。
 
 [⬆ 返回目录](#toc)
 

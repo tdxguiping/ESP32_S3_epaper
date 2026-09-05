@@ -1,4 +1,5 @@
 #include "factory_reset.h"
+#include "factory_reset_welcome.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -35,13 +36,9 @@ static const char *TAG = "factory_reset";
 
 #define FACTORY_RESET_TASK_STACK_SIZE (5 * 1024)
 #define FACTORY_RESET_TASK_PRIORITY 3
-#define FACTORY_RESET_WELCOME_DISPLAY_SIZE 960000U
 #define FACTORY_RESET_WELCOME_PENDING_NVS_KEY "fr_welcome"
 #define FACTORY_RESET_WELCOME_PENDING_VALUE 1U
 #define WHITE 0x11
-
-extern const uint8_t factory_reset_welcome_start[] asm("_binary_welcome_bin_start");
-extern const uint8_t factory_reset_welcome_end[] asm("_binary_welcome_bin_end");
 
 typedef struct {
     char base_path[SERVER_NETWORK_STA_DATAUP_BASE_PATH_MAX];
@@ -88,6 +85,7 @@ static factory_reset_context_t s_factory_reset_ctx;
 static portMUX_TYPE s_factory_reset_request_mux = portMUX_INITIALIZER_UNLOCKED;
 static factory_reset_request_t s_factory_reset_request;
 static bool s_factory_reset_ready;
+static bool s_factory_reset_startup_welcome_busy;
 static uint32_t s_factory_reset_generation;
 static bool s_factory_reset_submit_failure_logged;
 
@@ -133,6 +131,10 @@ static bool factory_reset_remote_request_is_pending(void)
 
 bool FactoryReset_IsBusy(void)
 {
+    if (__atomic_load_n(&s_factory_reset_startup_welcome_busy,
+                        __ATOMIC_ACQUIRE)) {
+        return true;
+    }
     factory_reset_request_state_t state;
     taskENTER_CRITICAL(&s_factory_reset_request_mux);
     state = s_factory_reset_request.state;
@@ -402,23 +404,16 @@ static esp_err_t factory_reset_save_welcome_pending(void)
 }
 
 static esp_err_t factory_reset_display_welcome(
-    epd_display_reservation_t *reservation)
+    epd_display_reservation_t *reservation,
+    const uint8_t *welcome_data,
+    size_t welcome_size)
 {
-    const epd_type_config_t *epd_config = EpdType_GetCurrentConfig();
-    size_t welcome_size =
-        (size_t)(factory_reset_welcome_end - factory_reset_welcome_start);
-    if (epd_config == NULL ||
-        epd_config->display_size != FACTORY_RESET_WELCOME_DISPLAY_SIZE) {
-        ESP_LOGE(TAG,
-                 "factory reset welcome display size unsupported epd_type=%u actual=%u expected=%u",
-                 epd_config != NULL ? (unsigned int)epd_config->type : 0U,
-                 epd_config != NULL ? (unsigned int)epd_config->display_size : 0U,
-                 (unsigned int)FACTORY_RESET_WELCOME_DISPLAY_SIZE);
-        return ESP_ERR_INVALID_SIZE;
+    if (reservation == NULL || welcome_data == NULL || welcome_size == 0) {
+        return ESP_ERR_INVALID_ARG;
     }
     return ServerNetworkStaEpdDisplay_QueueReservedToScreenAndWait(
         reservation,
-        factory_reset_welcome_start,
+        welcome_data,
         welcome_size,
         1);
 }
@@ -582,14 +577,24 @@ static esp_err_t factory_reset_execute(const char *base_path,
                                                    result->white_display_ret;
 }
 
-esp_err_t FactoryReset_HandleStartupWelcome(void)
+esp_err_t FactoryReset_HandleStartupWelcome(const char *base_path,
+                                            bool sd_ready)
 {
+    if (base_path == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     uint8_t pending = 0;
     esp_err_t ret = app_nvs_read_u8(FACTORY_RESET_WELCOME_PENDING_NVS_KEY,
                                     &pending,
                                     0);
-    if (ret != ESP_OK || pending == 0) {
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "factory reset startup welcome flag read failed ret=%s",
+                 esp_err_to_name(ret));
         return ret;
+    }
+    if (pending == 0) {
+        return ESP_OK;
     }
     if (pending != FACTORY_RESET_WELCOME_PENDING_VALUE) {
         ESP_LOGE(TAG, "factory reset startup welcome flag invalid value=%u",
@@ -597,18 +602,56 @@ esp_err_t FactoryReset_HandleStartupWelcome(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    __atomic_store_n(&s_factory_reset_startup_welcome_busy,
+                     true,
+                     __ATOMIC_RELEASE);
     ESP_LOGW(TAG, "factory reset startup welcome begin");
     ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(true);
     UserLedStatus_FactoryResetBegin();
 
+    factory_reset_welcome_file_t welcome_file = {0};
     epd_display_reservation_t reservation = {0};
+    bool display_succeeded = false;
+
     ret = ServerNetworkStaEpdDisplay_TryReserveIdle(&reservation);
     if (ret == ESP_OK) {
-        ret = factory_reset_display_welcome(&reservation);
+        ret = sd_ready
+                  ? FactoryResetWelcome_Load(base_path, &welcome_file)
+                  : ESP_ERR_INVALID_STATE;
+    }
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "factory reset startup welcome loaded file=%s size=%u",
+                 welcome_file.file_name,
+                 (unsigned int)welcome_file.size);
+        ret = factory_reset_display_welcome(&reservation,
+                                            welcome_file.data,
+                                            welcome_file.size);
+        if (ret == ESP_OK) {
+            display_succeeded = true;
+            ESP_LOGI(TAG, "factory reset startup welcome displayed from SD");
+        }
     }
     ServerNetworkStaEpdDisplay_ReleaseReservation(&reservation);
+    FactoryResetWelcome_Release(&welcome_file);
 
-    if (ret == ESP_OK) {
+    if (!display_succeeded) {
+        // The reserved SD welcome path is fully released before the raw test job.
+        ESP_LOGW(TAG,
+                 "factory reset startup welcome unavailable, using color bars sd_ready=%d ret=%s",
+                 sd_ready ? 1 : 0,
+                 esp_err_to_name(ret));
+        ret = test_epd_display_and_wait();
+        if (ret == ESP_OK) {
+            display_succeeded = true;
+            ESP_LOGI(TAG, "factory reset startup welcome color bars displayed");
+        } else {
+            ESP_LOGE(TAG,
+                     "factory reset startup welcome color bars failed ret=%s",
+                     esp_err_to_name(ret));
+        }
+    }
+
+    if (display_succeeded) {
         ret = app_nvs_erase_key(FACTORY_RESET_WELCOME_PENDING_NVS_KEY);
         if (ret == ESP_OK) {
             ESP_LOGI(TAG,
@@ -618,15 +661,15 @@ esp_err_t FactoryReset_HandleStartupWelcome(void)
                      "factory reset startup welcome flag clear failed ret=%s",
                      esp_err_to_name(ret));
         }
-    } else {
-        ESP_LOGE(TAG, "factory reset startup welcome failed ret=%s",
-                 esp_err_to_name(ret));
     }
 
     (void)ServerNetworkStaWifiWorkTime_StartWifiConnectGuardIfInactive(
         WIFI_CONNECT_POWER_GUARD_MAX_MS);
     ServerNetworkStaWifiWorkTime_SetFactoryResetGuard(false);
     UserLedStatus_FactoryResetEnd();
+    __atomic_store_n(&s_factory_reset_startup_welcome_busy,
+                     false,
+                     __ATOMIC_RELEASE);
     return ret;
 }
 

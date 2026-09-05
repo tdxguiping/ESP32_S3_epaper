@@ -155,28 +155,13 @@ static esp_err_t current_resolution(char *resolution, size_t resolution_size)
            ESP_OK : ESP_ERR_INVALID_SIZE;
 }
 
-static esp_err_t download_required_files(
+static esp_err_t download_all_files(
     const char *base_path,
     const factory_welcome_manifest_t *remote,
-    bool force_all,
-    bool *changed,
     factory_welcome_run_context_t *context)
 {
-    if (changed == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    *changed = false;
     for (size_t i = 0; i < remote->file_count; ++i) {
         const factory_welcome_file_t *file = &remote->files[i];
-        bool matches = false;
-        esp_err_t ret = FactoryWelcomeStorage_FileHasSize(
-            base_path, file->file_name, file->compressed_size, &matches);
-        if (ret != ESP_OK) {
-            return ret;
-        }
-        if (!force_all && matches) {
-            continue;
-        }
         if (!run_can_continue(context)) {
             return ESP_ERR_INVALID_STATE;
         }
@@ -187,24 +172,28 @@ static esp_err_t download_required_files(
             return ESP_ERR_NO_MEM;
         }
         size_t received_size = 0U;
-        ret = http_get_with_retry(file->url,
-                                  data,
-                                  file->compressed_size,
-                                  file->compressed_size,
-                                  &received_size,
-                                  context);
-        if (ret == ESP_OK && received_size == file->compressed_size &&
-            run_can_continue(context)) {
-            ret = FactoryWelcomeStorage_WriteFileAtomic(base_path,
-                                                        file->file_name,
-                                                        data,
-                                                        received_size);
+        esp_err_t ret = http_get_with_retry(file->url,
+                                            data,
+                                            file->compressed_size,
+                                            file->compressed_size,
+                                            &received_size,
+                                            context);
+        if (ret == ESP_OK) {
+            if (received_size != file->compressed_size) {
+                ret = ESP_ERR_INVALID_SIZE;
+            } else if (!run_can_continue(context)) {
+                ret = ESP_ERR_INVALID_STATE;
+            } else {
+                ret = FactoryWelcomeStorage_WriteFileAtomic(base_path,
+                                                            file->file_name,
+                                                            data,
+                                                            received_size);
+            }
         }
         free(data);
         if (ret != ESP_OK) {
             return ret;
         }
-        *changed = true;
         ESP_LOGI(TAG, "file saved name=%s size=%u",
                  file->file_name, (unsigned int)file->compressed_size);
     }
@@ -380,37 +369,23 @@ esp_err_t FactoryWelcomeResource_Sync(const char *base_path,
 
     free(local);
     local = NULL;
-    bool force_all = !local_valid || remote->version > local_version;
-    bool files_changed = false;
-    ret = download_required_files(base_path,
-                                  remote,
-                                  force_all,
-                                  &files_changed,
-                                  &context);
+    ret = download_all_files(base_path, remote, &context);
     if (ret != ESP_OK) {
         goto cleanup_manifests;
     }
 
-    bool manifest_changed = !local_valid || remote->version != local_version ||
-                            files_changed;
-    if (manifest_changed) {
-        if (!run_can_continue(&context)) {
-            ret = ESP_ERR_INVALID_STATE;
-            goto cleanup_manifests;
-        }
-        ret = FactoryWelcomeStorage_WriteManifestAtomic(
-            base_path, remote_json, remote_size);
-        if (ret != ESP_OK) {
-            goto cleanup_manifests;
-        }
-        ESP_LOGI(TAG, "sync complete version=%lu files=%u",
-                 (unsigned long)remote->version,
-                 (unsigned int)remote->file_count);
-    } else {
-        ESP_LOGI(TAG, "sync unchanged version=%lu files=%u",
-                 (unsigned long)remote->version,
-                 (unsigned int)remote->file_count);
+    if (!run_can_continue(&context)) {
+        ret = ESP_ERR_INVALID_STATE;
+        goto cleanup_manifests;
     }
+    ret = FactoryWelcomeStorage_WriteManifestAtomic(
+        base_path, remote_json, remote_size);
+    if (ret != ESP_OK) {
+        goto cleanup_manifests;
+    }
+    ESP_LOGI(TAG, "sync complete version=%lu files=%u",
+             (unsigned long)remote->version,
+             (unsigned int)remote->file_count);
 
     strlcpy(display_file_name,
             remote->files[0].file_name,

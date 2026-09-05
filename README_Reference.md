@@ -2949,7 +2949,11 @@ Factory Reset原5KB任务继续按300ms检测GPIO28、累计5秒长按并维护P
 
 Factory Reset统一callback开始清理前仍通过统一EPD准入接口预约IDLE状态，并持有预约直到文件和NVS清理完成，避免PB2本地浏览在BUSY检查之后插入。成功后清除 `wifi` namespace 全部键以及 `nvs.net80211:sta.ssid/sta.pswd`，清除本地浏览状态，并把 `PhotoPainter:epd_mode` 强制写入并读回校验为默认值。随后写入并读回 `PhotoPainter:fr_welcome=1`，通过新增 `ServerNetworkStaEpdDisplay_QueueReservedSolidColorAndWait()`按 `WHITE=0x11`分配、填充并提交一份当前屏幕大小的PSRAM缓冲区；该接口沿用原预约、pending计数、完成信号和5分钟等待上限，不修改已测试的zlib接口。白屏完成后释放缓冲区、发送未配网状态并结束，不提交Factory Reset专用关机或重启请求。
 
-`main/CMakeLists.txt`继续把 `DOC/welcome.bin`作为Flash只读常量嵌入固件。`fr_welcome`在恢复出厂白屏后保持为1，不触发自动重启；客人以后正常开机时，在 `ServerNetworkStaEpdDisplay_Init()`、存储挂载和 `FactoryReset_Init()`完成之后、网络业务启动之前调用 `FactoryReset_HandleStartupWelcome()`，避免EPD传输干扰SD卡首次握手。存储未就绪时不调用且保留标志；值为1时通过原 `ServerNetworkStaEpdDisplay_QueueReservedToScreenAndWait()`解压并显示欢迎图，成功后删除标志，失败或删除失败时保留标志供下次冷启动重试。启动显示期间使用Factory Reset guard，退出前启动现有WiFi连接保护再无条件清guard。该流程不写工作时间NVS，也不改变普通、轮播、DAILY或LOCAL_IMAGE_BROWSING关机路径。
+Factory Reset清除WiFi凭据时，`ServerNetworkStaWifiRecovery_Clear()`把当前factory session同时标记为suppressed和finished，使已经运行的30秒observer在下一次200ms检查时退出；保存hard-recovery marker前还会复检suppressed状态。该清理继续取消已经预约的recovery断电并清除attempted marker，防止白屏完成、EPD恢复IDLE后旧observer重新申请1秒 `WAKE_TIMER` 和 `POWER_OFF`。普通新凭据、厂测凭据和下一次冷启动的WiFi recovery规则不变。
+
+固件不再通过 `main/CMakeLists.txt`嵌入 `DOC/welcome.bin`，也不保留Flash/SD选择宏。`factory_reset_welcome.c`独立负责在持有 `TdxSharedSpi`锁时扫描和读取 `/data/welcome`：文件名必须包含 `_welcome_`，其后必须是十进制编号并以 `.bin`结束；多个候选按编号数值选择最大者，相同编号再按完整文件名稳定选择。文件必须是普通文件，大小为1字节至2MB，缓冲区使用公共内存策略，大文件放入PSRAM。完整读入后先关闭文件并释放SPI锁，之后才允许同步等待EPD显示。
+
+`fr_welcome`在恢复出厂白屏后保持为1，不触发自动重启。客人以后正常开机时，在 `ServerNetworkStaEpdDisplay_Init()`和存储挂载尝试之后、网络图片业务启动之前，无论SD挂载结果如何都调用 `FactoryReset_HandleStartupWelcome(base_path, sd_ready)`；只有实际存储类型为SD卡时 `sd_ready`才为true，SPIFFS不作为welcome来源。标志值为1时先设置独立的startup welcome忙标志，`FactoryReset_IsBusy()`因此让UploadGate和CH583厂测拒绝并发请求；同时在取得SD/SPI锁前先预约EPD，关闭SD读取结束至EPD提交之间的抢占窗口。SD读取成功后继续复用 `ServerNetworkStaEpdDisplay_QueueReservedToScreenAndWait()`解压和显示；SD不可用，或者选择、读取、预约、解压、提交、实际显示任一步失败时，先释放SPI锁、文件缓冲和EPD预约，再调用现有 `test_epd_display_and_wait()`生成彩条并同步等待。welcome或彩条成功后删除标志，两者都失败或删除失败时保留标志。所有路径退出前启动现有WiFi连接保护并无条件清除Factory Reset guard、LED状态和startup welcome忙标志；该流程不写工作时间NVS，不新增任务，也不改变普通、轮播、DAILY或LOCAL_IMAGE_BROWSING关机路径。
 
 ---
 
@@ -3250,7 +3254,7 @@ Factory Reset提交前调用厂测取消接口，使当前和pending厂测立即
 
 清单和下载缓冲优先放在SPIRAM。两个有界清单文本缓冲与解析结果只在同步判断阶段同时存在；本地JSON解析后立即释放，本地解析结果完成版本决策后释放。BIN严格逐个按 `compressed_size` 申请、下载、写入并释放，不同时保存多个BIN。选定显示项后只把文件名和压缩大小保留在统一任务栈中，再释放剩余远端JSON和解析结果，最后申请BIN显示缓冲。写SD前使用现有 `TdxSharedSpi` 零等待锁，传输期间复用现有 `ServerNetworkStaWifiWorkTime_ImageTransferBegin/End()` 和 `EpdSdPowerTest_ImageTransferBegin/End()` 电源保护。只接受 `example_storage_get_type()==SD_CARD`；取得IP后最多等待5秒让SD电源和共享SPI可用。
 
-HTTP实现依据 `C:/esp/v5.5.3/esp-idf/components/esp_http_client/include/esp_http_client.h` 的 `esp_http_client_*` 接口；固定清单及清单内BIN只允许局域网HTTP前缀 `http://192.168.25.208/eframeres/`。SDK的 `esp_http_client_get_url()`会在最终URL中显式加入默认`:80`端口，因此专用白名单同时接受这一等价规范形式，不接受HTTPS、其他主机、端口或路径。每次请求超时5秒、最多2次、总流程20秒；HTTP 200、完整读取、实际长度以及可用的Content-Length共同校验 `compressed_size`。当前模块明确不调用zlib和hash API，也不消费 `decompressed_size`、`hash_algorithm`、`hash`；同version本地修复仅依据文件存在及长度。
+HTTP实现依据 `C:/esp/v5.5.3/esp-idf/components/esp_http_client/include/esp_http_client.h` 的 `esp_http_client_*` 接口；固定清单及清单内BIN只允许局域网HTTP前缀 `http://192.168.25.208/eframeres/`。SDK的 `esp_http_client_get_url()`会在最终URL中显式加入默认`:80`端口，因此专用白名单同时接受这一等价规范形式，不接受HTTPS、其他主机、端口或路径。每次请求超时5秒、最多2次、总流程20秒；HTTP 200、完整读取、实际长度以及可用的Content-Length共同校验 `compressed_size`。当前模块明确不调用zlib和hash API，也不消费 `decompressed_size`、`hash_algorithm`、`hash`。远端version不低于本地时不再预检查本地BIN存在性或长度，而是全量下载当前resolution的welcome项并逐项原子覆盖；远端version较旧时保持不降级。
 
 所有BIN成功后才用临时文件替换 `welcome_Json.txt`，所以失败保留旧清单。取消点检查厂测generation、Factory Reset和OTA状态；DNS/TCP连接或阻塞读取只能在HTTP调用返回或5秒超时后观察取消，这是当前同步esp_http_client调用的边界。
 

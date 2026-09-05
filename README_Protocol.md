@@ -1430,14 +1430,16 @@ factory_reset_task()
 
 客人以后正常开机进入下一次 app_main() 冷启动
 ├─ 初始化 EPD，并对共享 EPD/SD 电源执行一次启动复位
-├─ 完成 SD/SPIFFS 存储挂载和 Factory Reset 初始化
+├─ 尝试完成 SD/SPIFFS 存储挂载和 Factory Reset 初始化
 ├─ 读取 PhotoPainter:fr_welcome
-├─ 值为1时显示固件内置 zlib 欢迎图，并等待 EPD 实际完成
-├─ 显示成功后删除 fr_welcome，Factory Reset完整流程结束
+├─ 值为1且SD可用时，选择 /data/welcome 中编号最大的合法文件
+├─ welcome读取、解压或显示失败时同步显示EPD彩条
+├─ welcome或彩条成功后删除 fr_welcome
+├─ 两者都失败或删除标志失败时保留 fr_welcome
 └─ 继续网络、DAILY、SLIDESHOW和本地浏览启动
 ```
 
-Factory Reset 没有改变 `WIFI_PROVISION`、`WAKE_TIMER` 或 `POWER_OFF` 的帧格式，但恢复出厂流程不再请求CH583断电重启。文件和NVS清理成功后，ESP32先持久化欢迎图待显示标志，再用一份当前屏幕大小的PSRAM缓冲区显示白屏；白屏完成后发送未配网 `WIFI_PROVISION 40`、清除Factory Reset guard并继续运行，不发送专用 `WAKE_TIMER ON,10` 或 `POWER_OFF`。标志保存或白屏失败时仍清除guard，已经保存的标志不回滚。客人以后正常开机时，ESP32在首次存储挂载前先完成共享EPD/SD电源复位，随后完成存储挂载和Factory Reset初始化，并在网络业务启动前显示欢迎图。只有显示成功才删除标志，失败或存储未就绪则保留到下次冷启动。普通wifi_work_time、轮播、DAILY和其他既有关机协议保持原逻辑。
+Factory Reset 没有改变 `WIFI_PROVISION`、`WAKE_TIMER` 或 `POWER_OFF` 的帧格式，但恢复出厂流程不再请求CH583断电重启。文件和NVS清理成功后，ESP32先持久化欢迎图待显示标志，再用一份当前屏幕大小的PSRAM缓冲区显示白屏；白屏完成后发送未配网 `WIFI_PROVISION 40`、清除Factory Reset guard并继续运行，不发送专用 `WAKE_TIMER ON,10` 或 `POWER_OFF`。标志保存或白屏失败时仍清除guard，已经保存的标志不回滚。客人以后正常开机时，ESP32在首次存储挂载前先完成共享EPD/SD电源复位，随后尝试存储挂载，并从实际SD卡的 `/data/welcome` 读取编号最大的合法welcome文件。SD不可用以及选择、读取、解压或显示失败时同步显示运行时生成的EPD彩条；welcome或彩条成功后删除标志，两者都失败或标志删除失败时保留到下次冷启动。普通wifi_work_time、轮播、DAILY和其他既有关机协议保持原逻辑。
 
 
 存 / 取信息（含条件限制）：
@@ -2660,4 +2662,4 @@ MAC结果格式：
 
 本功能只消费 `version`、`resolution`、`images.welcome[].url` 和 `compressed_size`。`decompressed_size`、`hash_algorithm`、`hash`保留给其他功能，本功能不解释、不解压、不校验hash。resolution由当前EPD宽高规范为较小值在前；BIN URL只允许局域网前缀 `http://192.168.25.208/eframeres/`，且没有query或fragment并以 `.bin` 结尾，落盘文件名严格采用URL basename。
 
-下载成功要求HTTP状态200、响应完整、实际接收长度严格等于 `compressed_size`；服务器声明Content-Length时也必须相等。本地同version时同样只以文件是否存在及压缩文件长度判断是否需要修复，不保证发现等长内容损坏。
+远端version不低于本地version时，当前resolution下全部welcome BIN每次都重新下载，不因同version、同名文件已存在或长度正确而跳过。下载成功要求HTTP状态200、响应完整、实际接收长度严格等于 `compressed_size`；服务器声明Content-Length时也必须相等。每项成功后通过临时文件替换同名原文件，失败时保留该项原文件；全部BIN成功后才替换 `welcome_Json.txt`。任一下载失败均显示测试色块，不使用保留下来的旧BIN。远端version低于本地version时不降级，继续使用本地清单第一项。

@@ -2307,12 +2307,32 @@ PB1请求使用IDLE/PENDING/RUNNING/COMPLETED RAM状态合并重复帧；请求�
 确认执行时不在检测任务中等待其他图片owner：FACTORY_RESET可替换普通pending图片命令，并非阻塞停止DAILY、SLIDESHOW和LOCAL_IMAGE；当前EPD或已经成为current的投屏事务安全结束后，由统一任务串行执行FACTORY_RESET。FACTORY_RESET一旦pending/current，其他图片owner不得覆盖。
 统一任务提交临时失败时把RUNNING恢复为PENDING并保留guard，由300ms检测周期继续提交；成功提交前不得删除文件或修改NVS。
 触发后先停止轮播，再删除 upload/slideshow 图片、cast/cast2pic 缓存图片和轮播配置。
+清除WiFi凭据时同时结束当前WiFi recovery观察器、取消已预约的recovery断电并清除attempted标志；旧观察器不得在Factory Reset白屏完成后重新申请 `WAKE_TIMER` 或 `POWER_OFF`。
 先把 `epd_mode` 强制保存为 `USER_EPD_DISPLAY_MODE_DEFAULT`；即使当前已经是默认模式也重新写入并读回校验。只有保存成功后才删除 `daily_cfg`，避免运行中的 daily worker 恢复已清除配置。
 文件不存在按无需删除处理；实际文件删除失败、路径过长或目录读取错误进入最终 `ret`，恢复失败时不设置欢迎图待显示标志，也不显示白屏。
 全部清理成功后，把 `PhotoPainter:fr_welcome` 写入并读回校验为1，再按 `WHITE=0x11` 填充当前屏幕大小的一份PSRAM缓冲区并同步等待白屏实际显示完成。白屏不新增固件图片常量，显示完成后释放缓冲区。
 白屏显示成功后发送未配网 WIFI_PROVISION 并结束本次 Factory Reset；不向 work_state_task 提交专用关机请求，不发送 Factory Reset 专用 `WAKE_TIMER` 或 `POWER_OFF`，ESP32保持运行和白屏状态。标志保存、内存分配、入队或白屏显示失败时记录关键错误；已经成功保存的标志仍保留供以后冷启动恢复。
 成功或失败都必须清除 Factory Reset guard，避免影响之后的普通关机；清除guard不会触发Factory Reset专用重启。
-`fr_welcome`一直保留到客人以后真正开机。该次冷启动先完成EPD初始化、存储挂载和Factory Reset初始化，再在网络业务启动前检查标志；值为1时显示固件内置的 `DOC/welcome.bin` zlib欢迎图，显示成功后删除标志并完成整个Factory Reset流程，失败则保留标志供下次冷启动重试。存储未就绪时不显示且不清除标志。
+`fr_welcome`一直保留到客人以后真正开机。固件不再嵌入welcome图片，也不提供Flash/SD切换宏；welcome只有SD卡读取路径。冷启动在EPD初始化和存储挂载尝试之后、网络图片业务启动之前检查标志。值为1时先设置startup welcome忙标志并预约EPD，使ping、上传和CH583厂测在SD扫描开始前就看到BUSY；随后只在实际存储类型为SD卡时扫描 `/data/welcome`。文件名必须包含 `_welcome_`、以十进制编号和 `.bin` 结尾；存在多个候选时按编号数值选择最大者，例如 `x_welcome_0002.bin` 优先于 `x_welcome_0001.bin`，相同编号按完整文件名稳定选择。读取、解压或显示任一步失败，以及SD缺失、挂载失败或降级为SPIFFS时，先释放EPD预约，再同步显示运行时生成的EPD彩条。welcome或彩条显示成功后删除 `fr_welcome`；两者都失败或标志删除失败时保留标志。启动保护、LED、内存、SPI锁和EPD预约在所有出口统一释放，失败不阻断后续正常启动。
+
+```text
+首次开机welcome显示
+├─ fr_welcome不是1
+│  └─ 不执行显示
+└─ fr_welcome等于1
+   ├─ 设置startup welcome忙标志并预约EPD
+   ├─ SD卡可用
+   │  ├─ 扫描 /data/welcome
+   │  ├─ 按 _welcome_ 后的十进制编号选择最大文件
+   │  ├─ 读取、解压并同步显示welcome
+   │  └─ 任一步失败
+   │     └─ 同步显示彩条
+   └─ SD卡不可用或仅挂载SPIFFS
+      └─ 同步显示彩条
+   ├─ welcome或彩条成功 → 清除fr_welcome
+   ├─ 两者都失败或标志删除失败 → 保留fr_welcome
+   └─ 释放EPD预约和startup welcome忙标志
+```
 取消Factory Reset专用断电重启不修改普通 wifi_work_time、轮播或 DAILY 的既有关机规则。
 长按触发后进入等待松手状态；GPIO28 恢复高电平前不会再次触发。
 Factory Reset代码不再保留完成后调用 `esp_restart()` 的条件分支；ESP32和CH583都不执行专用重启，欢迎图等待客人以后开机时显示。
@@ -2973,4 +2993,4 @@ CH583/CH585 FACTORY_DATA
 
 当前屏型通过 `EpdType_GetCurrentConfig()` 取得宽高，并规范为 `min(width,height)xmax(width,height)`，例如1208×1600得到 `1208x1600`。只解析远端清单中相同resolution下的 `images.welcome[]`。每项必须包含唯一允许的局域网HTTP前缀 `http://192.168.25.208/eframeres/` 下的 `url` 和有效 `compressed_size`；文件保留URL basename并逐个下载到PSRAM，再经共享SPI原子写入SD，因此内存中最多保留一个BIN。进入显示前只保留第一项的文件名和压缩大小，并先释放远端/本地JSON文本及两份解析结果，再申请BIN显示缓冲，降低显示阶段PSRAM峰值。欢迎模块不直接解压，不读取或校验 `decompressed_size`、`hash_algorithm`、`hash`；显示时由现有公共EPD入口按当前zlib配置解压并严格校验实际输出屏幕长度。
 
-本地清单不存在或损坏时下载全部匹配BIN；远端version较新时下载全部；version相同则只补下载不存在或文件长度不等于 `compressed_size` 的BIN；远端version较旧或没有当前resolution时不修改SD。下载必须满足HTTP 200、响应完整、实际字节数等于 `compressed_size`，若服务器提供Content-Length也必须相等。所有BIN成功原子落盘后才最后替换 `welcome_Json.txt`，失败不会覆盖旧清单。无论BIN是本次新下载还是SD中已有的正确尺寸文件，都从当前有效清单精确读回第一项并同步显示到EPD1。若清单、下载、文件读回、解压或资源显示不可用，则在当前厂测generation有效且非OTA时调用 `test_epd_display()`排队显示当前屏型测试色块，保证EPD产测仍有一次显示尝试。欢迎同步或显示失败只输出关键日志，不改变已经发出的 `facWifiCon success`，厂测仍按原流程结束。
+远端version不低于本地version时，无论本地清单和BIN是否存在、version是否相同、文件长度是否正确，都重新下载当前resolution下的全部welcome BIN。每项必须满足HTTP 200、响应完整、实际字节数等于 `compressed_size`，若服务器提供Content-Length也必须相等；下载成功后通过临时文件原子替换同名原文件，下载或写入失败时保留该项原文件。全部BIN成功后再替换 `welcome_Json.txt`。远端version较旧时不降级，直接使用本地清单第一项；没有当前resolution时不修改SD。全量下载成功或远端旧版本本地文件可用时，精确读回第一项并同步显示到EPD1；任一下载失败时即使旧文件仍在，也按产测规则调用 `test_epd_display()`，不显示旧缓存欢迎图。其他清单、文件读回、解压或资源显示失败同样进入测试色块后备路径。欢迎同步或显示失败只输出关键日志，不改变已经发出的 `facWifiCon success`，厂测仍按原流程结束。

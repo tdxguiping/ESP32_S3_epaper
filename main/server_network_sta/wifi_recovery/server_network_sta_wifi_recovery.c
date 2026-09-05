@@ -139,8 +139,9 @@ void ServerNetworkStaWifiRecovery_OnFactoryTestFinished(void)
 esp_err_t ServerNetworkStaWifiRecovery_Clear(void)
 {
     __atomic_store_n(&s_credential_result_pending, false, __ATOMIC_RELEASE);
-    __atomic_store_n(&s_factory_session_finished, false, __ATOMIC_RELEASE);
-    __atomic_store_n(&s_factory_session_suppressed, false, __ATOMIC_RELEASE);
+    // Stop the active observer so it cannot recreate a recovery request after Factory Reset.
+    __atomic_store_n(&s_factory_session_suppressed, true, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_factory_session_finished, true, __ATOMIC_RELEASE);
     ServerNetworkStaWifiWorkTime_CancelWifiRecoveryPowerCycle(
         "recovery_state_clear");
     esp_err_t ret = save_attempted_marker(false);
@@ -150,6 +151,7 @@ esp_err_t ServerNetworkStaWifiRecovery_Clear(void)
         return ret;
     }
     s_power_cycle_attempted = false;
+    ESP_LOGI(TAG, "WiFi recovery cleared for Factory Reset");
     return ESP_OK;
 }
 
@@ -244,6 +246,13 @@ static void wifi_recovery_task(void *arg)
             continue;
         }
         terminal_logged = false;
+
+        // Recheck cancellation immediately before committing the recovery marker.
+        if (__atomic_load_n(&s_factory_session_suppressed,
+                            __ATOMIC_ACQUIRE)) {
+            vTaskDelay(poll_ticks);
+            continue;
+        }
 
         // EPD must be exactly idle before the automatic recovery is requested.
         if (ServerNetworkStaEpdDisplay_IsBusy()) {

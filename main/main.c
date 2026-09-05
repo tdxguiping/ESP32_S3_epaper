@@ -415,6 +415,8 @@ void app_main(void)
 
     /* Initialize file storage */
     esp_err_t storage_ret = example_mount_storage(base_path);
+    bool welcome_sd_ready =
+        storage_ret == ESP_OK && example_storage_is_sd_card();
     if (storage_ret != ESP_OK) {
         UserLedStatus_SetStorageFailed(true);
         ESP_LOGE(TAG, "storage mount failed ret=%s",
@@ -431,11 +433,10 @@ void app_main(void)
         } else {
             ESP_ERROR_CHECK(FactoryReset_Init(base_path));
         }
-
-        /* Display the pending Factory Reset welcome only after storage has
-         * mounted, so EPD traffic cannot disturb the initial SD handshake. */
-        (void)FactoryReset_HandleStartupWelcome();
     }
+    /* Handle the pending welcome after the SD mount attempt. A missing SD or
+     * a SPIFFS fallback uses the synchronous EPD color-bar fallback. */
+    (void)FactoryReset_HandleStartupWelcome(base_path, welcome_sd_ready);
     // Stay-awake post-display rail cycling is a mandatory production function.
     ESP_ERROR_CHECK(EpdSdPowerTest_Init());
 #if 0

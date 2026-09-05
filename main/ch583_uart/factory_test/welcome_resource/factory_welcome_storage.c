@@ -104,31 +104,6 @@ esp_err_t FactoryWelcomeStorage_ReadManifest(const char *base_path,
     return ret;
 }
 
-esp_err_t FactoryWelcomeStorage_FileHasSize(const char *base_path,
-                                            const char *file_name,
-                                            size_t expected_size,
-                                            bool *matches)
-{
-    char path[FACTORY_WELCOME_PATH_MAX_SIZE] = {0};
-    if (expected_size == 0U || matches == NULL ||
-        !build_file_path(base_path, file_name, path, sizeof(path))) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    *matches = false;
-    esp_err_t ret = TdxSharedSpi_Lock(0);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    struct stat st = {0};
-    if (stat(path, &st) == 0) {
-        *matches = S_ISREG(st.st_mode) && (size_t)st.st_size == expected_size;
-    } else if (errno != ENOENT) {
-        ret = ESP_FAIL;
-    }
-    TdxSharedSpi_Unlock();
-    return ret;
-}
-
 esp_err_t FactoryWelcomeStorage_ReadFileExact(const char *base_path,
                                               const char *file_name,
                                               uint8_t *buffer,

@@ -12,7 +12,8 @@ typedef enum {
 } factory_reset_trigger_t;
 
 esp_err_t FactoryReset_Init(const char *base_path);
-esp_err_t FactoryReset_HandleStartupWelcome(void);
+esp_err_t FactoryReset_HandleStartupWelcome(const char *base_path,
+                                            bool sd_ready);
 bool FactoryReset_IsBusy(void);
 esp_err_t FactoryReset_Request(factory_reset_trigger_t trigger,
                                uint16_t protocol_seq);
