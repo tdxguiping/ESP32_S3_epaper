@@ -827,4 +827,16 @@ Run the common UTF-8 display/password validation cases through CH583 `BLE_DATA` 
 11. 注入MAC读取、凭据保存、连接提交、结果发送或NORMAL模式保存失败，确认使用对应ESP_LOGE且所有结束路径最终清除厂测BUSY，不永久阻塞APP。
 12. Factory Reset执行时发送厂测命令，确认返回`ERR,BUSY`；在`facWifiCon`的15秒等待期间触发Factory Reset，确认当前厂测立即失效、不发送旧结果，并在下一次500ms等待之前让Factory Reset接管统一任务。
 13. 当前开发阶段确认方向日志与WiFi manager凭据加载日志都明文打印`facWifiCon`密码，便于核对产测参数；不得打印每500ms轮询信息，只保留接收、连接开始、成功/失败、覆盖、发送失败和完成等关键日志。转正式发布版本前必须重新评估并关闭密码明文日志。
-14. 冷启动后在正常同步WiFi连接入口前发送`facWifiCon`，确认启动流程打印由厂测连接接管，不再重复提交普通同步连接；`facWifiMac`不接管启动WiFi连接。
+14. 冷启动后在正常同步WiFi连接入口前发送`facWifiCon`，确认启动流程打印由厂测连接接管，不再重复提交普通同步连接；再让普通启动联网已经进入执行后才发送`facWifiCon`，确认旧启动调用返回时打印`network startup superseded by factory WiFi manager flow`，不得打印`network init failed`。`facWifiMac`不接管启动WiFi连接。
+15. 准备真实SD卡并发送成功的`facWifiCon`，确认UART先收到`facWifiCon success`的`FACTORY_RESULT`，随后才出现一条欢迎资源同步开始日志；同步完成前厂测BUSY保持有效。分别执行`facWifiMac`、失败的`facWifiCon`、普通开机联网和WiFi重连，确认都不访问欢迎资源URL。
+16. 在取得IP时延迟SD挂载，确认模块以100ms间隔最多等待5秒；5秒内真实SD及其电源就绪后开始同步，超时或当前存储为SPIFFS时打印一条警告并跳过，不创建`/data/welcome`。同步期间进入OTA执行或OTA待重启状态时必须取消，不继续写文件。
+17. 删除`/data/welcome/welcome_Json.txt`后测试，确认创建目录、下载当前屏型resolution的全部`images.welcome[]`，并最后写入该名称的清单。破坏本地JSON后行为相同；远端version较新时重下全部，远端version较旧时不修改任何文件。
+18. 本地与远端version相同时，分别准备文件缺失、长度错误和长度正确三种情况：前两种必须补下载，长度正确项不得下载。当前规则只比较`compressed_size`，所以人为制造“长度相同但内容损坏”的文件不会被识别；该限制是预期行为。
+19. 分别使用1200×1600、1600×1200和1208×1600配置，确认匹配键始终为`min(width,height)xmax(width,height)`；没有匹配resource时只打印警告并保持SD不变。清单含多个welcome对象时必须依次下载，文件名保持URL basename，过程中PSRAM最多存在一个BIN缓冲。
+20. 使用唯一允许的局域网BIN前缀`http://192.168.25.208/eframeres/`测试成功下载。再对HTTPS、其他协议/主机/端口/路径、双斜杠路径、含查询/fragment、basename非法、非`.bin`、重复文件名、`compressed_size`为0/过大/非精确整数的清单逐项测试，确认拒绝且不覆盖本地清单。确认ESP-IDF把默认端口规范化为`:80`后仍能通过内部最终URL检查。额外的`decompressed_size`、`hash_algorithm`和`hash`字段应被忽略，不解压、不计算hash。
+21. 分别注入非200响应、短响应、长响应、Content-Length与`compressed_size`不符、连接中断和SD写失败；确认文件不以最终名称留下，旧`welcome_Json.txt`不被替换。HTTP失败最多尝试2次，单次超时5秒、重试间隔1秒，整个同步最多20秒。
+22. 在下载之间提交新厂测请求或触发Factory Reset，确认旧generation在安全检查点取消并不再替换清单；阻塞中的DNS/TCP调用允许到本次5秒HTTP超时才返回。无论欢迎同步成功、跳过或失败，先前已经发送的`facWifiCon success`不得改成failed，也不得新增UART结果或正式result code。
+23. 检查任务和内存：不得创建欢迎资源专用任务/queue；日志应显示业务仍运行于`image_business_worker`的`FACTORY_TEST` owner。大文件从PSRAM逐个申请和释放；进入显示前应只保留第一项文件名和压缩大小，远端/本地JSON文本及两份解析结果均已释放。统一worker `job done` 的`min_free`保持不小于2048字节。
+24. 删除当前resolution的BIN后执行成功`facWifiCon`，确认BIN与`welcome_Json.txt`均成功落盘后依次出现`display start`、公共zlib解压成功、EPD队列及`display complete`日志；目标固定为EPD1。显示期间不得持有SD共享SPI锁，不得创建新任务，也不得修改其他图片业务入口。
+25. 保留同version且长度正确的BIN再次执行，确认出现`sync unchanged`后仍从SD精确读回并显示清单第一项。清单包含多个welcome项或仅第二项需要修复时，确认所有应下载文件正常保存，但资源显示始终选择当前有效清单第一项。
+26. 分别注入SD未就绪、清单获取/解析失败、无匹配resolution、BIN下载失败、文件缺失/读回失败、zlib损坏、解压长度错误、EPD忙/队列失败和硬件显示失败；当前厂测generation仍有效且非OTA时，确认打印一条后备提示并调用`test_epd_display()`排队显示当前屏型测试色块。OTA、Factory Reset或旧generation取消不得启动后备显示。所有路径必须释放PSRAM和电源保护并正常结束厂测；已经发送的`facWifiCon success`不得改变或补发failed。显示开始后提交新厂测请求时，不强制中断已经提交给EPD硬件的刷新。

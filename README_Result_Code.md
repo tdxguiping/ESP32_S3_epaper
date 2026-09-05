@@ -1095,3 +1095,5 @@ UART `CMD=ERR` 不新增业务返回码；ESP32侧收发任何ERR均使用 `ESP_
 | `ERR,<received_seq>,NO_MEM` | 必要资源不可用 |
 
 ACK只表示厂测事件已被设备接收，不表示MAC读取或WiFi连接已经成功；`FACTORY_RESULT`不得早于该请求ACK。正式业务结果由后续`CMD=FACTORY_RESULT`中的`facWifiMac ...`、`facWifiCon success ...`或`facWifiCon failed ...`表达。`facWifiCon success`必须对应本次新凭据和新连接generation取得的非零IP；失败RSSI为0，不使用旧连接RSSI。Factory Reset抢占和厂测抑制30秒hard recovery均为内部控制，不增加返回码。
+
+成功的 `facWifiCon` 在发送 `FACTORY_RESULT` 后执行欢迎资源同步，并无条件尝试一次EPD测试：资源文件可用时同步等待当前有效清单第一项完成EPD1显示；资源不可用时调用`test_epd_display()`排队显示测试色块，OTA、Factory Reset或旧generation取消除外。该流程属于设备内部、尽力而为的产测收尾操作，不增加正式result code、UART结果字段或第二条完成通知。SD未就绪、清单无当前resolution、下载/长度校验失败、存储/读回失败、zlib解压或EPD显示失败时，仅通过设备端 `ESP_LOGW/ESP_LOGE` 记录；不得把已经发送的 `facWifiCon success`改成failed。

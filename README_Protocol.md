@@ -2630,4 +2630,34 @@ MAC结果格式：
 
 厂测凭据复用现有WiFi manager连接流程，但采用独立的15秒观察期限，每500ms检查一次，并在期限边界再检查一次。只有凭据generation和连接generation都相对请求前发生变化，并且取得非零STA IP，才判定本次凭据连接成功；旧连接保留的IP或RSSI不能作为成功依据。成功不等待HTTP、mDNS或SNTP，RSSI来自当前AP；失败固定返回0，不复用旧AP的RSSI。厂测凭据会清除旧恢复标记，但不启动30秒WiFi硬恢复窗口，厂测失败后不会因此自动掉电重启。
 
-每个发送端继续使用自己的递增SEQ。新合法厂测请求覆盖旧请求；旧请求发现generation变化后不发送旧结果，EPD BUSY状态在两个请求之间保持连续。Factory Reset拥有更高优先级，会使当前或pending厂测generation立即失效并接管统一任务。厂测期间网络和USB ping通过公共UploadGate返回`EPD=BUSY`，厂测结果发送后工作模式切换为NORMAL并恢复`EPD=IDLE`，此前停止的轮播、每日一图和本地图片浏览不自动恢复。若启动早期已提交`facWifiCon`，正常启动流程不再重复提交同步WiFi连接，由厂测的新凭据manager流程负责本次启动连接。
+每个发送端继续使用自己的递增SEQ。新合法厂测请求覆盖旧请求；旧请求发现generation变化后不发送旧结果，EPD BUSY状态在两个请求之间保持连续。Factory Reset拥有更高优先级，会使当前或pending厂测generation立即失效并接管统一任务。厂测期间网络和USB ping通过公共UploadGate返回`EPD=BUSY`，厂测结果发送后工作模式切换为NORMAL并恢复`EPD=IDLE`，此前停止的轮播、每日一图和本地图片浏览不自动恢复。若启动早期已提交`facWifiCon`，正常启动流程不再重复提交同步WiFi连接，由厂测的新凭据manager流程负责本次启动连接；若普通启动联网已经进入执行后才收到`facWifiCon`，旧启动调用返回时重新检查厂测接管状态，只记录普通接管信息，不把被新凭据替代误报为网络初始化错误。
+
+`facWifiCon success` 的 `FACTORY_RESULT` 成功发送后，ESP32-C5在结束同一个 `FACTORY_TEST` owner之前执行一次独立的欢迎资源同步和EPD测试。无论BIN是本次下载还是SD中已有的正确尺寸文件，都把当前有效清单的第一项提交现有公共EPD入口并等待EPD1显示完成；若清单、下载、文件或资源显示不可用，则调用 `test_epd_display()`排队显示当前屏型测试色块。OTA、Factory Reset或旧generation取消时不启动后备显示。该内部步骤不增加UART命令、ACK、通知或APP JSON协议；`facWifiMac`及`facWifiCon failed`不执行。同步或显示失败也不撤销或补发已经发送的success结果。
+
+远端清单固定为 `http://192.168.25.208/eframeres/inkora-preset-image.json`，格式如下：
+
+```json
+{
+  "version": 1,
+  "resources": [
+    {
+      "resolution": "1200x1600",
+      "images": {
+        "welcome": [
+          {
+            "url": "http://192.168.25.208/eframeres/1200x1600_welcome_0001.bin",
+            "compressed_size": 278250,
+            "decompressed_size": 960000,
+            "hash_algorithm": "fnv1a64",
+            "hash": "7a3abe9dcae8ce82"
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+本功能只消费 `version`、`resolution`、`images.welcome[].url` 和 `compressed_size`。`decompressed_size`、`hash_algorithm`、`hash`保留给其他功能，本功能不解释、不解压、不校验hash。resolution由当前EPD宽高规范为较小值在前；BIN URL只允许局域网前缀 `http://192.168.25.208/eframeres/`，且没有query或fragment并以 `.bin` 结尾，落盘文件名严格采用URL basename。
+
+下载成功要求HTTP状态200、响应完整、实际接收长度严格等于 `compressed_size`；服务器声明Content-Length时也必须相等。本地同version时同样只以文件是否存在及压缩文件长度判断是否需要修复，不保证发现等长内容损坏。

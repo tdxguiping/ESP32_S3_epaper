@@ -956,7 +956,7 @@ static void test_epd_display_type(uint8_t requested_type)
     }
 
     if (requested_type == EPD_TYPE_1208_1600_1243_BOE) {
-        if (!EpdType12081600_1243_BOE_FillMirroredTestPattern(test_buf, test_size)) {
+        if (!EpdType12081600_1243_BOE_FillTestPattern(test_buf, test_size)) {
             heap_caps_free(test_buf);
             return;
         }

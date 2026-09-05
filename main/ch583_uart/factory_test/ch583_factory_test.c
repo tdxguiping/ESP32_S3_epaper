@@ -10,6 +10,7 @@
 #include "esp_mac.h"
 #include "esp_wifi.h"
 #include "factory_reset.h"
+#include "factory_welcome_resource.h"
 #include "server_network_sta_wifi_ssid_candidate_store.h"
 #include "freertos/FreeRTOS.h"
 #include "image_business_worker.h"
@@ -52,6 +53,12 @@ static bool factory_test_request_is_current(uint32_t generation)
     return generation != 0U &&
            __atomic_load_n(&s_factory_test_active_generation,
                            __ATOMIC_ACQUIRE) == generation;
+}
+
+static bool factory_welcome_is_canceled(uint32_t generation)
+{
+    return !factory_test_request_is_current(generation) ||
+           FactoryReset_IsBusy();
 }
 
 bool Ch583FactoryTest_IsBusy(void)
@@ -253,8 +260,13 @@ static esp_err_t factory_test_make_mac_result(char *result, size_t result_size)
 static esp_err_t factory_test_make_connect_result(
     const factory_test_request_t *request,
     char *result,
-    size_t result_size)
+    size_t result_size,
+    bool *connected_out)
 {
+    if (connected_out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *connected_out = false;
     server_network_sta_status_t initial_status = {0};
     (void)ServerNetworkSta_GetStatus(&initial_status);
 
@@ -334,6 +346,7 @@ static esp_err_t factory_test_make_connect_result(
                               connected ? "success" : "failed",
                               request->ssid,
                               rssi);
+    *connected_out = connected;
     return result_len > 0 && result_len < (int)result_size ?
            ESP_OK : ESP_ERR_INVALID_SIZE;
 }
@@ -376,11 +389,13 @@ static esp_err_t factory_test_worker_run(const void *payload,
     }
 
     char result[128] = {0};
+    bool wifi_connected = false;
     esp_err_t ret = request.command == FACTORY_TEST_COMMAND_WIFI_MAC ?
                     factory_test_make_mac_result(result, sizeof(result)) :
                     factory_test_make_connect_result(&request,
                                                      result,
-                                                     sizeof(result));
+                                                     sizeof(result),
+                                                     &wifi_connected);
     if (ret == ESP_OK && factory_test_request_is_current(request.generation)) {
         if (ch583_wifi_uart_send_factory_result(result) != 0) {
             ESP_LOGE(TAG, "FACTORY_RESULT send failed generation=%lu",
@@ -392,6 +407,18 @@ static esp_err_t factory_test_worker_run(const void *payload,
                  (int)request.command,
                  (unsigned long)request.generation,
                  esp_err_to_name(ret));
+    }
+    if (ret == ESP_OK &&
+        request.command == FACTORY_TEST_COMMAND_WIFI_CONNECT &&
+        wifi_connected && factory_test_request_is_current(request.generation)) {
+        /* Keep welcome-resource work inside the successful factory Wi-Fi test. */
+        esp_err_t welcome_ret = FactoryWelcomeResource_Sync(
+            "/data", request.generation, factory_welcome_is_canceled);
+        if (welcome_ret != ESP_OK && welcome_ret != ESP_ERR_INVALID_STATE &&
+            welcome_ret != ESP_ERR_NOT_FOUND) {
+            ESP_LOGW(TAG, "welcome sync finished with warning ret=%s",
+                     esp_err_to_name(welcome_ret));
+        }
     }
     factory_test_finish(request.generation, request.command);
     memset(&request, 0, sizeof(request));

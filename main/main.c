@@ -485,8 +485,14 @@ void app_main(void)
                      esp_err_to_name(startup_status_ret));
         }
     }
+    bool factory_wifi_owned_after_init =
+        Ch583FactoryTest_ManagesWifiThisBoot();
     if (factory_wifi_owned) {
         ESP_LOGI(TAG, "network startup delegated to factory WiFi manager flow");
+    } else if (factory_wifi_owned_after_init) {
+        ESP_LOGI(TAG,
+                 "network startup superseded by factory WiFi manager flow ret=0x%02x",
+                 network_ret);
     } else if (network_ret != SERVER_NETWORK_STA_OK) {
         ESP_LOGE(TAG, "network init failed ret=0x%02x", network_ret);
         //return;
@@ -559,7 +565,7 @@ void app_main(void)
              ble_mac[0] != '\0' ? ble_mac : "<empty>");
 #endif
 
-   //  EpdType_Set(EPD_TYPE_1208_1600_1243_BOE);
-   //  test_epd_display();
+    //  EpdType_Set(EPD_TYPE_1208_1600_1243_BOE);
+    //  test_epd_display();
 }
 // vTaskDelay(pdMS_TO_TICKS(1000));

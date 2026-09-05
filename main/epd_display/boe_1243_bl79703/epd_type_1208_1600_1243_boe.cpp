@@ -13,7 +13,6 @@ constexpr const char *kTag = "epd_1243_boe";
 constexpr size_t kBytesPerLine = 1208U / 2U;
 constexpr size_t kLineCount = 1600U;
 constexpr size_t kImageSize = kBytesPerLine * kLineCount;
-constexpr size_t kMirroredTestHalfSize = kImageSize / 2U;
 static_assert(kBytesPerLine == 604U, "BOE 12.43 bytes per line must remain 604");
 static_assert(kImageSize == 966400U, "BOE 12.43 frame size must remain 966400");
 constexpr uint32_t kResetBusyTimeoutMs = 2000U;
@@ -305,8 +304,8 @@ private:
     ePaperPort &epd_;
 };
 
-bool EpdType12081600_1243_BOE_FillMirroredTestPattern(uint8_t *display_buf,
-                                                      size_t display_size)
+bool EpdType12081600_1243_BOE_FillTestPattern(uint8_t *display_buf,
+                                              size_t display_size)
 {
     static constexpr uint8_t kSolidColorBytes[] = {
         0x00, 0x11, 0x22, 0x33, 0x55, 0x66
@@ -318,20 +317,21 @@ bool EpdType12081600_1243_BOE_FillMirroredTestPattern(uint8_t *display_buf,
         return false;
     }
 
-    // Build one controller frame with solid-color nibbles, then mirror it so
-    // CSB-M and CSB-S receive byte-for-byte identical diagnostic data.
+    // Fill the complete native frame directly and keep every color boundary
+    // aligned to a 604-byte display line.
     for (size_t i = 0; i < sizeof(kSolidColorBytes); ++i) {
-        const size_t start = (kMirroredTestHalfSize * i) / sizeof(kSolidColorBytes);
-        const size_t end = (kMirroredTestHalfSize * (i + 1U)) / sizeof(kSolidColorBytes);
-        std::memset(display_buf + start, kSolidColorBytes[i], end - start);
+        const size_t start_line = (kLineCount * i) / sizeof(kSolidColorBytes);
+        const size_t end_line = (kLineCount * (i + 1U)) / sizeof(kSolidColorBytes);
+        std::memset(display_buf + (start_line * kBytesPerLine),
+                    kSolidColorBytes[i],
+                    (end_line - start_line) * kBytesPerLine);
     }
-    std::memcpy(display_buf + kMirroredTestHalfSize,
-                display_buf,
-                kMirroredTestHalfSize);
 
     ESP_LOGI(kTag,
-             "BOE 12.43 mirrored test pattern ready half=%u colors=00,11,22,33,55,66",
-             (unsigned int)kMirroredTestHalfSize);
+             "BOE 12.43 test pattern ready size=%u line_bytes=%u lines=%u colors=00,11,22,33,55,66",
+             (unsigned int)kImageSize,
+             (unsigned int)kBytesPerLine,
+             (unsigned int)kLineCount);
     return true;
 }
 

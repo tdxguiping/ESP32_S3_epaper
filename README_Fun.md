@@ -324,6 +324,8 @@ image_business_worker（永久常驻、固定12KB静态栈）
 │  └─ USB投屏后台业务；pending时允许被网络投屏替换
 ├─ owner=FACTORY_RESET
 │  └─ 恢复出厂清理、NVS复位、欢迎图待显示标志和白屏显示；最高优先级且不可被普通图片业务覆盖
+├─ owner=FACTORY_TEST
+│  └─ facWifiCon取得本次连接IP后同步并显示出厂欢迎资源；复用当前owner，不创建新任务
 └─ idle
    └─ 没有业务命令时阻塞等待task notification，不轮询、不重复打印
 ```
@@ -2951,7 +2953,8 @@ CH583/CH585 FACTORY_DATA
       │  ├─ 不启动30秒WiFi硬恢复观察窗口
       │  ├─ 每500ms检查一次，最多15秒，边界再检查一次
       │  ├─ 凭据与连接generation均更新且取得非零IP：success + 当前AP RSSI
-      │  └─ 未取得本次连接IP：failed + 0，不复用旧AP RSSI
+      │  ├─ 先发送facWifiCon success FACTORY_RESULT，再同步并显示欢迎资源
+      │  └─ 未取得本次连接IP：failed + 0，不同步欢迎资源且不复用旧AP RSSI
       └─ 厂测结束
          ├─ 先发送FACTORY_RESULT
          ├─ EpdDisplayMode设置为NORMAL
@@ -2961,3 +2964,13 @@ CH583/CH585 FACTORY_DATA
          ├─ Factory Reset可使当前厂测立即失效并接管统一任务
          └─ 7.6网络/USB ping恢复EPD=IDLE，允许后续cast通常业务
 ```
+
+### facWifiCon成功后的欢迎资源同步
+
+欢迎资源同步是出厂产测的独立子模块，只放在 `main/ch583_uart/factory_test/welcome_resource/`。唯一入口是合法 `facWifiCon` 使用本次新凭据取得非零IP并成功发送 `facWifiCon success` 结果之后；`facWifiMac`、连接失败、正常开机联网、重连、APP业务、每日一图、轮播和关机流程均不触发。该流程继续占用统一图片业务任务的 `FACTORY_TEST` owner，完成后才结束厂测，不创建任务或队列，也不与每日一图共用状态、文件或下载函数。
+
+同步目标只允许真实SD卡，目录为 `/data/welcome`，远端清单固定为 `http://192.168.25.208/eframeres/inkora-preset-image.json`，本地清单为 `/data/welcome/welcome_Json.txt`。取得IP后最多等待5秒让SD电源和共享SPI就绪；SPIFFS、OTA执行/待重启、Factory Reset或新厂测请求会跳过或取消本次同步。下载阶段总时限20秒，HTTP超时5秒，失败最多重试2次且间隔1秒；后续EPD同步显示使用公共EPD等待时限，不计入下载时限。
+
+当前屏型通过 `EpdType_GetCurrentConfig()` 取得宽高，并规范为 `min(width,height)xmax(width,height)`，例如1208×1600得到 `1208x1600`。只解析远端清单中相同resolution下的 `images.welcome[]`。每项必须包含唯一允许的局域网HTTP前缀 `http://192.168.25.208/eframeres/` 下的 `url` 和有效 `compressed_size`；文件保留URL basename并逐个下载到PSRAM，再经共享SPI原子写入SD，因此内存中最多保留一个BIN。进入显示前只保留第一项的文件名和压缩大小，并先释放远端/本地JSON文本及两份解析结果，再申请BIN显示缓冲，降低显示阶段PSRAM峰值。欢迎模块不直接解压，不读取或校验 `decompressed_size`、`hash_algorithm`、`hash`；显示时由现有公共EPD入口按当前zlib配置解压并严格校验实际输出屏幕长度。
+
+本地清单不存在或损坏时下载全部匹配BIN；远端version较新时下载全部；version相同则只补下载不存在或文件长度不等于 `compressed_size` 的BIN；远端version较旧或没有当前resolution时不修改SD。下载必须满足HTTP 200、响应完整、实际字节数等于 `compressed_size`，若服务器提供Content-Length也必须相等。所有BIN成功原子落盘后才最后替换 `welcome_Json.txt`，失败不会覆盖旧清单。无论BIN是本次新下载还是SD中已有的正确尺寸文件，都从当前有效清单精确读回第一项并同步显示到EPD1。若清单、下载、文件读回、解压或资源显示不可用，则在当前厂测generation有效且非OTA时调用 `test_epd_display()`排队显示当前屏型测试色块，保证EPD产测仍有一次显示尝试。欢迎同步或显示失败只输出关键日志，不改变已经发出的 `facWifiCon success`，厂测仍按原流程结束。

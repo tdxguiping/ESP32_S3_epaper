@@ -3213,6 +3213,11 @@ ESP-IDF `wifi_config_t.sta.ssid` 是32字节原始字段，不要求其中的SSI
 ```text
 main/ch583_uart/factory_test/ch583_factory_test.c
 main/ch583_uart/factory_test/ch583_factory_test.h
+main/ch583_uart/factory_test/welcome_resource/factory_welcome_resource.c/.h
+main/ch583_uart/factory_test/welcome_resource/factory_welcome_manifest.c/.h
+main/ch583_uart/factory_test/welcome_resource/factory_welcome_http.c/.h
+main/ch583_uart/factory_test/welcome_resource/factory_welcome_storage.c/.h
+main/ch583_uart/factory_test/welcome_resource/factory_welcome_config.h
 ```
 
 相关公共模块：
@@ -3240,6 +3245,16 @@ ESP-IDF 5.5.3接口依据：
 `Ch583FactoryTest_IsBusy()`是7.6 ping厂测BUSY的状态来源。公共UploadGate在厂测期间返回`factory_test`，网络和USB ping因此输出`EPD=BUSY`，同时最终上传预约也拒绝绕过ping的请求。该状态是APP业务门禁，不操作EPD硬件BUSY输入脚。`FACTORY_RESULT`发送后模块将EPD工作模式保存为NORMAL并清除状态，ping恢复`EPD=IDLE`。
 
 Factory Reset提交前调用厂测取消接口，使当前和pending厂测立即失效。厂测凭据使用独立的WiFi recovery入口，只清除旧marker和已预约掉电，不启动新的30秒hard recovery。当前开发阶段UART方向日志和WiFi manager凭据加载日志明文输出`facWifiCon`密码，方便产测核对；正式发布前必须重新评估并关闭密码明文日志。
+
+欢迎资源同步严格属于 `factory_test/welcome_resource`，由成功 `facWifiCon` 的同一个 `FACTORY_TEST` owner调用，不新增任务、queue或公共下载/EPD接口。`factory_welcome_resource`负责时限、取消、当前EPD resolution、同步及显示流程；`factory_welcome_manifest`只负责有界JSON解析和URL/basename校验；`factory_welcome_http`封装本功能专用HTTP读取；`factory_welcome_storage`只负责 `/data/welcome` 的共享SPI文件操作、精确读回和临时文件原子替换；所有策略常量集中在`factory_welcome_config.h`。
+
+清单和下载缓冲优先放在SPIRAM。两个有界清单文本缓冲与解析结果只在同步判断阶段同时存在；本地JSON解析后立即释放，本地解析结果完成版本决策后释放。BIN严格逐个按 `compressed_size` 申请、下载、写入并释放，不同时保存多个BIN。选定显示项后只把文件名和压缩大小保留在统一任务栈中，再释放剩余远端JSON和解析结果，最后申请BIN显示缓冲。写SD前使用现有 `TdxSharedSpi` 零等待锁，传输期间复用现有 `ServerNetworkStaWifiWorkTime_ImageTransferBegin/End()` 和 `EpdSdPowerTest_ImageTransferBegin/End()` 电源保护。只接受 `example_storage_get_type()==SD_CARD`；取得IP后最多等待5秒让SD电源和共享SPI可用。
+
+HTTP实现依据 `C:/esp/v5.5.3/esp-idf/components/esp_http_client/include/esp_http_client.h` 的 `esp_http_client_*` 接口；固定清单及清单内BIN只允许局域网HTTP前缀 `http://192.168.25.208/eframeres/`。SDK的 `esp_http_client_get_url()`会在最终URL中显式加入默认`:80`端口，因此专用白名单同时接受这一等价规范形式，不接受HTTPS、其他主机、端口或路径。每次请求超时5秒、最多2次、总流程20秒；HTTP 200、完整读取、实际长度以及可用的Content-Length共同校验 `compressed_size`。当前模块明确不调用zlib和hash API，也不消费 `decompressed_size`、`hash_algorithm`、`hash`；同version本地修复仅依据文件存在及长度。
+
+所有BIN成功后才用临时文件替换 `welcome_Json.txt`，所以失败保留旧清单。取消点检查厂测generation、Factory Reset和OTA状态；DNS/TCP连接或阻塞读取只能在HTTP调用返回或5秒超时后观察取消，这是当前同步esp_http_client调用的边界。
+
+资源同步成功后，无论文件是本次新下载还是同version下已经存在，都按当前有效清单第一项的 `compressed_size` 从SD精确读入一个PSRAM缓冲，释放共享SPI锁，再调用现有 `ServerNetworkStaEpdDisplay_QueueToScreenAndWait(..., 1)`。公共EPD入口在 `USER_EPD_DISPLAY_DATA_ZLIB_ENABLE=1` 时负责解压到既有持久帧缓冲并校验输出长度，欢迎模块不新增解压函数。资源链路任一步骤失败时，只要当前厂测generation仍有效且OTA/Factory Reset未接管，就调用现有void接口 `test_epd_display()`异步排队当前屏型测试色块；该后备入口不读取下载文件。显示等待不占用SD锁、不创建任务、不改变其他业务入口；失败只影响内部日志，不改变先前UART success结果。
 
 ## WiFi UTF-8 credential module reference (2026-08)
 

@@ -31,3 +31,10 @@ target_sources(${COMPONENT_LIB} PRIVATE "image_business_worker/image_business_wo
 target_include_directories(${COMPONENT_LIB} PRIVATE "image_business_worker")
 target_sources(${COMPONENT_LIB} PRIVATE "ch583_uart/factory_test/ch583_factory_test.c")
 target_include_directories(${COMPONENT_LIB} PRIVATE "ch583_uart/factory_test")
+target_sources(${COMPONENT_LIB} PRIVATE
+    "ch583_uart/factory_test/welcome_resource/factory_welcome_resource.c"
+    "ch583_uart/factory_test/welcome_resource/factory_welcome_manifest.c"
+    "ch583_uart/factory_test/welcome_resource/factory_welcome_http.c"
+    "ch583_uart/factory_test/welcome_resource/factory_welcome_storage.c")
+target_include_directories(${COMPONENT_LIB} PRIVATE
+    "ch583_uart/factory_test/welcome_resource")
