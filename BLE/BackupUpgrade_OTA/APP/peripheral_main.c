@@ -1054,6 +1054,9 @@ void   Low_power(void)
 	}
 
 	LowPower_Shutdown(0); //ȫ���ϵ磬���Ѻ�λ
+	RTC_ModeFunDisable(RTC_TMR_MODE);
+	R8_RTC_FLAG_CTRL = (RB_RTC_TMR_CLR | RB_RTC_TRIG_CLR);
+	RTCTigFlag = 0;
 	SYS_ResetExecute();
 	/*
 	��ģʽ���Ѻ��ִ�и�λ������������벻�����У�
@@ -1149,12 +1152,10 @@ int main(void)
 	PWR_DCDCCfg(ENABLE);
 #endif
 	SetSysClock(SYSCLK_FREQ);   
-#ifdef  Debug_mode_on
+#if defined(Debug_mode_on) || defined(RELEASE_UART)
 
-	GPIOPinRemap(0,RB_PIN_UART0);  // DISABLE  ENABLE
-	GPIOB_SetBits(GPIO_Pin_7);
-	GPIOB_ModeCfg(GPIO_Pin_7, GPIO_ModeOut_PP_5mA);
-	UART0_DefInit(); 
+	extern void release_uart0_init(void);
+	release_uart0_init();
 
 	GetResetState = GetLastResetSta();
 	if(GetResetState  != 5)

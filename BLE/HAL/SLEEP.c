@@ -158,6 +158,10 @@ void LowPowerGapProcess_Register(pfnLowPowerGapProcessCB_t cb)
  */
 void HAL_SleepInit(void)
 {
+    RTC_ModeFunDisable(RTC_TMR_MODE);
+    R8_RTC_FLAG_CTRL = (RB_RTC_TMR_CLR | RB_RTC_TRIG_CLR);
+    RTCTigFlag = 0;
+
     sys_safe_access_enable();
     R8_SLP_WAKE_CTRL |= RB_SLP_RTC_WAKE; // RTC»½ÐÑ
     sys_safe_access_disable();

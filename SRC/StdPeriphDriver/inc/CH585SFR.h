@@ -124,7 +124,7 @@ typedef volatile unsigned long long  *PUINT64V;
 #define max(a,b)                (((a) > (b)) ? (a) : (b))
 #endif
 
-#ifdef  DEBUG
+#if defined(DEBUG) && !defined(RELEASE_BUILD)
 #define PRINT(X...) printf(X)
 #else
 #define PRINT(X...)

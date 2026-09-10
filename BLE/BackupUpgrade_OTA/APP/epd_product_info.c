@@ -1,3 +1,5 @@
+#if defined(EPD_SCREEN_13D3_1200X1600_C6) || defined(EPD_SCREEN_7D09_1200X1600_C6)
+
 #include "epd_driver.h"
 #include "epd_product_info.h"
 
@@ -36,3 +38,5 @@ UINT8 EPD_GetBoardInfo(void)
 {
 	return (UINT8)EPD_PRODUCT_BOARD_INFO;
 }
+
+#endif

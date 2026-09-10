@@ -162,7 +162,9 @@
 //
 /***************************************/
 #define   Low_power_mode_on 		(1)
+#if !defined(RELEASE_BUILD)
 #define   Debug_mode_on     		(1)
+#endif
 
 extern UINT8   File_Qutity;
 
@@ -356,3 +358,8 @@ extern 	uint8_t Mac_ASCII[12];
 #endif
 
 
+
+/* Direct printf calls in legacy application code are diagnostics. */
+#if defined(RELEASE_BUILD)
+#define printf(...) (0)
+#endif

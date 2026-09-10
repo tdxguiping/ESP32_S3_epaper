@@ -366,6 +366,13 @@ UINT8 PIC_Display_Compress_Data(const unsigned char* pBW, UINT16 Length, unsigne
     UINT16 len;              // ??????????
     UINT16 j;                // ?????????
 
+    /* ZLIB_COLOR_V1 has already expanded legacy RLE before writing Flash. */
+    if(zip != IS_NEED_DECMPRESS) {
+        for(i = 0; i < Length; i++) {
+            if(dataimgCb != NULL) callbackValue = dataimgCb(pBW[i]);
+        }
+        return 0;
+    }
     // 1. ??????????????????????????????????
     if (pendingCompressByte != PENDING_NONE) {
         currentByte = pendingCompressByte;

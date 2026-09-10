@@ -13,6 +13,8 @@
 #include "flash_api.h"
 #include "util.h"
 #include "epd_driver.h"
+#include "flash_driver.h"
+#include "zlib_image_codec.h"
 #include "ch583_secure.h"
 
 /*********************************************************************
@@ -723,6 +725,23 @@ gattServiceCBs_t tdxInfoCBs = {
 
 static int phoneid_len = 0;
 static unsigned char u8IsFirstPackage = TDX_DATA_FIRST;
+static UINT8 s_zlib_image_active = 0;
+static int zlib_flash_sink(void *context, const UINT8 *data, UINT16 length)
+{
+    (void)context;
+    save256DataToExternFlashTmp((UINT8 *)data, length, global_EXTERN_FLASH_INFO.fImageIndex, global_EXTERN_FLASH_INFO.fBlockNum);
+    return 0;
+}
+static void zlib_receive_fail(uint16 connHandle)
+{
+    uint8_t notify_buf[6]; uint16_t notify_len = 0;
+    zlib_image_codec_abort(); s_zlib_image_active = 0;
+    global_DEVICE_STATUS.fDataSendSuccess = Is_No; global_DEVICE_STATUS.fPackageCnt = 0;
+    global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR;
+    u8IsFirstPackage = TDX_DATA_FIRST; IsDecryptFlag = Is_No; DeInitFlashDriver();
+    notitySendEnd(connHandle, 0x04, global_TDX_AES_DATA_INFO.fScreenType, notify_buf, &notify_len);
+    notitySendFunc(connHandle, notify_buf, &notify_len);
+}
 
 /*********************************************************************
  * NETWORK LAYER CALLBACKS
@@ -956,6 +975,7 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 				//PRINT("WriteAttrCB TDXINFO_SEND_DATA aaaaaaaaaaaaaaaa decrypted_len=%d\r\n",decrypted_len);
 				//hex_dump(decrypted, decrypted_len);
 				if(u8IsFirstPackage == TDX_DATA_FIRST){
+                    if(decrypted_len != 15){ free(decrypted); return ( ATT_ERR_INVALID_VALUE_SIZE ); }
 					if(s_tdx_display_busy_protect){
 						uint8_t busy_screen_type = decrypted[1];
 						uint8_t notify_buf[6];
@@ -989,6 +1009,7 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 					if(global_TDX_AES_DATA_INFO.fScreenType == OP_TYPE_IMG_AB || global_TDX_AES_DATA_INFO.fScreenType == OP_TYPE_SAVE_IMG_AB)
 						global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_AB;
 					global_TDX_AES_DATA_INFO.fPackageNum = (decrypted[2] << 24) | (decrypted[3] << 16) | (decrypted[4] << 8) | decrypted[5];
+                    if(decrypted[11] != 1 || global_TDX_AES_DATA_INFO.fPackageNum == 0){ free(decrypted); return ( ATT_ERR_INVALID_VALUE ); }
 					
 					// 处理user_id和lock标志（decrypted[6-9]=user_id, decrypted[14]=lock）
 					uint32_t received_user_id = (decrypted[6] << 24) | (decrypted[7] << 16) | (decrypted[8] << 8) | decrypted[9];
@@ -1014,9 +1035,14 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 						free(decrypted);
 						return ( ATT_ERR_INSUFFICIENT_AUTHOR );
 					}
+                    if(zlib_image_codec_begin(zlib_flash_sink, NULL) != 0){
+                        zlib_receive_fail(connHandle); free(decrypted);
+                        return ( ATT_ERR_INSUFFICIENT_AUTHOR );
+                    }
+                    s_zlib_image_active = 1;
 					u8IsFirstPackage = TDX_DATA_FIRST_COLOR;
 				}else{
-					InitOtherPackage(connHandle, decrypted, decrypted_len);
+					if(InitOtherPackage(connHandle, decrypted, decrypted_len) != 0){ free(decrypted); return ( ATT_ERR_INVALID_VALUE ); }
 				}
 				free(decrypted);
 			}
@@ -1687,7 +1713,7 @@ void TdxInfo_ClearDisplayBusyProtect(void)
 int getPresaveImageIndex(uint16 connHandle){
 	int ret;
 	
-	ret = EraseSaveBlock(connHandle,global_TDX_AES_DATA_INFO.fGroupNum,global_TDX_AES_DATA_INFO.fRoomNum,global_TDX_AES_DATA_INFO.fIsZip);
+	ret = EraseSaveBlock(connHandle,global_TDX_AES_DATA_INFO.fGroupNum,global_TDX_AES_DATA_INFO.fRoomNum,0);
 	if(ret == -1){
 		PRINT("WriteAttrCB TDXINFO_SEND_DATA error 00000000000000000000000000000\r\n");
 		uint8_t finish_data[] = {10};
@@ -1706,7 +1732,7 @@ int InitFirstPackage(uint16 connHandle){
 	global_DEVICE_STATUS.fOtaStatus = RTN_OTA_COMMON;
 	global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR;
 	global_EXTERN_FLASH_INFO.fImageIndex = 0;
-	global_EXTERN_FLASH_INFO.fZip = global_TDX_AES_DATA_INFO.fIsZip;
+	global_EXTERN_FLASH_INFO.fZip = 0; /* ZLIB_COLOR_V1 stores decoded RAW. */
 	global_DEVICE_STATUS.fRefreshType = global_TDX_AES_DATA_INFO.fOpType;
 	global_DEVICE_STATUS.fPackageCount = global_TDX_AES_DATA_INFO.fPackageNum;
 	global_DEVICE_STATUS.fIsNeedStandby = 0;
@@ -1721,7 +1747,7 @@ int InitFirstPackage(uint16 connHandle){
 			global_EXTERN_FLASH_INFO.fImageIndex =SCREEN_B_COMMON_INDEX;//SCREEN_A_COMMON_INDEX;
 		}
 		// When writing a common image into a shared slot, also save that slot zip so later timed refresh can read it per side
-		saveCommonImageZip(global_EXTERN_FLASH_INFO.fImageIndex, global_TDX_AES_DATA_INFO.fIsZip);
+		/* Common-image metadata is committed after finish(). */
 	}else{
 		global_EXTERN_FLASH_INFO.fImageIndex = getPresaveImageIndex(connHandle);
 	}
@@ -1743,63 +1769,30 @@ int InitFirstPackage(uint16 connHandle){
 
 int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
 {
-	int ret ;
-	uint8_t notify_buf[6];
-	uint16_t notify_len;
-	uint8_t notify_retry;
-			
-	if(global_DEVICE_STATUS.fPackageCnt % 50 == 0)
-		PRINT("WriteAttrCB TDXINFO_SEND_DATA fPackageCnt:%d fPackageNum:%d\r\n",global_DEVICE_STATUS.fPackageCnt,global_TDX_AES_DATA_INFO.fPackageNum);
-
-
-		if(Save256DataToFlash(adData,dataLen,global_EXTERN_FLASH_INFO.fImageIndex,global_EXTERN_FLASH_INFO.fBlockNum) == 1){
-			//global_EXTERN_FLASH_INFO.fBlockNum++;
-		}
-		
-		global_DEVICE_STATUS.fPackageCnt++;
-		if(global_DEVICE_STATUS.fPackageCnt == global_TDX_AES_DATA_INFO.fPackageNum){
-			PRINT("WriteAttrCB TDXINFO_SEND_DATA send finish\r\n");
-			//hex_dump(decrypted, decrypted_len);
-			u8IsFirstPackage = TDX_DATA_FIRST;
-			IsDecryptFlag = Is_No;
-			global_DEVICE_STATUS.fPackageCnt=0;
-			global_DEVICE_STATUS.fRefreshType = global_TDX_AES_DATA_INFO.fOpType;
-			DeInitFlashDriver();
-			global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR;
-					
-			global_DEVICE_STATUS.fDataSendSuccess = Is_Yes;
-			notitySendEnd(connHandle, 0x01, global_TDX_AES_DATA_INFO.fScreenType,notify_buf, &notify_len);
-			//hex_dump(notify_buf, notify_len);
-			for(notify_retry = 0; notify_retry < 5; notify_retry++){
-				PRINT("TDX send notify 0x01 repeat %d/5\r\n", notify_retry + 1);
-				notitySendFunc(connHandle, notify_buf, &notify_len);
-				if(notify_retry < 4){
-					delay_ms(50);
-				}
-			}
-			if(global_TDX_AES_DATA_INFO.fScreenType != OP_TYPE_IMG_DIFF_A)
-			{
-				s_tdx_display_busy_protect = 1;
-				s_tdx_busy_drop_packets = 0;
-
-				InitFlashDriver();
-				mDelayuS(10);
-				if(global_TDX_AES_DATA_INFO.fScreenType == OP_TYPE_IMG_DIFF_B){
-					PRINT("need refresh ab diffrent @@@@@@@@@@@@@@@@@@@@@@@@\r\n");
-					global_DEVICE_STATUS.fImageType = 1;
-				}
-				else{
-					PRINT("need refresh ab same @@@@@@@@@@@@@@@@@@@@@@@@\r\n");
-					global_DEVICE_STATUS.fImageType = 0;
-				}
-				tmos_start_task(main_task_ID,EVENT_Get_Battle_Charge ,100);
-				mDelayuS(10);
-				DeInitFlashDriver();
-			}
-		}
-
+    uint8_t notify_buf[6]; uint16_t notify_len; uint8_t notify_retry;
+    if(!s_zlib_image_active || zlib_image_codec_feed(adData, (UINT16)dataLen) != 0){ zlib_receive_fail(connHandle); return -1; }
+    global_DEVICE_STATUS.fPackageCnt++;
+    if(global_DEVICE_STATUS.fPackageCnt != global_TDX_AES_DATA_INFO.fPackageNum){
+        if(global_DEVICE_STATUS.fPackageCnt > global_TDX_AES_DATA_INFO.fPackageNum){ zlib_receive_fail(connHandle); return -1; }
+        return 0;
+    }
+    if(zlib_image_codec_finish() != 0){ zlib_receive_fail(connHandle); return -1; }
+    global_DEVICE_STATUS.fPackageCnt = 0; global_DEVICE_STATUS.fPackageCount = 1;
+    Save256DataToFlash(NULL, 0, global_EXTERN_FLASH_INFO.fImageIndex, global_EXTERN_FLASH_INFO.fBlockNum);
+    global_EXTERN_FLASH_INFO.fZip = 0;
+    if(global_TDX_AES_DATA_INFO.fOpType == DEVICE_OP_COMMON) saveCommonImageZip(global_EXTERN_FLASH_INFO.fImageIndex, 0);
+    s_zlib_image_active = 0; u8IsFirstPackage = TDX_DATA_FIRST; IsDecryptFlag = Is_No;
+    global_DEVICE_STATUS.fRefreshType = global_TDX_AES_DATA_INFO.fOpType; DeInitFlashDriver();
+    global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR; global_DEVICE_STATUS.fDataSendSuccess = Is_Yes;
+    notitySendEnd(connHandle, 0x01, global_TDX_AES_DATA_INFO.fScreenType, notify_buf, &notify_len);
+    for(notify_retry = 0; notify_retry < 5; notify_retry++){ notitySendFunc(connHandle, notify_buf, &notify_len); if(notify_retry < 4) delay_ms(50); }
+    if(global_TDX_AES_DATA_INFO.fScreenType != OP_TYPE_IMG_DIFF_A){
+        s_tdx_display_busy_protect = 1; s_tdx_busy_drop_packets = 0; InitFlashDriver(); mDelayuS(10);
+        global_DEVICE_STATUS.fImageType = (global_TDX_AES_DATA_INFO.fScreenType == OP_TYPE_IMG_DIFF_B) ? 1 : 0;
+        tmos_start_task(main_task_ID,EVENT_Get_Battle_Charge ,100); mDelayuS(10); DeInitFlashDriver();
+    }
+    return 0;
 }
-
 void notitySendEnd(uint16 connHandle, uint8 status, uint8 type, uint8_t *out_buf, uint16_t *out_len)
 {
 #if(INK_SCREEN_CUSTOMER != INK_SCREEN_CUSTOMER_TY)
