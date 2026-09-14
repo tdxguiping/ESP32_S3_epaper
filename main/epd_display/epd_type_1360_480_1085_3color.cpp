@@ -63,9 +63,9 @@ void ePaperPort::EpdType1360480_1085_3Color_Init()
     int64_t start_us = esp_timer_get_time();
     setPinCsAll(GPIO_HIGH);
     Set_ResetIOLevel(GPIO_LOW);
-    delay_ms(10);
+    delay_ms(20);
     Set_ResetIOLevel(GPIO_HIGH);
-    delay_ms(10);
+    delay_ms(20);
     EPD_Check_Busy_1085_3c(2);
 
     EPD_WriteCMD_Target(TARGET_BOTH, 0x08);

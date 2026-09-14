@@ -172,9 +172,9 @@ void ePaperPort::EpdType800480_4S_75_Mofang_Reset()
 {
     Set_CSIOLevel(1);
     Set_ResetIOLevel(0);
-    delay_ms(50);
+    delay_ms(20);
     Set_ResetIOLevel(1);
-    delay_ms(50);
+    delay_ms(20);
 }
 
 void ePaperPort::EpdType800480_4S_75_Mofang_WriteCommand(uint8_t command)

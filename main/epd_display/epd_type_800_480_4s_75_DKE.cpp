@@ -146,9 +146,9 @@ void ePaperPort::EpdType800480_4S_75_DKE_Reset()
     Set_CSIOLevel(1);
     delay_ms(100);
     Set_ResetIOLevel(0);
-    delay_ms(50);
+    delay_ms(20);
     Set_ResetIOLevel(1);
-    delay_ms(50);
+    delay_ms(20);
 }
 
 void ePaperPort::EpdType800480_4S_75_DKE_WriteCommand(uint8_t command)

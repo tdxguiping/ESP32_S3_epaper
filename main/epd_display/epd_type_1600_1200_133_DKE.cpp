@@ -41,12 +41,12 @@ constexpr uint8_t kCmd66[] = {0x49, 0x55, 0x13, 0x5D, 0x05, 0x10};
 constexpr uint8_t kEnBuf[] = {0x07};
 constexpr uint8_t kCcset[] = {0x01};
 constexpr uint8_t kPws[] = {0x22};
-constexpr uint8_t kAnTm[] = {0xC0, 0x1C, 0x1C, 0xCC, 0xCC, 0xCC, 0x15, 0x15, 0x55};
+constexpr uint8_t kAnTm[] = {0x00, 0x0C, 0x0C, 0xD9, 0xDD, 0xDD, 0x15, 0x15, 0x55};
 constexpr uint8_t kAgid[] = {0x10};
 constexpr uint8_t kCmdA4[] = {0x03, 0x00, 0x01, 0x03, 0x00, 0x03, 0x00, 0x00, 0x00};
-constexpr uint8_t kBtstP[] = {0xD8, 0x18};
+constexpr uint8_t kBtstP[] = {0xE0, 0x20};
 constexpr uint8_t kBoostVddpEn[] = {0x01};
-constexpr uint8_t kBtstN[] = {0xD8, 0x18};
+constexpr uint8_t kBtstN[] = {0xE0, 0x20};
 constexpr uint8_t kBuckBoostVddn[] = {0x01};
 constexpr uint8_t kTftVcomPower[] = {0x02};
 constexpr uint8_t kDcdc[] = {0x44, 0x54, 0x00};
@@ -117,8 +117,20 @@ esp_err_t ePaperPort::EpdType16001200_133_DKE_Init()
     int64_t start_us = esp_timer_get_time();
     ESP_LOGI(kTag, "EPD 1600x1200 13.3 DKE init start");
 
-    EPD_Reset();
-    esp_err_t ret = EpdType16001200_133_DKE_WaitBusyUnlockSpi("reset",
+    esp_err_t ret = Set_Power(1);
+    if (ret != ESP_OK) {
+        ESP_LOGE(kTag, "EPD 1600x1200 13.3 DKE reset power on failed ret=%s",
+                 esp_err_to_name(ret));
+        EpdType_ReportDisplayFailure(ret);
+        return ret;
+    }
+
+    Set_ResetIOLevel(0);
+    delay_ms(20);
+    Set_ResetIOLevel(1);
+    delay_ms(20);
+
+    ret = EpdType16001200_133_DKE_WaitBusyUnlockSpi("reset",
                                                               kDkeResetBusyTimeoutMs);
     if (ret != ESP_OK) {
         EpdType_ReportDisplayFailure(ret);
