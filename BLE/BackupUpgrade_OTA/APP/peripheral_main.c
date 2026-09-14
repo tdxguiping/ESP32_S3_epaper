@@ -10,6 +10,9 @@
 #include "OTAprofile.h"
 #include "central.h"
 #include "ch583_secure.h"
+#include "release_uart0.h"
+#include "release_trace.h"
+#include "factory_selftest.h"
 
 /* ��¼��ǰ��Image */
 #include "commoninfo.h"
@@ -92,6 +95,9 @@ void Main_Circulation()
     while(1)
     {
         WWDG_SetCounter(0);//ι�� , ����������� û��Ч��
+        #if APP_FACTORY_UART0_ENABLE
+        FactorySelftest_FastPoll();
+        #endif
         TMOS_SystemProcess();
     }
 }
@@ -378,6 +384,10 @@ UINT8  Ble_Scan=Is_Off;
 UINT8  Ble_Central_Scan= Is_Off;
 static uint8_t adc_idle_confirm_count = 0;
 static uint16_t adc_idle_monitor_count = 0;
+#if APP_FACTORY_UART0_ENABLE && APP_FACTORY_POWER_HOLD_ENABLE
+/* Last direct PB13 state. It lets an unplug restart the normal idle timer. */
+static uint8_t factory_power_was_present = Is_No;
+#endif
 
 
 static void StartChargeMonitor(void)
@@ -567,6 +577,22 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
         uint8_t is_charging_now = GetCurrentChargeStatus();
         uint8_t need_adc_check = Is_No;
 
+#if APP_FACTORY_UART0_ENABLE && APP_FACTORY_POWER_HOLD_ENABLE
+        uint8_t factory_power_now = FactorySelftest_ShouldBlockDeepSleep();
+        if(factory_power_now != factory_power_was_present)
+        {
+            BOOT_LOG_HEX8("BOOT power=", factory_power_now);
+        }
+        if((factory_power_was_present == Is_Yes) && (factory_power_now == Is_No))
+        {
+            /* Do not use the stale >30 second timeout accumulated on fixture power. */
+            global_DEVICE_STATUS.fSystemTimeOut = 0;
+            /* The earlier low-power event was held while fixture power was present. */
+            tmos_start_task(main_task_ID, EVENT_Low_Power, 500);
+        }
+        factory_power_was_present = factory_power_now;
+#endif
+
         if((is_charging_now == Is_Yes) || (was_charging == Is_Yes)){
             adc_idle_confirm_count = 0;
             adc_idle_monitor_count = 0;
@@ -621,6 +647,26 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 	if(events & EVENT_Low_Power)
 	{ 
 		Print_I3("..............EVENT_Low_Power 00000000000000000");		
+
+#if APP_FACTORY_UART0_ENABLE && APP_FACTORY_POWER_HOLD_ENABLE
+		if(FactorySelftest_ShouldBlockDeepSleep() == Is_Yes)
+		{
+			/* Persist completed refresh metadata but retain UART0 and all working IO. */
+			factory_power_was_present = Is_Yes;
+			Save_LastRefresh_Info_To_Flash();
+			return events ^ EVENT_Low_Power;
+		}
+
+		if(factory_power_was_present == Is_Yes)
+		{
+			/* PB13 fell since the last check: restart the existing BLE idle timeout. */
+			factory_power_was_present = Is_No;
+			global_DEVICE_STATUS.fSystemTimeOut = 0;
+			/* Re-run the event now that PB13 no longer holds the fixture awake. */
+			tmos_start_task(main_task_ID, EVENT_Low_Power, 500);
+			return events ^ EVENT_Low_Power;
+		}
+#endif
 		
 		Save_LastRefresh_Info_To_Flash();	
 			
@@ -1025,6 +1071,10 @@ void  Low_Power_IDLE_Times(UINT8 u8t)
 
 void   Low_power(void)
 {
+	#if !APP_LOW_POWER_ENABLE
+	return;
+	#endif
+
 	uint32_t tmp, irq_status;
 	//Print_I3("-----");   
 
@@ -1152,31 +1202,27 @@ int main(void)
 	PWR_DCDCCfg(ENABLE);
 #endif
 	SetSysClock(SYSCLK_FREQ);   
-#if defined(Debug_mode_on) || defined(RELEASE_UART)
-
+#if APP_UART0_ENABLE
 	extern void release_uart0_init(void);
-	release_uart0_init();
+#endif
 
 	GetResetState = GetLastResetSta();
-	if(GetResetState  != 5)
-	{
-		//Print_I3("low ");
-		// Low_power();
-	}
-#endif
 
-#ifdef  Low_power_mode_on
-#if(defined(HAL_SLEEP)) && (HAL_SLEEP == TRUE)
+#if APP_LOW_POWER_ENABLE
+	/* Original boot low-leakage profile; UART0 is restored immediately below. */
 	low_power_IIO_New();
-#endif
 #else
-	Init_GPIO(); 
-	init_cs();
-	Set_Spi0_Input_all_input();
-#endif    
+	Init_GPIO();
+#endif
+#if APP_UART0_ENABLE
+	release_uart0_init();
+	BOOT_LOG_TEXT("BOOT start\r\n" );
+	BOOT_LOG_TEXT("BOOT uart0-ready\r\n");
+#endif
 	CH58x_BLEInit();
 	HAL_Init();
 	Mac_To_Ascii();
+	BOOT_LOG_TEXT("BOOT ble-ready\r\n");
 
 #ifdef ENABLE_BOARD_ENCRYPT
 	if(is_illegal_device(Mac, 6) == Is_No){
@@ -1210,11 +1256,21 @@ int main(void)
 	GAPRole_CentralInit();
 	Central_Init();
 	main_task_ID = TMOS_ProcessEventRegister(Main_Event);
+#if APP_FACTORY_UART0_ENABLE
+	FactorySelftest_Init();
+	FactorySelftest_SendBootReport();
+	BOOT_LOG_TEXT("BOOT factory-ready\r\n");
+#endif
 	global_DEVICE_STATUS.fisOtaed = 0;
 	global_DEVICE_STATUS.fWillReboot = Is_No;
 
 	ControlEPDPower(Is_Off);
 	AdcInit();
+
+#if APP_FACTORY_UART0_ENABLE && APP_FACTORY_POWER_HOLD_ENABLE
+	factory_power_was_present = FactorySelftest_ShouldBlockDeepSleep();
+	BOOT_LOG_HEX8("BOOT power=", factory_power_was_present);
+#endif
 	
 #ifndef ENABLE_SOFTWARE_TO_XT
 	if(GetResetState  == 3)

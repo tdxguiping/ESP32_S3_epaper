@@ -16,6 +16,7 @@
 #include "flash_driver.h"
 #include "zlib_image_codec.h"
 #include "ch583_secure.h"
+#include "release_trace.h"
 
 /*********************************************************************
  * MACROS
@@ -735,6 +736,7 @@ static int zlib_flash_sink(void *context, const UINT8 *data, UINT16 length)
 static void zlib_receive_fail(uint16 connHandle)
 {
     uint8_t notify_buf[6]; uint16_t notify_len = 0;
+    TRANSFER_LOG_TEXT("ZLIB aborted\r\n");
     zlib_image_codec_abort(); s_zlib_image_active = 0;
     global_DEVICE_STATUS.fDataSendSuccess = Is_No; global_DEVICE_STATUS.fPackageCnt = 0;
     global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR;
@@ -1036,10 +1038,12 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 						return ( ATT_ERR_INSUFFICIENT_AUTHOR );
 					}
                     if(zlib_image_codec_begin(zlib_flash_sink, NULL) != 0){
+                        TRANSFER_LOG_TEXT("ZLIB begin failed\r\n");
                         zlib_receive_fail(connHandle); free(decrypted);
                         return ( ATT_ERR_INSUFFICIENT_AUTHOR );
                     }
                     s_zlib_image_active = 1;
+					TRANSFER_LOG_TEXT("ZLIB begin\r\n");
 					u8IsFirstPackage = TDX_DATA_FIRST_COLOR;
 				}else{
 					if(InitOtherPackage(connHandle, decrypted, decrypted_len) != 0){ free(decrypted); return ( ATT_ERR_INVALID_VALUE ); }
@@ -1770,13 +1774,13 @@ int InitFirstPackage(uint16 connHandle){
 int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
 {
     uint8_t notify_buf[6]; uint16_t notify_len; uint8_t notify_retry;
-    if(!s_zlib_image_active || zlib_image_codec_feed(adData, (UINT16)dataLen) != 0){ zlib_receive_fail(connHandle); return -1; }
+    if(!s_zlib_image_active || zlib_image_codec_feed(adData, (UINT16)dataLen) != 0){ TRANSFER_LOG_TEXT("ZLIB feed failed\r\n"); zlib_receive_fail(connHandle); return -1; }
     global_DEVICE_STATUS.fPackageCnt++;
     if(global_DEVICE_STATUS.fPackageCnt != global_TDX_AES_DATA_INFO.fPackageNum){
-        if(global_DEVICE_STATUS.fPackageCnt > global_TDX_AES_DATA_INFO.fPackageNum){ zlib_receive_fail(connHandle); return -1; }
+        if(global_DEVICE_STATUS.fPackageCnt > global_TDX_AES_DATA_INFO.fPackageNum){ TRANSFER_LOG_TEXT("ZLIB count failed\r\n"); zlib_receive_fail(connHandle); return -1; }
         return 0;
     }
-    if(zlib_image_codec_finish() != 0){ zlib_receive_fail(connHandle); return -1; }
+    if(zlib_image_codec_finish() != 0){ TRANSFER_LOG_TEXT("ZLIB finish failed\r\n"); zlib_receive_fail(connHandle); return -1; }
     global_DEVICE_STATUS.fPackageCnt = 0; global_DEVICE_STATUS.fPackageCount = 1;
     Save256DataToFlash(NULL, 0, global_EXTERN_FLASH_INFO.fImageIndex, global_EXTERN_FLASH_INFO.fBlockNum);
     global_EXTERN_FLASH_INFO.fZip = 0;
@@ -1784,6 +1788,7 @@ int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
     s_zlib_image_active = 0; u8IsFirstPackage = TDX_DATA_FIRST; IsDecryptFlag = Is_No;
     global_DEVICE_STATUS.fRefreshType = global_TDX_AES_DATA_INFO.fOpType; DeInitFlashDriver();
     global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR; global_DEVICE_STATUS.fDataSendSuccess = Is_Yes;
+	TRANSFER_LOG_TEXT("ZLIB finish ok\r\n");
     notitySendEnd(connHandle, 0x01, global_TDX_AES_DATA_INFO.fScreenType, notify_buf, &notify_len);
     for(notify_retry = 0; notify_retry < 5; notify_retry++){ notitySendFunc(connHandle, notify_buf, &notify_len); if(notify_retry < 4) delay_ms(50); }
     if(global_TDX_AES_DATA_INFO.fScreenType != OP_TYPE_IMG_DIFF_A){

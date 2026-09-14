@@ -8,6 +8,7 @@ C_SRCS += \
 ../APP/app_uart.c \
 ../APP/central.c \
 ../APP/epd_product_info.c \
+../APP/factory_selftest.c \
 ../APP/peripheral.c \
 ../APP/peripheral_main.c \
 ../APP/release_uart0.c \
@@ -17,6 +18,7 @@ OBJS += \
 ./APP/app_uart.o \
 ./APP/central.o \
 ./APP/epd_product_info.o \
+./APP/factory_selftest.o \
 ./APP/peripheral.o \
 ./APP/peripheral_main.o \
 ./APP/release_uart0.o \
@@ -26,6 +28,7 @@ C_DEPS += \
 ./APP/app_uart.d \
 ./APP/central.d \
 ./APP/epd_product_info.d \
+./APP/factory_selftest.d \
 ./APP/peripheral.d \
 ./APP/peripheral_main.d \
 ./APP/release_uart0.d \

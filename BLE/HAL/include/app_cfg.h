@@ -1,3 +1,63 @@
+/*
+ * Release / factory UART0 controls.
+ *
+ * Keep product selection (VER, panel and customer) in the existing build
+ * scripts. These switches are deliberately here so a production build never
+ * needs a second, protocol-specific script.
+ */
+#ifndef APP_RELEASE_BUILD
+#define APP_RELEASE_BUILD            1
+#endif
+
+#ifndef APP_UART0_ENABLE
+#define APP_UART0_ENABLE             1
+#endif
+
+#ifndef APP_FACTORY_UART0_ENABLE
+#define APP_FACTORY_UART0_ENABLE     1
+#endif
+
+#ifndef UART0_BOOT_LOG_ENABLE
+#define UART0_BOOT_LOG_ENABLE        1
+#endif
+
+#ifndef UART0_TRANSFER_LOG_ENABLE
+#define UART0_TRANSFER_LOG_ENABLE    1
+#endif
+
+/*
+ * Enable release low power. Fixture power on PB13 keeps deep low power from
+ * reconfiguring UART0; use 0 only while diagnosing low-power behavior.
+ */
+#ifndef APP_LOW_POWER_ENABLE
+#define APP_LOW_POWER_ENABLE          1
+#endif
+
+/*
+ * Keep the production-test UART alive while the fixture powers the board.
+ * The fixture-present signal is CHARGE_LED/PB13 and is read directly, so it
+ * is independent of the slower ADC charge-status update.
+ */
+#ifndef APP_FACTORY_POWER_HOLD_ENABLE
+#define APP_FACTORY_POWER_HOLD_ENABLE 1
+#endif
+
+#if APP_FACTORY_UART0_ENABLE && !APP_UART0_ENABLE
+#error "APP_FACTORY_UART0_ENABLE requires APP_UART0_ENABLE"
+#endif
+
+#if APP_RELEASE_BUILD && !defined(RELEASE_BUILD)
+#define RELEASE_BUILD
+#endif
+
+#if APP_UART0_ENABLE && !defined(RELEASE_UART)
+#define RELEASE_UART
+#endif
+
+#if APP_FACTORY_UART0_ENABLE && !defined(ENABLE_FACTORY_UART0_SELFTEST)
+#define ENABLE_FACTORY_UART0_SELFTEST
+#endif
+
 #include "CH58x_common.h"
 #include "CONFIG.h"
 
@@ -162,7 +222,7 @@
 //
 /***************************************/
 #define   Low_power_mode_on 		(1)
-#if !defined(RELEASE_BUILD)
+#if !APP_RELEASE_BUILD
 #define   Debug_mode_on     		(1)
 #endif
 
@@ -360,6 +420,6 @@ extern 	uint8_t Mac_ASCII[12];
 
 
 /* Direct printf calls in legacy application code are diagnostics. */
-#if defined(RELEASE_BUILD)
+#if APP_RELEASE_BUILD
 #define printf(...) (0)
 #endif

@@ -14,6 +14,7 @@
 /* 头文件包含 */
 #include "HAL.h"
 #include "app_cfg.h"
+#include "CH58x_gpio.h"
 
 #ifdef ENABLE_WIFI_UART1_PASSTHROUGH
 extern volatile uint8_t g_wifi_passthrough_disable_hal_sleep;
@@ -37,7 +38,23 @@ pfnLowPowerGapProcessCB_t LowPowerGapProcess;
 __HIGH_CODE
 uint32_t CH58x_LowPower(uint32_t time)
 {
+#if !APP_LOW_POWER_ENABLE
+    (void)time;
+    return 0;
+#else
 #if(defined(HAL_SLEEP)) && (HAL_SLEEP == TRUE)
+#if APP_FACTORY_UART0_ENABLE && APP_FACTORY_POWER_HOLD_ENABLE
+    /*
+     * UART0 RX is not a configured WFE wake source on this product. While
+     * the production fixture drives PB13 high, stay awake so PB4 RX remains
+     * continuously serviceable. Deep low power is separately blocked by the
+     * application-level PB13 check.
+     */
+    if((GPIOB_ReadPort() & CHARGE_LED) != 0U)
+    {
+        return 0;
+    }
+#endif
 #ifdef ENABLE_WIFI_UART1_PASSTHROUGH
     if(g_wifi_passthrough_disable_hal_sleep)
     {
@@ -128,6 +145,7 @@ uint32_t CH58x_LowPower(uint32_t time)
     SYS_RecoverIrq(irq_status);
 #endif
     return 3;
+#endif
 }
 
 /*******************************************************************************
