@@ -8,6 +8,7 @@
 #include "aes_util.h"
 #include "ch583_secure.h"
 #include "commoninfo.h"
+#include "epd_driver.h"
 #include "adc_api.h"
 #include "release_trace.h"
 #include "release_uart0.h"
@@ -274,21 +275,24 @@ void FactorySelftest_FastPoll(void)
 void FactorySelftest_SendBootReport(void)
 {
     const char *resolution;
-    const char *color;
     const char *maker;
     char mac_text[13];
+    char panel_type[2];
     UINT8 i;
     UINT16 crc = 0xffffU;
 
 #if defined(ENABLE_INK_SCREEN_JD79665_800X480_COLOR_4)
-    resolution = "800x480"; color = "7.5C4"; maker = "XT";
+    resolution = "800x480"; maker = "XT";
 #elif defined(ENABLE_INK_SCREEN_JD79665CA_800X480_COLOR_4)
-    resolution = "800x480"; color = "7.5C4"; maker = "DKE";
+    resolution = "800x480"; maker = "DKE";
 #elif defined(ENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6)
-    resolution = "800x480"; color = "7.5C6"; maker = "YT";
+    resolution = "800x480"; maker = "YT";
 #else
-    resolution = "UNKNOWN"; color = "UNKNOWN"; maker = "UNKNOWN";
+    resolution = "UNKNOWN"; maker = "UNKNOWN";
 #endif
+    /* Match the panel-type character used as the second character of BLE name. */
+    panel_type[0] = (char)EPD_GetScreenType();
+    panel_type[1] = '\0';
 
     for(i = 0; i < 6U; i++)
     {
@@ -307,14 +311,14 @@ void FactorySelftest_SendBootReport(void)
         while(count != 0U) crc = Factory_Crc16Update(crc, (UINT8)version_text[--count]);
     }
     crc = Factory_CrcText(crc, resolution);
-    crc = Factory_CrcText(crc, color);
+    crc = Factory_CrcText(crc, panel_type);
     crc = Factory_CrcText(crc, maker);
 
     Factory_WriteText("facBleMac ");
     Factory_WriteText(mac_text); Factory_WriteText(",");
     Factory_WriteDec(VER); Factory_WriteText(",");
     Factory_WriteText(resolution); Factory_WriteText(",");
-    Factory_WriteText(color); Factory_WriteText(",");
+    Factory_WriteText(panel_type); Factory_WriteText(",");
     Factory_WriteText(maker); Factory_WriteText(",");
     Factory_WriteHex((UINT8)(crc >> 8)); Factory_WriteHex((UINT8)crc);
     Factory_WriteText("\n");
