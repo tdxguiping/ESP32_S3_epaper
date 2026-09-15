@@ -18,6 +18,7 @@
 #define FACTORY_AES_LENGTH           16U
 #define FACTORY_EVENT_REBOOT         0x0001U
 #define FACTORY_REBOOT_DELAY_TICKS   160U
+#define FACTORY_LINE_END              "\r\n"
 
 static char s_factory_line[FACTORY_LINE_MAX];
 static UINT8 s_factory_line_len;
@@ -164,7 +165,7 @@ static void Factory_SendError(const char *reason)
 {
     Factory_WriteText("facBleErr ");
     Factory_WriteText(reason);
-    Factory_WriteText("\n");
+    Factory_WriteText(FACTORY_LINE_END);
 }
 
 static void Factory_HandleBle(char *payload)
@@ -173,21 +174,21 @@ static void Factory_HandleBle(char *payload)
     if(strcmp(payload, "facReboot") == 0)
     {
         if(tmos_start_task(s_factory_task_id, FACTORY_EVENT_REBOOT, FACTORY_REBOOT_DELAY_TICKS) == 0)
-            Factory_WriteText("facReboot failed\n");
+            Factory_WriteText("facReboot failed" FACTORY_LINE_END);
         else
-            Factory_WriteText("facReboot success\n");
+            Factory_WriteText("facReboot success" FACTORY_LINE_END);
         return;
     }
-    if(strncmp(payload, "facCleanRegist", 15U) == 0 && (payload[15] == ' ' || payload[15] == '\t'))
+    if(strncmp(payload, "facCleanRegist", 14U) == 0 && (payload[14] == ' ' || payload[14] == '\t'))
     {
-        key = Factory_Trim(payload + 15U);
-        Factory_WriteText(Factory_CleanRegister(key) ? "facCleanRegist success\n" : "facCleanRegist failed\n");
+        key = Factory_Trim(payload + 14U);
+        Factory_WriteText(Factory_CleanRegister(key) ? "facCleanRegist success" FACTORY_LINE_END : "facCleanRegist failed" FACTORY_LINE_END);
         return;
     }
     if(strncmp(payload, "facRegist", 9U) == 0 && (payload[9] == ' ' || payload[9] == '\t'))
     {
         key = Factory_Trim(payload + 9U);
-        Factory_WriteText(Factory_Register(key) ? "facRegist success\n" : "facRegist failed\n");
+        Factory_WriteText(Factory_Register(key) ? "facRegist success" FACTORY_LINE_END : "facRegist failed" FACTORY_LINE_END);
         return;
     }
     Factory_SendError("BAD_CMD");
@@ -274,25 +275,28 @@ void FactorySelftest_FastPoll(void)
 
 void FactorySelftest_SendBootReport(void)
 {
-    const char *resolution;
     const char *maker;
     char mac_text[13];
     char panel_type[2];
+    char registered[2];
     UINT8 i;
     UINT16 crc = 0xffffU;
 
 #if defined(ENABLE_INK_SCREEN_JD79665_800X480_COLOR_4)
-    resolution = "800x480"; maker = "XT";
+    maker = "XT";
 #elif defined(ENABLE_INK_SCREEN_JD79665CA_800X480_COLOR_4)
-    resolution = "800x480"; maker = "DKE";
+    maker = "DKE";
 #elif defined(ENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6)
-    resolution = "800x480"; maker = "YT";
+    maker = "YT";
 #else
-    resolution = "UNKNOWN"; maker = "UNKNOWN";
+    maker = "UNKNOWN";
 #endif
     /* Match the panel-type character used as the second character of BLE name. */
     panel_type[0] = (char)EPD_GetScreenType();
     panel_type[1] = '\0';
+    /* Same key-validation state used by the advertising response: 1=registered. */
+    registered[0] = (global_DEVICE_STATUS.fisVaildDevice == Is_Yes) ? '1' : '0';
+    registered[1] = '\0';
 
     for(i = 0; i < 6U; i++)
     {
@@ -310,18 +314,18 @@ void FactorySelftest_SendBootReport(void)
         do { version_text[count++] = (char)('0' + version % 10U); version /= 10U; } while(version != 0U);
         while(count != 0U) crc = Factory_Crc16Update(crc, (UINT8)version_text[--count]);
     }
-    crc = Factory_CrcText(crc, resolution);
+    crc = Factory_CrcText(crc, registered);
     crc = Factory_CrcText(crc, panel_type);
     crc = Factory_CrcText(crc, maker);
 
     Factory_WriteText("facBleMac ");
     Factory_WriteText(mac_text); Factory_WriteText(",");
     Factory_WriteDec(VER); Factory_WriteText(",");
-    Factory_WriteText(resolution); Factory_WriteText(",");
+    Factory_WriteText(registered); Factory_WriteText(",");
     Factory_WriteText(panel_type); Factory_WriteText(",");
     Factory_WriteText(maker); Factory_WriteText(",");
     Factory_WriteHex((UINT8)(crc >> 8)); Factory_WriteHex((UINT8)crc);
-    Factory_WriteText("\n");
+    Factory_WriteText(FACTORY_LINE_END);
     BOOT_LOG_TEXT("BOOT panel-ready\r\n");
 }
 
