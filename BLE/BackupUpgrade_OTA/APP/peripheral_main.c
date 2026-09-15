@@ -361,6 +361,11 @@ void Init_GPIO(void)
 	R32_PA_OUT |= (epaper_CS);//R32_PA_OUT |= (epaper_CS | epaper_CS_SLAVE);
 	R32_PB_OUT |= (epaper2_CS);//R32_PB_OUT |= (epaper2_CS | epaper2_CS_SLAVE);
 #endif
+
+#if APP_UART0_ENABLE
+	/* DeviceInit() reuses Init_GPIO(); keep PB4/PB7 as UART0 afterwards. */
+	release_uart0_restore_pins();
+#endif
 }
 
 /******************************** endfile @ main ******************************/
@@ -646,12 +651,15 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 	
 	if(events & EVENT_Low_Power)
 	{ 
-		Print_I3("..............EVENT_Low_Power 00000000000000000");		
+		Print_I3("..............EVENT_Low_Power 00000000000000000");
+		BOOT_LOG_TEXT("BOOT lowpower event\r\n");
+		BOOT_LOG_HEX8("BOOT fWorked=", global_DEVICE_STATUS.fWorked);
 
 #if APP_FACTORY_UART0_ENABLE && APP_FACTORY_POWER_HOLD_ENABLE
 		if(FactorySelftest_ShouldBlockDeepSleep() == Is_Yes)
 		{
 			/* Persist completed refresh metadata but retain UART0 and all working IO. */
+			BOOT_LOG_TEXT("BOOT power-hold\r\n");
 			factory_power_was_present = Is_Yes;
 			Save_LastRefresh_Info_To_Flash();
 			return events ^ EVENT_Low_Power;
@@ -660,6 +668,7 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 		if(factory_power_was_present == Is_Yes)
 		{
 			/* PB13 fell since the last check: restart the existing BLE idle timeout. */
+			BOOT_LOG_TEXT("BOOT power-release\r\n");
 			factory_power_was_present = Is_No;
 			global_DEVICE_STATUS.fSystemTimeOut = 0;
 			/* Re-run the event now that PB13 no longer holds the fixture awake. */
@@ -671,7 +680,10 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 		Save_LastRefresh_Info_To_Flash();	
 			
 		if(global_DEVICE_STATUS.fisOtaed != 1)
+		{
+			BOOT_LOG_TEXT("BOOT deep-sleep pending\r\n");
 			Low_power();
+		}
 		
 		return events ^ EVENT_Low_Power;
 	}
@@ -973,6 +985,7 @@ void   Low_power_IDLE(void)
         CPU_busy_had_active = Is_No;
         CPU_busy_idle_stable = 0;
         EPD_Busy_PrepareObserve();
+        BUSY_LOG_TEXT("BUSY monitor begin\r\n");
     }
 
     EPD_Busy_GetStatus(&busy_status);
@@ -989,6 +1002,10 @@ void   Low_power_IDLE(void)
         {
             if(busy_status.any_busy == Is_Yes)
             {
+                if(CPU_busy_had_active == Is_No)
+                {
+                    BUSY_LOG_TEXT("BUSY active-seen\r\n");
+                }
                 CPU_busy_had_active = Is_Yes;
                 CPU_busy_idle_stable = 0;
             }
@@ -1014,6 +1031,20 @@ void   Low_power_IDLE(void)
 
         if(refresh_over == Is_Yes)
         {
+            if(busy_supported == Is_Yes)
+            {
+                if(busy_timeout == Is_Yes)
+                {
+                    BUSY_LOG_TEXT("BUSY refresh-timeout\r\n");
+                    FAULT_LOG_TEXT("FAULT epd busy-timeout\r\n");
+                }
+                else
+                {
+                    BUSY_LOG_TEXT("BUSY refresh-complete\r\n");
+                }
+                BUSY_LOG_HEX8("BUSY rawA=", busy_status.raw_a);
+                BUSY_LOG_HEX8("BUSY rawB=", busy_status.raw_b);
+            }
             if(busy_supported == Is_Yes)
             {
                 Print_I3("CPU_had_IDLE over=%d target=%x rawA=%d rawB=%d busyA=%d busyB=%d stable=%d timeout=%d",
@@ -1050,6 +1081,8 @@ void   Low_power_IDLE(void)
         global_DEVICE_STATUS.fWorked =Is_No;
         global_DEVICE_STATUS.fWillReboot =Is_Yes;
         Print_I3("EVENT_Low_Power=%d",CPU_had_IDLE_counter);
+        IMAGE_LOG_TEXT("IMG refresh lifecycle complete\r\n");
+        BOOT_LOG_TEXT("BOOT lowpower queued\r\n");
         CPU_had_IDLE_counter = 0;
         CPU_had_IDLE = Is_No;
         CPU_busy_had_active = Is_No;
@@ -1098,6 +1131,8 @@ void   Low_power(void)
 	}
 	else
 	{
+		/* PB7 is still UART0 here; finish its final diagnostics before pin remap. */
+		release_uart0_wait_tx_idle(60000U);
 		low_power_IIO_New();
 		Print_I3("LowPower_Shutdown Period_4_S");       
 		Low_Power_RTC(Period_0_125_S);
@@ -1218,6 +1253,7 @@ int main(void)
 	release_uart0_init();
 	BOOT_LOG_TEXT("BOOT start\r\n" );
 	BOOT_LOG_TEXT("BOOT uart0-ready\r\n");
+	BOOT_LOG_HEX8("BOOT reset=", GetResetState);
 #endif
 	CH58x_BLEInit();
 	HAL_Init();

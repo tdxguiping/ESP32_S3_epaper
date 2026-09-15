@@ -737,6 +737,7 @@ static void zlib_receive_fail(uint16 connHandle)
 {
     uint8_t notify_buf[6]; uint16_t notify_len = 0;
     TRANSFER_LOG_TEXT("ZLIB aborted\r\n");
+    FAULT_LOG_TEXT("FAULT img transfer aborted\r\n");
     zlib_image_codec_abort(); s_zlib_image_active = 0;
     global_DEVICE_STATUS.fDataSendSuccess = Is_No; global_DEVICE_STATUS.fPackageCnt = 0;
     global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR;
@@ -971,13 +972,14 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 			    if (!decrypted) {
 			    	free(decrypted);
 			        Print_I3("decrypt_ecb failure\n");
+                    FAULT_LOG_TEXT("FAULT img decrypt\r\n");
 			       	return ( ATT_ERR_INSUFFICIENT_AUTHOR );
 			    } 		
 
 				//PRINT("WriteAttrCB TDXINFO_SEND_DATA aaaaaaaaaaaaaaaa decrypted_len=%d\r\n",decrypted_len);
 				//hex_dump(decrypted, decrypted_len);
 				if(u8IsFirstPackage == TDX_DATA_FIRST){
-                    if(decrypted_len != 15){ free(decrypted); return ( ATT_ERR_INVALID_VALUE_SIZE ); }
+					if(decrypted_len != 15){ FAULT_LOG_TEXT("FAULT img first-len\r\n"); FAULT_LOG_HEX32("FAULT img first-len-value=", decrypted_len); free(decrypted); return ( ATT_ERR_INVALID_VALUE_SIZE ); }
 					if(s_tdx_display_busy_protect){
 						uint8_t busy_screen_type = decrypted[1];
 						uint8_t notify_buf[6];
@@ -985,6 +987,8 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 						uint8_t notify_retry;
 
 						s_tdx_busy_drop_packets = (decrypted[2] << 24) | (decrypted[3] << 16) | (decrypted[4] << 8) | decrypted[5];
+						FAULT_LOG_TEXT("FAULT img busy-protect\r\n");
+						FAULT_LOG_HEX32("FAULT img busy-drop=", s_tdx_busy_drop_packets);
 						u8IsFirstPackage = (s_tdx_busy_drop_packets == 0) ? TDX_DATA_FIRST : TDX_DATA_FIRST_COLOR;
 						notitySendEnd(connHandle, 0x03, busy_screen_type, notify_buf, &notify_len);
 						for(notify_retry = 0; notify_retry < 3; notify_retry++){
@@ -1011,7 +1015,8 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 					if(global_TDX_AES_DATA_INFO.fScreenType == OP_TYPE_IMG_AB || global_TDX_AES_DATA_INFO.fScreenType == OP_TYPE_SAVE_IMG_AB)
 						global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_AB;
 					global_TDX_AES_DATA_INFO.fPackageNum = (decrypted[2] << 24) | (decrypted[3] << 16) | (decrypted[4] << 8) | decrypted[5];
-                    if(decrypted[11] != 1 || global_TDX_AES_DATA_INFO.fPackageNum == 0){ free(decrypted); return ( ATT_ERR_INVALID_VALUE ); }
+                    if(decrypted[11] != 1){ FAULT_LOG_TEXT("FAULT img protocol\r\n"); free(decrypted); return ( ATT_ERR_INVALID_VALUE ); }
+                    if(global_TDX_AES_DATA_INFO.fPackageNum == 0){ FAULT_LOG_TEXT("FAULT img package-zero\r\n"); free(decrypted); return ( ATT_ERR_INVALID_VALUE ); }
 					
 					// 处理user_id和lock标志（decrypted[6-9]=user_id, decrypted[14]=lock）
 					uint32_t received_user_id = (decrypted[6] << 24) | (decrypted[7] << 16) | (decrypted[8] << 8) | decrypted[9];
@@ -1019,6 +1024,7 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 					global_TDX_AES_DATA_INFO.fUserId = received_user_id;
 					
 					if(processUserIdAndLock(received_user_id, user_id_lock) != 0){
+						FAULT_LOG_TEXT("FAULT img device-bound\r\n");
 						// user_id验证失败，设备已被其他用户绑定，通知前端
 						u8IsFirstPackage = TDX_DATA_FIRST_COLOR;//第二个包就不进来了
 						notifyDeviceBound(connHandle);
@@ -1032,8 +1038,12 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 					global_TDX_AES_DATA_INFO.fGroupNum= decrypted[13];
 					global_DEVICE_STATUS.fBoardCastGroup = global_TDX_AES_DATA_INFO.fGroupNum;
 					global_DEVICE_STATUS.fBoardCastRoom = global_TDX_AES_DATA_INFO.fRoomNum;
+					IMAGE_LOG_TEXT("IMG header ok\r\n");
+					IMAGE_LOG_HEX8("IMG screen=", global_TDX_AES_DATA_INFO.fScreenType);
+					IMAGE_LOG_HEX32("IMG packages=", global_TDX_AES_DATA_INFO.fPackageNum);
 
 					if(InitFirstPackage(connHandle) == -1){
+						FAULT_LOG_TEXT("FAULT img init-first\r\n");
 						free(decrypted);
 						return ( ATT_ERR_INSUFFICIENT_AUTHOR );
 					}
@@ -1044,6 +1054,7 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
                     }
                     s_zlib_image_active = 1;
 					TRANSFER_LOG_TEXT("ZLIB begin\r\n");
+					IMAGE_LOG_TEXT("IMG zlib session begin\r\n");
 					u8IsFirstPackage = TDX_DATA_FIRST_COLOR;
 				}else{
 					if(InitOtherPackage(connHandle, decrypted, decrypted_len) != 0){ free(decrypted); return ( ATT_ERR_INVALID_VALUE ); }
@@ -1774,13 +1785,14 @@ int InitFirstPackage(uint16 connHandle){
 int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
 {
     uint8_t notify_buf[6]; uint16_t notify_len; uint8_t notify_retry;
-    if(!s_zlib_image_active || zlib_image_codec_feed(adData, (UINT16)dataLen) != 0){ TRANSFER_LOG_TEXT("ZLIB feed failed\r\n"); zlib_receive_fail(connHandle); return -1; }
+    if(!s_zlib_image_active || zlib_image_codec_feed(adData, (UINT16)dataLen) != 0){ TRANSFER_LOG_TEXT("ZLIB feed failed\r\n"); FAULT_LOG_TEXT("FAULT img zlib-feed\r\n"); zlib_receive_fail(connHandle); return -1; }
     global_DEVICE_STATUS.fPackageCnt++;
     if(global_DEVICE_STATUS.fPackageCnt != global_TDX_AES_DATA_INFO.fPackageNum){
-        if(global_DEVICE_STATUS.fPackageCnt > global_TDX_AES_DATA_INFO.fPackageNum){ TRANSFER_LOG_TEXT("ZLIB count failed\r\n"); zlib_receive_fail(connHandle); return -1; }
+        if(global_DEVICE_STATUS.fPackageCnt > global_TDX_AES_DATA_INFO.fPackageNum){ TRANSFER_LOG_TEXT("ZLIB count failed\r\n"); FAULT_LOG_TEXT("FAULT img package-overflow\r\n"); FAULT_LOG_HEX32("FAULT img received=", global_DEVICE_STATUS.fPackageCnt); FAULT_LOG_HEX32("FAULT img expected=", global_TDX_AES_DATA_INFO.fPackageNum); zlib_receive_fail(connHandle); return -1; }
         return 0;
     }
-    if(zlib_image_codec_finish() != 0){ TRANSFER_LOG_TEXT("ZLIB finish failed\r\n"); zlib_receive_fail(connHandle); return -1; }
+    IMAGE_LOG_TEXT("IMG zlib last-packet\r\n");
+    if(zlib_image_codec_finish() != 0){ TRANSFER_LOG_TEXT("ZLIB finish failed\r\n"); FAULT_LOG_TEXT("FAULT img zlib-finish\r\n"); zlib_receive_fail(connHandle); return -1; }
     global_DEVICE_STATUS.fPackageCnt = 0; global_DEVICE_STATUS.fPackageCount = 1;
     Save256DataToFlash(NULL, 0, global_EXTERN_FLASH_INFO.fImageIndex, global_EXTERN_FLASH_INFO.fBlockNum);
     global_EXTERN_FLASH_INFO.fZip = 0;
@@ -1789,11 +1801,13 @@ int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
     global_DEVICE_STATUS.fRefreshType = global_TDX_AES_DATA_INFO.fOpType; DeInitFlashDriver();
     global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR; global_DEVICE_STATUS.fDataSendSuccess = Is_Yes;
 	TRANSFER_LOG_TEXT("ZLIB finish ok\r\n");
+	IMAGE_LOG_TEXT("IMG receive complete\r\n");
     notitySendEnd(connHandle, 0x01, global_TDX_AES_DATA_INFO.fScreenType, notify_buf, &notify_len);
     for(notify_retry = 0; notify_retry < 5; notify_retry++){ notitySendFunc(connHandle, notify_buf, &notify_len); if(notify_retry < 4) delay_ms(50); }
     if(global_TDX_AES_DATA_INFO.fScreenType != OP_TYPE_IMG_DIFF_A){
         s_tdx_display_busy_protect = 1; s_tdx_busy_drop_packets = 0; InitFlashDriver(); mDelayuS(10);
         global_DEVICE_STATUS.fImageType = (global_TDX_AES_DATA_INFO.fScreenType == OP_TYPE_IMG_DIFF_B) ? 1 : 0;
+		IMAGE_LOG_TEXT("IMG refresh queued\r\n");
         tmos_start_task(main_task_ID,EVENT_Get_Battle_Charge ,100); mDelayuS(10); DeInitFlashDriver();
     }
     return 0;

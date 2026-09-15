@@ -15,14 +15,20 @@
 
 #if APP_UART0_ENABLE
 void release_uart0_init(void);
+/* Restore PB4/PB7 after shared GPIO initialisation without resetting UART state. */
+void release_uart0_restore_pins(void);
 void release_uart0_write(const UINT8 *data, UINT16 length);
+/* Drain only the UART transmitter before a deliberate deep-sleep pin remap. */
+void release_uart0_wait_tx_idle(UINT16 poll_limit);
 UINT16 release_uart0_available(void);
 UINT16 release_uart0_read(UINT8 *data, UINT16 capacity);
 UINT16 release_uart0_rx_overflow_count(void);
 void release_uart0_clear_rx(void);
 #else
 #define release_uart0_init()                     do { } while(0)
+#define release_uart0_restore_pins()             do { } while(0)
 #define release_uart0_write(data, length)        do { (void)(data); (void)(length); } while(0)
+#define release_uart0_wait_tx_idle(poll_limit)   do { (void)(poll_limit); } while(0)
 #define release_uart0_available()                0U
 #define release_uart0_read(data, capacity)       0U
 #define release_uart0_rx_overflow_count()        0U

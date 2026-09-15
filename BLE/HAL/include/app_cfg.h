@@ -25,6 +25,26 @@
 #define UART0_TRANSFER_LOG_ENABLE    1
 #endif
 
+/* Category debug logging: each category can be compiled out independently. */
+#ifndef UART0_BLE_LOG_ENABLE
+#define UART0_BLE_LOG_ENABLE         1
+#endif
+
+#ifndef UART0_IMAGE_LOG_ENABLE
+#define UART0_IMAGE_LOG_ENABLE       1
+#endif
+
+#ifndef UART0_BUSY_LOG_ENABLE
+#define UART0_BUSY_LOG_ENABLE        1
+#endif
+
+#ifndef UART0_OTA_LOG_ENABLE
+#define UART0_OTA_LOG_ENABLE         1
+#endif
+
+#ifndef UART0_FAULT_LOG_ENABLE
+#define UART0_FAULT_LOG_ENABLE       1
+#endif
 /*
  * Enable release low power. Fixture power on PB13 keeps deep low power from
  * reconfiguring UART0; use 0 only while diagnosing low-power behavior.

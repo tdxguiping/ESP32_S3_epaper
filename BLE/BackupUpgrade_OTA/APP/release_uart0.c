@@ -28,12 +28,17 @@ static void release_uart0_rx_push(UINT8 value)
     release_uart0_rx_write_index = next;
 }
 
-void release_uart0_init(void)
+void release_uart0_restore_pins(void)
 {
     GPIOPinRemap(DISABLE, RB_PIN_UART0);
     GPIOB_SetBits(GPIO_Pin_7);
     GPIOB_ModeCfg(GPIO_Pin_4, GPIO_ModeIN_PU);
     GPIOB_ModeCfg(GPIO_Pin_7, GPIO_ModeOut_PP_5mA);
+}
+
+void release_uart0_init(void)
+{
+    release_uart0_restore_pins();
 
     release_uart0_rx_read_index = 0;
     release_uart0_rx_write_index = 0;
@@ -52,6 +57,14 @@ void release_uart0_write(const UINT8 *data, UINT16 length)
     if(data && length)
     {
         UART0_SendString((UINT8 *)data, length);
+    }
+}
+
+void release_uart0_wait_tx_idle(UINT16 poll_limit)
+{
+    while((poll_limit != 0U) && ((UART0_GetLinSTA() & STA_TXALL_EMP) == 0U))
+    {
+        poll_limit--;
     }
 }
 

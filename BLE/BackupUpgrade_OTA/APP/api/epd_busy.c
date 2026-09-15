@@ -2,6 +2,7 @@
 #include "app_cfg.h"
 #include "commoninfo.h"
 #include "epd_busy.h"
+#include "release_trace.h"
 
 static UINT32 EPD_Busy_GetLegacyBusyGpio(void)
 {
@@ -235,6 +236,7 @@ UINT16 EPD_Busy_WaitCurrent(UINT16 active_timeout_ms, UINT16 release_timeout_ms)
     if(target_sides == EPD_BUSY_SIDE_NONE)
     {
         Print_I3("BW noT");
+		BUSY_LOG_TEXT("BUSY no-target\r\n");
         return Is_OK;
     }
 
@@ -255,11 +257,13 @@ UINT16 EPD_Busy_WaitCurrent(UINT16 active_timeout_ms, UINT16 release_timeout_ms)
         if(EPD_Busy_GetStatusByTarget(&status, target_sides) != Is_Yes)
         {
             Print_I3("BW uns");
+			FAULT_LOG_TEXT("FAULT epd busy-unsupported\r\n");
             return Is_Er;
         }
         if(status.any_busy == Is_Yes)
         {
             had_active = Is_Yes;
+			BUSY_LOG_TEXT("BUSY active\r\n");
             break;
         }
         DelayMs(2);
@@ -269,6 +273,7 @@ UINT16 EPD_Busy_WaitCurrent(UINT16 active_timeout_ms, UINT16 release_timeout_ms)
     {
         Print_I3("BW idle t=%x rA=%d rB=%d bA=%d bB=%d",
                  target_sides, status.raw_a, status.raw_b, status.busy_a, status.busy_b);
+		BUSY_LOG_TEXT("BUSY no-active\r\n");
         return Is_OK;
     }
 
@@ -277,12 +282,16 @@ UINT16 EPD_Busy_WaitCurrent(UINT16 active_timeout_ms, UINT16 release_timeout_ms)
         if(EPD_Busy_GetStatusByTarget(&status, target_sides) != Is_Yes)
         {
             Print_I3("BW unsR");
+			FAULT_LOG_TEXT("FAULT epd busy-unsupported\r\n");
             return Is_Er;
         }
         if(status.all_idle == Is_Yes)
         {
             Print_I3("BW ok t=%x a=%d r=%d rA=%d rB=%d",
                      target_sides, active_count, release_count, status.raw_a, status.raw_b);
+			BUSY_LOG_TEXT("BUSY idle\r\n");
+			BUSY_LOG_HEX8("BUSY rawA=", status.raw_a);
+			BUSY_LOG_HEX8("BUSY rawB=", status.raw_b);
             return Is_OK;
         }
         DelayMs(2);
@@ -290,6 +299,11 @@ UINT16 EPD_Busy_WaitCurrent(UINT16 active_timeout_ms, UINT16 release_timeout_ms)
 
     Print_I3("BW to t=%x r=%d rA=%d rB=%d bA=%d bB=%d",
              target_sides, release_count, status.raw_a, status.raw_b, status.busy_a, status.busy_b);
+	BUSY_LOG_TEXT("BUSY timeout\r\n");
+	FAULT_LOG_TEXT("FAULT epd busy-timeout\r\n");
+	FAULT_LOG_HEX8("FAULT epd target=", target_sides);
+	FAULT_LOG_HEX8("FAULT epd rawA=", status.raw_a);
+	FAULT_LOG_HEX8("FAULT epd rawB=", status.raw_b);
     return Is_Er;
 }
 

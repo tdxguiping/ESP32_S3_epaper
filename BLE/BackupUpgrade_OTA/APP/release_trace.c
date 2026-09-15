@@ -1,6 +1,9 @@
 #include "release_trace.h"
 
-#if APP_UART0_ENABLE && (UART0_BOOT_LOG_ENABLE || UART0_TRANSFER_LOG_ENABLE)
+#if APP_UART0_ENABLE && (UART0_BOOT_LOG_ENABLE || UART0_TRANSFER_LOG_ENABLE || \
+                         UART0_BLE_LOG_ENABLE || UART0_IMAGE_LOG_ENABLE || \
+                         UART0_BUSY_LOG_ENABLE || UART0_OTA_LOG_ENABLE || \
+                         UART0_FAULT_LOG_ENABLE)
 #include "release_uart0.h"
 
 void release_trace_write(const UINT8 *data, UINT16 length)

@@ -6,6 +6,7 @@
 #include "epd_driver.h"
 #include "Display_EPD_W21_spi.h"
 #include "rledecode.h"
+#include "release_trace.h"
 
 RleImgDataCallback_t dataimgCb = NULL;
 int callbackValue = 0;
@@ -265,6 +266,7 @@ int DevicePower(){
 void Display_EPD_AB()
 {    
 	Print_I3("EPD_AB h=%d\r\n", global_DEVICE_STATUS.fisHost);
+	IMAGE_LOG_TEXT("IMG epd refresh command\r\n");
 #if (defined(ENABLE_INK_SCREEN_JD79686BB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79686AB_1360X480_COLOR_3)) || \
 	(defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4)) || \
 	(defined(ENABLE_INK_SCREEN_JD79686AC_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_SSD2683ZA_272X792_COLOR_4)) || \
@@ -477,6 +479,7 @@ void Display_Picture_To_Color(unsigned char data, int length){
 
 	if(global_DEVICE_STATUS.fInitDriver == Is_Yes){
 		Print_I3("PIC len:%d",length);
+		IMAGE_LOG_TEXT("IMG panel-data begin\r\n");
 		// Reset host/slave state at the start of every new image.
 		// Otherwise the second half of the previous refresh can leak into the next frame.
 #if (defined(ENABLE_INK_SCREEN_JD79686AB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || \
@@ -581,6 +584,7 @@ void Display_Picture_To_Color(unsigned char data, int length){
 #else
 	if (length == EPD_GetDisplayMaxBuf() -1) {
 		Print_I3("D6 len:%d",length);
+		IMAGE_LOG_TEXT("IMG panel-data complete\r\n");
 		Display_EPD_AB();
         // Clear per-image decode state after the last byte of the frame.
         pendingCompressByte = PENDING_NONE;

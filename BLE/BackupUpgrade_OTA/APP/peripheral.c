@@ -20,6 +20,7 @@
 #include "OTAprofile.h"
 #include "app_cfg.h"
 #include "commoninfo.h"
+#include "release_trace.h"
 
 #include "rledecode.h"
 
@@ -501,6 +502,9 @@ uint32_t EraseTmpBlockCnt = 0; //�����Ŀ����
 /* FLASH У����� */
 uint8_t VerifyStatus = 0;
 uint8_t ResultStatus = 0;
+/* Trace-only state. It must not participate in the BLE or OTA state machines. */
+static UINT8 s_ble_log_connected = Is_No;
+static UINT8 s_ota_program_logged = Is_No;
 
 /*********************************************************************
  * LOCAL FUNCTIONS
@@ -589,15 +593,21 @@ static void peripheralParamUpdateCB(uint16 connHandle, uint16 connInterval,
         if(state==SUCCESS)
         {
             Print_I3("Disconnect Ble Success");
+            BLE_LOG_TEXT("BLE disconnect request ok\r\n");
         }
         else
         {
             Print_I3("Disconnect Ble Fail");
+            FAULT_LOG_TEXT("FAULT ble disconnect request\r\n");
+            FAULT_LOG_HEX8("FAULT ble status=", state);
         }
     }
     else
     {
         Print_I3("Update %x connInterval=%x %x %x", connHandle, connInterval,connSlaveLatency,connTimeout);
+        BLE_LOG_TEXT("BLE param-update ok\r\n");
+        BLE_LOG_HEX32("BLE interval=", connInterval);
+        BLE_LOG_HEX32("BLE timeout=", connTimeout);
     }
 }
 
@@ -770,6 +780,7 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
 			Print_I3("EraseBlockCnt(%d) >= EraseBlockNum(%d), erase already complete\r\n", 
 					 (int)EraseBlockCnt, (int)EraseBlockNum);
 			global_DEVICE_STATUS.fOtaStatus = RTN_OTA_SUCCESS;
+			OTA_LOG_TEXT("OTA erase complete\r\n");
 			OTA_IAP_SendCMDDealSta(SUCCESS);
 			return (events ^ OTA_FLASH_ERASE_EVT); // ??????
 		}
@@ -782,6 +793,8 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
         {
             OTA_IAP_SendCMDDealSta(status);
 			global_DEVICE_STATUS.fOtaStatus = RTN_OTA_FAILURE;
+			FAULT_LOG_TEXT("FAULT ota erase\r\n");
+			FAULT_LOG_HEX8("FAULT ota status=", status);
 			mDelaymS(10);
             SYS_ResetExecute();
             return (events ^ OTA_FLASH_ERASE_EVT);
@@ -800,6 +813,7 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
         {
             Print_I3("ERASE Complete %d\r\n",status);
 			global_DEVICE_STATUS.fOtaStatus = RTN_OTA_SUCCESS;
+			OTA_LOG_TEXT("OTA erase complete\r\n");
             OTA_IAP_SendCMDDealSta(status);
             return (events ^ OTA_FLASH_ERASE_EVT);
         }
@@ -843,10 +857,15 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
     {
         case GAPROLE_STARTED:
             Print_I3("Initialized..");
+			BLE_LOG_TEXT("BLE stack started\r\n");
 			global_DEVICE_STATUS.fisBleConnect = Is_No;
             break;
         case GAPROLE_ADVERTISING:
             //Print_I3("Advertising..");
+			if(s_ble_log_connected == Is_No)
+			{
+				BLE_LOG_TEXT("BLE advertising\r\n");
+			}
             global_DEVICE_STATUS.fisBleConnect = Is_No;
             break;
         case GAPROLE_CONNECTED:
@@ -869,6 +888,10 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
             printf("connLatency=%d \r\n",event->connLatency);
             printf("connTimeout=%d \r\n",event->connTimeout);
             printf("clockAccuracy=%d \r\n",event->clockAccuracy);
+			BLE_LOG_TEXT("BLE connected\r\n");
+			BLE_LOG_HEX32("BLE interval=", event->connInterval);
+			BLE_LOG_HEX32("BLE timeout=", event->connTimeout);
+			s_ble_log_connected = Is_Yes;
 
 			//tmos_start_task(main_task_ID,EVENT_Check_TimeOut ,500);
 #ifdef ENABLE_INK_SCREEN_UC8279_800X480_COLOR_3
@@ -878,6 +901,9 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
             if(conn_interval > DEFAULT_DESIRED_MAX_CONN_INTERVAL)
             {
                 Print_I3("Send Update %d %d",DEFAULT_DESIRED_MIN_CONN_INTERVAL_v2,DEFAULT_DESIRED_MAX_CONN_INTERVAL_v2);
+				BLE_LOG_TEXT("BLE param-update request\r\n");
+				BLE_LOG_HEX32("BLE param-min=", DEFAULT_DESIRED_MIN_CONN_INTERVAL_v2);
+				BLE_LOG_HEX32("BLE param-max=", DEFAULT_DESIRED_MAX_CONN_INTERVAL_v2);
                 GAPRole_PeripheralConnParamUpdateReq(event->connectionHandle,
                                                      DEFAULT_DESIRED_MIN_CONN_INTERVAL_v2,
                                                      DEFAULT_DESIRED_MAX_CONN_INTERVAL_v2,
@@ -889,10 +915,16 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
         }
         case GAPROLE_CONNECTED_ADV:
             Print_I3("Connected Advertising..");
+			BLE_LOG_TEXT("BLE connected advertising\r\n");
             break;
         case GAPROLE_WAITING:
         {
 			Print_I3("GAPROLE_WAITING..");
+			if(s_ble_log_connected == Is_Yes)
+			{
+				BLE_LOG_TEXT("BLE disconnected\r\n");
+				s_ble_log_connected = Is_No;
+			}
 			//global_DEVICE_STATUS.fisBleConnect = Is_No;
             //uint8_t initial_advertising_enable = TRUE;
             //global_DEVICE_STATUS.fBle_connect_or_no=Is_No;
@@ -912,8 +944,10 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
             uint8_t initial_advertising_enable = TRUE;
             GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advertising_enable);
      		Print_I3("Start .advertising.");
+			BLE_LOG_TEXT("BLE restart advertising\r\n");
 			if(global_DEVICE_STATUS.fisOtaed == 1)
 			{
+				OTA_LOG_TEXT("OTA disconnect reset\r\n");
 				delay_ms(100);	
 				SYS_ResetExecute();
 			}
@@ -934,10 +968,13 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
         case GAPROLE_ERROR:
 			global_DEVICE_STATUS.fisBleConnect = Is_No;
             Print_I3("Error..%x",newState);
+			FAULT_LOG_TEXT("FAULT ble state\r\n");
+			FAULT_LOG_HEX8("FAULT ble state-code=", newState);
             break;
 
         default:
             Print_I3("Other..%x",newState);            
+			BLE_LOG_HEX8("BLE other-state=", newState);
             break;
     }
 }
@@ -1130,8 +1167,15 @@ void Rec_OTA_IAP_DataDeal(void)
 
             if(Debug_info_OTA<=Is_Five)
             {
-                printf("program:%x:%d:%d\r\n", (int)OpAdd, (int)OpParaDataLen,Ble_Len);
+               printf("program:%x:%d:%d\r\n", (int)OpAdd, (int)OpParaDataLen,Ble_Len);
             }
+			if(s_ota_program_logged == Is_No)
+			{
+				OTA_LOG_TEXT("OTA program begin\r\n");
+				OTA_LOG_HEX32("OTA program-address=", OpAdd);
+				OTA_LOG_HEX32("OTA program-length=", OpParaDataLen);
+				s_ota_program_logged = Is_Yes;
+			}
 			//printf("program:%x:%d:%d\r\n", (int)OpAdd, (int)OpParaDataLen,Ble_Len);
 			//hex_dump(iap_rec_data.program.buf,OpParaDataLen);
 
@@ -1140,6 +1184,8 @@ void Rec_OTA_IAP_DataDeal(void)
             if(status)
             {
                 Print_I3("IAP_PROM err");
+				FAULT_LOG_TEXT("FAULT ota program\r\n");
+				FAULT_LOG_HEX8("FAULT ota status=", status);
 				ResultStatus = 1;
             }
             OTA_IAP_SendCMDDealSta(status);
@@ -1171,7 +1217,11 @@ void Rec_OTA_IAP_DataDeal(void)
                 EraseBlockNum = newEraseBlockNum;
                 EraseBlockCnt = 0;
                 EraseTmpBlockCnt = 0;
+				s_ota_program_logged = Is_No;
                 Print_I3("New erase task: addr=%x, blocks=%d\r\n", (int)EraseAdd, (int)EraseBlockNum);
+				OTA_LOG_TEXT("OTA erase begin\r\n");
+				OTA_LOG_HEX32("OTA erase-address=", EraseAdd);
+				OTA_LOG_HEX32("OTA erase-blocks=", EraseBlockNum);
             }
             else
             {
@@ -1192,6 +1242,8 @@ void Rec_OTA_IAP_DataDeal(void)
             {                
                 OTA_IAP_SendCMDDealSta(0xFF);
                 Print_I3("erase -- er ");
+				FAULT_LOG_TEXT("FAULT ota erase-range\r\n");
+				FAULT_LOG_HEX32("FAULT ota erase-address=", EraseAdd);
                 printf("EraseAdd=%x  %x\r\n",EraseAdd,IMAGE_B_START_ADD);
                 printf("EraseAdd=%x  %x\r\n",(EraseAdd + (EraseBlockNum - 1) * FLASH_BLOCK_SIZE),IMAGE_IAP_START_ADD);
             }
@@ -1230,6 +1282,8 @@ void Rec_OTA_IAP_DataDeal(void)
             if(status)
             {
                 Print_I3("IAP_VERIFY err");
+				FAULT_LOG_TEXT("FAULT ota verify\r\n");
+				FAULT_LOG_HEX8("FAULT ota status=", status);
 				ResultStatus = 1;
             }
             VerifyStatus |= status;
@@ -1240,6 +1294,7 @@ void Rec_OTA_IAP_DataDeal(void)
         case CMD_IAP_END:
         {
             Print_I3("iap end:%d\r\n",Ble_Len);
+			OTA_LOG_TEXT("OTA switch-image\r\n");
             
             Debug_info_OTA=Is_Zero;
 
@@ -1253,6 +1308,7 @@ void Rec_OTA_IAP_DataDeal(void)
 
             /* �ȴ���ӡ��� ����λ*/
             mDelaymS(10);
+			OTA_LOG_TEXT("OTA reboot pending\r\n");
             SYS_ResetExecute();
             break;
         }
@@ -1261,6 +1317,9 @@ void Rec_OTA_IAP_DataDeal(void)
             uint8_t send_buf[20];
 
             Print_I3("send iap info :%d\r\n      ",Ble_Len);
+			OTA_LOG_TEXT("OTA info request\r\n");
+			OTA_LOG_HEX32("OTA image-size=", IMAGE_SIZE);
+			OTA_LOG_HEX32("OTA block-size=", FLASH_BLOCK_SIZE);
             
             /* IMAGE FLAG */
             send_buf[0] = IMAGE_B_FLAG;
@@ -1287,10 +1346,14 @@ void Rec_OTA_IAP_DataDeal(void)
 		case CMD_IAP_VERIFY_END:	
         {
             Print_I3("CMD_IAP_PROM_END CMD_IAP_VERIFY_END 00000000000000 ResultStatus:%d",ResultStatus);
+			OTA_LOG_TEXT("OTA stage complete\r\n");
+			OTA_LOG_HEX8("OTA result=", ResultStatus);
             if(ResultStatus == 1){
 				global_DEVICE_STATUS.fOtaStatus = RTN_OTA_FAILURE;
+				FAULT_LOG_TEXT("FAULT ota result\r\n");
 				/* �ȴ���ӡ��� ����λ*/
 	            mDelaymS(10);
+				OTA_LOG_TEXT("OTA reset pending\r\n");
 	            SYS_ResetExecute();
             }else{
             	global_DEVICE_STATUS.fOtaStatus = RTN_OTA_SUCCESS;
@@ -1300,6 +1363,8 @@ void Rec_OTA_IAP_DataDeal(void)
         default:
         {
             Print_I3("OTA_IAP_CMDErrDeal:%d=[%s]",Ble_Len,iap_rec_data);
+			FAULT_LOG_TEXT("FAULT ota command\r\n");
+			FAULT_LOG_HEX8("FAULT ota command=", iap_rec_data.other.buf[0]);
             OTA_IAP_CMDErrDeal();
             break;
         }

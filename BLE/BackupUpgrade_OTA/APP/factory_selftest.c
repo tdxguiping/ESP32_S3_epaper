@@ -246,6 +246,7 @@ void FactorySelftest_FastPoll(void)
     {
         release_uart0_clear_rx();
         s_factory_line_len = 0;
+        FAULT_LOG_TEXT("FAULT uart0 rx-overflow\r\n");
         Factory_SendError("LINE_TOO_LONG");
         return;
     }

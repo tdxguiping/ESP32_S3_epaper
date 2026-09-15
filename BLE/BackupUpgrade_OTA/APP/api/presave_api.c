@@ -8,6 +8,7 @@
 #include "app_cfg.h"
 #include "flash_api.h"
 #include "epd_driver.h"
+#include "release_trace.h"
 
 int checkRoomHaveData(unsigned char *groupinfo, int room)
 {
@@ -251,6 +252,7 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
 
     if (PicData == NULL) {
         PRINT("PicData malloc failed\r\n");
+		FAULT_LOG_TEXT("FAULT img flash-buffer-alloc\r\n");
         return -1;
     }
 
@@ -271,6 +273,9 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
 	        index = getPicCurIndex(szGroupInfo, group, room);
 	        if ((index == -1) || (szGroupInfo[PRESAVE_POSITION_COUNT * index + 3] != PRESAVE_GROUP_SAVE_FLAG)) {
 	            PRINT("@@@@@@@@@@@@@@@@@@@@ group not exist\r\n");
+			FAULT_LOG_TEXT("FAULT img presave-missing\r\n");
+			FAULT_LOG_HEX8("FAULT img group=", group);
+			FAULT_LOG_HEX8("FAULT img room=", room);
 	            free(PicData); // �ͷ��ڴ�
 	            return -1;
 	        }
@@ -280,6 +285,7 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
 			global_EXTERN_FLASH_INFO.fImageIndex = index+EXTERN_FLASH_SAVE_START_ADDR;
 #endif
 		}
+		IMAGE_LOG_TEXT("IMG flash replay begin\r\n");
         while (1) {
             // ����FLASH���ͻ�ȡʵ�ʻ���������
             uint32_t buffer_size = EXTERN_FLASH_BUFFER_SIZE_EXTERNAL;
@@ -306,6 +312,7 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
 #endif
             {
                 PRINT("preSaveDisplay6Color success\r\n");
+				IMAGE_LOG_TEXT("IMG flash replay complete\r\n");
                 global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR;
                 break;
             }
