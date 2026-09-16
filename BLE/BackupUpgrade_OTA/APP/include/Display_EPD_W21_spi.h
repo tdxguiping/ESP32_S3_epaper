@@ -3,6 +3,10 @@
 #define _DISPLAY_EPD_W21_SPI_
 
 void EPD_W21_Init(void);
+void Display_EPD_AB(void);
+#if TDX_STORE_ZLIB
+void EPD_SetRefreshDeferred(UINT8 deferred);
+#endif
 void SPI_Write(unsigned char value);
 void EPD_W21_WriteDATA(unsigned char data);
 void EPD_W21_WriteCMD(unsigned char command);

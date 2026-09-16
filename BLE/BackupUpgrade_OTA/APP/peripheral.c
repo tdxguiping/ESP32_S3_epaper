@@ -19,6 +19,7 @@
 #include "OTA.h"
 #include "OTAprofile.h"
 #include "app_cfg.h"
+#include "zlib_image_store.h"
 #include "commoninfo.h"
 #include "release_trace.h"
 
@@ -183,7 +184,7 @@ void saveCommonImageZip(uint8_t index, uint8_t zip)
 	}
 
 	Get_EEPROM_Flag(zip_info, COMMON_IMG_ZIP_INFO_POSITION, COMMON_IMG_ZIP_INFO_LEN);
-	zip_info[index] = zip & 0x01;
+	zip_info[index] = zip; /* 0=RAW, 1=legacy RLE, 2=stored zlib */
 	Save_EEPROM_Flag(zip_info, COMMON_IMG_ZIP_INFO_POSITION, COMMON_IMG_ZIP_INFO_LEN);
 }
 
@@ -199,7 +200,7 @@ uint8_t getCommonImageZip(uint8_t index)
 
 	Get_EEPROM_Flag(zip_info, COMMON_IMG_ZIP_INFO_POSITION, COMMON_IMG_ZIP_INFO_LEN);
 	zip = zip_info[index];
-	if(zip > 1){
+	if(zip > IMAGE_FLASH_ZLIB){
 		return 0xFF;
 	}
 

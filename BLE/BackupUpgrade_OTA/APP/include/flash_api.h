@@ -45,6 +45,7 @@ void ReadDataFromFlash(UINT8* buffer, UINT8 index, UINT32 blocknum, UINT16 block
 int SaveDataFromFlash(UINT8* buffer, UINT8 index, UINT32 blocknum, UINT16 blocksize);
 bStatus_t EraseFLashData(unsigned char index);
 int EraseSaveBlock(uint16 connHandle, unsigned char groupNum, unsigned char roomNum, unsigned char zip);
+void CommitZlibSaveBlock(UINT8 index);
 void Start_Flash_power(void);
 void Set_Spi1_output_init(void);
 void SPI_FLASH_Init(void);

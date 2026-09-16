@@ -6,6 +6,7 @@
 #include "flash_driver.h"
 #include "commoninfo.h"
 #include "util.h"
+#include "zlib_image_store.h"
 
 void InitFlashDriver()
 {
@@ -63,7 +64,7 @@ int EraseSaveBlock(uint16 connHandle, unsigned char groupNum, unsigned char room
 			szGroupInfo[PRESAVE_POSITION_COUNT*i] = savIndex;
 			szGroupInfo[PRESAVE_POSITION_COUNT*i+1] = groupNum;
 			szGroupInfo[PRESAVE_POSITION_COUNT*i+2] = roomNum;
-			szGroupInfo[PRESAVE_POSITION_COUNT*i+3] = PRESAVE_GROUP_SAVE_FLAG;
+			szGroupInfo[PRESAVE_POSITION_COUNT*i+3] = (zip == IMAGE_FLASH_ZLIB) ? 0 : PRESAVE_GROUP_SAVE_FLAG;
 			szGroupInfo[PRESAVE_POSITION_COUNT*i+4] = zip;
 		}
 	}
@@ -89,3 +90,15 @@ int EraseSaveBlock(uint16 connHandle, unsigned char groupNum, unsigned char room
 }
 
 
+
+#if TDX_STORE_ZLIB
+void CommitZlibSaveBlock(UINT8 index)
+{
+    UINT8 info[GROUPINFO_Len];
+    UINT8 slot = index - EXTERN_FLASH_SAVE_START_ADDR;
+    if(index < EXTERN_FLASH_SAVE_START_ADDR || slot >= getFlashMaxGroup()) return;
+    Get_EEPROM_Flag(info, GROUPINFO_Position, GROUPINFO_Len);
+    info[PRESAVE_POSITION_COUNT * slot + 3] = PRESAVE_GROUP_SAVE_FLAG;
+    Save_EEPROM_Flag(info, GROUPINFO_Position, GROUPINFO_Len);
+}
+#endif

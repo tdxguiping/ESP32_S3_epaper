@@ -656,7 +656,7 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 		BOOT_LOG_HEX8("BOOT fWorked=", global_DEVICE_STATUS.fWorked);
 
 #if APP_FACTORY_UART0_ENABLE && APP_FACTORY_POWER_HOLD_ENABLE
-		if(FactorySelftest_ShouldBlockDeepSleep() == Is_Yes)
+		if((global_DEVICE_STATUS.fWorked != Is_Yes) && (global_DEVICE_STATUS.fWillReboot != Is_Yes) && (FactorySelftest_ShouldBlockDeepSleep() == Is_Yes))
 		{
 			/* Persist completed refresh metadata but retain UART0 and all working IO. */
 			BOOT_LOG_TEXT("BOOT power-hold\r\n");

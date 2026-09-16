@@ -8,6 +8,14 @@
 #include "rledecode.h"
 #include "release_trace.h"
 
+#if TDX_STORE_ZLIB
+static UINT8 s_refresh_deferred;
+void EPD_SetRefreshDeferred(UINT8 deferred)
+{
+    s_refresh_deferred = deferred;
+}
+#endif
+
 RleImgDataCallback_t dataimgCb = NULL;
 int callbackValue = 0;
 // ???????????????????????????????I?????
@@ -264,7 +272,10 @@ int DevicePower(){
  * @brief ???EPD????
  */
 void Display_EPD_AB()
-{    
+{
+#if TDX_STORE_ZLIB
+    if(s_refresh_deferred) return;
+#endif
 	Print_I3("EPD_AB h=%d\r\n", global_DEVICE_STATUS.fisHost);
 	IMAGE_LOG_TEXT("IMG epd refresh command\r\n");
 #if (defined(ENABLE_INK_SCREEN_JD79686BB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79686AB_1360X480_COLOR_3)) || \

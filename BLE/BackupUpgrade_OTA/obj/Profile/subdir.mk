@@ -14,6 +14,7 @@ C_SRCS += \
 ../Profile/xtinfoservice.c \
 ../Profile/tdxinfoservice.c \
 ../Profile/zlib_image_codec.c \
+../Profile/zlib_image_store.c \
 ../Profile/gattprofile.c \
 ../Profile/rledecode.c \
 ../Profile/util.c
@@ -28,6 +29,7 @@ OBJS += \
 ./Profile/xtinfoservice.o \
 ./Profile/tdxinfoservice.o \
 ./Profile/zlib_image_codec.o \
+./Profile/zlib_image_store.o \
 ./Profile/rledecode.o \
 ./Profile/util.o \
 ./Profile/gattprofile.o
@@ -42,6 +44,7 @@ C_DEPS += \
 ./Profile/xtinfoservice.d \
 ./Profile/tdxinfoservice.d \
 ./Profile/zlib_image_codec.d \
+./Profile/zlib_image_store.d \
 ./Profile/rledecode.d \
 ./Profile/util.d \
 ./Profile/gattprofile.d

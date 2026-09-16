@@ -5,6 +5,15 @@
  * scripts. These switches are deliberately here so a production build never
  * needs a second, protocol-specific script.
  */
+/* Defer zlib decoding for the TDX 7.5-inch six-color product. */
+#ifndef TDX_STORE_ZLIB
+#if defined(ENABLE_SOFTWARE_TO_TDX) && defined(ENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6)
+#define TDX_STORE_ZLIB 1
+#else
+#define TDX_STORE_ZLIB 0
+#endif
+#endif
+
 #ifndef APP_RELEASE_BUILD
 #define APP_RELEASE_BUILD            1
 #endif
@@ -24,6 +33,7 @@
 #ifndef UART0_TRANSFER_LOG_ENABLE
 #define UART0_TRANSFER_LOG_ENABLE    1
 #endif
+
 
 /* Category debug logging: each category can be compiled out independently. */
 #ifndef UART0_BLE_LOG_ENABLE

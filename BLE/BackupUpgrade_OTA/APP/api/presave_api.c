@@ -9,6 +9,18 @@
 #include "flash_api.h"
 #include "epd_driver.h"
 #include "release_trace.h"
+#include "zlib_image_store.h"
+#include "tdxinfoservice.h"
+#include "Display_EPD_W21_spi.h"
+
+#if TDX_STORE_ZLIB
+static int zlib_panel_sink(void *context, const UINT8 *data, UINT16 length)
+{
+    (void)context;
+    refreshScreenColor((UINT8 *)data, length, IS_NONEED_DECMPRESS);
+    return 0;
+}
+#endif
 
 int checkRoomHaveData(unsigned char *groupinfo, int room)
 {
@@ -285,7 +297,28 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
 			global_EXTERN_FLASH_INFO.fImageIndex = index+EXTERN_FLASH_SAVE_START_ADDR;
 #endif
 		}
-		IMAGE_LOG_TEXT("IMG flash replay begin\r\n");
+        IMAGE_LOG_TEXT("IMG flash replay begin\r\n");
+#if TDX_STORE_ZLIB
+        if(global_EXTERN_FLASH_INFO.fZip == IMAGE_FLASH_ZLIB) {
+            int result;
+            EPD_SetRefreshDeferred(1);
+            result = zlib_image_store_replay(global_EXTERN_FLASH_INFO.fImageIndex, zlib_panel_sink, NULL);
+            EPD_SetRefreshDeferred(0);
+            if(result != 0) {
+                FAULT_LOG_TEXT("FAULT img replay; no refresh\r\n");
+                global_DEVICE_STATUS.fDataSendSuccess = Is_No;
+                global_DEVICE_STATUS.fWorked = Is_No;
+                global_DEVICE_STATUS.fInitDriver = Is_Yes;
+                ControlEPDPower(Is_Off);
+                TdxInfo_ClearDisplayBusyProtect();
+                free(PicData);
+                return -1;
+            }
+            Display_EPD_AB();
+            global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR;
+            goto pre_save_display_done;
+        }
+#endif
         while (1) {
             // ����FLASH���ͻ�ȡʵ�ʻ���������
             uint32_t buffer_size = EXTERN_FLASH_BUFFER_SIZE_EXTERNAL;
@@ -317,6 +350,8 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
                 break;
             }
         }
+pre_save_display_done:
+        ;
     } else if (type == DEVICE_CLEAN_SCREEN) {
         clearBoardcastData();
         cleanDisplayColor(SCREEN_COLOR_WHITE, Is_Yes);
