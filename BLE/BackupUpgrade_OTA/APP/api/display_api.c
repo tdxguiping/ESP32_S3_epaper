@@ -7,6 +7,7 @@
 #include "Display_EPD_W21_spi.h"
 #include "rledecode.h"
 #include "release_trace.h"
+#include "img_perf.h"
 
 #if TDX_STORE_ZLIB
 static UINT8 s_refresh_deferred;
@@ -16,7 +17,30 @@ void EPD_SetRefreshDeferred(UINT8 deferred)
 }
 #endif
 
-RleImgDataCallback_t dataimgCb = NULL;
+#if defined(ENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6) && defined(ENABLE_SCREEN_COLOR_6)
+#define EPD_BATCH_DATA 1
+/* A 256-byte Flash block expands to at most 128 * 256 bytes. */
+static unsigned char imageBatchBuffer[32768U];
+#if TDX_STORE_ZLIB
+static UINT8 imageBatchSending;
+#if IMG_COLOR_LUT
+static const UINT8 imageColorMap[16] = {
+    0, 1, 2, 3, 5, 6, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+};
+static inline UINT8 ImageColorByte(UINT8 value)
+{
+    UINT8 high = imageColorMap[value >> 4], low = imageColorMap[value & 15U];
+    return (high | low) == 0xff ? 0xff : (UINT8)((high << 4) | low);
+}
+#endif
+#endif
+typedef int (*ImgDataCallback_t)(unsigned char *pData, UINT32 Len);
+#else
+#define EPD_BATCH_DATA 0
+typedef RleImgDataCallback_t ImgDataCallback_t;
+#endif
+
+ImgDataCallback_t dataimgCb = NULL;
 int callbackValue = 0;
 // ???????????????????????????????I?????
 #define PENDING_NONE 0xBB
@@ -277,7 +301,6 @@ void Display_EPD_AB()
     if(s_refresh_deferred) return;
 #endif
 	Print_I3("EPD_AB h=%d\r\n", global_DEVICE_STATUS.fisHost);
-	IMAGE_LOG_TEXT("IMG epd refresh command\r\n");
 #if (defined(ENABLE_INK_SCREEN_JD79686BB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79686AB_1360X480_COLOR_3)) || \
 	(defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1280X600_COLOR_4)) || \
 	(defined(ENABLE_INK_SCREEN_JD79686AC_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_SSD2683ZA_272X792_COLOR_4)) || \
@@ -373,7 +396,96 @@ UINT8 isNeedDecompress(UINT8 by, UINT8 type)
  */
 UINT8 PIC_Display_Compress_Data(const unsigned char* pBW, UINT16 Length, unsigned char zip)
 {
-#if (defined(ENABLE_SCREEN_COLOR_3)) || (defined(ENABLE_SCREEN_COLOR_4)) || (defined(ENABLE_SCREEN_COLOR_2))
+#if EPD_BATCH_DATA
+    UINT32 i, outputLen = 0;
+    UINT32 perf_color = IP_Start(IP_COLOR);
+    UINT16 count;
+    UINT8 value;
+    unsigned char *out = imageBatchBuffer;
+
+    if(Length == 0) return 0;
+    if(pBW == NULL) goto batch_error;
+    if(zip == IS_NEED_DECMPRESS) {
+        if(Length & 1U) goto batch_error;
+        for(i = 1; i < Length; i += 2) {
+            outputLen += pBW[i];
+#ifndef ENABLE_SOFTWARE_TO_BOE
+            outputLen++;
+#endif
+        }
+    } else {
+        outputLen = Length;
+    }
+#if TDX_STORE_ZLIB
+    /* Ignore only bytes beyond the complete image (legacy Flash page padding). */
+    {
+        UINT32 offset = global_DEVICE_STATUS.fInitDriver == Is_Yes ? 0 : global_DEVICE_STATUS.fImageDataLen;
+        UINT32 maxLen = EPD_GetDisplayMaxBuf();
+        if(offset >= maxLen) return 0;
+        if(outputLen > maxLen - offset) outputLen = maxLen - offset;
+    }
+#endif
+    /* Validate the complete batch before writing or calling the panel. */
+    if(outputLen > sizeof(imageBatchBuffer)) goto batch_error;
+#if TDX_STORE_ZLIB && IMG_COLOR_LUT
+    if(zip != IS_NEED_DECMPRESS) {
+        for(i = 0; i < outputLen; i++) {
+            value = ImageColorByte(pBW[i]);
+            if(value == 0xff) goto batch_error;
+            out[i] = value;
+        }
+    } else {
+        for(i = 0; i < Length && out < imageBatchBuffer + outputLen; i += 2) {
+            value = ImageColorByte(pBW[i]);
+            if(value == 0xff) goto batch_error;
+            count = (UINT16)pBW[i + 1] + 1U;
+            if(count > imageBatchBuffer + outputLen - out)
+                count = (UINT16)(imageBatchBuffer + outputLen - out);
+            memset(out, value, count);
+            out += count;
+        }
+    }
+#else
+    for(i = 0; i < Length; ) {
+#if TDX_STORE_ZLIB
+        if(out >= imageBatchBuffer + outputLen) break;
+#endif
+        value = pBW[i++];
+        count = 1;
+        if(zip == IS_NEED_DECMPRESS) {
+            count = pBW[i++];
+#ifndef ENABLE_SOFTWARE_TO_BOE
+            count++;
+#endif
+        }
+#ifdef ENABLE_SOFTWARE_TO_BOE
+        if(zip != IS_NEED_DECMPRESS)
+#endif
+        {
+            value = (CovertColorData((value >> 4) & 0x0f) << 4) |
+                     CovertColorData(value & 0x0f);
+        }
+#if TDX_STORE_ZLIB
+        if(count > imageBatchBuffer + outputLen - out)
+            count = (UINT16)(imageBatchBuffer + outputLen - out);
+#endif
+        if(count == 1) *out = value;
+        else memset(out, value, count);
+        out += count;
+    }
+#endif
+    IP_Toc(IP_COLOR, perf_color);
+    if(outputLen && dataimgCb != NULL) {
+        callbackValue = dataimgCb(imageBatchBuffer, outputLen);
+    }
+    return 0;
+
+batch_error:
+    IP_Toc(IP_COLOR, perf_color);
+    BOOT_LOG_TEXT("IMG batch err\r\n");
+    callbackValue = -1;
+    return 1;
+#elif (defined(ENABLE_SCREEN_COLOR_3)) || (defined(ENABLE_SCREEN_COLOR_4)) || (defined(ENABLE_SCREEN_COLOR_2))
     UINT8 currentByte;       // ??j?????????
     UINT16 i = 0;            // ????????
     UINT16 len;              // ??????????
@@ -477,9 +589,24 @@ UINT8 PIC_Display_Compress_Data(const unsigned char* pBW, UINT16 Length, unsigne
 
 /**
  * @brief Write image data into the panel buffer.
- * @param data Input byte.
+ * @param pData/data Input batch (SPD1657) or byte (other panels).
+ * @param dataLen Batch byte count (SPD1657 only).
  * @param length Current image offset.
  */
+#if EPD_BATCH_DATA
+void Display_Picture_To_Color(unsigned char *pData, UINT32 dataLen, UINT32 length){
+    UINT32 endOffset, maxLen = EPD_GetDisplayMaxBuf();
+    UINT32 perf_init = 0;
+#if TDX_STORE_ZLIB
+    UINT8 saved_div, saved_delay;
+#endif
+    UINT16 sendLen;
+    if(pData == NULL || dataLen == 0 || length >= maxLen) return;
+    if(dataLen > maxLen - length) {
+        dataLen = maxLen - length;
+    }
+    endOffset = length + dataLen;
+#else
 void Display_Picture_To_Color(unsigned char data, int length){
 	UINT8  By;
 	int i,wLen;
@@ -487,10 +614,16 @@ void Display_Picture_To_Color(unsigned char data, int length){
 	if(length >= EPD_GetDisplayMaxBuf()){
 		return;
 	}
+#endif
 
 	if(global_DEVICE_STATUS.fInitDriver == Is_Yes){
+#if EPD_BATCH_DATA
+        BOOT_LOG_HEX32("IMG batch=", dataLen);
+        perf_init = IP_Start(IP_INIT);
+#else
 		Print_I3("PIC len:%d",length);
 		IMAGE_LOG_TEXT("IMG panel-data begin\r\n");
+#endif
 		// Reset host/slave state at the start of every new image.
 		// Otherwise the second half of the previous refresh can leak into the next frame.
 #if (defined(ENABLE_INK_SCREEN_JD79686AB_1360X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_JD79665AA_1360X480_COLOR_4)) || \
@@ -510,7 +643,9 @@ void Display_Picture_To_Color(unsigned char data, int length){
 	}
 
 	if(length == SCREEN_DATA_START){ // Black and white color
+#if !EPD_BATCH_DATA
 		Print_I3("BW len:%d",length);
+#endif
 #if defined(ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6)
 		if(global_DEVICE_STATUS.fisHost == Is_HOST){
 			DevicePower();
@@ -571,7 +706,36 @@ void Display_Picture_To_Color(unsigned char data, int length){
 	}
 #endif
 
-#if (defined(ENABLE_INK_SCREEN_JD79686BB_800X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_SSD1863_400X300_COLOR_3)) || \
+#if EPD_BATCH_DATA
+#if TDX_STORE_ZLIB
+    if(imageBatchSending && length == SCREEN_DATA_START) IP_Toc(IP_INIT, perf_init);
+    saved_div = R8_SPI0_CLOCK_DIV;
+    saved_delay = R8_SPI0_CTRL_CFG & RB_SPI_MST_DLY_EN;
+    if(imageBatchSending) SPI0_CLKCfg(IMG_PANEL_SPI_DIV);
+    IP_Pixels(imageBatchSending);
+#endif
+    while(dataLen) {
+        UINT32 perf_spi = 0;
+#if TDX_STORE_ZLIB
+        if(imageBatchSending) perf_spi = IP_Start(IP_SPI);
+#endif
+        sendLen = dataLen > 4095U ? 4095U : (UINT16)dataLen;
+        SPI0_MasterTrans(pData, sendLen);
+        /* FIFO empty does not guarantee that the last byte is off the wire. */
+        while(!(R8_SPI0_INT_FLAG & RB_SPI_FREE));
+#if TDX_STORE_ZLIB
+        if(imageBatchSending) IP_Toc(IP_SPI, perf_spi);
+#endif
+        pData += sendLen;
+        dataLen -= sendLen;
+    }
+#if TDX_STORE_ZLIB
+    IP_Pixels(0);
+    /* Restore before commands, refresh or returning to the Flash reader. */
+    R8_SPI0_CLOCK_DIV = saved_div;
+    R8_SPI0_CTRL_CFG = (R8_SPI0_CTRL_CFG & ~RB_SPI_MST_DLY_EN) | saved_delay;
+#endif
+#elif (defined(ENABLE_INK_SCREEN_JD79686BB_800X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_SSD1863_400X300_COLOR_3)) || \
 	(defined(ENABLE_INK_SCREEN_UC8179_800X480_COLOR_3)) || (defined(ENABLE_INK_SCREEN_UC8279_800X480_COLOR_3)) || \
 	(defined(ENABLE_INK_SCREEN_SSD1683_272X792_COLOR_3))
 	if(length < SCREEN_BLACK_WHITE_COLOR_3_MAX){
@@ -593,9 +757,14 @@ void Display_Picture_To_Color(unsigned char data, int length){
         callbackValue = 0;
 	}
 #else
+#if EPD_BATCH_DATA
+    if (endOffset == maxLen) {
+        BOOT_LOG_TEXT("IMG done\r\n");
+#else
 	if (length == EPD_GetDisplayMaxBuf() -1) {
 		Print_I3("D6 len:%d",length);
 		IMAGE_LOG_TEXT("IMG panel-data complete\r\n");
+#endif
 		Display_EPD_AB();
         // Clear per-image decode state after the last byte of the frame.
         pendingCompressByte = PENDING_NONE;
@@ -611,7 +780,7 @@ void Display_Picture_To_Color(unsigned char data, int length){
  * @param rCb Output callback.
  * @return Decode result.
  */
-int data_decrypt(unsigned char *input, int length, unsigned char zip, RleImgDataCallback_t rCb) {	
+int data_decrypt(unsigned char *input, int length, unsigned char zip, ImgDataCallback_t rCb) {
 	dataimgCb = rCb;
     // Reset decode state when a new image starts.
     if (global_DEVICE_STATUS.fImageDataLen == 0) {
@@ -623,9 +792,38 @@ int data_decrypt(unsigned char *input, int length, unsigned char zip, RleImgData
 }
 /**
  * @brief Image decode callback.
- * @param data Image byte.
+ * @param pData/data Image batch (SPD1657) or byte (other panels).
+ * @param Len Batch byte count (SPD1657 only).
  * @return Current image offset after write.
  */
+#if EPD_BATCH_DATA
+int ImgDataCallBack(unsigned char *pData, UINT32 Len) {
+    static UINT32 batchCount;
+    UINT32 offset = global_DEVICE_STATUS.fImageDataLen;
+    UINT32 maxLen = EPD_GetDisplayMaxBuf();
+    if(global_DEVICE_STATUS.fInitDriver == Is_Yes) offset = SCREEN_DATA_START;
+    if(offset >= maxLen || Len == 0) return offset;
+    /* The final Flash block may contain padding beyond the image. */
+    if(Len > maxLen - offset) Len = maxLen - offset;
+    if(offset == SCREEN_DATA_START) batchCount = 0;
+#if TDX_STORE_ZLIB
+    imageBatchSending = 1;
+#endif
+    Display_Picture_To_Color(pData, Len, offset);
+#if TDX_STORE_ZLIB
+    imageBatchSending = 0;
+#endif
+    batchCount++;
+    global_DEVICE_STATUS.fImageDataLen = offset + Len;
+    /* One summary per image; no per-batch UART overhead. */
+    if(global_DEVICE_STATUS.fImageDataLen == maxLen) {
+        BOOT_LOG_HEX32("IMG n=", batchCount);
+        BOOT_LOG_HEX32("IMG bytes=", global_DEVICE_STATUS.fImageDataLen);
+        BOOT_LOG_HEX32("IMG last=", Len);
+    }
+    return global_DEVICE_STATUS.fImageDataLen;
+}
+#else
 int ImgDataCallBack(unsigned char data) {
 	int screen_color_max = 0;
 	
@@ -666,6 +864,7 @@ int ImgDataCallBack(unsigned char data) {
 
 	return global_DEVICE_STATUS.fImageDataLen;
 }
+#endif
 /**
  * @brief Clear the whole color panel with one color.
  * @param color Fill color.
@@ -731,7 +930,11 @@ void cleanDisplayColor(int color, UINT8 isNeedStandy){
 	int dLen = EPD_GetDisplayMaxBuf();
 	for(i=0;i<dLen;i++)
 	{
+#if EPD_BATCH_DATA
+        Display_Picture_To_Color(data, 1, i);
+#else
 		Display_Picture_To_Color(data[0],i);
+#endif
 	}
 #endif
 }

@@ -12,6 +12,7 @@
 #include "ch583_secure.h"
 #include "release_uart0.h"
 #include "release_trace.h"
+#include "img_perf.h"
 #include "factory_selftest.h"
 
 /* ��¼��ǰ��Image */
@@ -526,7 +527,8 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
     }
 
     if(events & EVENT_Get_Battle_Charge)
-    {	
+    {
+    IP_Dequeue();
 	if(global_DEVICE_STATUS.fImageType == 1){
 		// 异显模式：需要刷两次（A�?B面）
 		// 普通刷图的异显模式：不管内外置flash，都直接�?/1（不加偏移）
@@ -540,7 +542,11 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 			PRINT("send pre save  error \r\n");	
 			global_DEVICE_STATUS.fWorked =Is_No;
 		}
+    {
+        UINT32 perf_wait = IP_Start(IP_SIDE_WAIT);
 		mDelaymS(2000);
+        IP_Toc(IP_SIDE_WAIT, perf_wait);
+    }
 		
         // Second refresh: B side.
         global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_B;
@@ -584,10 +590,6 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 
 #if APP_FACTORY_UART0_ENABLE && APP_FACTORY_POWER_HOLD_ENABLE
         uint8_t factory_power_now = FactorySelftest_ShouldBlockDeepSleep();
-        if(factory_power_now != factory_power_was_present)
-        {
-            BOOT_LOG_HEX8("BOOT power=", factory_power_now);
-        }
         if((factory_power_was_present == Is_Yes) && (factory_power_now == Is_No))
         {
             /* Do not use the stale >30 second timeout accumulated on fixture power. */
@@ -651,24 +653,25 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 	
 	if(events & EVENT_Low_Power)
 	{ 
+        UINT32 perf_save;
+        IP_Tail();
 		Print_I3("..............EVENT_Low_Power 00000000000000000");
-		BOOT_LOG_TEXT("BOOT lowpower event\r\n");
-		BOOT_LOG_HEX8("BOOT fWorked=", global_DEVICE_STATUS.fWorked);
 
 #if APP_FACTORY_UART0_ENABLE && APP_FACTORY_POWER_HOLD_ENABLE
 		if((global_DEVICE_STATUS.fWorked != Is_Yes) && (global_DEVICE_STATUS.fWillReboot != Is_Yes) && (FactorySelftest_ShouldBlockDeepSleep() == Is_Yes))
 		{
 			/* Persist completed refresh metadata but retain UART0 and all working IO. */
-			BOOT_LOG_TEXT("BOOT power-hold\r\n");
 			factory_power_was_present = Is_Yes;
-			Save_LastRefresh_Info_To_Flash();
+            perf_save = IP_Start(IP_SAVE);
+            Save_LastRefresh_Info_To_Flash();
+            IP_Toc(IP_SAVE, perf_save);
+            IP_FinishTail();
 			return events ^ EVENT_Low_Power;
 		}
 
 		if(factory_power_was_present == Is_Yes)
 		{
 			/* PB13 fell since the last check: restart the existing BLE idle timeout. */
-			BOOT_LOG_TEXT("BOOT power-release\r\n");
 			factory_power_was_present = Is_No;
 			global_DEVICE_STATUS.fSystemTimeOut = 0;
 			/* Re-run the event now that PB13 no longer holds the fixture awake. */
@@ -677,11 +680,13 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 		}
 #endif
 		
-		Save_LastRefresh_Info_To_Flash();	
+        perf_save = IP_Start(IP_SAVE);
+        Save_LastRefresh_Info_To_Flash();
+        IP_Toc(IP_SAVE, perf_save);
+        IP_FinishTail();
 			
 		if(global_DEVICE_STATUS.fisOtaed != 1)
 		{
-			BOOT_LOG_TEXT("BOOT deep-sleep pending\r\n");
 			Low_power();
 		}
 		
@@ -985,7 +990,6 @@ void   Low_power_IDLE(void)
         CPU_busy_had_active = Is_No;
         CPU_busy_idle_stable = 0;
         EPD_Busy_PrepareObserve();
-        BUSY_LOG_TEXT("BUSY monitor begin\r\n");
     }
 
     EPD_Busy_GetStatus(&busy_status);
@@ -1002,10 +1006,7 @@ void   Low_power_IDLE(void)
         {
             if(busy_status.any_busy == Is_Yes)
             {
-                if(CPU_busy_had_active == Is_No)
-                {
-                    BUSY_LOG_TEXT("BUSY active-seen\r\n");
-                }
+                IP_BusySeen();
                 CPU_busy_had_active = Is_Yes;
                 CPU_busy_idle_stable = 0;
             }
@@ -1038,12 +1039,6 @@ void   Low_power_IDLE(void)
                     BUSY_LOG_TEXT("BUSY refresh-timeout\r\n");
                     FAULT_LOG_TEXT("FAULT epd busy-timeout\r\n");
                 }
-                else
-                {
-                    BUSY_LOG_TEXT("BUSY refresh-complete\r\n");
-                }
-                BUSY_LOG_HEX8("BUSY rawA=", busy_status.raw_a);
-                BUSY_LOG_HEX8("BUSY rawB=", busy_status.raw_b);
             }
             if(busy_supported == Is_Yes)
             {
@@ -1058,6 +1053,7 @@ void   Low_power_IDLE(void)
 #ifdef ENABLE_SOFTWARE_TO_TDX
             TdxInfo_ClearDisplayBusyProtect();
 #endif
+            IP_BusyDone(busy_supported != Is_Yes ? 5 : (busy_timeout == Is_Yes ? 2 : 0));
             CPU_had_IDLE=Is_Yes;
         }
         else
@@ -1081,8 +1077,6 @@ void   Low_power_IDLE(void)
         global_DEVICE_STATUS.fWorked =Is_No;
         global_DEVICE_STATUS.fWillReboot =Is_Yes;
         Print_I3("EVENT_Low_Power=%d",CPU_had_IDLE_counter);
-        IMAGE_LOG_TEXT("IMG refresh lifecycle complete\r\n");
-        BOOT_LOG_TEXT("BOOT lowpower queued\r\n");
         CPU_had_IDLE_counter = 0;
         CPU_had_IDLE = Is_No;
         CPU_busy_had_active = Is_No;
@@ -1251,14 +1245,10 @@ int main(void)
 #endif
 #if APP_UART0_ENABLE
 	release_uart0_init();
-	BOOT_LOG_TEXT("BOOT start\r\n" );
-	BOOT_LOG_TEXT("BOOT uart0-ready\r\n");
-	BOOT_LOG_HEX8("BOOT reset=", GetResetState);
 #endif
 	CH58x_BLEInit();
 	HAL_Init();
 	Mac_To_Ascii();
-	BOOT_LOG_TEXT("BOOT ble-ready\r\n");
 
 #ifdef ENABLE_BOARD_ENCRYPT
 	if(is_illegal_device(Mac, 6) == Is_No){
@@ -1294,8 +1284,6 @@ int main(void)
 	main_task_ID = TMOS_ProcessEventRegister(Main_Event);
 #if APP_FACTORY_UART0_ENABLE
 	FactorySelftest_Init();
-	FactorySelftest_SendBootReport();
-	BOOT_LOG_TEXT("BOOT factory-ready\r\n");
 #endif
 	global_DEVICE_STATUS.fisOtaed = 0;
 	global_DEVICE_STATUS.fWillReboot = Is_No;
@@ -1305,7 +1293,6 @@ int main(void)
 
 #if APP_FACTORY_UART0_ENABLE && APP_FACTORY_POWER_HOLD_ENABLE
 	factory_power_was_present = FactorySelftest_ShouldBlockDeepSleep();
-	BOOT_LOG_HEX8("BOOT power=", factory_power_was_present);
 #endif
 	
 #ifndef ENABLE_SOFTWARE_TO_XT

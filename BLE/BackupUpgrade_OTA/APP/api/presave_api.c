@@ -9,6 +9,7 @@
 #include "flash_api.h"
 #include "epd_driver.h"
 #include "release_trace.h"
+#include "img_perf.h"
 #include "zlib_image_store.h"
 #include "tdxinfoservice.h"
 #include "Display_EPD_W21_spi.h"
@@ -17,8 +18,7 @@
 static int zlib_panel_sink(void *context, const UINT8 *data, UINT16 length)
 {
     (void)context;
-    refreshScreenColor((UINT8 *)data, length, IS_NONEED_DECMPRESS);
-    return 0;
+    return refreshScreenColor((UINT8 *)data, length, IS_NONEED_DECMPRESS) < 0 ? -1 : 0;
 }
 #endif
 
@@ -260,12 +260,13 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
     int i, index, data_len = 0;
     unsigned char *PicData = NULL; // ��Ϊָ�룬��̬�����ڴ�
  
+    if(type == DEVICE_PRE_SAVE) IP_ReplayBegin(global_DEVICE_STATUS.fScreenType);
     PicData = (unsigned char *)malloc(EXTERN_FLASH_BUFFER_SIZE_EXTERNAL); 
 
     if (PicData == NULL) {
         PRINT("PicData malloc failed\r\n");
 		FAULT_LOG_TEXT("FAULT img flash-buffer-alloc\r\n");
-        return -1;
+        IP_Stop(1); return -1;
     }
 
     if (type == DEVICE_PRE_SAVE) {
@@ -289,7 +290,7 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
 			FAULT_LOG_HEX8("FAULT img group=", group);
 			FAULT_LOG_HEX8("FAULT img room=", room);
 	            free(PicData); // �ͷ��ڴ�
-	            return -1;
+	            IP_Stop(1); return -1;
 	        }
 #ifdef ENABLE_SOFTWARE_TO_BOE
 			global_EXTERN_FLASH_INFO.fImageIndex = index;
@@ -297,13 +298,13 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
 			global_EXTERN_FLASH_INFO.fImageIndex = index+EXTERN_FLASH_SAVE_START_ADDR;
 #endif
 		}
-        IMAGE_LOG_TEXT("IMG flash replay begin\r\n");
 #if TDX_STORE_ZLIB
         if(global_EXTERN_FLASH_INFO.fZip == IMAGE_FLASH_ZLIB) {
             int result;
             EPD_SetRefreshDeferred(1);
             result = zlib_image_store_replay(global_EXTERN_FLASH_INFO.fImageIndex, zlib_panel_sink, NULL);
             EPD_SetRefreshDeferred(0);
+            IP_ReplayEnd();
             if(result != 0) {
                 FAULT_LOG_TEXT("FAULT img replay; no refresh\r\n");
                 global_DEVICE_STATUS.fDataSendSuccess = Is_No;
@@ -312,7 +313,7 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
                 ControlEPDPower(Is_Off);
                 TdxInfo_ClearDisplayBusyProtect();
                 free(PicData);
-                return -1;
+                IP_Stop(1); return -1;
             }
             Display_EPD_AB();
             global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR;
@@ -350,6 +351,7 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
                 break;
             }
         }
+        IP_ReplayEnd();
 pre_save_display_done:
         ;
     } else if (type == DEVICE_CLEAN_SCREEN) {

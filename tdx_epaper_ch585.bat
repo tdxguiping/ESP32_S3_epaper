@@ -4,7 +4,7 @@ chcp 65001 >nul
 
 echo 当前操作：准备进入boe epaper目录
 
-set target_dir=G:\e_paper\TDX_BOE_E_PAPER_CH585\BLE\BackupUpgrade_OTA
+set target_dir=F:\project\CH585\project_3\BLE\BackupUpgrade_OTA
 cd /d %target_dir%
 
 if %errorlevel% equ 0 (

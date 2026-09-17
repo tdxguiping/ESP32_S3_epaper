@@ -326,7 +326,6 @@ void FactorySelftest_SendBootReport(void)
     Factory_WriteText(maker); Factory_WriteText(",");
     Factory_WriteHex((UINT8)(crc >> 8)); Factory_WriteHex((UINT8)crc);
     Factory_WriteText(FACTORY_LINE_END);
-    BOOT_LOG_TEXT("BOOT panel-ready\r\n");
 }
 
 #endif

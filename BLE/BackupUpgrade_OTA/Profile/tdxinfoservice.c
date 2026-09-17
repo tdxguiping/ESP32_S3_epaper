@@ -10,6 +10,7 @@
 #include "commoninfo.h"
 #include "aes_util.h"
 #include "base64.h"
+#include "img_perf.h"
 #include "flash_api.h"
 #include "util.h"
 #include "epd_driver.h"
@@ -738,6 +739,7 @@ static int zlib_flash_sink(void *context, const UINT8 *data, UINT16 length)
 #endif
 static void zlib_receive_fail(uint16 connHandle)
 {
+    IP_Stop(1);
     uint8_t notify_buf[6]; uint16_t notify_len = 0;
     TRANSFER_LOG_TEXT("ZLIB aborted\r\n");
     FAULT_LOG_TEXT("FAULT img transfer aborted\r\n");
@@ -960,34 +962,41 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 					if(s_tdx_busy_drop_packets == 0){
 						u8IsFirstPackage = TDX_DATA_FIRST;
 					}
-					return ( SUCCESS );
+					IP_RxExit(0); return (SUCCESS);
 				}
 	   		
-	   			unsigned int decrypted_len;
+                UINT32 perf_prepare, perf_header;
+                if(!s_tdx_display_busy_protect)
+                    IP_RxEnter(u8IsFirstPackage == TDX_DATA_FIRST, len);
+                perf_prepare = IP_Start(IsDecryptFlag == Is_Yes ? IP_AES : IP_COPY);
+                unsigned int decrypted_len;
 			    unsigned char *decrypted;
 				if(IsDecryptFlag == Is_Yes)
 				{
 					//Print_I3("ENCRYPTED YES YES YES YES YES");
 					decrypted = decrypt_ecb(pValue, len, &decrypted_len, data_aes_key);
+                    IP_Toc(IP_AES, perf_prepare);
 				}
 				else
 				{
 					//Print_I3("ENCRYPTED NO NO NO NO NO NO");
 					decrypted = (unsigned char *)malloc(len * sizeof(uint8_t));
 					decrypted_len = len;
-					memcpy(decrypted, pValue, len);
+					if(decrypted) memcpy(decrypted, pValue, len);
+                    IP_Toc(IP_COPY, perf_prepare);
 				}
 			    if (!decrypted) {
 			    	free(decrypted);
 			        Print_I3("decrypt_ecb failure\n");
                     FAULT_LOG_TEXT("FAULT img decrypt\r\n");
-			       	return ( ATT_ERR_INSUFFICIENT_AUTHOR );
+                IP_RxExit(1); return (ATT_ERR_INSUFFICIENT_AUTHOR);
 			    } 		
 
 				//PRINT("WriteAttrCB TDXINFO_SEND_DATA aaaaaaaaaaaaaaaa decrypted_len=%d\r\n",decrypted_len);
 				//hex_dump(decrypted, decrypted_len);
 				if(u8IsFirstPackage == TDX_DATA_FIRST){
-					if(decrypted_len != 15){ FAULT_LOG_TEXT("FAULT img first-len\r\n"); FAULT_LOG_HEX32("FAULT img first-len-value=", decrypted_len); free(decrypted); return ( ATT_ERR_INVALID_VALUE_SIZE ); }
+                    perf_header = IP_Start(IP_HEADER);
+					if(decrypted_len != 15){ FAULT_LOG_TEXT("FAULT img first-len\r\n"); FAULT_LOG_HEX32("FAULT img first-len-value=", decrypted_len); free(decrypted); IP_RxExit(1); return (ATT_ERR_INVALID_VALUE_SIZE); }
 					if(s_tdx_display_busy_protect){
 						uint8_t busy_screen_type = decrypted[1];
 						uint8_t notify_buf[6];
@@ -1007,7 +1016,7 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 							}
 						}
 						free(decrypted);
-						return ( SUCCESS );
+						IP_RxExit(0); return (SUCCESS);
 					}
 
 					//PRINT("WriteAttrCB TDXINFO_SEND_DATA aaaaaaaaaaaaaaaa decrypted_len=%d\r\n",decrypted_len);
@@ -1023,8 +1032,8 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 					if(global_TDX_AES_DATA_INFO.fScreenType == OP_TYPE_IMG_AB || global_TDX_AES_DATA_INFO.fScreenType == OP_TYPE_SAVE_IMG_AB)
 						global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_AB;
 					global_TDX_AES_DATA_INFO.fPackageNum = (decrypted[2] << 24) | (decrypted[3] << 16) | (decrypted[4] << 8) | decrypted[5];
-                    if(decrypted[11] != 1){ FAULT_LOG_TEXT("FAULT img protocol\r\n"); free(decrypted); return ( ATT_ERR_INVALID_VALUE ); }
-                    if(global_TDX_AES_DATA_INFO.fPackageNum == 0){ FAULT_LOG_TEXT("FAULT img package-zero\r\n"); free(decrypted); return ( ATT_ERR_INVALID_VALUE ); }
+                    if(decrypted[11] != 1){ FAULT_LOG_TEXT("FAULT img protocol\r\n"); free(decrypted); IP_RxExit(1); return (ATT_ERR_INVALID_VALUE); }
+                    if(global_TDX_AES_DATA_INFO.fPackageNum == 0){ FAULT_LOG_TEXT("FAULT img package-zero\r\n"); free(decrypted); IP_RxExit(1); return (ATT_ERR_INVALID_VALUE); }
 					
 					// 处理user_id和lock标志（decrypted[6-9]=user_id, decrypted[14]=lock）
 					uint32_t received_user_id = (decrypted[6] << 24) | (decrypted[7] << 16) | (decrypted[8] << 8) | decrypted[9];
@@ -1036,8 +1045,9 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 						// user_id验证失败，设备已被其他用户绑定，通知前端
 						u8IsFirstPackage = TDX_DATA_FIRST_COLOR;//第二个包就不进来了
 						notifyDeviceBound(connHandle);
+                        IP_Stop(1);
 						free(decrypted);
-						return ( SUCCESS );  // 返回成功，避免前端重试，通过notify告知真实状态
+						IP_RxExit(0); return (SUCCESS);  // 返回成功，避免前端重试，通过notify告知真实状态
 					}
 					
 					global_TDX_AES_DATA_INFO.fIsSecret = decrypted[10];
@@ -1046,14 +1056,11 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 					global_TDX_AES_DATA_INFO.fGroupNum= decrypted[13];
 					global_DEVICE_STATUS.fBoardCastGroup = global_TDX_AES_DATA_INFO.fGroupNum;
 					global_DEVICE_STATUS.fBoardCastRoom = global_TDX_AES_DATA_INFO.fRoomNum;
-					IMAGE_LOG_TEXT("IMG header ok\r\n");
-					IMAGE_LOG_HEX8("IMG screen=", global_TDX_AES_DATA_INFO.fScreenType);
-					IMAGE_LOG_HEX32("IMG packages=", global_TDX_AES_DATA_INFO.fPackageNum);
 
 					if(InitFirstPackage(connHandle) == -1){
 						FAULT_LOG_TEXT("FAULT img init-first\r\n");
 						free(decrypted);
-						return ( ATT_ERR_INSUFFICIENT_AUTHOR );
+						IP_RxExit(1); return (ATT_ERR_INSUFFICIENT_AUTHOR);
 					}
 #if TDX_STORE_ZLIB
                     if(zlib_image_store_begin(global_EXTERN_FLASH_INFO.fImageIndex) != 0){
@@ -1062,22 +1069,23 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 #endif
                         TRANSFER_LOG_TEXT("ZLIB begin failed\r\n");
                         zlib_receive_fail(connHandle); free(decrypted);
-                        return ( ATT_ERR_INSUFFICIENT_AUTHOR );
+                        IP_RxExit(1); return (ATT_ERR_INSUFFICIENT_AUTHOR);
                     }
                     s_zlib_image_active = 1;
 					#if !TDX_STORE_ZLIB
                     TRANSFER_LOG_TEXT("ZLIB begin\r\n");
 #endif
 					#if TDX_STORE_ZLIB
-                    IMAGE_LOG_TEXT("IMG zlib store begin\r\n");
 #else
                     IMAGE_LOG_TEXT("IMG zlib session begin\r\n");
 #endif
 					u8IsFirstPackage = TDX_DATA_FIRST_COLOR;
+                    IP_Toc(IP_HEADER, perf_header);
 				}else{
-                    if(InitOtherPackage(connHandle, decrypted, decrypted_len) != 0){ free(decrypted); return ( ATT_ERR_INVALID_VALUE ); }
+                    if(InitOtherPackage(connHandle, decrypted, decrypted_len) != 0){ free(decrypted); IP_RxExit(1); return (ATT_ERR_INVALID_VALUE); }
 				}
 				free(decrypted);
+                IP_RxExit(0);
 			}
 			break;
 		case TDXINFO_NOTITY_SEND_END:
@@ -1824,6 +1832,8 @@ int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
     uint8_t notify_buf[6], notify_retry;
     uint16_t notify_len;
     int result;
+    UINT32 perf_commit, perf_notify;
+    IP_ZipBytes((UINT16)dataLen);
 #if TDX_STORE_ZLIB
     result = s_zlib_image_active ? zlib_image_store_feed(adData, (UINT16)dataLen) : -1;
 #else
@@ -1843,7 +1853,8 @@ int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
         }
         return 0;
     }
-    IMAGE_LOG_TEXT("IMG zlib last-packet\r\n");
+    IP_RxDone();
+    perf_commit = IP_Start(IP_COMMIT);
 #if TDX_STORE_ZLIB
     result = zlib_image_store_finish();
 #else
@@ -1860,7 +1871,6 @@ int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
     global_EXTERN_FLASH_INFO.fZip = IMAGE_FLASH_ZLIB;
     if(global_TDX_AES_DATA_INFO.fOpType != DEVICE_OP_COMMON)
         CommitZlibSaveBlock(global_EXTERN_FLASH_INFO.fImageIndex);
-    IMAGE_LOG_TEXT("IMG zlib stored\r\n");
 #else
     Save256DataToFlash(NULL, 0, global_EXTERN_FLASH_INFO.fImageIndex, global_EXTERN_FLASH_INFO.fBlockNum);
     global_EXTERN_FLASH_INFO.fZip = 0;
@@ -1874,19 +1884,23 @@ int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
     DeInitFlashDriver();
     global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR;
     global_DEVICE_STATUS.fDataSendSuccess = Is_Yes;
-    IMAGE_LOG_TEXT("IMG receive complete\r\n");
+    IP_Toc(IP_COMMIT, perf_commit);
+    perf_notify = IP_Start(IP_NOTIFY);
     notitySendEnd(connHandle, 0x01, global_TDX_AES_DATA_INFO.fScreenType, notify_buf, &notify_len);
     for(notify_retry = 0; notify_retry < 5; notify_retry++) {
         notitySendFunc(connHandle, notify_buf, &notify_len);
         if(notify_retry < 4) delay_ms(50);
     }
+    IP_Toc(IP_NOTIFY, perf_notify);
     if(global_TDX_AES_DATA_INFO.fScreenType != OP_TYPE_IMG_DIFF_A) {
         s_tdx_display_busy_protect = 1;
         s_tdx_busy_drop_packets = 0;
         /* DeInitFlashDriver leaves Flash powered; avoid another 200 ms init. */
         global_DEVICE_STATUS.fImageType = (global_TDX_AES_DATA_INFO.fScreenType == OP_TYPE_IMG_DIFF_B) ? 1 : 0;
-        IMAGE_LOG_TEXT("IMG refresh queued\r\n");
+        IP_Queue();
         tmos_start_task(main_task_ID, EVENT_Get_Battle_Charge, 100);
+    } else {
+        IP_Stop(4); /* Stored A side; its later replay is a separate pass. */
     }
     return 0;
 }

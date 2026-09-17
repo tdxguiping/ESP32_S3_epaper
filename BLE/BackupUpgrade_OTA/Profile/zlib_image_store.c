@@ -1,4 +1,5 @@
 #include "zlib_image_store.h"
+#include "img_perf.h"
 
 #if TDX_STORE_ZLIB
 #include <string.h>
@@ -24,16 +25,23 @@ static struct {
 static int write_page(UINT16 block)
 {
     UINT8 verify[STORE_PAGE];
+    UINT32 perf_verify;
+    int result;
     if(block && block % 16U == 0U)
         TDX_SPI_FLASH_E_4096Bytes(store.index, block, EXTERN_FLASH_PIC_SIZE);
     TDX_SPI_FLASH_W_256Bytes(store.page, store.index, block, EXTERN_FLASH_PIC_SIZE);
+    perf_verify = IP_Start(IP_VERIFY);
     Read256DataFromFlash(verify, store.index, block);
-    return memcmp(verify, store.page, STORE_PAGE) ? -1 : 0;
+    result = memcmp(verify, store.page, STORE_PAGE) ? -1 : 0;
+    IP_Toc(IP_VERIFY, perf_verify);
+    return result;
 }
 
 int zlib_image_store_begin(UINT8 index)
 {
     UINT8 i;
+    UINT32 perf_verify;
+    int result = 0;
     zlib_image_store_abort();
     /* Includes both common-image slots; never cross the 4 MiB Flash limit. */
     if(index >= 4096U / EXTERN_FLASH_PIC_SIZE) return -1;
@@ -41,8 +49,11 @@ int zlib_image_store_begin(UINT8 index)
     store.block = 1;
     store.length = store.used = 0;
     TDX_SPI_FLASH_E_4096Bytes(index, 0, EXTERN_FLASH_PIC_SIZE);
+    perf_verify = IP_Start(IP_VERIFY);
     Read256DataFromFlash(store.page, index, 0);
-    for(i = 0; i < 16U; i++) if(store.page[i] != 0xff) return -1;
+    for(i = 0; i < 16U; i++) if(store.page[i] != 0xff) { result = -1; break; }
+    IP_Toc(IP_VERIFY, perf_verify);
+    if(result) return result;
     store.active = 1;
     return 0;
 }
@@ -96,11 +107,13 @@ void zlib_image_store_abort(void)
 
 int zlib_image_store_replay(UINT8 index, zlib_image_codec_sink_t sink, void *context)
 {
-    UINT32 header[4], remaining;
+    UINT32 header[4], remaining, perf_read;
     UINT16 block = 1;
     int result = -1;
     if(store.active || index >= 4096U / EXTERN_FLASH_PIC_SIZE) return -1;
+    perf_read = IP_Start(IP_READ);
     Read256DataFromFlash(store.page, index, 0);
+    IP_Toc(IP_READ, perf_read);
     memcpy(header, store.page, sizeof(header));
     remaining = header[1];
     if(header[0] != STORE_MAGIC || header[2] != ~remaining ||
@@ -109,7 +122,9 @@ int zlib_image_store_replay(UINT8 index, zlib_image_codec_sink_t sink, void *con
     if(zlib_image_codec_begin(sink, context)) return -1;
     while(remaining) {
         UINT16 count = remaining > STORE_PAGE ? STORE_PAGE : (UINT16)remaining;
+        perf_read = IP_Start(IP_READ);
         Read256DataFromFlash(store.page, index, block++);
+        IP_Toc(IP_READ, perf_read);
         /* Exclude page padding: the decoder rejects trailing input. */
         if(zlib_image_codec_feed(store.page, count)) goto done;
         remaining -= count;

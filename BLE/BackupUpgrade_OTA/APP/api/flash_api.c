@@ -7,10 +7,13 @@
 #include "commoninfo.h"
 #include "util.h"
 #include "zlib_image_store.h"
+#include "img_perf.h"
 
 void InitFlashDriver()
 {
+    UINT32 perf_start = IP_Start(IP_FLASH_INIT);
 	initExternFlashDriver();
+    IP_Toc(IP_FLASH_INIT, perf_start);
 }
 
 void DeInitFlashDriver()

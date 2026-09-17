@@ -263,10 +263,9 @@ UINT16 EPD_Busy_WaitCurrent(UINT16 active_timeout_ms, UINT16 release_timeout_ms)
         if(status.any_busy == Is_Yes)
         {
             had_active = Is_Yes;
-			BUSY_LOG_TEXT("BUSY active\r\n");
             break;
         }
-        DelayMs(2);
+        DelayMs(1);
     }
 
     if(had_active == Is_No)
@@ -289,12 +288,9 @@ UINT16 EPD_Busy_WaitCurrent(UINT16 active_timeout_ms, UINT16 release_timeout_ms)
         {
             Print_I3("BW ok t=%x a=%d r=%d rA=%d rB=%d",
                      target_sides, active_count, release_count, status.raw_a, status.raw_b);
-			BUSY_LOG_TEXT("BUSY idle\r\n");
-			BUSY_LOG_HEX8("BUSY rawA=", status.raw_a);
-			BUSY_LOG_HEX8("BUSY rawB=", status.raw_b);
             return Is_OK;
         }
-        DelayMs(2);
+        DelayMs(1);
     }
 
     Print_I3("BW to t=%x r=%d rA=%d rB=%d bA=%d bB=%d",

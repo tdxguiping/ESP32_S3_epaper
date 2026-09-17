@@ -5,6 +5,8 @@
 #include "Display_EPD_W21_spi.h"
 #include "epd_busy.h"
 #include "release_trace.h"
+#include "img_perf.h"
+#include "img_perf.h"
 
 #ifdef ENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6
 UINT8 EPD_Driver_GetBusyConfig(EPD_BUSY_CONFIG *cfg)
@@ -38,12 +40,9 @@ uint16  EPD_Check_Busy(void)
 void Init_EPD_Driver()
 {          
 	int i;
-	IMAGE_LOG_TEXT("IMG driver-init\r\n");
-
-	for(i=0; i<3; i++){
-    	EPD_W21_Reset();                     // reset  
-	}
-    Print_I3("---");
+	//IMAGE_LOG_TEXT("IMG driver-init\r\n");
+	
+    EPD_W21_Reset();                     // reset  	    
 	EPD_W21_WriteCMD(0xAA);    // CMDH
 	EPD_W21_WriteDATA(0x49);
 	EPD_W21_WriteDATA(0x55);
@@ -131,6 +130,8 @@ void Display_EPD_Driver(void)
 	EPD_W21_WriteDATA(0x00);
 	EPD_Check_Busy();*/
 
+    IP_Refresh();
+    IP_Refresh();
 	EPD_W21_WriteCMD(0x12);   //DISPLAY REFRESH   
     EPD_W21_WriteDATA(0x00);   
 	EPD_Busy_PrepareObserve();
@@ -138,9 +139,6 @@ void Display_EPD_Driver(void)
 		EPD_BUSY_STATUS busy_status;
 		if(EPD_Busy_GetStatus(&busy_status) == Is_Yes)
 		{
-			BUSY_LOG_HEX8("BUSY target=", busy_status.target_sides);
-			BUSY_LOG_HEX8("BUSY rawA=", busy_status.raw_a);
-			BUSY_LOG_HEX8("BUSY rawB=", busy_status.raw_b);
 		}
 		else
 		{

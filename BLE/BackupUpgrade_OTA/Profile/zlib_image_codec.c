@@ -7,10 +7,15 @@
 #include "app_cfg.h"
 #include "epd_driver.h"
 #include "release_trace.h"
+#include "img_perf.h"
 #include "zlib_image_codec.h"
 
 #define ZIC_WINDOW             4096U
+#if TDX_STORE_ZLIB
+#define ZIC_OUT_BUFFER         IMG_ZLIB_BATCH
+#else
 #define ZIC_OUT_BUFFER          256U
+#endif
 #define ZIC_MAX_BITS             15U
 
 enum {
@@ -138,7 +143,12 @@ static int zic_decode(zic_tree_t *tree, UINT16 *symbol)
 
 static int zic_flush(void)
 {
-    if(zic.out_len && (!zic.sink || zic.sink(zic.sink_context, zic.out, zic.out_len) != 0)) return -1;
+    if(zic.out_len) {
+        UINT32 perf_output = IP_Start(IP_OUTPUT);
+        int result = zic.sink ? zic.sink(zic.sink_context, zic.out, zic.out_len) : -1;
+        IP_Toc(IP_OUTPUT, perf_output);
+        if(result != 0) return -1;
+    }
     zic.out_len = 0;
     return 0;
 }
@@ -337,7 +347,6 @@ int zlib_image_codec_begin(zlib_image_codec_sink_t sink, void *context)
 #else
     zic.inner_limit = raw * 2U;
 #endif
-    TRACE_HEX32("ZLIB raw=", raw);
     return 0;
 }
 
@@ -346,7 +355,9 @@ int zlib_image_codec_feed(const UINT8 *data, UINT16 length)
     int rc;
     if(!data || !length || zic.state == ZIC_BAD || zic.state == ZIC_DONE) return -1;
     zic.in = data; zic.in_left = length;
+    UINT32 perf_decode = IP_Start(IP_DECODE), perf_output = IP_Value(IP_OUTPUT);
     rc = zic_run();
+    IP_Add(IP_DECODE, IP_Diff(IP_Now(), perf_decode) - (IP_Value(IP_OUTPUT) - perf_output));
     if(rc < 0 || (rc > 0 && zic.in_left)){
         TRACE_TEXT("ZLIB feed error\r\n");
         zic.state = ZIC_BAD;
@@ -357,13 +368,16 @@ int zlib_image_codec_feed(const UINT8 *data, UINT16 length)
 
 int zlib_image_codec_finish(void)
 {
-    if(zic.state == ZIC_BAD || zic_run() != 1 || zic.rle_pending || zic.raw != zic.raw_limit || zic_flush()){
+    UINT32 perf_decode = IP_Start(IP_DECODE), perf_output = IP_Value(IP_OUTPUT);
+    int failed = zic.state == ZIC_BAD || zic_run() != 1 || zic.rle_pending ||
+                 zic.raw != zic.raw_limit || zic_flush();
+    IP_Add(IP_DECODE, IP_Diff(IP_Now(), perf_decode) - (IP_Value(IP_OUTPUT) - perf_output));
+    if(failed){
         TRACE_HEX32("ZLIB finish raw=", zic.raw);
         TRACE_TEXT("ZLIB finish error\r\n");
         zic.state = ZIC_BAD;
         return -1;
     }
-    TRACE_TEXT("ZLIB finish ok\r\n");
     return 0;
 }
 

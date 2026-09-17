@@ -9,6 +9,9 @@
  *******************************************************************************/
 
 #include "CH58x_common.h"
+#if defined(ENABLE_SOFTWARE_TO_TDX) && defined(ENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6)
+#include "img_perf.h"
+#endif
 
 static UINT16 counter=0;
 
@@ -210,6 +213,9 @@ uint8_t SPI0_MasterRecvByte(void)
  */
 void SPI0_MasterTrans(uint8_t *pbuf, uint16_t len)
 {
+#if defined(ENABLE_SOFTWARE_TO_TDX) && defined(ENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6)
+    IP_SpiCall(len);
+#endif
     uint16_t sendlen;
 
     sendlen = len;

@@ -1,7 +1,5 @@
-@echo off
-
-@echo Build Start!!!!!!!!!!!!!!!!!!!!
-@set GCC12_BIN=E:\E_paper_tool\MounRiver\MounRiver_Studio\toolchain\RISC-V Embedded GCC12\bin
+ï»¿@echo Build Start!!!!!!!!!!!!!!!!!!!!
+@set GCC12_BIN=C:\MounRiver\MounRiver_Studio\toolchain\RISC-V Embedded GCC12\bin
 @if exist "%GCC12_BIN%\riscv-none-elf-gcc.exe" @set PATH=%GCC12_BIN%;%PATH%
 @if "%1"=="" (
 	@echo ver is null
@@ -10,7 +8,7 @@
 	@set VER_TMP=%1
 )
 
-:: ?¡§¨°?D¨¨¨°a¡À¨¤¨°?¦Ì??¨´¨®D EPD_SCREEN_TYPE¡ê¡§¨®?????¡¤???¡ê?
+
 set "EPD_SCREEN_TYPE=EPD_SCREEN_TYPE_A EPD_SCREEN_TYPE_T"
 
 @for %%i in ("%cd%\..\..") do set "PARENT_DIR=%%~fi"
@@ -33,7 +31,7 @@ set "EPD_SCREEN_TYPE=EPD_SCREEN_TYPE_A EPD_SCREEN_TYPE_T"
 @set U_EPAPER_TYPE_DIR=YT_SPD_800X400C6
 ::########################
 
-:: ¨º1¨®?WMIC??¨¨?¨¨??¨²¡ê¡§??¨º?¡êoYYYYMMDD¡ê?
+
 for /f "skip=1" %%a in ('wmic os get LocalDateTime') do (
     set "DATETIME=%%a"
     goto :continue
@@ -43,10 +41,10 @@ for /f "skip=1" %%a in ('wmic os get LocalDateTime') do (
 @set "MM=%DATETIME:~4,2%"
 @set "DD=%DATETIME:~6,2%"
 
-:: ??¨®??¨®3¨´¨¤??1¡ê¡§D¨¨¨°a?¨²?-?¡¤?¡ã?a??¡ê?
+
 setlocal enabledelayedexpansion
 
-:: ?-?¡¤¡À¨¦¨¤¨²???? EPAPER_TYPE 2¡é¡À¨¤¨°?
+
 for %%t in (%EPD_SCREEN_TYPE%) do (
     @set "EPD_SCREEN_TYPE_TMP=%%t"
 	if "!EPD_SCREEN_TYPE_TMP!"=="EPD_SCREEN_TYPE_A" (

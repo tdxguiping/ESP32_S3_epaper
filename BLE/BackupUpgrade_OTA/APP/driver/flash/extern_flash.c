@@ -1,3 +1,4 @@
+#include "img_perf.h"
 #include <stdlib.h>
 
 #include "base64.h"
@@ -195,6 +196,7 @@ void SPI_FLASH_BufferRead(UINT8* pBuffer, UINT32 ReadAddr, UINT16 NumByteToRead)
 
 void SPI_FLASH_SectorErase(UINT32 SectorAddr)
 {
+    UINT32 perf_start = IP_Start(IP_ERASE);
 	SPI_FLASH_WriteEnable();
 	SPI_FLASH_CS_LOW();
 	SPI1_MasterSendByte(SectorErace);
@@ -203,6 +205,7 @@ void SPI_FLASH_SectorErase(UINT32 SectorAddr)
 	SPI1_MasterSendByte(SectorAddr & 0xFF);
 	SPI_FLASH_CS_HIGH();
 	SPI_FLASH_WaitForWriteEnd();
+    IP_Toc(IP_ERASE, perf_start);
 }
 
 void SPI_FLASH_BulkErase(UINT32 BlockAddr)
@@ -400,6 +403,7 @@ void TDX_SPI_FLASH_W_256Bytes_xt(UINT8* pBuffer,UINT16 PIC_Number,UINT16 Block_N
 // Addr = 表示 第几个 256 块
 void TDX_SPI_FLASH_W_256Bytes(UINT8* pBuffer,UINT16 PIC_Number,UINT16 Block_Number,UINT16 F_type)
 {
+    UINT32 perf_start = IP_Start(IP_WRITE);
 	UINT32 Addr;
 	UINT16 NumByteToWrite;  
 
@@ -422,6 +426,7 @@ void TDX_SPI_FLASH_W_256Bytes(UINT8* pBuffer,UINT16 PIC_Number,UINT16 Block_Numb
 	}
 	SPI_FLASH_CS_HIGH();
 	SPI_FLASH_WaitForWriteEnd();
+    IP_Toc(IP_WRITE, perf_start);
 }
 
 // 以 256bytes 为单位，一次最少写 256 bytes

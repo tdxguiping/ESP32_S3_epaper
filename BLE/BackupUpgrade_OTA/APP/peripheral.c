@@ -22,6 +22,7 @@
 #include "zlib_image_store.h"
 #include "commoninfo.h"
 #include "release_trace.h"
+#include "img_perf.h"
 
 #include "rledecode.h"
 
@@ -606,9 +607,6 @@ static void peripheralParamUpdateCB(uint16 connHandle, uint16 connInterval,
     else
     {
         Print_I3("Update %x connInterval=%x %x %x", connHandle, connInterval,connSlaveLatency,connTimeout);
-        BLE_LOG_TEXT("BLE param-update ok\r\n");
-        BLE_LOG_HEX32("BLE interval=", connInterval);
-        BLE_LOG_HEX32("BLE timeout=", connTimeout);
     }
 }
 
@@ -858,15 +856,10 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
     {
         case GAPROLE_STARTED:
             Print_I3("Initialized..");
-			BLE_LOG_TEXT("BLE stack started\r\n");
 			global_DEVICE_STATUS.fisBleConnect = Is_No;
             break;
         case GAPROLE_ADVERTISING:
             //Print_I3("Advertising..");
-			if(s_ble_log_connected == Is_No)
-			{
-				BLE_LOG_TEXT("BLE advertising\r\n");
-			}
             global_DEVICE_STATUS.fisBleConnect = Is_No;
             break;
         case GAPROLE_CONNECTED:
@@ -889,9 +882,6 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
             printf("connLatency=%d \r\n",event->connLatency);
             printf("connTimeout=%d \r\n",event->connTimeout);
             printf("clockAccuracy=%d \r\n",event->clockAccuracy);
-			BLE_LOG_TEXT("BLE connected\r\n");
-			BLE_LOG_HEX32("BLE interval=", event->connInterval);
-			BLE_LOG_HEX32("BLE timeout=", event->connTimeout);
 			s_ble_log_connected = Is_Yes;
 
 			//tmos_start_task(main_task_ID,EVENT_Check_TimeOut ,500);
@@ -919,11 +909,11 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
 			BLE_LOG_TEXT("BLE connected advertising\r\n");
             break;
         case GAPROLE_WAITING:
+            IP_Disconnect();
         {
 			Print_I3("GAPROLE_WAITING..");
 			if(s_ble_log_connected == Is_Yes)
 			{
-				BLE_LOG_TEXT("BLE disconnected\r\n");
 				s_ble_log_connected = Is_No;
 			}
 			//global_DEVICE_STATUS.fisBleConnect = Is_No;
@@ -945,7 +935,6 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
             uint8_t initial_advertising_enable = TRUE;
             GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advertising_enable);
      		Print_I3("Start .advertising.");
-			BLE_LOG_TEXT("BLE restart advertising\r\n");
 			if(global_DEVICE_STATUS.fisOtaed == 1)
 			{
 				OTA_LOG_TEXT("OTA disconnect reset\r\n");
@@ -1147,6 +1136,8 @@ void Rec_OTA_Data(uint8 *pValue, uint16 len){
  * @return  none
  */
 UINT16  Debug_info_OTA=Is_Zero;
+#if 0
+
 void Rec_OTA_IAP_DataDeal(void)
 {
     Debug_info_OTA++;
@@ -1372,6 +1363,14 @@ void Rec_OTA_IAP_DataDeal(void)
     }
 }    
 
+#else
+
+void Rec_OTA_IAP_DataDeal(void)
+{
+
+    
+}
+#endif
 /*********************************************************************
  * @fn      OTA_IAPReadDataComplete
  *
