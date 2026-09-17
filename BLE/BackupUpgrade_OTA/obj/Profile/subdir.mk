@@ -13,6 +13,7 @@ C_SRCS += \
 ../Profile/boeinfoservice.c \
 ../Profile/xtinfoservice.c \
 ../Profile/tdxinfoservice.c \
+../Profile/tdx_image_stream.c \
 ../Profile/zlib_image_codec.c \
 ../Profile/zlib_image_store.c \
 ../Profile/gattprofile.c \
@@ -28,6 +29,7 @@ OBJS += \
 ./Profile/boeinfoservice.o \
 ./Profile/xtinfoservice.o \
 ./Profile/tdxinfoservice.o \
+./Profile/tdx_image_stream.o \
 ./Profile/zlib_image_codec.o \
 ./Profile/zlib_image_store.o \
 ./Profile/rledecode.o \
@@ -43,6 +45,7 @@ C_DEPS += \
 ./Profile/boeinfoservice.d \
 ./Profile/xtinfoservice.d \
 ./Profile/tdxinfoservice.d \
+./Profile/tdx_image_stream.d \
 ./Profile/zlib_image_codec.d \
 ./Profile/zlib_image_store.d \
 ./Profile/rledecode.d \

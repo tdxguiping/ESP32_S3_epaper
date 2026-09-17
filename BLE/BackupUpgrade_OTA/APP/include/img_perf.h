@@ -59,6 +59,8 @@ void IP_Tail(void);
 void IP_Stop(UINT8 status);
 void IP_FinishTail(void);
 void IP_Disconnect(void);
+void IP_FlowFreeze(void);
+void IP_FlowReport(void);
 #else
 #define IP_Now() 0U
 #define IP_Start(i) 0U
@@ -83,5 +85,7 @@ void IP_Disconnect(void);
 #define IP_Stop(s) ((void)0)
 #define IP_FinishTail() ((void)0)
 #define IP_Disconnect() ((void)0)
+#define IP_FlowFreeze() ((void)0)
+#define IP_FlowReport() ((void)0)
 #endif
 #endif

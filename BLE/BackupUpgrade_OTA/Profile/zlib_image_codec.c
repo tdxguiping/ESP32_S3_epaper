@@ -9,6 +9,7 @@
 #include "release_trace.h"
 #include "img_perf.h"
 #include "zlib_image_codec.h"
+#include "tdx_image_stream.h"
 
 #define ZIC_WINDOW             4096U
 #if TDX_STORE_ZLIB
@@ -58,6 +59,13 @@ typedef struct {
 } zic_context_t;
 
 static zic_context_t zic;
+#if TDX_SMALL_STREAM_ENABLE
+static UINT32 zic_budget_end;
+static UINT8 zic_budgeted;
+#define ZIC_YIELD_CHECK() do { if(zic_budgeted && zic.raw >= zic_budget_end) return 2; } while(0)
+#else
+#define ZIC_YIELD_CHECK() ((void)0)
+#endif
 
 static const UINT16 zic_len_base[29] = {
     3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,
@@ -222,6 +230,7 @@ static int zic_run(void)
     UINT8 btype;
     int rc;
     for(;;){
+        ZIC_YIELD_CHECK();
         switch(zic.state){
         case ZIC_HEADER:
             if(!zic_need(16)) return 0;
@@ -244,7 +253,12 @@ static int zic_run(void)
             zic.state = ZIC_STORED;
             break;
         case ZIC_STORED:
-            while(zic.stored){ if(!zic_need(8)) return 0; if(zic_emit((UINT8)zic_get(8))) return -1; zic.stored--; }
+            while(zic.stored){
+                ZIC_YIELD_CHECK();
+                if(!zic_need(8)) return 0;
+                if(zic_emit((UINT8)zic_get(8))) return -1;
+                zic.stored--;
+            }
             zic.state = zic.final ? ZIC_TRAILER : ZIC_BLOCK;
             break;
         case ZIC_DYN_HEADER:
@@ -307,6 +321,7 @@ static int zic_run(void)
             break;
         case ZIC_MATCH:
             while(zic.match_len){
+                ZIC_YIELD_CHECK();
                 value = zic.window[(zic.window_pos + ZIC_WINDOW - zic.match_dist) & (ZIC_WINDOW - 1U)];
                 if(zic_emit((UINT8)value)) return -1;
                 zic.match_len--;
@@ -339,6 +354,9 @@ int zlib_image_codec_begin(zlib_image_codec_sink_t sink, void *context)
     UINT32 raw = EPD_GetDisplayMaxBuf();
     if(!sink || !raw) return -1;
     memset(&zic, 0, sizeof(zic));
+#if TDX_SMALL_STREAM_ENABLE
+    zic_budgeted = 0;
+#endif
     zic.sink = sink; zic.sink_context = context;
     zic.state = ZIC_HEADER; zic.adler_s1 = 1;
     zic.raw_limit = raw;
@@ -386,3 +404,25 @@ void zlib_image_codec_abort(void)
     memset(&zic, 0, sizeof(zic));
     zic.state = ZIC_BAD;
 }
+
+#if TDX_SMALL_STREAM_ENABLE
+/* 0=need input, 1=stream end, 2=yield, -1=error. No input pointer is retained
+ * after returning: the caller releases exactly *consumed FIFO bytes. */
+int zlib_image_codec_pump(const UINT8 *data, UINT16 length, UINT16 *consumed)
+{
+    int rc;
+    UINT32 start = IP_Start(IP_DECODE), output = IP_Value(IP_OUTPUT);
+    if(!consumed || (!data && length) || zic.state == ZIC_BAD) return -1;
+    *consumed = 0;
+    zic.in = data; zic.in_left = length;
+    zic_budget_end = zic.raw + (ZIC_OUT_BUFFER - zic.out_len);
+    zic_budgeted = 1;
+    rc = zic_run();
+    zic_budgeted = 0;
+    *consumed = length - zic.in_left;
+    zic.in = NULL; zic.in_left = 0;
+    IP_Add(IP_DECODE, IP_Diff(IP_Now(), start) - (IP_Value(IP_OUTPUT) - output));
+    if(rc < 0) zic.state = ZIC_BAD;
+    return rc;
+}
+#endif

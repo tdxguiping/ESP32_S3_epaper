@@ -26,6 +26,7 @@ extern "C" {
 // Simple BLE Peripheral Task Events
 #define SBP_START_DEVICE_EVT    0x0001
 #define SBP_PERIODIC_EVT        0x0002
+#define SBP_IMAGE_STREAM_EVT    0x0008
 #define OTA_FLASH_ERASE_EVT     0x0004  //OTA Flash²Á³ýÈÎÎñ
 
 /*********************************************************************

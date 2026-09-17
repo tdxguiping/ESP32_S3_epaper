@@ -17,6 +17,7 @@
 #include "flash_driver.h"
 #include "zlib_image_codec.h"
 #include "zlib_image_store.h"
+#include "tdx_image_stream.h"
 #include "ch583_secure.h"
 #include "release_trace.h"
 
@@ -729,6 +730,9 @@ gattServiceCBs_t tdxInfoCBs = {
 static int phoneid_len = 0;
 static unsigned char u8IsFirstPackage = TDX_DATA_FIRST;
 static UINT8 s_zlib_image_active = 0;
+#if TDX_SMALL_STREAM_ENABLE
+static TDX_IMAGE_MODE s_image_session_mode = TDX_IMAGE_SMALL_STREAM;
+#endif
 #if !TDX_STORE_ZLIB
 static int zlib_flash_sink(void *context, const UINT8 *data, UINT16 length)
 {
@@ -929,6 +933,14 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 			return ( ATT_ERR_INSUFFICIENT_AUTHOR );
 		}
 	}
+#if TDX_SMALL_STREAM_ENABLE
+    if(TIS_Locked() && (gatt_handle == TDXINFO_SEND_PRE_SAVE ||
+       gatt_handle == TDXINFO_SEND_CLEAN || gatt_handle == TDXINFO_OTA_INFO ||
+       gatt_handle == TDXINFO_NOTITY_SEND_END || gatt_handle == TDXINFO_SWITCH_MODE)) return ATT_ERR_INSUFFICIENT_RESOURCES;
+    if((TIS_Active() || TdxInfo_DisplayBusy()) &&
+       (gatt_handle == TDXINFO_SEND_AES_IV || gatt_handle == TDXINFO_SEND_PHONE_ID))
+        return ATT_ERR_INSUFFICIENT_RESOURCES;
+#endif
     switch (gatt_handle) {
 		case TDXINFO_GET_DATA:
         case TDXINFO_NOTITY_SEND_RESULT_INFO:
@@ -1057,6 +1069,21 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 					global_DEVICE_STATUS.fBoardCastGroup = global_TDX_AES_DATA_INFO.fGroupNum;
 					global_DEVICE_STATUS.fBoardCastRoom = global_TDX_AES_DATA_INFO.fRoomNum;
 
+#if TDX_SMALL_STREAM_ENABLE
+                    s_image_session_mode = g_tdx_image_transfer_mode;
+                    if(s_image_session_mode == TDX_IMAGE_SMALL_STREAM) {
+                        /* Stream format is direct SPD1657 pixels, not save/diff commands. */
+                        if(global_TDX_AES_DATA_INFO.fOpType != DEVICE_OP_COMMON ||
+                           global_TDX_AES_DATA_INFO.fScreenType > OP_TYPE_IMG_AB ||
+                           TIS_Begin(connHandle, global_TDX_AES_DATA_INFO.fScreenType,
+                                     global_DEVICE_STATUS.fScreenType,
+                                     global_TDX_AES_DATA_INFO.fPackageNum)) {
+                            free(decrypted); IP_RxExit(1); return ATT_ERR_INVALID_VALUE;
+                        }
+                        clearBoardcastData();
+                    } else if(s_image_session_mode == TDX_IMAGE_LARGE_FLASH) {
+                        TIS_UseLarge();
+#endif
 					if(InitFirstPackage(connHandle) == -1){
 						FAULT_LOG_TEXT("FAULT img init-first\r\n");
 						free(decrypted);
@@ -1079,9 +1106,19 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 #else
                     IMAGE_LOG_TEXT("IMG zlib session begin\r\n");
 #endif
+#if TDX_SMALL_STREAM_ENABLE
+                    } else { free(decrypted); IP_RxExit(1); return ATT_ERR_INVALID_VALUE; }
+#endif
 					u8IsFirstPackage = TDX_DATA_FIRST_COLOR;
                     IP_Toc(IP_HEADER, perf_header);
 				}else{
+#if TDX_SMALL_STREAM_ENABLE
+                    if(s_image_session_mode == TDX_IMAGE_SMALL_STREAM) {
+                        if(decrypted_len > 65535U || TIS_Push(decrypted, (UINT16)decrypted_len)) {
+                            free(decrypted); IP_RxExit(1); return ATT_ERR_INVALID_VALUE;
+                        }
+                    } else
+#endif
                     if(InitOtherPackage(connHandle, decrypted, decrypted_len) != 0){ free(decrypted); IP_RxExit(1); return (ATT_ERR_INVALID_VALUE); }
 				}
 				free(decrypted);
@@ -1096,12 +1133,14 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 			//tmos_set_event(main_task_ID,EVENT_Low_Power);
 			break;
 		case TDXINFO_OTA_INFO:
+            TIS_UseLarge();
 			global_DEVICE_STATUS.fisOtaed = 1;
 			//PRINT("WriteAttrCB TDXINFO_OTA_INFO\r\n");
 			//hex_dump(pValue, len);
 			Rec_OTA_Data(pValue,len);
 			break;
 		case TDXINFO_SEND_PRE_SAVE:
+            TIS_UseLarge();
 			global_DEVICE_STATUS.fInitDriver = Is_Yes;
 			global_TDX_AES_DATA_INFO.fOpType = OP_TYPE_SAVE_IMG_A;
 			global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR;
@@ -1156,6 +1195,7 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 			}
 			break;
 		case TDXINFO_SEND_CLEAN:
+            TIS_UseLarge();
 			PRINT("send pre clean\r\n");	
 			hex_dump(pValue, len);
 			global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_AB;
@@ -1582,6 +1622,7 @@ static uint8_t firstAdvertisementLen[BOARDLEN_Len];
 
 void receiveGapBroadcastAdData(UINT8 *adData, UINT32 dataLen)
 {
+    if(TIS_Locked() || TIS_HoldPower()) return;
 	if((adData[0] == BROADCAST_COMMAND_PRESAVE && adData[1] == BROADCAST_PREFIX_CHAR2 && adData[2] == BROADCAST_PREFIX_CHAR3 && adData[3] == BROADCAST_PREFIX_CHAR4) || 
 		(adData[0] == BROADCAST_COMMAND_CLEAN_SCREEN && adData[1] == BROADCAST_PREFIX_CHAR2 && adData[2] == BROADCAST_PREFIX_CHAR3 && adData[3] == BROADCAST_PREFIX_CHAR4) ||
 		(adData[0] == BROADCAST_COMMAND_CLEAN_PRESAVE && adData[1] == BROADCAST_PREFIX_CHAR2 && adData[2] == BROADCAST_PREFIX_CHAR3 && adData[3] == BROADCAST_PREFIX_CHAR4)){
@@ -1689,6 +1730,8 @@ void receiveGapBroadcastAdData(UINT8 *adData, UINT32 dataLen)
 }
 
 void processGapBroadcastAdData(){
+    if(TIS_Locked() || TIS_HoldPower()) return;
+    TIS_UseLarge();
 	//PRINT("boardcast info type:%d room:%d group:%d ab:%d\r\n",global_DEVICE_STATUS.fBoardCastType,global_DEVICE_STATUS.fBoardCastRoom,
 	//	global_DEVICE_STATUS.fBoardCastGroup,global_DEVICE_STATUS.fScreenType);
 
@@ -1746,6 +1789,7 @@ void processGapBroadcastAdData(){
 
 void TdxInfo_ClearDisplayBusyProtect(void)
 {
+    TIS_RefreshComplete();
 	s_tdx_display_busy_protect = 0;
 	s_tdx_busy_drop_packets = 0;
 	u8IsFirstPackage = TDX_DATA_FIRST;
@@ -2002,3 +2046,27 @@ void notifyDeviceBound(uint16 connHandle)
 #endif
 /*********************************************************************
 *********************************************************************/
+
+#if TDX_SMALL_STREAM_ENABLE
+UINT8 TdxInfo_DisplayBusy(void) { return s_tdx_display_busy_protect; }
+void TdxInfo_StreamResult(UINT16 conn, UINT8 type, UINT8 error)
+{
+    UINT8 notify_buf[6], retry;
+    UINT16 notify_len = 0;
+    u8IsFirstPackage = TDX_DATA_FIRST;
+    IsDecryptFlag = Is_No;
+    global_DEVICE_STATUS.fPackageCnt = 0;
+    global_DEVICE_STATUS.fPackageCount = 1;
+    s_zlib_image_active = 0;
+    if(!error) {
+        s_tdx_display_busy_protect = 1;
+        s_tdx_busy_drop_packets = 0;
+    }
+    if(error == 0xff) return; /* Link is gone; reset state without notification. */
+    notitySendEnd(conn, error ? 0x04 : 0x01, type, notify_buf, &notify_len);
+    for(retry = 0; retry < (error ? 1 : 5); retry++) {
+        notitySendFunc(conn, notify_buf, &notify_len);
+        if(!error && retry < 4) delay_ms(50);
+    }
+}
+#endif

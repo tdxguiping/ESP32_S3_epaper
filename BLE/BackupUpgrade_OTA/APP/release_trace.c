@@ -43,7 +43,7 @@ static struct {
     UINT32 rx_bytes, zip_bytes, spi_bytes, spi_calls, pass_spi, pass_bytes;
     struct { UINT32 ticks, spi, bytes; UINT8 side; } pass[2];
     UINT8 active, rx_open, rx_closed, queued, refreshing, seen, tail_ready;
-    UINT8 pending, result, source, pixels, passes, stage;
+    UINT8 pending, result, source, pixels, passes, stage, flow_frozen;
 } ip;
 
 UINT32 IP_Now(void) { return ip.active ? RTC_GetCycle32k() : 0; }
@@ -199,5 +199,31 @@ void IP_Disconnect(void)
 {
     /* A normal disconnect after reception must not close the refresh timer. */
     if(ip.active && !ip.source && !ip.rx_closed) IP_Stop(3);
+}
+#endif
+
+#if IMG_PERF_ENABLE
+/* Freeze without UART work before the real refresh invocation. */
+void IP_FlowFreeze(void)
+{
+    if(!ip.active || ip.rx_open) return;
+    IP_Toc(IP_TOTAL, ip.begin);
+    ip.active = ip.pixels = 0;
+    ip.flow_frozen = 1;
+}
+void IP_FlowReport(void)
+{
+    if(!ip.flow_frozen) return;
+    ip.flow_frozen = 0;
+    BOOT_LOG_HEX8("S result=", 0);
+    BOOT_LOG_HEX32("RX bytes=", ip.rx_bytes);
+    BOOT_LOG_HEX32("ZIP bytes=", ip.zip_bytes);
+    BOOT_LOG_HEX32("RX ms=", ip_ms(ip.ticks[IP_RX_SPAN]));
+    BOOT_LOG_HEX32("AES ms=", ip_ms(ip.ticks[IP_AES]));
+    BOOT_LOG_HEX32("ZIP ms=", ip_ms(ip.ticks[IP_DECODE]));
+    BOOT_LOG_HEX32("SPI n=", ip.spi_calls);
+    BOOT_LOG_HEX32("SPI bytes=", ip.spi_bytes);
+    BOOT_LOG_HEX32("SPI ms=", ip_ms(ip.ticks[IP_SPI]));
+    BOOT_LOG_HEX32("FLOW ms=", ip_ms(ip.ticks[IP_TOTAL]));
 }
 #endif

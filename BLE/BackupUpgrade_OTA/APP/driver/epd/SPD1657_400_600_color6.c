@@ -37,12 +37,12 @@ uint16  EPD_Check_Busy(void)
     return EPD_Busy_WaitCurrent(200, 10000);
 }
 
-void Init_EPD_Driver()
+void SPD1657_InitRegisters(void)
 {          
 	int i;
 	//IMAGE_LOG_TEXT("IMG driver-init\r\n");
 	
-    EPD_W21_Reset();                     // reset  	    
+    /* Reset and BUSY wait belong to the caller. */
 	EPD_W21_WriteCMD(0xAA);    // CMDH
 	EPD_W21_WriteDATA(0x49);
 	EPD_W21_WriteDATA(0x55);
@@ -103,7 +103,13 @@ void Init_EPD_Driver()
 	EPD_W21_WriteDATA(0x2F);
 	
 	EPD_W21_WriteCMD(0x04); 	//PWR on  
-	EPD_Check_Busy();          //waiting for the electronic paper IC to release the idle signal
+}
+
+void Init_EPD_Driver(void)
+{
+    EPD_W21_Reset();
+    SPD1657_InitRegisters();
+    EPD_Check_Busy();
 }
 
 void Display_EPD_Driver(void)

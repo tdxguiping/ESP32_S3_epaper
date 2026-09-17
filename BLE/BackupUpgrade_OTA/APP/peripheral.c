@@ -23,6 +23,7 @@
 #include "commoninfo.h"
 #include "release_trace.h"
 #include "img_perf.h"
+#include "tdx_image_stream.h"
 
 #include "rledecode.h"
 
@@ -87,7 +88,7 @@ __attribute__((aligned(8))) uint8_t block_key_buf[EEPROM_PAGE_SIZE];
 /*********************************************************************
  * LOCAL VARIABLES
  */
-static uint8_t Peripheral_TaskID = 0xff; // Task ID for internal task/event processing
+uint8_t Peripheral_TaskID = 0xff; // Task ID for internal task/event processing
 
 #ifdef ENABLE_BOARD_ENCRYPT
 void Save_Key_EEPROM_Flag(uint8_t* new_flag,UINT16 pos,UINT16 Len)
@@ -752,6 +753,13 @@ uint16_t Peripheral_ProcessEvent(uint8_t task_id, uint16_t events)
         return (events ^ SYS_EVENT_MSG);
     }
 
+#if TDX_SMALL_STREAM_ENABLE
+    if(events & SBP_IMAGE_STREAM_EVT) {
+        UINT16 delay = TIS_Process();
+        if(delay) tmos_start_task(Peripheral_TaskID, SBP_IMAGE_STREAM_EVT, delay);
+        return events ^ SBP_IMAGE_STREAM_EVT;
+    }
+#endif
     if(events & SBP_START_DEVICE_EVT)
     {
         //Print_I3("SBP_PERIODIC_EVT 1");
@@ -889,6 +897,7 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
 			//Power_CS_A_on;
 #endif
 			global_DEVICE_STATUS.fisBleConnect = Is_Yes;
+            TIS_Connect();
             if(conn_interval > DEFAULT_DESIRED_MAX_CONN_INTERVAL)
             {
                 Print_I3("Send Update %d %d",DEFAULT_DESIRED_MIN_CONN_INTERVAL_v2,DEFAULT_DESIRED_MAX_CONN_INTERVAL_v2);
@@ -909,6 +918,7 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
 			BLE_LOG_TEXT("BLE connected advertising\r\n");
             break;
         case GAPROLE_WAITING:
+            TIS_Disconnect();
             IP_Disconnect();
         {
 			Print_I3("GAPROLE_WAITING..");
@@ -956,6 +966,7 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
         break;
 
         case GAPROLE_ERROR:
+            TIS_Disconnect();
 			global_DEVICE_STATUS.fisBleConnect = Is_No;
             Print_I3("Error..%x",newState);
 			FAULT_LOG_TEXT("FAULT ble state\r\n");
@@ -1122,10 +1133,12 @@ void DisableAllIRQ(void)
 UINT8  Ble_Len;
 
 void Rec_OTA_Data(uint8 *pValue, uint16 len){
-	tmos_memcpy((unsigned char *)&iap_rec_data, pValue, len);
 
+    #if 0 //by_lgp
+	tmos_memcpy((unsigned char *)&iap_rec_data, pValue, len);
 	Ble_Len=len;
 	Rec_OTA_IAP_DataDeal();
+    #endif
 }
 
 /*********************************************************************
@@ -1136,7 +1149,7 @@ void Rec_OTA_Data(uint8 *pValue, uint16 len){
  * @return  none
  */
 UINT16  Debug_info_OTA=Is_Zero;
-#if 0
+#if 0  // by_lgp
 
 void Rec_OTA_IAP_DataDeal(void)
 {
@@ -1368,7 +1381,7 @@ void Rec_OTA_IAP_DataDeal(void)
 void Rec_OTA_IAP_DataDeal(void)
 {
 
-    
+
 }
 #endif
 /*********************************************************************
@@ -1382,7 +1395,7 @@ void Rec_OTA_IAP_DataDeal(void)
  */
 void OTA_IAPReadDataComplete(unsigned char index)
 {
-	Print_I3("Ble Send=%x\r\n",index);
+	//Print_I3("Ble Send=%x\r\n",index);
     //Ble_Send_over=Is_Ready;
 }
 
@@ -1427,6 +1440,7 @@ void OTA_IAPReadDataComplete(unsigned char index)
 // 244
 //static int ota1_data_len = 0;
 
+#if 0  // by_lgp
 void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char w_len)
 {
     unsigned char  rec_len;
@@ -1450,5 +1464,9 @@ void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char 
    
 	Rec_OTA_IAP_DataDeal();
 }
-
+#else
+void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char w_len)
+{
+}
+#endif
 

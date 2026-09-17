@@ -13,6 +13,7 @@
 #include "release_uart0.h"
 #include "release_trace.h"
 #include "img_perf.h"
+#include "tdx_image_stream.h"
 #include "factory_selftest.h"
 
 /* ��¼��ǰ��Image */
@@ -453,6 +454,7 @@ static uint8_t RefreshTimerSegmentElapsed(void)
 //UINT8  Frist_time=0;
 void Save_LastRefresh_Info_To_Flash(void)
 {
+    if(TIS_VolatileImage()) return; /* No Flash slot exists for this frame. */
 	// ============ 统一在这里保存刷屏信息到flash（用于定时刷屏恢复） ============
 	// 在进入低功耗前，判断刚才是什么类型的刷屏，并保存索引、group、room等信�?	// 注意：只保存一次，使用静态变量避免重复保�?	// fDataSendSuccess保持Is_Yes状态，确保Low_power_IDLE()循环期间不会被peripheral.c:713-716打断
 	static uint8_t last_saved_success_flag = Is_No;
@@ -528,6 +530,8 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 
     if(events & EVENT_Get_Battle_Charge)
     {
+        if(TIS_Locked()) return events ^ EVENT_Get_Battle_Charge;
+        TIS_UseLarge();
     IP_Dequeue();
 	if(global_DEVICE_STATUS.fImageType == 1){
 		// 异显模式：需要刷两次（A�?B面）
@@ -652,7 +656,8 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
     }
 	
 	if(events & EVENT_Low_Power)
-	{ 
+	{
+        if(TIS_HoldPower()) return events ^ EVENT_Low_Power;
         UINT32 perf_save;
         IP_Tail();
 		Print_I3("..............EVENT_Low_Power 00000000000000000");
@@ -695,6 +700,10 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 
 	if(events & EVENT_Refresh_Timer)
 	{
+        if(TIS_Locked() || TIS_HoldPower()) {
+            tmos_start_task(main_task_ID, EVENT_Refresh_Timer, 1600);
+            return events ^ EVENT_Refresh_Timer;
+        }
 		if(global_refresh_timer_interval > 0){
 			if(RefreshTimerSegmentElapsed() != Is_Yes){
 				return events ^ EVENT_Refresh_Timer;
@@ -705,6 +714,7 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 			// index/zip/fScreenType 会由 getLastRefreshInfo() 回写到全局变量
 			// 小时数使用固定�?REFRESH_TIMER_FIXED_HOURS
 			uint8_t last_type, last_group, last_room, last_enabled, last_screen_mode;
+            TIS_UseLarge();
 			getLastRefreshInfo(&last_type, &last_group, &last_room, &last_enabled, &last_screen_mode);
 
 			uint8_t last_index = global_EXTERN_FLASH_INFO.fImageIndex;
@@ -979,6 +989,7 @@ static UINT8 CPU_busy_had_active=Is_No;
 static UINT8 CPU_busy_idle_stable=0;
 void   Low_power_IDLE(void)
 {
+    if(TIS_HoldPower()) return;
     UINT8 refresh_over;
     UINT8 timeout_over;
     UINT8 busy_supported;
