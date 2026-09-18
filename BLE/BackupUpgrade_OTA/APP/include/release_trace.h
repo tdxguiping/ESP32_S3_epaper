@@ -9,24 +9,22 @@
                          UART0_BUSY_LOG_ENABLE || UART0_OTA_LOG_ENABLE || \
                          UART0_FAULT_LOG_ENABLE)
 void release_trace_write(const UINT8 *data, UINT16 length);
-void release_trace_hex8(UINT8 value);
-void release_trace_hex32(UINT32 value);
+void release_trace_hex_line(const UINT8 *label, UINT16 length, UINT32 value, UINT8 digits);
 
 #define RELEASE_TRACE_TEXT(text) do { \
     static const char trace_literal[] = text; \
     release_trace_write((const UINT8 *)trace_literal, (UINT16)(sizeof(trace_literal) - 1U)); \
 } while(0)
 
+/* One shared call per line; string literals can be pooled by the compiler. */
 #define RELEASE_TRACE_HEX8(label, value) do { \
-    RELEASE_TRACE_TEXT(label); \
-    release_trace_hex8((UINT8)(value)); \
-    RELEASE_TRACE_TEXT("\r\n"); \
+    release_trace_hex_line((const UINT8 *)(label), (UINT16)(sizeof(label) - 1U), \
+                           (UINT8)(value), 2U); \
 } while(0)
 
 #define RELEASE_TRACE_HEX32(label, value) do { \
-    RELEASE_TRACE_TEXT(label); \
-    release_trace_hex32((UINT32)(value)); \
-    RELEASE_TRACE_TEXT("\r\n"); \
+    release_trace_hex_line((const UINT8 *)(label), (UINT16)(sizeof(label) - 1U), \
+                           (UINT32)(value), 8U); \
 } while(0)
 
 #if UART0_BOOT_LOG_ENABLE

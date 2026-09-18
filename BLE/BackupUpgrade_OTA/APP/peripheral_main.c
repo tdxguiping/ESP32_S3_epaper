@@ -47,7 +47,7 @@ __attribute__((aligned(4))) uint32_t Image_Flag __attribute__((section(".ImageFl
 struct _BOE_DEVICE_STATUS global_DEVICE_STATUS;
 struct _BOE_EXTERN_FLASH_INFO global_EXTERN_FLASH_INFO;
 uint32_t global_refresh_timer_interval = 0;
-uint16_t global_refresh_timer_remaining_hours = 0; // 定时刷屏的时间间�?系统tick�?tick=625us)
+uint16_t global_refresh_timer_remaining_hours = 0; // 定时刷屏的时间间�?系统tick�?tick=625us)
 uint8_t global_screen_cleared_flag = SCREEN_ALREADY_CLEARED;
 
 #define ADC_CHECK_POLL_TICKS              ((uint32_t)2 * 1600)
@@ -56,7 +56,7 @@ uint8_t global_screen_cleared_flag = SCREEN_ALREADY_CLEARED;
 #define ADC_IDLE_CONFIRM_REQUIRED         2
 #define ADC_CHECK_IDLE_CONFIRM_TICKS     ((uint32_t)2 * 1600)
 #define REFRESH_TIMER_TICKS_PER_HOUR      ((uint32_t)3600 * 1600)
-#define REFRESH_TIMER_MAX_SEGMENT_HOURS   23  // 清屏标志：默认已清屏（复位后�?
+#define REFRESH_TIMER_MAX_SEGMENT_HOURS   23  // 清屏标志：默认已清屏（复位后�?
 /* ע�⣺���ڳ���������flash�Ĳ���������ִ�У��������κ��жϣ���ֹ�����жϺ�ʧ�� */
 /*********************************************************************
  * @fn      ReadImageFlag
@@ -205,7 +205,7 @@ void Main_Circulation()
 //#define  Key2_def  GPIO_Pin_3    // PB
 //#define  Key3_def  GPIO_Pin_0    // PB
 //#define  Key5_def  GPIO_Pin_4    // PB
-//#define  CHARGE_LED  GPIO_Pin_13   // PB  �����?//#define  LED3                GPIO_Pin_0       //:PA  0=on , 1=off
+//#define  CHARGE_LED  GPIO_Pin_13   // PB  �����?//#define  LED3                GPIO_Pin_0       //:PA  0=on , 1=off
 //#define  LED1                GPIO_Pin_1       //:PB  0=on , 1=off
 //#define  LED2                GPIO_Pin_2       //:PB  0=on , 1=off
 //#define  LED5_Power          GPIO_Pin_5       //:PB  0=on , 1=off
@@ -456,11 +456,11 @@ void Save_LastRefresh_Info_To_Flash(void)
 {
     if(TIS_VolatileImage()) return; /* No Flash slot exists for this frame. */
 	// ============ 统一在这里保存刷屏信息到flash（用于定时刷屏恢复） ============
-	// 在进入低功耗前，判断刚才是什么类型的刷屏，并保存索引、group、room等信�?	// 注意：只保存一次，使用静态变量避免重复保�?	// fDataSendSuccess保持Is_Yes状态，确保Low_power_IDLE()循环期间不会被peripheral.c:713-716打断
+	// 在进入低功耗前，判断刚才是什么类型的刷屏，并保存索引、group、room等信�?	// 注意：只保存一次，使用静态变量避免重复保�?	// fDataSendSuccess保持Is_Yes状态，确保Low_power_IDLE()循环期间不会被peripheral.c:713-716打断
 	static uint8_t last_saved_success_flag = Is_No;
 	if(global_DEVICE_STATUS.fDataSendSuccess == Is_Yes && last_saved_success_flag == Is_No){
 		// 刷屏成功且未保存过，保存信息
-		// 判断屏幕模式（根据fScreenType和fImageIndex�?		// 注意：普通刷图时，fImageIndex就是0�?（无偏移），预存刷图不依赖此判断
+		// 判断屏幕模式（根据fScreenType和fImageIndex�?		// 注意：普通刷图时，fImageIndex就是0�?（无偏移），预存刷图不依赖此判断
 		uint8_t base_index = global_EXTERN_FLASH_INFO.fImageIndex;
 		
 		uint8_t screen_mode;
@@ -468,7 +468,7 @@ void Save_LastRefresh_Info_To_Flash(void)
 			// 基础index=0 表示异显模式
 			screen_mode = SCREEN_MODE_AB_DIFF;
 		} else {
-			// 基础index=1，根�?fScreenType 判断
+			// 基础index=1，根�?fScreenType 判断
 			if(global_DEVICE_STATUS.fScreenType == SCREEN_TYPE_IMG_A){
 				screen_mode = SCREEN_MODE_SINGLE_A;
 			} else if(global_DEVICE_STATUS.fScreenType == SCREEN_TYPE_IMG_B){
@@ -479,18 +479,18 @@ void Save_LastRefresh_Info_To_Flash(void)
 		}
 		
 		if(global_DEVICE_STATUS.fRefreshType == DEVICE_OP_COMMON){
-			// 纯实时刷屏（不带预存�?			// 刷图不允许改 enabled（只由TIME命令改），这里保持原�?			// 正常刷图后，设置清屏标志为未清屏，下次开机能正常进入定时刷图
+			// 纯实时刷屏（不带预存�?			// 刷图不允许改 enabled（只由TIME命令改），这里保持原�?			// 正常刷图后，设置清屏标志为未清屏，下次开机能正常进入定时刷图
 			global_screen_cleared_flag = SCREEN_NOT_CLEARED;
 			saveLastRefreshInfo(LAST_REFRESH_TYPE_COMMON, 0, 0, screen_mode, global_EXTERN_FLASH_INFO.fZip, 
 							   SAVE_KEEP_U8, global_screen_cleared_flag);
 		}
 		else if(global_DEVICE_STATUS.fRefreshType == DEVICE_OP_COMMON_PRESAVE || 
 		        global_DEVICE_STATUS.fRefreshType == DEVICE_OP_PRESAVE){
-			// 预存刷屏（包括实时传�?预存、或从flash读取预存�?			// 预存刷屏的screen_mode无意义，因为通过group/room定位，固定为AB_SAME
+			// 预存刷屏（包括实时传�?预存、或从flash读取预存�?			// 预存刷屏的screen_mode无意义，因为通过group/room定位，固定为AB_SAME
 			Print_I3("Save refresh info: PRESAVE mode, group=%d, room=%d, index=%d, zip=%d (keep timer cfg)",
 					 global_DEVICE_STATUS.fBoardCastGroup, global_DEVICE_STATUS.fBoardCastRoom,
 					 global_EXTERN_FLASH_INFO.fImageIndex, global_EXTERN_FLASH_INFO.fZip);
-			// 刷图不允许改 enabled（只由TIME命令改），这里保持原�?			// 预存刷图后，设置清屏标志为未清屏，下次开机能正常进入定时刷图
+			// 刷图不允许改 enabled（只由TIME命令改），这里保持原�?			// 预存刷图后，设置清屏标志为未清屏，下次开机能正常进入定时刷图
 			global_screen_cleared_flag = SCREEN_NOT_CLEARED;
 			saveLastRefreshInfo(LAST_REFRESH_TYPE_PRESAVE,
 							   global_DEVICE_STATUS.fBoardCastGroup,
@@ -534,8 +534,8 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
         TIS_UseLarge();
     IP_Dequeue();
 	if(global_DEVICE_STATUS.fImageType == 1){
-		// 异显模式：需要刷两次（A�?B面）
-		// 普通刷图的异显模式：不管内外置flash，都直接�?/1（不加偏移）
+		// 异显模式：需要刷两次（A�?B面）
+		// 普通刷图的异显模式：不管内外置flash，都直接�?/1（不加偏移）
         // First refresh: A side.
         global_DEVICE_STATUS.fInitDriver = Is_Yes;
 		global_DEVICE_STATUS.fImageDataLen = 0;
@@ -548,7 +548,7 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 		}
     {
         UINT32 perf_wait = IP_Start(IP_SIDE_WAIT);
-		mDelaymS(2000);
+		//mDelaymS(2000);// by_lgp
         IP_Toc(IP_SIDE_WAIT, perf_wait);
     }
 		
@@ -739,7 +739,7 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 				
                 // Check whether this is AB-diff mode.
                 if(last_screen_mode == SCREEN_MODE_AB_DIFF){
-					// 异显模式：触�?EVENT_Get_Battle_Charge，让它自动刷两次（A�?B面）
+					// 异显模式：触�?EVENT_Get_Battle_Charge，让它自动刷两次（A�?B面）
                     // fImageType is already set by getLastRefreshInfo().
                     InitFlashDriver();
 					mDelayuS(10);
@@ -762,7 +762,7 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 					DeInitFlashDriver();
 				}
 			}else if(last_type == LAST_REFRESH_TYPE_PRESAVE){
-				// 预存模式：需要根�?group/room 重新计算 index
+				// 预存模式：需要根�?group/room 重新计算 index
 				global_DEVICE_STATUS.fRefreshType = DEVICE_OP_PRESAVE;
                 // Save group/room for low-power refresh info persistence.
                 global_DEVICE_STATUS.fBoardCastGroup = last_group;
@@ -1194,11 +1194,11 @@ void Mac_To_Ascii(void)
 
 void Init_FirstBootLastRefresh(void)
 {
-	// 开机时检查“首次开机初始化标志�?	// 约定：FIRST_BOOT_FLAG_VALUE(默认0x66) 为已初始化标志值，其他�?�?xFF)视为首次开�?	// 开机初始化自动定时刷屏功能
+	// 开机时检查“首次开机初始化标志�?	// 约定：FIRST_BOOT_FLAG_VALUE(默认0x66) 为已初始化标志值，其他�?�?xFF)视为首次开�?	// 开机初始化自动定时刷屏功能
 
 	uint8_t first_boot_flag = getFirstBootFlag();
 	if(first_boot_flag != FIRST_BOOT_FLAG_VALUE){
-		// 第一次开机：写入特征�?FIRST_BOOT_FLAG_VALUE
+		// 第一次开机：写入特征�?FIRST_BOOT_FLAG_VALUE
 		setFirstBootFlag(FIRST_BOOT_FLAG_VALUE);
 		saveLastRefreshInfo(LAST_REFRESH_TYPE_COMMON, 0, 0, SCREEN_MODE_AB_SAME, 1, REFRESH_TIMER_ENABLED, SCREEN_ALREADY_CLEARED);
 		//Print_I3("Boot: first boot detected, set FIRST_BOOT_FLAG to 0x%02X (old=0x%02X)", FIRST_BOOT_FLAG_VALUE, first_boot_flag);
@@ -1220,8 +1220,8 @@ void Start_LastRefresh(void)
             // Screen already cleared, skip refresh timer.
 		} else {
 			// 未清屏状态，启动定时器（使用固定小时数）
-			// 将小时转换为系统tick单位�?25us�?			// 1小时 = 3600�?= 3600000毫秒 = 3600000000微秒
-			// 系统tick单位�?25us，所以：1小时 = 3600000000 / 625 = 5760000 tick
+			// 将小时转换为系统tick单位�?25us�?			// 1小时 = 3600�?= 3600000毫秒 = 3600000000微秒
+			// 系统tick单位�?25us，所以：1小时 = 3600000000 / 625 = 5760000 tick
 			StartRefreshTimerCycle();
             // Refresh timer restored from flash.
 		}

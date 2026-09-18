@@ -26,7 +26,8 @@ APP/driver/flash/extern_flash.o: ../APP/driver/flash/extern_flash.c \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/flash_driver.h \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/commoninfo.h \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/epd_busy.h \
- F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/Display_EPD_W21_spi.h
+ F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/Display_EPD_W21_spi.h \
+ F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/release_trace.h
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/img_perf.h:
 F:\project\CH585\project_3\SRC\StdPeriphDriver\inc/CH58x_common.h:
 F:\project\CH585\project_3\SRC\StdPeriphDriver\inc/CH585SFR.h:
@@ -55,3 +56,4 @@ F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/flash_driver.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/commoninfo.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/epd_busy.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/Display_EPD_W21_spi.h:
+F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/release_trace.h:

@@ -15,10 +15,29 @@
 #include "Display_EPD_W21_spi.h"
 
 #if TDX_STORE_ZLIB
+static UINT32 replay_color_ticks, replay_sink_calls, replay_sink_bytes;
+
+static UINT32 presave_elapsed(UINT32 start)
+{
+    UINT32 now = RTC_GetCycle32k();
+    return now >= start ? now - start : RTC_MAX_COUNT - start + now;
+}
+
+static UINT32 presave_ms(UINT32 ticks)
+{
+    return (ticks / CAB_LSIFQ) * 1000U + ((ticks % CAB_LSIFQ) * 1000U) / CAB_LSIFQ;
+}
+
 static int zlib_panel_sink(void *context, const UINT8 *data, UINT16 length)
 {
+    UINT32 start = RTC_GetCycle32k();
+    int result;
     (void)context;
-    return refreshScreenColor((UINT8 *)data, length, IS_NONEED_DECMPRESS) < 0 ? -1 : 0;
+    result = refreshScreenColor((UINT8 *)data, length, IS_NONEED_DECMPRESS) < 0 ? -1 : 0;
+    replay_color_ticks += presave_elapsed(start);
+    replay_sink_calls++;
+    replay_sink_bytes += length;
+    return result;
 }
 #endif
 
@@ -258,6 +277,7 @@ void setWorkMode(int mode)
 
 int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
     int i, index, data_len = 0;
+    UINT32 flow_start = RTC_GetCycle32k();
     unsigned char *PicData = NULL; // ��Ϊָ�룬��̬�����ڴ�
  
     if(type == DEVICE_PRE_SAVE) IP_ReplayBegin(global_DEVICE_STATUS.fScreenType);
@@ -301,6 +321,7 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
 #if TDX_STORE_ZLIB
         if(global_EXTERN_FLASH_INFO.fZip == IMAGE_FLASH_ZLIB) {
             int result;
+            replay_color_ticks = replay_sink_calls = replay_sink_bytes = 0;
             EPD_SetRefreshDeferred(1);
             result = zlib_image_store_replay(global_EXTERN_FLASH_INFO.fImageIndex, zlib_panel_sink, NULL);
             EPD_SetRefreshDeferred(0);
@@ -315,7 +336,16 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
                 free(PicData);
                 IP_Stop(1); return -1;
             }
-            Display_EPD_AB();
+            {
+                UINT32 refresh_start = RTC_GetCycle32k();
+                Display_EPD_AB();
+                BOOT_LOG_TEXT("IMG SW=V24\r\n");
+                BOOT_LOG_HEX32("T REF=", presave_ms(presave_elapsed(refresh_start)));
+                BOOT_LOG_HEX32("T ALL=", presave_ms(presave_elapsed(flow_start)));
+                BOOT_LOG_HEX32("T WRITE=", presave_ms(replay_color_ticks));
+                BOOT_LOG_HEX32("T SINKN=", replay_sink_calls);
+                BOOT_LOG_HEX32("T SINKB=", replay_sink_bytes);
+            }
             global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR;
             goto pre_save_display_done;
         }

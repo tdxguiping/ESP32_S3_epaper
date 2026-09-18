@@ -521,7 +521,7 @@ void        OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigne
 void        Rec_OTA_IAP_DataDeal(void);
 void        OTA_IAP_SendCMDDealSta(uint8_t deal_status);
 
-// add by_lgp
+
 static void peripheralRssiCB(uint16 connHandle, int8 rssi);
 static void peripheralParamUpdateCB(uint16 connHandle, uint16 connInterval,
                                     uint16 connSlaveLatency, uint16 connTimeout);
@@ -1134,11 +1134,11 @@ UINT8  Ble_Len;
 
 void Rec_OTA_Data(uint8 *pValue, uint16 len){
 
-    #if 0 //by_lgp
+    
 	tmos_memcpy((unsigned char *)&iap_rec_data, pValue, len);
 	Ble_Len=len;
 	Rec_OTA_IAP_DataDeal();
-    #endif
+    
 }
 
 /*********************************************************************
@@ -1149,10 +1149,11 @@ void Rec_OTA_Data(uint8 *pValue, uint16 len){
  * @return  none
  */
 UINT16  Debug_info_OTA=Is_Zero;
-#if 0  // by_lgp
 
 void Rec_OTA_IAP_DataDeal(void)
 {
+
+    #if 0
     Debug_info_OTA++;
     switch(iap_rec_data.other.buf[0])
     {
@@ -1374,16 +1375,9 @@ void Rec_OTA_IAP_DataDeal(void)
             break;
         }
     }
+#endif    
 }    
 
-#else
-
-void Rec_OTA_IAP_DataDeal(void)
-{
-
-
-}
-#endif
 /*********************************************************************
  * @fn      OTA_IAPReadDataComplete
  *
@@ -1440,7 +1434,7 @@ void OTA_IAPReadDataComplete(unsigned char index)
 // 244
 //static int ota1_data_len = 0;
 
-#if 0  // by_lgp
+
 void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char w_len)
 {
     unsigned char  rec_len;
@@ -1464,9 +1458,4 @@ void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char 
    
 	Rec_OTA_IAP_DataDeal();
 }
-#else
-void OTA_IAPWriteData(unsigned char index, unsigned char *p_data, unsigned char w_len)
-{
-}
-#endif
 

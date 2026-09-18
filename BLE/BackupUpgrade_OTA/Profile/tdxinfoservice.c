@@ -730,8 +730,12 @@ gattServiceCBs_t tdxInfoCBs = {
 static int phoneid_len = 0;
 static unsigned char u8IsFirstPackage = TDX_DATA_FIRST;
 static UINT8 s_zlib_image_active = 0;
+static UINT8 s_zlib_image_aborted = 0;
 #if TDX_SMALL_STREAM_ENABLE
-static TDX_IMAGE_MODE s_image_session_mode = TDX_IMAGE_SMALL_STREAM;
+static TDX_IMAGE_MODE s_image_session_mode = TDX_IMAGE_LARGE_FLASH;
+static UINT8 s_small_stream_aborted = 0;
+static UINT8 s_small_stream_gate_logged = 0;
+static UINT8 s_small_stream_trace_logged = 0;
 #endif
 #if !TDX_STORE_ZLIB
 static int zlib_flash_sink(void *context, const UINT8 *data, UINT16 length)
@@ -743,6 +747,8 @@ static int zlib_flash_sink(void *context, const UINT8 *data, UINT16 length)
 #endif
 static void zlib_receive_fail(uint16 connHandle)
 {
+    if(s_zlib_image_aborted) return;
+    s_zlib_image_aborted = 1;
     IP_Stop(1);
     uint8_t notify_buf[6]; uint16_t notify_len = 0;
     TRANSFER_LOG_TEXT("ZLIB aborted\r\n");
@@ -934,12 +940,26 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 		}
 	}
 #if TDX_SMALL_STREAM_ENABLE
+    if((gatt_handle == TDXINFO_SEND_AES_IV || gatt_handle == TDXINFO_SEND_PHONE_ID ||
+        gatt_handle == TDXINFO_SEND_DATA) && !s_small_stream_trace_logged) {
+        s_small_stream_trace_logged = 1;
+        BOOT_LOG_HEX8("S h=", gatt_handle);
+        BOOT_LOG_HEX32("S l=", len);
+        BOOT_LOG_HEX8("S a=", TIS_Active());
+        BOOT_LOG_HEX8("S b=", TdxInfo_DisplayBusy());
+    }
     if(TIS_Locked() && (gatt_handle == TDXINFO_SEND_PRE_SAVE ||
        gatt_handle == TDXINFO_SEND_CLEAN || gatt_handle == TDXINFO_OTA_INFO ||
        gatt_handle == TDXINFO_NOTITY_SEND_END || gatt_handle == TDXINFO_SWITCH_MODE)) return ATT_ERR_INSUFFICIENT_RESOURCES;
     if((TIS_Active() || TdxInfo_DisplayBusy()) &&
-       (gatt_handle == TDXINFO_SEND_AES_IV || gatt_handle == TDXINFO_SEND_PHONE_ID))
+       (gatt_handle == TDXINFO_SEND_AES_IV || gatt_handle == TDXINFO_SEND_PHONE_ID)) {
+        if(s_image_session_mode == TDX_IMAGE_SMALL_STREAM && !s_small_stream_gate_logged) {
+            s_small_stream_gate_logged = 1;
+            BOOT_LOG_HEX8("S gateA=", TIS_Active());
+            BOOT_LOG_HEX8("S gateB=", TdxInfo_DisplayBusy());
+        }
         return ATT_ERR_INSUFFICIENT_RESOURCES;
+    }
 #endif
     switch (gatt_handle) {
 		case TDXINFO_GET_DATA:
@@ -961,6 +981,12 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 		case TDXINFO_SEND_AES_IV:
 			//PRINT("WriteAttrCB TDXINFO_SEND_AES_IV\r\n");
 			u8IsFirstPackage = TDX_DATA_FIRST;
+#if TDX_SMALL_STREAM_ENABLE
+            s_small_stream_aborted = 0;
+            s_small_stream_gate_logged = 0;
+            s_small_stream_trace_logged = 0;
+            BOOT_LOG_TEXT("S iv-ready\r\n");
+#endif
 			//hex_dump(pValue, len);
 			memcpy(global_TDX_AES_INFO.szAesIv,pValue,len);
 			break;
@@ -976,6 +1002,11 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 					}
 					IP_RxExit(0); return (SUCCESS);
 				}
+				#if TDX_SMALL_STREAM_ENABLE
+                if(s_small_stream_aborted){
+                    return (SUCCESS);
+                }
+				#endif
 	   		
                 UINT32 perf_prepare, perf_header;
                 if(!s_tdx_display_busy_protect)
@@ -1003,12 +1034,26 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
                     FAULT_LOG_TEXT("FAULT img decrypt\r\n");
                 IP_RxExit(1); return (ATT_ERR_INSUFFICIENT_AUTHOR);
 			    } 		
-
 				//PRINT("WriteAttrCB TDXINFO_SEND_DATA aaaaaaaaaaaaaaaa decrypted_len=%d\r\n",decrypted_len);
 				//hex_dump(decrypted, decrypted_len);
 				if(u8IsFirstPackage == TDX_DATA_FIRST){
                     perf_header = IP_Start(IP_HEADER);
-					if(decrypted_len != 15){ FAULT_LOG_TEXT("FAULT img first-len\r\n"); FAULT_LOG_HEX32("FAULT img first-len-value=", decrypted_len); free(decrypted); IP_RxExit(1); return (ATT_ERR_INVALID_VALUE_SIZE); }
+					if(decrypted_len != 15){
+                        /* Diagnose a rejected first packet without entering the image path. */
+#if TDX_SMALL_STREAM_ENABLE
+                        s_small_stream_aborted = 1;
+#endif
+                        BOOT_LOG_TEXT("IMG SW=V24\r\n");
+                        BOOT_LOG_HEX32("IMG FH raw=", len);
+                        BOOT_LOG_HEX32("IMG FH dec=", decrypted_len);
+                        BOOT_LOG_HEX32("IMG FH off=", offset);
+                        BOOT_LOG_HEX8("IMG FH enc=", IsDecryptFlag);
+                        BOOT_LOG_HEX8("IMG FH b0=", decrypted_len ? decrypted[0] : 0);
+                        BOOT_LOG_HEX8("IMG FH b1=", decrypted_len > 1 ? decrypted[1] : 0);
+                        BOOT_LOG_HEX8("IMG FH b11=", decrypted_len > 11 ? decrypted[11] : 0);
+                        BOOT_LOG_HEX8("IMG FH p15=", decrypted_len > 15 ? decrypted[15] : 0);
+                        free(decrypted); IP_RxExit(1); return (ATT_ERR_INVALID_VALUE_SIZE);
+                    }
 					if(s_tdx_display_busy_protect){
 						uint8_t busy_screen_type = decrypted[1];
 						uint8_t notify_buf[6];
@@ -1071,13 +1116,17 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 
 #if TDX_SMALL_STREAM_ENABLE
                     s_image_session_mode = g_tdx_image_transfer_mode;
+                    BOOT_LOG_TEXT("IMG SW=V12\r\n");
+                    BOOT_LOG_HEX8("IMG MODE=", s_image_session_mode);
                     if(s_image_session_mode == TDX_IMAGE_SMALL_STREAM) {
+                        s_small_stream_aborted = 0;
                         /* Stream format is direct SPD1657 pixels, not save/diff commands. */
                         if(global_TDX_AES_DATA_INFO.fOpType != DEVICE_OP_COMMON ||
                            global_TDX_AES_DATA_INFO.fScreenType > OP_TYPE_IMG_AB ||
                            TIS_Begin(connHandle, global_TDX_AES_DATA_INFO.fScreenType,
                                      global_DEVICE_STATUS.fScreenType,
                                      global_TDX_AES_DATA_INFO.fPackageNum)) {
+                            s_small_stream_aborted = 1;
                             free(decrypted); IP_RxExit(1); return ATT_ERR_INVALID_VALUE;
                         }
                         clearBoardcastData();
@@ -1089,6 +1138,7 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 						free(decrypted);
 						IP_RxExit(1); return (ATT_ERR_INSUFFICIENT_AUTHOR);
 					}
+                    s_zlib_image_aborted = 0;
 #if TDX_STORE_ZLIB
                     if(zlib_image_store_begin(global_EXTERN_FLASH_INFO.fImageIndex) != 0){
 #else
@@ -1115,6 +1165,7 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 #if TDX_SMALL_STREAM_ENABLE
                     if(s_image_session_mode == TDX_IMAGE_SMALL_STREAM) {
                         if(decrypted_len > 65535U || TIS_Push(decrypted, (UINT16)decrypted_len)) {
+                            s_small_stream_aborted = 1;
                             free(decrypted); IP_RxExit(1); return ATT_ERR_INVALID_VALUE;
                         }
                     } else
@@ -1321,6 +1372,7 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 			else if (memcmp(pValue, keyPrefix, 3) == 0){
 				//PRINT("aes key.......\r\n");
 				IsDecryptFlag = Is_Yes;
+                BOOT_LOG_TEXT("S key-ready\r\n");
 				memcpy(data_aes_key, pValue+3, len-3);
 				//hex_dump(data_aes_key, len-3);
 				reverseData(data_aes_key, len-3);
@@ -1909,6 +1961,7 @@ int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
         zlib_receive_fail(connHandle);
         return -1;
     }
+    s_zlib_image_aborted = 0;
     global_DEVICE_STATUS.fPackageCnt = 0;
     global_DEVICE_STATUS.fPackageCount = 1;
 #if TDX_STORE_ZLIB
@@ -1931,10 +1984,17 @@ int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
     IP_Toc(IP_COMMIT, perf_commit);
     perf_notify = IP_Start(IP_NOTIFY);
     notitySendEnd(connHandle, 0x01, global_TDX_AES_DATA_INFO.fScreenType, notify_buf, &notify_len);
-    for(notify_retry = 0; notify_retry < 5; notify_retry++) {
-        notitySendFunc(connHandle, notify_buf, &notify_len);
-        if(notify_retry < 4) delay_ms(50);
-    }
+    // for(notify_retry = 0; notify_retry < 5; notify_retry++) {
+    //     notitySendFunc(connHandle, notify_buf, &notify_len);
+    //     if(notify_retry < 4) delay_ms(50);
+    // }
+
+	 // by_lgp
+     notitySendFunc(connHandle, notify_buf, &notify_len);
+
+
+
+
     IP_Toc(IP_NOTIFY, perf_notify);
     if(global_TDX_AES_DATA_INFO.fScreenType != OP_TYPE_IMG_DIFF_A) {
         s_tdx_display_busy_protect = 1;
@@ -2061,6 +2121,8 @@ void TdxInfo_StreamResult(UINT16 conn, UINT8 type, UINT8 error)
     if(!error) {
         s_tdx_display_busy_protect = 1;
         s_tdx_busy_drop_packets = 0;
+        BOOT_LOG_TEXT("S refresh-start\r\n");
+        s_small_stream_trace_logged = 0;
     }
     if(error == 0xff) return; /* Link is gone; reset state without notification. */
     notitySendEnd(conn, error ? 0x04 : 0x01, type, notify_buf, &notify_len);

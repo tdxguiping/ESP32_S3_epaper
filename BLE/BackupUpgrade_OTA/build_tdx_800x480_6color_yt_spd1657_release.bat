@@ -58,7 +58,7 @@ for %%t in (%EPD_SCREEN_TYPE%) do (
 	@set DEST_DIR=!OUT_DIR!\!DEST_DIR_NAME!
 	@set SOURCE=!CD!\obj\BackupUpgrade_OTA.hex
 	@set DEST_FILE=!DEST_DIR!\!DEST_FILE_NAME!.hex
-	@set USER_CFLAGS=-DVER=!VER! -D!FACTORY! -DINK_SCREEN_CUSTOMER=!CUSTOMER! -D!EPAPER_TYPE! -D!FLASH_MODE! -D!EPD_SCREEN_TYPE_TMP! -DINK_DEVICE_CHIP=INK_CHIP_CH585
+	@set USER_CFLAGS=-DVER=!VER! -D!FACTORY! -DINK_SCREEN_CUSTOMER=!CUSTOMER! -D!EPAPER_TYPE! -D!FLASH_MODE! -D!EPD_SCREEN_TYPE_TMP! -DINK_DEVICE_CHIP=INK_CHIP_CH585 -DTDX_SMALL_STREAM_ENABLE=1 -DTDX_LARGE_RAW_COLOR_DISABLE=1 -DTDX_LARGE_RAW_DIRECT=1 -DTDX_DISABLE_EPD_DELAY=1 -DTDX_FLASH_POWERUP_DELAY_MS=10U -DTDX_FLASH_WIP_LEGACY_DELAY=0 -DIMG_PERF_ENABLE=0 -DAPP_FACTORY_UART0_ENABLE=0 -DAPP_FACTORY_POWER_HOLD_ENABLE=0 -DUART0_TRANSFER_LOG_ENABLE=0 -DUART0_BLE_LOG_ENABLE=0 -DUART0_IMAGE_LOG_ENABLE=0 -DUART0_BUSY_LOG_ENABLE=0 -DUART0_OTA_LOG_ENABLE=0 -DUART0_BOOT_LOG_ENABLE=1 -DUART0_FAULT_LOG_ENABLE=1
 	
 	@echo /************************************************************/
 	@echo Build Boe 800x480 6color Project
@@ -69,6 +69,14 @@ for %%t in (%EPD_SCREEN_TYPE%) do (
 	@echo EPD_SCREEN_TYPE_TMP:    !EPD_SCREEN_TYPE_TMP!
 	@echo OUT_FILE:		!DEST_FILE!
 	@echo /************************************************************/
+
+	@rem Rebuild each panel with its own USER_CFLAGS, including after a failed build.
+	@make -C obj clean
+	@if !ERRORLEVEL! neq 0 (
+		@echo Clean Failure!!!!!!!!!!!!!!!!!!!!
+		endlocal
+		@exit /b 1
+	)
 
 	@make -C obj all
 	@if !ERRORLEVEL! neq 0 (
@@ -108,7 +116,7 @@ for %%t in (%EPD_SCREEN_TYPE%) do (
 	endlocal
 	@    exit /b 1
 	)
-	@make -C obj clean
+	@rem Keep the final build artifacts for size/map inspection.
 )
 
 endlocal

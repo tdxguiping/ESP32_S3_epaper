@@ -9,9 +9,6 @@
 #include "release_trace.h"
 #include "img_perf.h"
 #include "tdx_image_stream.h"
-#if TDX_SMALL_STREAM_ENABLE
-#include "epd_busy.h"
-#endif
 
 #if TDX_STORE_ZLIB
 static UINT8 s_refresh_deferred;
@@ -27,9 +24,6 @@ void EPD_SetRefreshDeferred(UINT8 deferred)
 static unsigned char imageBatchBuffer[32768U];
 #if TDX_STORE_ZLIB
 static UINT8 imageBatchSending;
-#if TDX_SMALL_STREAM_ENABLE
-static UINT8 streamWrite;
-#endif
 #if IMG_COLOR_LUT
 static const UINT8 imageColorMap[16] = {
     0, 1, 2, 3, 5, 6, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
@@ -54,6 +48,17 @@ int callbackValue = 0;
 static UINT8 pendingCompressByte = PENDING_NONE;  // ?????????????????????
 int ImgDataCallBack_flag=0;
 
+static UINT32 epd_stage_elapsed(UINT32 start)
+{
+    UINT32 now = RTC_GetCycle32k();
+    return now >= start ? now - start : RTC_MAX_COUNT - start + now;
+}
+
+static UINT32 epd_stage_ms(UINT32 ticks)
+{
+    return (ticks / CAB_LSIFQ) * 1000U + ((ticks % CAB_LSIFQ) * 1000U) / CAB_LSIFQ;
+}
+
 #ifdef ENABLE_INK_SCREEN_UC8579_1360X480_COLOR_4
 #define UC8579_CLEAN_POWER_PREPARE_MS    25
 #endif
@@ -61,13 +66,19 @@ int ImgDataCallBack_flag=0;
 #if (defined(ENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6))
 static void PreparePowerBeforeDeviceInit(void)
 {
+	UINT32 stage_start = RTC_GetCycle32k();
 	ControlEPDPower(Is_On);
+	BOOT_LOG_HEX32("T EPD_POWER=", epd_stage_ms(epd_stage_elapsed(stage_start)));
+	#if !TDX_DISABLE_EPD_DELAY
 	DelayMs(200);
+	BOOT_LOG_TEXT("T EPD_WAIT=200ms\r\n");
+	#else
+	DelayMs(10);
+	#endif
 }
 #endif
 
 void EPD_W21_Reset_Spi2_AB(){
-    TIS_InvalidatePanel();
 #ifdef ENABLE_SCREEN_COLOR_6
 	SPI_NEW_RST_A_0;// Module reset
 	SPI_NEW_RST_B_0;
@@ -75,7 +86,11 @@ void EPD_W21_Reset_Spi2_AB(){
 #ifdef ENABLE_INK_SCREEN_M009FT_1024X600_COLOR_6
 	DelayMs(100);
 #else
+	#if !TDX_DISABLE_EPD_DELAY
 	DelayMs(5);//At least 10ms delay 
+	#else
+		DelayMs(2);//At least 10ms delay
+	#endif
 #endif
 		
 	SPI_NEW_RST_A_1;
@@ -244,12 +259,13 @@ int DeviceInit(){
     SPI_CS_A_SLAVE_1;
     SPI_CS_B_SLAVE_1;
 #endif
-    DelayMs(5);
+	#if !TDX_DISABLE_EPD_DELAY
+	DelayMs(5);
+	#endif
 }
 
 void ControlEPDPower(UINT8 ison)
 {
-    if(ison == Is_Off) TIS_InvalidatePanel();
 	UINT8 power_switch = Is_On;
 #ifdef HARDWAR_DRY_CELL
 	power_switch = Is_Off; //?????,????
@@ -287,7 +303,9 @@ int DevicePower(){
     SPI_CS_A_SLAVE_1;
     SPI_CS_B_SLAVE_1;
 #endif
+    #if !TDX_DISABLE_EPD_DELAY
     DelayMs(5);  // Let CS settle at high level.
+    #endif
     
 #ifdef ENABLE_SCREEN_COLOR_6
 	EPD_Control_A_Or_B();
@@ -409,7 +427,7 @@ UINT8 PIC_Display_Compress_Data(const unsigned char* pBW, UINT16 Length, unsigne
     UINT32 i, outputLen = 0;
     UINT32 perf_color = IP_Start(IP_COLOR);
     UINT16 count;
-    UINT8 value;
+UINT8 value;
     unsigned char *out = imageBatchBuffer;
 
     if(Length == 0) return 0;
@@ -438,11 +456,15 @@ UINT8 PIC_Display_Compress_Data(const unsigned char* pBW, UINT16 Length, unsigne
     if(outputLen > sizeof(imageBatchBuffer)) goto batch_error;
 #if TDX_STORE_ZLIB && IMG_COLOR_LUT
     if(zip != IS_NEED_DECMPRESS) {
+#if TDX_LARGE_RAW_COLOR_DISABLE
+        memcpy(out, pBW, outputLen);
+#else
         for(i = 0; i < outputLen; i++) {
             value = ImageColorByte(pBW[i]);
             if(value == 0xff) goto batch_error;
             out[i] = value;
         }
+#endif
     } else {
         for(i = 0; i < Length && out < imageBatchBuffer + outputLen; i += 2) {
             value = ImageColorByte(pBW[i]);
@@ -606,6 +628,7 @@ batch_error:
 void Display_Picture_To_Color(unsigned char *pData, UINT32 dataLen, UINT32 length){
     UINT32 endOffset, maxLen = EPD_GetDisplayMaxBuf();
     UINT32 perf_init = 0;
+    UINT32 stage_start;
 #if TDX_STORE_ZLIB
     UINT8 saved_div, saved_delay;
 #endif
@@ -625,9 +648,6 @@ void Display_Picture_To_Color(unsigned char data, int length){
 	}
 #endif
 
-#if TDX_SMALL_STREAM_ENABLE
-    if(!streamWrite) {
-#endif
 	if(global_DEVICE_STATUS.fInitDriver == Is_Yes){
 #if EPD_BATCH_DATA
         BOOT_LOG_HEX32("IMG batch=", dataLen);
@@ -650,7 +670,9 @@ void Display_Picture_To_Color(unsigned char data, int length){
 #if (defined(ENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6))
 		PreparePowerBeforeDeviceInit(); // Keep the SPD1657 power-up sequence unchanged.
 #endif
+		stage_start = RTC_GetCycle32k();
 		DeviceInit();
+		BOOT_LOG_HEX32("T DEV_INIT=", epd_stage_ms(epd_stage_elapsed(stage_start)));
 		global_DEVICE_STATUS.fInitDriver = Is_No;
 	}
 
@@ -667,8 +689,14 @@ void Display_Picture_To_Color(unsigned char data, int length){
 			Print_I3("M S cont");
 		}
 #else
+		stage_start = RTC_GetCycle32k();
 		DevicePower();
+		BOOT_LOG_HEX32("T DEV_PWR=", epd_stage_ms(epd_stage_elapsed(stage_start)));
+		stage_start = RTC_GetCycle32k();
+		#if !TDX_DISABLE_EPD_DELAY
 		DelayMs(20);
+		#endif
+		BOOT_LOG_HEX32("T WAIT20=", epd_stage_ms(epd_stage_elapsed(stage_start)));
 #endif
 #if (defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2)) || (defined(ENABLE_INK_SCREEN_SSD2683ZA_272X792_COLOR_4))
 		if(global_DEVICE_STATUS.fisHost == Is_HOST){
@@ -699,7 +727,9 @@ void Display_Picture_To_Color(unsigned char data, int length){
 			Init_EPD_Driver();
 		}
 #else
+		stage_start = RTC_GetCycle32k();
 		Init_EPD_Driver();
+		BOOT_LOG_HEX32("T EPD_INIT=", epd_stage_ms(epd_stage_elapsed(stage_start)));
 #endif
 #endif
 #ifdef ENABLE_SCREEN_COLOR_3
@@ -718,16 +748,9 @@ void Display_Picture_To_Color(unsigned char data, int length){
 	}
 #endif
 
-#if TDX_SMALL_STREAM_ENABLE
-    } /* Existing hardware/frame initialization is retained for the large path. */
-#endif
 #if EPD_BATCH_DATA
 #if TDX_STORE_ZLIB
-    if(imageBatchSending && length == SCREEN_DATA_START
-#if TDX_SMALL_STREAM_ENABLE
-       && !streamWrite
-#endif
-      ) IP_Toc(IP_INIT, perf_init);
+    if(imageBatchSending && length == SCREEN_DATA_START) IP_Toc(IP_INIT, perf_init);
     saved_div = R8_SPI0_CLOCK_DIV;
     saved_delay = R8_SPI0_CTRL_CFG & RB_SPI_MST_DLY_EN;
     if(imageBatchSending) SPI0_CLKCfg(IMG_PANEL_SPI_DIV);
@@ -767,12 +790,10 @@ void Display_Picture_To_Color(unsigned char data, int length){
 	SPI0_MasterSendByte(data);
 #endif
 
-#if TDX_SMALL_STREAM_ENABLE
-    if(streamWrite) return; /* ZLIB trailer must pass before the refresh call. */
-#endif
 #if defined(ENABLE_INK_SCREEN_SSD1683A_272X792_COLOR_2)
 	if (length == SCREEN_272X792_COLOR_2_HALF_MAX -1) {
 		Print_I3("D2 len:%d",length);
+		IP_FlowMark();
 		Display_EPD_AB();
         // Clear per-image decode state after the last byte of the frame.
         pendingCompressByte = PENDING_NONE;
@@ -787,6 +808,7 @@ void Display_Picture_To_Color(unsigned char data, int length){
 		Print_I3("D6 len:%d",length);
 		IMAGE_LOG_TEXT("IMG panel-data complete\r\n");
 #endif
+		IP_FlowMark();
 		Display_EPD_AB();
         // Clear per-image decode state after the last byte of the frame.
         pendingCompressByte = PENDING_NONE;
@@ -809,6 +831,18 @@ int data_decrypt(unsigned char *input, int length, unsigned char zip, ImgDataCal
         pendingCompressByte = PENDING_NONE;
         callbackValue = 0;
     }
+#if TDX_STORE_ZLIB && TDX_LARGE_RAW_COLOR_DISABLE && TDX_LARGE_RAW_DIRECT
+    /* Large 6-color ZLIB output is already panel-format data. */
+    if(zip != IS_NEED_DECMPRESS) {
+        if(input == NULL || length < 0 || rCb == NULL) {
+            callbackValue = -1;
+            return -1;
+        }
+        if(length == 0) return callbackValue;
+        callbackValue = rCb(input, (UINT32)length);
+        return callbackValue;
+    }
+#endif
 	PIC_Display_Compress_Data(input, length, zip);
 	return callbackValue;
 }
@@ -839,6 +873,7 @@ int ImgDataCallBack(unsigned char *pData, UINT32 Len) {
     global_DEVICE_STATUS.fImageDataLen = offset + Len;
     /* One summary per image; no per-batch UART overhead. */
     if(global_DEVICE_STATUS.fImageDataLen == maxLen) {
+        BOOT_LOG_TEXT("IMG SW=V24\r\n");
         BOOT_LOG_HEX32("IMG n=", batchCount);
         BOOT_LOG_HEX32("IMG bytes=", global_DEVICE_STATUS.fImageDataLen);
         BOOT_LOG_HEX32("IMG last=", Len);
@@ -976,71 +1011,3 @@ int refreshScreenColor(unsigned char *data, unsigned int len, unsigned char isZi
 	return data_decrypt(data, len, isZip, ImgDataCallBack);
 #endif
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#if TDX_SMALL_STREAM_ENABLE
-void EPD_StreamRelease(void)
-{
-    SPI_CS_A_1; SPI_CS_B_1;
-    EPD_SetRefreshDeferred(0);
-}
-
-void EPD_StreamPrepare(UINT8 step)
-{
-    UINT8 saved_side = global_DEVICE_STATUS.fScreenType;
-    global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_AB;
-    if(step == 0) {
-        global_DEVICE_STATUS.fInitDriver = Is_Yes;
-        global_DEVICE_STATUS.fWorked = Is_Yes;
-        ControlEPDPower(Is_On);
-    } else if(step == 1) {
-        DeviceInit();
-        ControlEPDPower(Is_On);
-        GPIOA_ModeCfg(epaper_NEW_RES | epaper2_NEW_RES, GPIO_ModeOut_PP_5mA);
-        EPD_Busy_PrepareObserve();
-        TIS_InvalidatePanel();
-        SPI_NEW_RST_A_0; SPI_NEW_RST_B_0;
-    } else if(step == 2) {
-        SPI_NEW_RST_A_1; SPI_NEW_RST_B_1;
-    } else {
-        EPD_Control_A_Or_B();
-        SPD1657_InitRegisters();
-    }
-    SPI_CS_A_1; SPI_CS_B_1;
-    global_DEVICE_STATUS.fScreenType = saved_side;
-}
-
-void EPD_StreamFrameBegin(UINT8 side)
-{
-    global_DEVICE_STATUS.fScreenType = side;
-    global_DEVICE_STATUS.fImageDataLen = 0;
-    pendingCompressByte = PENDING_NONE;
-    callbackValue = 0;
-    Set_Spi0_output_init();
-    EPD_Control_A_Or_B();
-    Init_display_Red();
-    EPD_SetRefreshDeferred(1);
-}
-
-int EPD_StreamWrite(const UINT8 *data, UINT16 length, UINT32 offset)
-{
-    if(!data || !length || offset >= EPD_GetDisplayMaxBuf() ||
-       length > EPD_GetDisplayMaxBuf() - offset) return -1;
-    streamWrite = 1; imageBatchSending = 1;
-    Display_Picture_To_Color((unsigned char *)data, length, offset);
-    imageBatchSending = 0; streamWrite = 0;
-    return 0;
-}
-#endif

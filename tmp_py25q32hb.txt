@@ -1,0 +1,4693 @@
+
+
+===== PAGE 1 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 1 of 94 
+PY25Q32HB 
+ 
+Ultra-Low Power, 32M-bit 
+Serial Multi I/O Flash Memory Datasheet 
+ 
+Aug. 17, 2022 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Puya Semiconductor (Shanghai) Co., Ltd 
+Performance Highlight  
+◆ Wide Supply Range from 2.7 to 3.6V for Read, Erase and Program 
+◆ Ultra-Low Power consumption for Read, Erase and Program 
+◆ X1, X2 and X4 Multi I/O, QPI 
+◆ High reliability with 100K cycling and 20 Year-retention 
+
+===== PAGE 2 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 2 of 94 
+Contents 
+1 Overview ........................................................................................................................................................4 
+2 Description .....................................................................................................................................................5 
+3 Pin Definition .................................................................................................................................................6 
+3.1 Pin Configurations .............................................................................................................................6 
+3.2 Pin Descriptions .................................................................................................................................6 
+4 Block Diagram ...............................................................................................................................................7 
+5 Electrical Specifications .................................................................................................................................8 
+5.1 Absolute Maximum Ratings ...............................................................................................................8 
+5.2 DC Characteristics .............................................................................................................................9 
+5.3 AC Characteristics .......................................................................................................................... 10 
+5.4 AC Characteristics for Program and Erase ..................................................................................... 11 
+5.5 Operation Conditions ...................................................................................................................... 13 
+6 Data Protection ........................................................................................................................................... 15 
+7 Memory Address Mapping .......................................................................................................................... 19 
+8 Device Operation ........................................................................................................................................ 20 
+9 Hold Feature ............................................................................................................................................... 23 
+10 Commands ......................................................................................................................................... 24 
+10.1 Commands listing ........................................................................................................................... 24 
+10.2 Write Enable (WREN) (06H) ........................................................................................................... 27 
+10.3 Write Disable (WRDI) (04H) ............................................................................................................. 29 
+10.4 Write Enable for Volatile Register (50H) ......................................................................................... 29 
+10.5 Read Status Register (RDSR) (05H/35H) ......................................................................................... 31 
+10.6 Read Configure Register (RDCR) (15H) ........................................................................................... 33 
+10.7 Write Status Register (WRSR) (01H/31H) ........................................................................................ 35 
+10.8 Write Configure Register (WRCR) (11H) .......................................................................................... 37 
+10.9 Read Data Bytes (READ) (03H) ....................................................................................................... 38 
+10.10 Fast Read (FREAD) (0BH) ............................................................................................................... 38 
+10.11 Dual Read (DREAD) (3BH) .............................................................................................................. 39 
+10.12 2IO Read (2READ) (BBH) ................................................................................................................ 40 
+10.13 Quad Read (QREAD) (6BH) ............................................................................................................ 42 
+10.14 4IO Read (4READ) (EBH) ................................................................................................................ 44 
+10.15 Set Burst Read(77H) ........................................................................................................................ 47 
+10.16 4IO Word Read(E7H) ....................................................................................................................... 48 
+10.17 Set Read Parameters(C0H) ............................................................................................................. 50 
+10.18 Burst Read with Wrap (0CH) ............................................................................................................ 51 
+10.19 Enable QPI (38H)............................................................................................................................. 51 
+10.20 Disable QPI (FFH) ........................................................................................................................... 51 
+10.21 Sector Erase (SE) (20H) .................................................................................................................. 52 
+10.22 Block Erase (BE32K) (52H) .............................................................................................................. 54 
+10.23 Block Erase (BE) (D8H) ................................................................................................................... 55 
+10.24 Chip Erase (CE) (60H/C7H) ............................................................................................................. 56 
+10.25 Page Program (PP) (02H) ................................................................................................................ 57 
+10.26 Quad Page Program (QPP) (32H) .................................................................................................... 58 
+10.27 Erase Security Registers (ERSCUR) (44H) ...................................................................................... 59 
+10.28 Program Security Registers (PRSCUR) (42H) .................................................................................. 60 
+10.29 Read Security Registers (RDSCUR) (48H) ....................................................................................... 61 
+10.30 Deep Power-down (DP) (B9H) ......................................................................................................... 62 
+10.31 Release form Deep Power-Down (RDP), Read Electronic Signature (RES) (ABH) ........................... 63 
+10.32 Read Electronic Manufacturer ID & Device ID (REMS) (90H) ........................................................... 65 
+10.33 Dual I/O Read Electronic Manufacturer ID & Device ID (DREMS) (92H) ........................................... 66 
+
+===== PAGE 3 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 3 of 94 
+10.34 Quad I/O Read Electronic Manufacturer ID & Device ID (QREMS) (94H) ......................................... 67 
+10.35 Read Identification (RDID) (9FH) ...................................................................................................... 68 
+10.36 Program/Erase Suspend/Resume .................................................................................................... 69 
+10.37 Erase Suspend to Program(75H) ..................................................................................................... 71 
+10.38 Program Resume and Erase Resume(7AH) ..................................................................................... 72 
+10.39 No Operation (NOP) ........................................................................................................................ 72 
+10.40 Individual Block Lock (SBLK) (36H) .................................................................................................. 73 
+10.41 Individual Block Unlock (SBULK) (39H) ............................................................................................ 74 
+10.42 Read Block Lock Status (RDBLK) (3DH) .......................................................................................... 75 
+10.43 Global Block Lock (GBLK) (7EH) ...................................................................................................... 76 
+10.44 Global Block Unlock (GBULK) (98H) ................................................................................................ 77 
+10.45 Software Reset (RSTEN/RST) (66H/99H) ........................................................................................ 78 
+10.46 RESET ............................................................................................................................................ 79 
+10.47 Read Unique ID(RUID) (4BH) .......................................................................................................... 80 
+10.48 Read SFDP Mode (RDSFDP) (5AH) ................................................................................................ 81 
+11 Ordering Information ........................................................................................................................... 86 
+12 Valid Part Numbers and Top Marking ................................................................................................. 87 
+13 Package Information ........................................................................................................................... 88 
+13.1 8-Lead SOP(150mil) ....................................................................................................................... 88 
+13.2 8-Lead SOP(208mil) ....................................................................................................................... 89 
+13.3 8-Lead TSSOP ............................................................................................................................... 90 
+13.4 8-Land USON(3x2x0.55mm) .......................................................................................................... 91 
+13.5 8-Land USON(3x4x0.55mm) .......................................................................................................... 92 
+13.6 8-Land WSON(6x5x0.75mm) ......................................................................................................... 93 
+14 Revision History .................................................................................................................................. 94 
+ 
+
+===== PAGE 4 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 4 of 94 
+1 Overview 
+General 
+ Single 2.7 to 3.6V supply 
+ Industrial Temperature Range -40C to 85C 
+ Serial Peripheral Interface (SPI) Compatible: Mode 0 and Mode 3 
+ Single, Dual, Quad SPI, QPI 
+- Standard SPI:  SCLK, CS#, SI, SO, WP#, HOLD# 
+- Dual SPI:  SCLK, CS#, IO0, IO1, WP#, HOLD# 
+- Quad SPI:  SCLK, CS#, IO0, IO1, IO2, IO3 
+- QPI:    SCLK, CS#, IO0, IO1, IO2, IO3 
+ Flexible Architecture for Code and Data Storage 
+- Uniform 256-byte   Page Program 
+- Uniform 4K-byte   Sector Erase 
+- Uniform 32K/64K-byte  Block Erase 
+- Full Chip Erase 
+ Hardware Controlled Locking of Protected Sectors by WP# Pin 
+ One Time Programmable (OTP) Security Register 
+- 3*1K Byte Security Registers with OTP Lock 
+ 128-bit Unique ID for each device 
+ Fast Program and Erase Speed Typical 
+- 0.4ms Page program time 
+- 40ms 4K-byte sector erase time 
+- 0.12s 32K-byte block erase time 
+- 0.15s  64K-byte block erase time 
+ JEDEC Standard Manufacturer and Device ID Read Methodology 
+ Ultra-Low Power Consumption Typical 
+- 1uA     Deep Power Down current 
+- 18uA  Standby current 
+- 8mA     Active Read current at 85MHz 
+- 10mA Active Program or Erase current 
+ High Reliability 
+- 100,000  Program / Erase Cycles 
+- 20-year  Data Retention 
+ Industry Standard Green Package Options 
+- 8-pin   SOP (150/208mil)  
+- 8-land     USON (3x2x0.55mm, 3x4x0.55mm) 
+- 8-land   WSON (6x5mm) 
+- 8-pin      TSSOP  
+- KGD for SiP 
+
+===== PAGE 5 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 5 of 94 
+2 Description 
+The PY25Q32HB is a serial interface Flash memory device designed for use in a wide variety of high-volume 
+consumer-based applications in which program code is shadowed from Flash memory into embedded or 
+external RAM for execution. The flexible erase architecture of the device, with its sector erase granularity it is 
+ideal for data storage as well, eliminating the need for additional data storage devices.  
+The erase block sizes of the device have been optimized to meet the needs of today's code and data storage 
+applications. By optimizing the size of the erase blocks, the memory space can be used much more efficiently. 
+Because certain code modules and data storage segments must reside by themselves in their own erase 
+regions, the wasted and unused memory space that occurs with large sectored and large block erase Flash 
+memory devices can be greatly reduced. This increased memory space efficiency allows additional code 
+routines and data storage segments to be added while still maintaining the same overall device density.  
+The device also contains an additional 3*1K-byte security registers with OTP lock (One-Time Programmable), 
+can be used for purposes such as unique device serialization, system-level Electronic Serial Number (ESN) 
+storage, locked key storage, etc.  
+Specifically designed for use in many different systems, the device supports read, program, and erase 
+operations with a wide supply voltage range of 2.7V to 3.6V. No separate voltage is required for programming 
+and erasing. 
+ 
+
+===== PAGE 6 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 6 of 94 
+3 Pin Definition 
+3.1 Pin Configurations  
+CS#
+SO
+WP#
+HOLD#
+SLCK
+VCC
+GND
+1
+2
+3
+4
+8
+7
+6
+5
+CS#
+SO
+WP#
+HOLD#
+SLCK
+SI
+VCC
+GND
+1
+2
+3
+4
+8
+7
+6
+5SI
+ 
+     8-PIN SOP (150mil/208mil) and TSSOP             8-Land WSON (3x2/3x4/6x5mm) 
+ 
+ 
+3.2 Pin Descriptions  
+No. Symbol Extension Remarks 
+1 CS#  Chip select 
+2 SO SIO1 
+Serial data output for 1 x I/O 
+Serial data input and output for 2 x I/O read mode 
+Serial data input and output for 4 x I/O read mode 
+3 WP# SIO2 Write protection active low  
+Serial data input and output for 4 x I/O read mode 
+4 GND - Ground of the device 
+5 SI SIO0 
+Serial data input for 1x I/O 
+Serial data input and output for 2 x I/O read mode 
+Serial data input and output for 4 x I/O read mode 
+6 SCLK - Serial interface clock input 
+7 HOLD#/RESET# SIO3 
+Hardware Reset Pin Active low or to pause the device 
+without deselecting the device 
+Serial data input and output for 4 x I/O read mode 
+8 VCC - Power supply of the device 
+Notes: 
+1. SIO0 and SIO1 are used for Standard and Dual SPI instructions 
+2. SIO0 – SIO3 are used for Quad SPI/QPI instructions, WP# & HOLD# (or RESET#) functions are only available for Standard/Dual 
+SPI. 
+  
+
+===== PAGE 7 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 7 of 94 
+4 Block Diagram 
+Serial Bus 
+Control Logic
+Address Latch
+Flash Memory Array
+Data buffer
+Y-DECODER
+X -DECODER
+Serial MUX &
+I/O buffers
+High Voltage Generator
+Control and
+Protection logic
+WP#
+HOLD#
+SO
+CS#
+SCLK
+VCC
+GND
+Interface
+Control &
+Logic
+SI
+/RESET#
+ 
+ 
+I/O Interface 
+ 
+Page(256 bytes) 
+Flash Memory Array 
+SI(IO0) HOLD#(IO3)SO(IO1) WP#(IO2)
+ 
+
+===== PAGE 8 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 8 of 94 
+5 Electrical Specifications 
+5.1 Absolute Maximum Ratings 
+◼ Storage Temperature .......................-65°C to +150°C  
+◼ Operation Temperature ....................-40°C to +85°C  
+◼ Maximum Operation Voltage............. 4.0V 
+◼ Voltage on Any Pin with  
+respect to Ground...........................-0.6V to + 4.1V 
+◼ DC Output Current ............................5.0 mA 
+ 
+Table 5-1 Pin Capacitance [1]  
+Symbol Parameter Max. Units Test Condition 
+COUT Output Capacitance 8 pF VOUT=GND 
+CIN Input Capacitance  6 pF VIN=GND 
+Note:  
+1. Test Conditions: TA= 25°C, F = 1MHz, VCC = 3.0V.  
+ 
+Figure 5-1 Maximum Overshoot Waveform 
+0V 
+-1.0V 
+20ns 
+20ns 
+VCC+1.0V 
+VCC 
+Maximum Negative Overshoot Waveform Maximum Positive Overshoot Waveform 
+ 
+ 
+Figure 5-2 Input Test Waveforms and Measurement Level 
+0.8VCC 
+0.2VCC 
+0.7VCC 
+0.3VCC 
+0.5VCC AC Measurement Level 
+Input timing reference  level Output timing reference  level 
+Note:Input pulse rise and fall time ara < 5ns 
+ 
+Figure 5-3 Output Loading 
+VCC
+DEVICE 
+UNDER
+TEST
+25K ohm
+25K ohmCL
+CL = 15/30pF Including jig capacitance
+ 
+ 
+  
+NOTICE: Stresses above those listed under “Absolute 
+Maximum Ratings” may cause permanent damage to the 
+device. This is a stress rating only and functional operation 
+of the device at those or any other conditions above those 
+indicated in the operational listings of this specification is 
+not implied. Exposure to maximum rating conditions for 
+extended periods may affect device reliability. 
+
+===== PAGE 9 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 9 of 94 
+5.2 DC Characteristics 
+Table 5-2 DC Parameters (Ta=-40°C to +85°C) 
+Sym. Parameter  Conditions 2.7V to 3.6V Units Min. Typ. Max. 
+IDPD Deep power down 
+current CS#=VCC, all other inputs at 0V or VCC  1 8 uA 
+ISB Standby current CS#, HOLD#, WP#=VIH all inputs at CMOS 
+levels  18 40 uA 
+ICC1 Read current 
+(1, 2, 4 IO) 
+f=85MHz; IOUT=0mA  8 10 mA 
+f=133MHz; IOUT=0mA  11 15 mA 
+ICC2 Program current CS#=VCC  6 10 mA 
+ICC3 Erase current CS#=VCC  10 15 mA 
+ILI Input load current All inputs at CMOS level   1.0 uA 
+ILO Output leakage All inputs at CMOS level   1.0 uA 
+VIL Input low voltage    0.3Vcc V 
+VIH Input high voltage  0.7Vcc   V 
+VOL Output low voltage IOL=100uA   0.2 V 
+VOH Output high voltage IOH=-100uA Vcc-0.2   V 
+Notes: 
+1. Typical values measured at 3.0V @ 25°C for the 2.7V to 3.6V range. 
+2. The value guaranteed by characterization, not 100% tested in production. 
+ 
+  
+
+===== PAGE 10 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 10 of 94 
+5.3 AC Characteristics 
+Table 5-3-1 AC Parameters (Ta=-40°C to +85°C) 
+Symbol Alt. Parameter 
+2.7V~3.6V  
+min typ max Unit 
+fSCLK fC Clock Frequency for all instructions except for special marking   133 MHz 
+fRSCLK fR Clock Frequency for READ instructions   55 MHz 
+fWSCLK fW Clock Frequency for 4IO WORD READ instructions   104 MHz 
+tCH(1) tCLH Clock High Time, 45% x (1/fSCLK) 3.3   ns 
+tCL(1) tCLL Clock Low Time, 45% x (1/fSCLK) 3.3   ns 
+tCLCH(3)  Clock Rise Time (peak to peak) 0.1   v/ns 
+tCHCL(3)  Clock Fall Time (peak to peak) 0.1   v/ns 
+tSLCH tCSS CS# Active Setup Time (relative to SCLK) 5   ns 
+tCHSL  CS# Not Active Hold Time (relative to SCLK) 5   ns 
+tDVCH tDSU Data in Setup Time 2   ns 
+tCHDX tDH Data in Hold Time 3   ns 
+tCHSH  CS# Active Hold Time (relative to SCLK) 5   ns 
+tSHCH  CS# Not Active Setup Time (relative to SCLK) 5   ns 
+tSHSL tCSH 
+CS# Deselect Time from Read to next Read 20   ns 
+CS# Deselect Time from Write, Erase, Program to Read Status Register 30   ns 
+tSHQZ(3) tDIS Output Disable Time   6 ns 
+tCLQV tV Clock Low to Output Valid Loading 30pF   7 ns 
+Clock Low to Output Valid Loading 15pF   6 ns 
+tCLQX tHO Output Hold Time 1   ns 
+tHLCH  HOLD# Active Setup Time (relative to SCLK) 5   ns 
+tCHHH  HOLD# Active Hold Time (relative to SCLK) 5   ns 
+tHHCH  HOLD# Not Active Setup Time (relative to SCLK) 5   ns 
+tCHHL  HOLD# Not Active Hold Time (relative to SCLK) 5   ns 
+tHHQX tLZ HOLD# to Output Low-Z   6 ns 
+tHLQZ tHZ HOLD# to Output High-Z   6 ns 
+tWHSL(2)  Write Protect Setup Time 20   ns 
+tSHWL(2)  Write Protect Hold Time 100   ns 
+tDP  CS# High to Deep Power-down Mode   3 us 
+tRES1  CS# High to Standby Mode Without Electronic Signature Read   20 us 
+tRES2  CS# High to Standby Mode with Electronic Signature Read   20 us 
+tW  Write Status Register Cycle Time  5 12 ms 
+tReady  
+Reset recovery time (except Erase/WRSR/WRCR)   30 us 
+Reset recovery time (for Erase/WRSR/WRCR operation)  8 12 ms 
+Notes: 
+1. tCH + tCL must be greater than or equal to 1/ Frequency. 
+2. Only applicable as a constraint for a WRSR instruction. 
+3. The value guaranteed by characterization, not 100% tested in production. 
+ 
+ 
+ 
+ 
+ 
+
+===== PAGE 11 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 11 of 94 
+Table 5-3-2 SPI Read Command Performance Comparison (MHz) 
+ Dummy Cycles (VCC=2.7V~3.6V) 
+Read command 4 6 8 10 
+FREAD - - 133 - 
+DREAD - - 133 - 
+2READ 104(default) - 133 - 
+QREAD - - 133 - 
+4READ - 104(default) - 133 
+Table 5-3-3 QPI Read Command Performance Comparison (MHz) 
+ Dummy Cycles (VCC=2.7V~3.6V) 
+Read command 4 6 8 10 
+FREAD 70 104 120 133(default) 
+4READ 70 104 120 133(default) 
+BURST READ 70 104 120 133(default) 
+ 
+ 
+5.4 AC Characteristics for Program and Erase 
+Table 5-4 AC Parameters for Program and Erase (Ta=-40°C to +85°C) 
+Sym. Parameter  2.7V to 3.6V Units Min. Typ. Max. 
+TESL(4) Erase Suspend Latency   30 us 
+TPSL(4) Program Suspend Latency   30 us 
+TPRS(2) Latency between Program Resume and next Suspend 0.5   us 
+TERS(3) Latency between Erase Resume and next Suspend 0.5   us 
+tPSR Program Security Registers time (up to 256 bytes)  0.4 2.4 ms 
+tESR Erase Security Registers time  40 300 ms 
+tPP Page program time (up to 256 bytes)  0.4 2.4 ms 
+tSE Sector erase time  40 300 ms 
+tBE1 Block erase time for 32K bytes  0.12 0.8 s 
+tBE2 Block erase time for 64K bytes  0.15 1.2 s 
+tCE Chip erase time   10 30 s 
+Notes: 
+1. Typical values given for TA=25°C. Not 100% tested. 
+2. Program operation may be interrupted as often as system request. The minimum timing of tPRS must be observed 
+before issuing the next program suspend command. However, in order for a Program operation to make progress, tPRS ≥ 
+100us must be included in resume-to-suspend loop(s). Not 100% tested. 
+3. Erase operation may be interrupted as often as system request. The minimum timing of tERS must be observed 
+before issuing the next erase suspend command. However, in order for an Erase operation to make progress, tERS ≥ 
+100us must be included in resume-to-suspend loop(s). Not 100% tested. 
+4. Latency time is required to complete Erase/Program Suspend operation. 
+5. The value guaranteed by characterization, not 100% tested in production. 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+===== PAGE 12 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 12 of 94 
+Figure 5-4 Serial Input Timing 
+SCLK 
+CS# 
+SI MSB 
+SO High-Z 
+LSB 
+tCHSL tSLCH 
+tDVCH 
+tCHDX 
+tSHCH tCHSH 
+tCHCL 
+tCLCH 
+tSHSL 
+tCLH tCLL
+ 
+Figure 5-5 Output Timing 
+CS# 
+SCLK
+ 
+SO 
+SI
+ Least significant address bit (LIB) in 
+tCLQV 
+tCLQX tCLQX 
+tCLQV 
+tCLH
+ 
+tCLL
+ 
+tSHQZ 
+LSB 
+tQLQH
+tQHQL
+Figure 5-6 Hold Timing 
+CS# 
+SCLK
+ 
+SO 
+HOLD# 
+tCHHL 
+tHLQZ
+ 
+tHLCH 
+tCHHH
+ 
+tHHCH
+ 
+tHHQX
+ 
+SI do not care during HOLD operation. 
+Figure 5-7 WP Timing 
+WP# 
+SI 
+SCLK 
+ 
+ 
+ 
+tWHSL
+ 
+tSHWL
+ 
+CS# 
+ Write status register is allowed  
+Write status register is not allowed
+ 
+
+===== PAGE 13 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 13 of 94 
+5.5 Operation Conditions 
+At Device Power-Up and Power-Down 
+AC timing illustrated in "Figure AC Timing at Device Power-Up" and "Figure Power-Down Sequence" are for 
+the supply voltages and the control signals at device power-up and power-down. If the timing in the figures is 
+ignored, the device will not operate correctly. 
+During power-up and power-down, CS# needs to follow the voltage applied on VCC to keep the device not to 
+be selected. The CS# can be driven low when VCC reach Vcc(min.) and wait a period of tVSL.  
+ 
+Figure 5-8 AC Timing at Device Power-Up 
+ 
+SCLK  
+SI  
+CS#  
+MSB 
+SO  
+tDVCH 
+High-Z  
+LSB 
+tSLCH 
+tCHDX 
+tCHCL 
+tCLCH 
+tSHCH 
+tSHSL 
+tCHSH tCHSL 
+tVR
+VCC VCC(min)
+GND
+ 
+Figure 5-9 Power-Up Timing 
+ 
+Vcc(max) 
+Vcc(min) 
+VWI 
+ 
+ 
+tVSL
+ 
+Chip Selection is not allowed 
+ 
+ 
+ 
+Device is fully accessible  
+ 
+Time 
+ 
+ 
+  
+
+===== PAGE 14 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 14 of 94 
+Power Up/Down and Voltage Drop 
+For Power-down to Power-up operation, the VCC of flash device must below VPWD for at least tPWD timing.  
+Please check the table below for more detail. 
+ 
+Figure 5-10 Power down-up Timing 
+ 
+Vcc(max)  
+Vcc(min)  
+VPWD(max) 
+ 
+ 
+tVSL
+ 
+Chip Selection is not allowed
+ 
+ 
+ 
+ 
+Device is fully 
+accessible
+ 
+ 
+Time 
+tPWD
+ 
+Symbol Parameter min max unit 
+VPWD VCC voltage needed to below VPWD for ensuring 
+initialization will occur  1 V 
+tPWD The minimum duration for ensuring initialization will occur 300  us 
+tVSL(1) Vcc(min.) to device operation 2.5  ms 
+tVR Vcc Rise Time 1 500000 us/V 
+VWI Write Inhibit Voltage 1.5 2.5 V 
+ 
+Notes: 
+1. if the chip operates normally (no power drop during erase operation), the normal tVSL time is less than 
+300us. 
+ 
+Initial Delivery State 
+The device is delivered with the memory array erased: all bits are set to 1 (each byte contains FFH). The 
+Status Register contains 00H (all Status Register bits are 0). 
+ 
+
+===== PAGE 15 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 15 of 94 
+6 Data Protection 
+During power transition, there may be some false system level signals which result in inadvertent erasure 
+or programming. The device is designed to protect itself from accidental write cycles . 
+The state machine will be reset as standby mode automatically during power up. In addition, the control 
+register architecture of the device constrains that the memory contents can only be changed after specific 
+command sequences have completed successfully. 
+In the following, there are several features to protect the system from the accidental write cycles during 
+VCC power-up and power-down or from system noise. 
+• Power-on reset: to avoid sudden power switch by system power supply transition, the power -on reset may 
+protect the Flash. 
+• Valid command length checking: The command length will be checked whether it is at byte base and 
+completed on byte boundary. 
+• Write Enable (WREN) command: WREN command is required to set the Write Enable Latch bit (WEL) 
+before issuing other commands to change data. 
+• Software Protection Mode: The Block Protect (BP4, BP3, BP2, BP1, and BP0) bits define the section of the 
+memory array that can be read but not change. 
+• Hardware Protection Mode: WP# going low to protected the BP0~BP4bits and SRP0~1bits 
+• Deep Power-Down Mode: By entering deep power down mode, the flash device is under protected from 
+writing all commands except the Release from Deep Power-Down Mode command. 
+Protected Area Sizes 
+Table 6-1. PY25Q32HB Protected Area Sizes (WPS=0,CMP bit = 0) 
+Status Register Memory content 
+BP4 BP3 BP2 BP1 BP0 Blocks Addresses Density Portion 
+X X 0 0 0 NONE NONE NONE NONE 
+0 0 0 0 1 63 3F0000h – 3FFFFFh 64KB Upper 1/64 
+0 0 0 1 0 62 to 63 3E0000h – 3FFFFFh 128KB Upper 1/32 
+0 0 0 1 1 60 to 63 3C0000h – 3FFFFFh 256KB Upper 1/16 
+0 0 1 0 0 56 to 63 380000h – 3FFFFFh 512KB Upper 1/8 
+0 0 1 0 1 48 to 63 300000h – 3FFFFFh 1MB Upper 1/4 
+0 0 1 1 0 32 to 63 200000h – 3FFFFFh 2MB Upper 1/2 
+0 1 0 0 1 0  000000h – 00FFFFh 64KB Lower 1/64 
+0 1 0 1 0 0 to 1 000000h – 01FFFFh 128KB Lower 132 
+0 1 0 1 1 0 to 3 000000h – 03FFFFh 256KB Lower 1/16 
+0 1 1 0 0 0 to 7 000000h – 07FFFFh 512KB Lower 1/8 
+0 1 1 0 1 0 to 15 000000h – 0FFFFFh 1MB Lower 1/4 
+0 1 1 1 0 0 to 31 000000h – 1FFFFFh 2MB Lower 1/2 
+X X 1 1 1 0 to 63 000000h –3FFFFFh 4MB ALL 
+1 0 0 0 1 63 3FF000h – 3FFFFFh 4KB Top Block 
+1 0 0 1 0 63 3FE000h – 3FFFFFh 8KB Top Block 
+1 0 0 1 1 63 3FC000h – 3FFFFFh 16KB Top Block 
+1 0 1 0 X 63 3F8000h – 3FFFFFh 32KB Top Block 
+1 0 1 1 0 63 3F8000h – 3FFFFFh 32KB Top Block 
+
+===== PAGE 16 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 16 of 94 
+1 1 0 0 1 0 000000h – 000FFFh 4KB Bottom Block 
+1 1 0 1 0 0 000000h – 001FFFh 8KB Bottom Block 
+1 1 0 1 1 0 000000h – 003FFFh 16KB Bottom Block 
+1 1 1 0 X 0 000000h – 007FFFh 32KB Bottom Block 
+1 1 1 1 0 0 000000h – 007FFFh 32KB Bottom Block 
+ 
+Table 6-2. PY25Q32HB Protected Area Sizes (WPS=0,CMP bit = 1) 
+ 
+Status Register Memory content 
+BP4 BP3 BP2 BP1 BP0 Blocks Addresses Density Portion 
+X X 0 0 0 ALL 000000h – 3FFFFFh 4M ALL 
+0 0 0 0 1 0 to 62 000000h – 3EFFFFh 4032KB Lower 63/64 
+0 0 0 1 0 0 to 61 000000h – 3DFFFFh 3968KB Lower 31/32 
+0 0 0 1 1 0 to 59 000000h – 3BFFFFh 3840KB Lower 15/16 
+0 0 1 0 0 0 to 55 000000h – 37FFFFh 3584KB Lower 7/8 
+0 0 1 0 1 0 to 47 000000h – 2FFFFFh 3MB Lower 3/4 
+0 0 1 1 0 0 to 31 000000h – 1fFFFFh 2MB Lower 1/2 
+0 1 0 0 1 1 to 63 010000h – 3FFFFFh 4032KB Upper 63/64 
+0 1 0 1 0 2 to 63 020000h – 3FFFFFh 3968KB Upper 31/32 
+0 1 0 1 1 4 to 63 040000h – 3FFFFFh 3840KB Upper 15/16 
+0 1 1 0 0 8 to 63 080000h – 3FFFFFh 3584KB Upper 7/8 
+0 1 1 0 1 16 to 63 100000h – 3FFFFFh 3MB Upper 3/4 
+0 1 1 1 0 32 to 63 200000h – 3FFFFFh 2MB Upper 1/2 
+X X 1 1 X NONE NONE NONE NONE 
+1 0 0 0 1 0 to 63 000000h – 3FEFFFh 4092KB Lower 1023/1024 
+1 0 0 1 0 0 to 63 000000h – 3FDFFFh 4088KB Lower 511/512 
+1 0 0 1 1 0 to 63 000000h – 3FBFFFh 4080KB Lower 255/256 
+1 0 1 0 X 0 to 63 000000h – 3F7FFFh 4064KB Lower 127/128 
+1 0 1 1 0 0 to 63 000000h – 3F7FFFh 4064KB Lower 127/128 
+1 1 0 0 1 0 to 63 001000h – 3FFFFFh 4092KB Upper 1023/1024 
+1 1 0 1 0 0 to 63 002000h – 3FFFFFh 4088KB Upper 511/512 
+1 1 0 1 1 0 to 63 004000h – 3FFFFFh 4080KB Upper 255/256 
+1 1 1 0 X 0 to 63 008000h – 3FFFFFh 4064KB Upper 127/128 
+1 1 1 1 0 0 to 63 008000h – 3FFFFFh 4064KB Upper 127/128 
+Notes: 
+1. X=don’t care 
+2. If any erase or program command specifies a memory that contains protected data portion, this command will be 
+ignored. 
+Table 6-3. PY25Q32HB Individual Block Protection (WPS=1) 
+
+===== PAGE 17 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 17 of 94 
+ Block Sector/Block 
+  
+ 
+  
+  
+ 
+ 
+ 
+------- 
+ 
+  
+ 
+  
+ 
+ 
+-
+  
+Sector 0 (4KB) 
+-
+Sector 1 (4KB)
+Sector 14 (4KB)
+Sector 15 (4KB)
+Block 1 (64KB)
+Block 62  (64KB)
+ 
+ 
+ 
+-
+  
+Sector 0 (4KB) 
+-
+Sector 1 (4KB)
+Sector 14 (4KB)
+Sector 15 (4KB)
+Block 0
+Block 1
+Block2 ~61
+Block 62
+Block 63
+Individual Block 
+Locks:
+32 Sectors(Top/Bottom)
+62 Blocks
+Individual Block Lock :
+36h+Address
+Individual Block Unlock :
+39h+Address
+Read Block Lock:
+3Ch+Address
+Global Block Lock:
+7Eh
+Global Block Unlock:
+98h
+-------
+
+===== PAGE 18 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 18 of 94 
+Notes:  
+1. Individual Block/Sector protection is only valid when WPS=1.  
+2. All individual block/sector lock bits are set to 1 by default after power up, all memory array is protected.  
+ 
+  
+
+===== PAGE 19 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 19 of 94 
+7 Memory Address Mapping 
+The memory array can be erased in three levels of granularity including a full chip erase. The size of the erase 
+blocks is optimized for both code and data storage applications, allowing both code and data segments to 
+reside in their own erase regions.  
+ Each device has Each block has Each sector has Each page has 
+1M
+ 
+64/32K
+ 
+4K
+ 
+256
+ 
+bytes
+ 
+4K
+ 
+256/128
+ 
+16
+ 
+- pages
+ 
+256
+ 
+16/8
+ 
+- - sectors
+ 
+64/128
+ 
+- - - blocks
+ 
+PY25Q32HB Memory Organization 
+ Block Sector Address range 
+63
+ 
+511
+ 3FF000H 
+3FFFFFH 
+         
+496
+  
+3F0FFFH
+ 
+ 
+495
+  
+1FFFFFH
+ 
+         
+480
+  
+1F0FFFH
+ 
+   
+         
+         
+         
+   
+         
+         
+         
+2 
+47
+ 
+02F000H
+ 
+02FFFFH
+ 
+         
+32
+ 
+020000H
+ 
+020FFFH
+ 
+1 
+31
+ 
+01F000H
+ 
+01FFFFH
+ 
+         
+ 
+010000H
+ 
+010FFFH
+ 
+0 
+15
+ 
+00F000H
+ 
+00FFFFH
+ 
+         
+0 000000H
+ 
+000FFFH
+ 
+62
+16
+3F0000H
+1FF000H
+1F0000H
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+===== PAGE 20 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 20 of 94 
+8 Device Operation 
+Before a command is issued, status register should be checked to ensure device is ready for the intended 
+operation.  
+When incorrect command is inputted to this LSI, this LSI becomes standby mode and keeps the standby 
+mode until next CS# falling edge. In standby mode, SO pin of this LSI should be High-Z. When correct 
+command is inputted to this LSI, this LSI becomes active mode and keeps the active mode until next CS# 
+rising edge. 
+Input data is latched on the rising edge of Serial Clock (SCLK) and data shifts out on the falling edge of SCLK. 
+The difference of serial peripheral interface mode 0 and mode 3 is shown as Figure 8-1.  
+For the following instructions: RDID, RDSR, RDSR1, RDCR, RDSCUR, READ, FREAD, DREAD, 2READ, 
+4READ, QREAD, RDSFDP, RES, REMS, DREMS, QREMS, the shifted-in instruction sequence is followed by 
+a data-out sequence. After any bit of data being shifted out, the CS# can be high. For the following 
+instructions: WREN, WRDI, WRSR, WRCR, SE, BE32K, BE, CE, PP, QPP, DP, ERSCUR, PRSCUR, 
+SUSPEND, RESUME, RSTEN, RST, the CS# must go high exactly at the byte boundary; otherwise, the 
+instruction will be rejected and not executed. 
+During the progress of Write Status Register, Program, Erase operation, to access the memory array is 
+neglected and not affect the current operation of Write Status Register, Program, Erase. 
+Figure 8-1 Serial Peripheral Interface Modes Supported 
+SCLK 
+MSB 
+CPHA shift in shift out 
+SI 
+0 
+1 
+CPOL 
+0 (Serial mode 0) 
+(Serial mode 3) 1 
+SO 
+SCLK 
+MSB 
+Note: 
+CPOL indicates clock polarity of serial master, CPOL=1 for SCLK high while idle, CPOL=0 for SCLK low while not transmitting. CPHA 
+indicates clock phase. The combination of CPOL bit and CPHA bit decides which serial mode is supported. 
+ 
+  
+
+===== PAGE 21 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 21 of 94 
+   
+ 
+ 
+ 
+QPI Reset 
+(66h + 99h) 
+QPI 
+ 
+Disable QPI (FFh) Enable QPI (38h) 
+SPI Reset 
+(66h + 99h) 
+   
+Standard SPI 
+Dual SPI  
+Quad SPI 
+ 
+  
+Device Initialization 
+& Status Register Refresh 
+Power Up 
+Standard SPI  
+The PY25Q32HB features a serial peripheral interface on 4 signals bus: Serial Clock (SCLK), Chip Select 
+(CS#), Serial Data Input (SI) and Serial Data Output (SO). Both SPI bus mode 0 and 3 are supported. Input 
+data is latched on the rising edge of SCLK and data shifts out on the falling edge of SCLK.  
+Dual SPI 
+The PY25Q32HB supports Dual SPI operation when using the “Dual Output Fast Read” and “Dual I/O Fast 
+Read” (3BH and BBH) commands. These commands allow data to be transferred to or from the device at two 
+times the rate of the standard SPI. When using the Dual SPI command, the SI and SO pins become 
+bidirectional I/O pins: IO0 and IO1. 
+Quad SPI 
+The PY25Q32HB supports Quad SPI operation when using the “Quad Output Fast Read”, “Quad I/O Fast 
+Read” (6BH, EBH) commands. These commands allow data to be transferred to or from the device at four 
+times the rate of the standard SPI. When using the Quad SPI command, the SI and SO pins become 
+bidirectional I/O pins: IO0 and IO1, and WP# and HOLD# pins become IO2 andIO3. Quad SPI commands 
+require the non-volatile Quad Enable bit (QE) in Status Register to be set.  
+QPI  
+The PY25Q32HB supports Quad Peripheral Interface (QPI) operations only when the device is switched from 
+Standard/Dual/Quad SPI mode to QPI mode using the “Enable the QPI (38H)” command. The QPI mode 
+utilizes all four IO pins to input the command code. Standard/Dual/Quad SPI mode and QPI mode are 
+exclusive. Only one mode can be active at any given times. “Enable the QPI (38H)”and “Disable the 
+QPI(FFH)” commands are used to switch between these two modes. Upon power -up and after software reset 
+using “” Reset (99H)” command, the default state of the device is Standard/Dual/Quad SPI mode. The QPI 
+mode requires the non-volatile Quad Enable bit (QE) in Status Register to be set. 
+Software Reset & Hardware RESET# pin 
+The PY25Q32HB can be reset to the initial power-on state by a software Reset sequence, either in SPI mode 
+or QPI mode. This sequence must include two consecutive commands: Enable Reset (66H) & Reset (99H). If 
+the command sequence is successfully accepted, the device will take approximately 30uS (t Ready) to reset 
+
+===== PAGE 22 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 22 of 94 
+except all ERASE or WRSR or WRCR command, the tReady time is max. 12ms for ERASE or WRSR or 
+WRCR command. No command will be accepted during the reset period.  
+The PY25Q32HB can also be configured to utilize a hardware RESET# pin. The HOLD/RST bit in the 
+Configure Register is the configuration bit for HOLD# pin function. When HOLD/RST=0 (factory default), the 
+pin acts as a HOLD# pin as described above; when HOLD/RST=1, the pin acts as a RESET# pin. Drive the 
+RESET# pin low for a minimum period of 1us (tRLRH) will reset the device to its initial power-on state. Any on-
+going Program/Erase operation will be interrupted and data corruption may happen. While RESET # is low, the 
+device will not accept any command input. 
+If QE bit is set to 1, the HOLD/RST function will be disabled, the pin will become one of the four data I/O pins.  
+Hardware RESET# pin has the highest priority among all the input signals. Drive RESET# low for a minimum 
+period of 1us (tRLRH) will interrupt any on-going external/internal operations, regardless the status of other 
+SPI signals (/CS, CLK, IOs, WP# and/or HOLD#).  
+Notes:  
+1.While a faster RESET# pulse (as short as a few hundred nanoseconds) will often reset the device, a 1us 
+minimum is recommended to ensure reliable operation.  
+2.There is an internal pull-up resistor for the dedicated RESET# pin. If the reset function is not needed, this 
+pin can be left floating in the system. 
+ 
+ 
+ 
+ 
+
+===== PAGE 23 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 23 of 94 
+9 Hold Feature 
+HOLD# pin signal goes low to hold any serial communications with the device. The HOLD feature will not stop 
+the operation of write status register, programming, or erasing in progress. 
+The operation of HOLD requires Chip Select (CS#) keeping low and starts on falling edge of HOLD# pin 
+signal while Serial Clock (SCLK)signal is being low (if Serial Clock signal is not being lo w, HOLD operation 
+will not start until Serial Clock signal being low).  
+The HOLD condition ends on the rising edge of HOLD# pin signal while Serial Clock (SCLK) signal is being 
+low (if Serial Clock signal is not being low, HOLD operation will not end until Serial Clock being low). 
+Figure 9-1 Hold Condition Operation 
+HOLD HOLD 
+CS# 
+SCLK 
+HOLD# 
+ 
+During the HOLD operation, the Serial Data Output (SO) is high impedance when HOLD# pin goes low and 
+will keep high impedance until Hold# pin goes high. The Serial Data Input (SI) is don't care if both Serial Clock 
+(SCLK) and Hold# pin goes low and will keep the state until SCLK goes low and H old# pin goes high. If Chip 
+Select (CS#) drives high during HOLD operation, it will reset the internal logic of the device. To re-start 
+communication with chip, the HOLD# must be at high and CS# must be at low. 
+ 
+Note: The HOLD feature is disabled during Quad I/O mode. 
+
+===== PAGE 24 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 24 of 94 
+10 Commands 
+10.1 Commands listing 
+Figure 10-1 Command set (Standard/Dual/Quad SPI) 
+Commands Abbr. Code ADR 
+Bytes 
+DMY 
+Cycles 
+Data 
+Bytes Function description 
+Read             
+Fast Read Array  FREAD 0BH 3 8 1+ n bytes read out until CS# goes high 
+Normal Read Array  READ 03H 3 0 1+ n bytes read out until CS# goes high 
+Read Dual Output DREAD 3BH 3 8 1+ n bytes read out by Dual output 
+Read 2IO 2READ BBH 3 4(8) 1+ n bytes read out by 2IO 
+Read Quad Output QREAD 6BH 3 8 1+ n bytes read out by Quad output 
+Read 4IO 4READ EBH 3 6(10) 1+ n bytes read out by 4IO 
+Read Word 4IO WREAD E7H 3 4 1+ n bytes word read out by 4IO 
+Program and Erase             
+Sector Erase (4K bytes) SE 20H 3 0 0 erase selected sector 
+Block Erase (32K bytes) BE32K 52H 3 0 0 erase selected 32K block 
+Block Erase (64K bytes) BE D8H 3 0 0 erase selected 64K block 
+Chip Erase CE 60H/C7H 0 0 0 erase whole chip 
+Page Program PP 02H 3 0 1+ program selected page 
+Quad page program QPP 32H 3 0 1+ quad input to program selected page 
+Program/Erase Suspend PES 75H 0 0 0 suspend program/erase operation 
+Program/Erase Resume PER 7AH 0 0 0 continue program/erase operation 
+Protection             
+Write Enable WREN 06H 0 0 0 sets the write enable latch bit 
+Write Disable WRDI 04H 0 0 0 resets the write enable latch bit 
+Volatile SR/CR Write Enable VWREN 50H 0 0 0 Write enable for volatile SR/CR 
+Individual Block Lock SBLK 36H 3 0 0 Individual block lock 
+Individual Block Unlock SBULK 39H 3 0 0 Individual block un-lock 
+Read Block Lock Status RDBLOCK 3DH 3 0 1 Read individual block lock register 
+Global Block Lock GBLK 7EH 0 0 0 Whole chip block protection 
+Global Block Unlock GBULK 98H 0 0 0 Whole chip block un-protection 
+Security              
+Erase Security Registers ERSCUR  44H 3 0 0 Erase security registers 
+Program Security Registers PRSCUR 42H 3 0 1+ Program security registers  
+Read Security Registers RDSCUR 48H 3 8 1+ Read value of security register 
+
+===== PAGE 25 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 25 of 94 
+ Command set (Standard/Dual/Quad SPI)  
+Commands Abbr. Code ADR 
+Bytes 
+DMY 
+Cycles 
+Data 
+Bytes Function 
+Status Register             
+Read Status Register RDSR 05H 0 0 1 read out status register 
+Read Status Register-1 RDSR1 35H 0 0 1 Read out status register-1 
+Read Configure Register RDCR 15H 0 0 1 Read out configure register 
+Write Status Register WRSR  01H 0 0 1-2 Write data to status registers and status 
+registers-1 
+Write Status Register-1 WRSR1  31H 0 0 1 Write data to status registers-1 
+Write Configure Register WRCR 11H 0 0 1 Write data to configuration register 
+Other Commands             
+Reset Enable RSTEN 66H 0 0 0 Enable reset 
+Reset  RST 99H 0 0 0 Reset 
+Enable QPI QPIEN 38H 0 0 0 Enable QPI mode 
+Read Manufacturer/device ID RDID 9FH 0 0 1 to 3 output JEDEC ID: 1-byte manufacturer 
+ID & 2-byte device ID 
+Read Manufacture ID REMS 90H 3  1+ Read manufacturer ID/device ID data 
+Dual Read Manufacture ID DREMS 92H 3 4 1+ Dual output read manufacture/device 
+ID 
+Quad Read Manufacture ID QREMS 94H 3 6 1+ Quad output read manufacture/device 
+ID 
+Deep Power-down DP B9H 0 0 0 enters deep power-down mode 
+Release Deep Power-
+down/Read Electronic ID RDP/RES ABH 3 0 1 Read electronic ID data 
+Set burst length SBL  77H 0 0 0 Set burst length 
+Read SFDP RDSFDP 5AH 3 8 1+ Read SFDP parameter 
+Release read enhanced  FFH    Release from read enhanced 
+Read unique ID RUID 4BH 3 8 1+ Read unique ID 
+ 
+Command set (QPI Instructions) 
+Commands Abbr. Code ADR 
+Bytes 
+DMY 
+Cycles 
+Data 
+Bytes Function description 
+Read             
+Fast read  0BH 3 10/4/6/8 1+ n bytes read out until CS# goes high 
+Burst Read with Wrap  0CH 3 10/4/6/8 1+ n bytes burst read with wrap by 4IO 
+Read Word 4x I/O  EBH 3 10/4/6/8 1+ n bytes read out by 4IO 
+Program and Erase              
+Page Program PP 02H 3 0 1+ program selected page 
+Sector Erase (4K bytes) SE 20H 3 0 0 erase selected sector 
+Block Erase (32K bytes) BE32 52H 3 0 0 erase selected 32K block 
+Block Erase (64K bytes) BE D8H 3 0 0 erase selected 64K block 
+Chip Erase CE 60H/C7H 0 0 0 erase whole chip 
+Program/Erase Suspend PES 75H 0 0 0 suspend program/erase operation 
+Program/Erase Resume PER 7AH 0 0 0 continue program/erase operation 
+Protection             
+
+===== PAGE 26 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 26 of 94 
+Commands Abbr. Code ADR 
+Bytes 
+DMY 
+Cycles 
+Data 
+Bytes Function description 
+Write Enable WREN 06H 0 0 0 sets the write enable latch bit 
+Volatile SR Write Enable VWREN 50H 0 0 0 Write enable for volatile SR/CR 
+Write Disable WRDI 04H 0 0 0 resets the write enable latch bit 
+Individual Block Lock SBLK 36H 3 0 0 Individual block lock 
+Individual Block Unlock  SBULK 39H 3 0 0 Individual block un-lock 
+Read Block Lock Status RDBLOCK 3DH 3 0 1 Read individual block lock register 
+Global Block Lock GBLK 7EH 0 0 0 Whole chip block protection 
+Global Block Unlock GBULK 98H 0 0 0 Whole chip block un-protection 
+Status Register             
+Read Status Register RDSR 05H 0 0 1 read out status register 
+Read Status Register-1 RDSR1 35H 0 0 1 Read out status register-1 
+Read Configure Register RDCR 15H 0 0 1 Read out configure register 
+Write Status Register WRSR  01H 0 0 1-2 Write data to status registers-0 and 
+status registers-1 
+Write Status Register-1 WRSR1  31H 0 0 1 Write data to status registers-1 
+Write Configure Register WRCR 11H 0 0 1 Write data to configuration register 
+Other Commands             
+Deep Power-down DP B9H 0 0 0 enters deep power-down mode 
+Release Deep Power-
+down/Read Electronic ID RDP/RES ABH 3 0 1 Read electronic ID data 
+Set Read Parameters SRP C0H 0 0 1 Set read dummy and wrap 
+Read Manufacture ID REMS 90H 3  1+ Read manufacturer ID/device ID 
+data 
+Read Manufacturer/device 
+ID RDID 9FH 0 0 1 to 3 output JEDEC ID: 1-byte 
+manufacturer ID & 2-byte device ID 
+Read SFDP RDSFDP 5AH 3 10/4/6/8 1+ Read SFDP parameter 
+Disable QPI  FFH    Release from read enhanced 
+Reset Enable RSTEN 66H 0 0 0 Enable reset 
+Reset  RST 99H 0 0 0 Reset 
+ 
+NOTES: 
+1. Dual Output data  
+IO0 = (D6, D4, D2, D0)  
+IO1 = (D7, D5, D3, D1)  
+2. Dual Input Address  
+IO0 = A22, A20, A18, A16, A14, A12, A10, A8 A6, A4, A2, A0, M6, M4, M2, M0  
+IO1 = A23, A21, A19, A17, A15, A13, A11, A9 A7, A5, A3, A1, M7, M5, M3, M1  
+3. Quad Output Data  
+IO0 = (D4, D0, …)  
+IO1 = (D5, D1, …)  
+IO2 = (D6, D2, …)  
+IO3 = (D7, D3, …)  
+4. Quad Input Address  
+IO0 = A20, A16, A12, A8, A4, A0, M4, M0  
+IO1 = A21, A17, A13, A9, A5, A1, M5, M1  
+
+===== PAGE 27 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 27 of 94 
+IO2 = A22, A18, A14, A10, A6, A2, M6, M2  
+IO3 = A23, A19, A15, A11, A7, A3, M7, M3  
+5. Fast Read Quad I/O Data  
+IO0 = (x, x, x, x, D4, D0, …)  
+IO1 = (x, x, x, x, D5, D1, …)  
+IO2 = (x, x, x, x, D6, D2, …)  
+IO3 = (x, x, x, x, D7, D3, …)  
+6. Fast Word Read Quad I/O Data  
+IO0 = (x, x, D4, D0, …)  
+IO1 = (x, x, D5, D1, …)  
+IO2 = (x, x, D6, D2, …)  
+IO3 = (x, x, D7, D3, …)  
+7. Fast Word Read Quad I/O Data: the lowest address bit must be 0.  
+8. QPI Command, Address, Data input/output format:  
+IO0= C4, C0, A20, A16, A12, A8, A4, A0, D4, D0, D4, D0,  
+IO1= C5, C1, A21, A17, A13, A9, A5, A1, D5, D1, D5, D1  
+IO2= C6, C2, A22, A18, A14, A10, A6, A2, D6, D2, D6, D2  
+IO3= C7, C3, A23, A19, A15, A11, A7, A3, D7, D3, D7, D3 
+9. Security Registers Address:  
+Security Register1: A23-A16=00H, A15-A12=0001, A11-A10=00, A9-A0= Byte Address;  
+Security Register2: A23-A16=00H, A15-A12=0010, A11-A10=00, A9-A0= Byte Address;  
+Security Register3: A23-A16=00H, A15-A12=0011, A11-A10=00, A9-A0= Byte Address; 
+ 
+10.2 Write Enable (WREN) (06H) 
+The Write Enable (WREN) instruction is for setting Write Enable Latch (WEL) bit. For tho se instructions like 
+PP, QPP, SE, BE32K, BE, CE and WRSR, WRCR, ERSCUR, PRSCUR which are intended to change the 
+device content, should be set every time after the WREN instruction setting the WEL bit.  
+The sequence of issuing WREN instruction is: CS# goes low→ sending WREN instruction code→ CS# 
+goes high. 
+ 
+Figure 10-2 Write Enable (WREN) Sequence (Command 06H) 
+Command 
+0  1  2  3  4  5  6  7  
+06H 
+CS# 
+SCLK 
+SI 
+SO 
+High-Z 
+ 
+Figure 10-2a Write Enable (WREN) Sequence (QPI) 
+
+===== PAGE 28 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 28 of 94 
+ 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+06H
+0     1
+ 
+  
+
+===== PAGE 29 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 29 of 94 
+10.3 Write Disable (WRDI) (04H) 
+The Write Disable (WRDI) instruction is for resetting Write Enable Latch (WEL) bit.  
+The sequence of issuing WRDI instruction is: CS# goes low→ sending WRDI instruction code→ CS# goes 
+high. 
+The WEL bit is reset by following situations: 
+- Power-up 
+- Write Disable (WRDI) instruction completion 
+- Write Status Register (WRSR/WRSR1/WRCR) instruction completion 
+- Page Program (PP) instruction completion 
+- Quad Page Program (QPP) instruction completion 
+- Sector Erase (SE) instruction completion 
+- Block Erase (BE32K, BE) instruction completion 
+- Chip Erase (CE) instruction completion 
+- Erase Security Register (ERSCUR) instruction completion 
+- Program Security Register (PRSCUR) instruction completion 
+- Reset (Soft Reset, Hard Reset) instruction completion 
+- Write Enable for Volatile Register 
+ 
+Figure 10-3 Write Disable (WRDI) Sequence (Command 04H) 
+Command 
+0  1  2  3  4  5  6  7  
+04H 
+CS# 
+SCLK 
+SI 
+SO 
+High-Z 
+ 
+Figure 10-3a Write Disable (WRDI) Sequence (QPI) 
+ 
+Command
+04H
+0     1
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+ 
+10.4 Write Enable for Volatile Register (50H) 
+The non-volatile Status Register bits can also be written to as volatile bits. This gives more flexibility to 
+change the system configuration and memory protection schemes quickly without waiting for the typical 
+
+===== PAGE 30 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 30 of 94 
+non-volatile bit write cycles or affecting the endurance of the Status Register non-volatile bits. The Write 
+Enable for Volatile Register command must be issued prior to a Write Status Register  command, and any 
+other commands cannot be inserted between them. The Write Enable for Volatile Register co mmand will 
+not set the Write Enable Latch, LB3, LB2 and LB1 bits, it is only valid for the Write Status Register 
+command to change the volatile Register bit values. 
+The sequence of issuing Write Enable for Volatile Register instruction is: CS# goes low→ se nding Write 
+Enable for Volatile Register instruction code→ CS# goes high. 
+Figure 10-4 Write Enable for Volatile Register Sequence (Command 50H) 
+CS#
+ 
+SCLK 
+ SI
+ 
+SO
+ 
+0 1 2 3 4 5 6 7 
+High-Z
+Command(50H )
+ 
+Figure 10-4a Write Enable for Volatile Register Sequence (QPI) 
+CS#
+SCLK
+SI(IO0)
+SO(IO1)
+WP#(IO2)
+HOLD#(IO3)
+Command
+50H
+0     1
+ 
+  
+
+===== PAGE 31 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 31 of 94 
+10.5 Read Status Register (RDSR) (05H/35H) 
+The RDSR instruction is for reading Status Register Bits. The Read Status Register can be read at any time 
+(even in program/erase/write status register condition). It is recommended to check the Write in Pro gress 
+(WIP) bit before sending a new instruction when a program, erase, or write status register operation is in 
+progress. For command code “05H”, the SO will output Status Register bits S7~S0. The command code 
+“35H”, the SO will output Status Register bits S15~S8.  
+The sequence of issuing RDSR instruction is: CS# goes low→ sending RDSR instruction code→ Status 
+Register data out on SO. The SIO [3:1] are "don't care". 
+Figure 10-5 Read Status Register (RDSR) Sequence (Command 05h or 35H) 
+Command 
+0     1    2     3    4    5    6    7    8    9    10  11  12  13  14  15   16  17  18   19  20   21  22   23 
+05Hor35H 
+CS# 
+SCLK 
+SI 
+SO High-Z 
+7    6    5     4     3    2    1    0    7    6     5    4    3    2     1    0    7 
+MSB 
+S7~S0 or S15~S8 out S7~S0 or S15~S8 out 
+MSB 
+ 
+Figure 10-5a Read Status Register (RDSR) Sequence (QPI) 
+ 
+ CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+05H or 35H
+0  1  2  3  4  5
+ 4      0       4      0      4
+ 5      1       5      1      5
+ 6      2       6      2      6
+ 7      3       7      3      7
+S7-S0 or S15-S8 out
+ 
+ 
+Status Register 
+ 
+ 
+BIT S15 S14 S13 S12 S11 S10 S9 S8 
+Definition SUS CMP LB3 LB2 LB1 EP_FAIL QE SRP1 
+Volatile RO N OTP OTP OTP RO N N 
+Default 0 0 0 0 0 0 0 0 
+ 
+BIT S7 S6 S5 S4 S3 S2 S1 S0 
+Definition SRP0 BP4 BP3 BP2 BP1 BP0 WEL WIP 
+Volatile N N N N N N V RO 
+Default 0 0 0 0 0 0 0 0 
+
+===== PAGE 32 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 32 of 94 
+ 
+Note: 
+1. RO=read only, N=non-volatile, V= volatile. 
+The definition of the status register bits is as below: 
+WIP bit.  
+The Write in Progress (WIP) bit indicates whether the memory is busy in program/erase/write status register 
+progress. When WIP bit sets to 1, means the device is busy in program/erase/write status register progress, 
+when WIP bit sets 0, means the device is not in program/erase/write status register progress.  
+WEL bit.  
+The Write Enable Latch (WEL) bit indicates the status of the internal Write Enable Latch. When set to 1 the 
+internal Write Enable Latch is set, when set to 0 the internal Write Enable Latch is reset and no Write Status 
+Register, Program or Erase command is accepted.  
+BP4, BP3, BP2, BP1, BP0 bits.  
+The Block Protect (BP4, BP3, BP2, BP1, and BP0) bits are non-volatile. They define the size of the area to be 
+software protected against Program and Erase commands. These bits are written with the Write Status 
+Register (WRSR) command. When the Block Protect (BP4, BP3, BP2, BP1, BP0) bits are set to 1, the 
+relevant memory area (as defined in Table “Protected Area Sizes”). becomes protected against Page Program 
+(PP), Sector Erase (SE) and Block Erase (BE) commands. The Block Protect (BP4, BP3, BP2, BP1, and BP0) 
+bits can be written provided that the Hardware Protected mode has not been set. The Chip Erase (CE) 
+command is executed, only if the Block Protect (BP4, BP3, BP2, BP1and BP0) are set to “None protected”.  
+SRP1, SRP0 bits. 
+The Status Register Protect (SRP1 and SRP0) bits are non-volatile Read/Write bits in the status register. The 
+SRP bits control the method of write protection: software protection, hardware protection, power supply lock -
+down or one-time programmable protection 
+SRP1 SRP0 WP# Status Register Description 
+0 0 x Software Protected The Status Register can be written to after a Write Enable 
+command,  
+0 1 0 Hardware Protected WP#=0, the Status Register locked and cannot be written 
+to. 
+0 1 1 Hardware Unprotected 
+WP#=1, the Status Register r is unlocked and can be written 
+to after a Write Enable 
+ 
+1 0 x Power Supply Lock-Down 
+(1) 
+Status Register are protected and cannot be written to 
+again until the next Power-Down, Power-Up cycle. 
+ 1 1 x One Time Program (2) Status Register are permanently protected and cannot be 
+written to. 
+ NOTE: 
+1. When SRP1, SRP0= (1, 0), Only a Power-Down, Power-Up cycle will change SRP1, SRP0 to (0, 0) state, 
+not include soft reset and hard reset.   
+2. This feature is available on special order. Please contact PUYA for details. 
+QE bit. 
+The Quad Enable (QE) bit is a non-volatile Read/Write bit in the Status Register that allows Quad operation. 
+When the QE bit is set to 0 (Default) the WP# pin and HOLD# pin is enabled. When the QE pin is set to 1, the 
+Quad IO2 and IO3 pins are enabled. (The QE bit should never be set to 1 during standard SPI or Dual SPI 
+operation if the WP# or HOLD# pins are tied directly to the power supply or ground)  
+EP_FAIL bit. 
+
+===== PAGE 33 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 33 of 94 
+The Erase/Program Fail bit is a read only bit which shows the status of the last Program/Erase (PP, QPP, SE, 
+BE32K, BE, CE and ERSCUR, PRSCUR) operation. The bit will be set to "1"if the program/erase operation 
+failed or interrupted by reset or the program/erase region was protected. It will be automatically cleared to "0" 
+if the next program/erase operation succeeds. Please note that it will not interrupt or stop any operation in the 
+flash memory. 
+ 
+LB3, LB2, LB1, bits. 
+The LB3, LB2, LB1, bits are non-volatile One Time Program (OTP) bits in Status Register (S13-S11) that 
+provide the write protect control and status to the Security Registers. The default state of LB3 -LB1are0, the 
+security registers are unlocked. The LB3-LB1bitscan be set to 1 individually using the Write Register 
+instruction. The LB3-LB1bits are One Time Programmable, once it’s set to 1, the Security Registers will 
+become read-only permanently.  
+CMP bit 
+The CMP bit is a non-volatile Read/Write bit in the Status Register(S14). It is used in conjunction the BP4-BP0 
+bits to provide more flexibility for the array protection. Please see the table “Protected Area Size” for details. 
+The default setting is CMP=0. 
+SUS bit 
+The SUS bit is read only bit in the status register (S15) that is set to 1 after executing a Program/Erase 
+Suspend (75H) command. The SUS bit is cleared to 0 by Program/Erase Resume (7AH) command and a 
+power-down, power-up cycle, soft reset, hard reset. 
+10.6 Read Configure Register (RDCR) (15H) 
+The RDCR instruction is for reading Configure Register Bits. The Read Configure Register can be read at any 
+time (even in program/erase/write status register condition).  
+The sequence of issuing RDCR instruction is: CS# goes low→ sending RDCR instruction code→ Configure 
+Register data out on SO. The SIO [3:1] are "don't care". 
+Figure 10-6 Read Status Register (RDCR) Sequence (Command 15h) 
+Command 
+0     1    2     3    4    5    6    7    8    9    10  11  12  13  14  15   16  17  18   19  20   21  22   23 
+15H  
+CS# 
+SCLK 
+SI 
+SO High-Z 
+7    6    5     4     3    2    1    0    7    6     5    4    3    2     1    0    7 
+MSB 
+Configure Register Out Configure Register Out 
+MSB 
+Figure 10-6a Read Status Register (RDCR) Sequence (QPI) 
+
+===== PAGE 34 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 34 of 94 
+ CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+15H
+ 4      0       4      0      4
+ 5      1       5      1      5
+ 6      2       6      2      6
+ 7      3       7      3      7
+C7-C0 out
+0  1  2  3  4  5
+ 
+ 
+Configure Register 
+BIT Bit7 Bit6 Bit5 Bit4 Bit3 Bit2 Bit1 Bit0 
+Definition HOLD/RST DRV1 DRV0 Reserved Reserved WPS DC Reserved 
+Volatile N N N Reserved Reserved N V Reserved 
+Default 0 0 0 0 0 0 0 0 
+Note: 
+1. N=non-volatile, V= volatile. 
+ 
+HOLD/RST bit. 
+The HOLD/RST bit is a non-volatile Read/Write bit in the Configure Register which is used to determine 
+whether /HOLD or /RESET function should be implemented on the hardware pin for 8 -pin packages. When 
+HOLD/RST=0 (factory default), the pin acts as /HOLD; when HOLD/RST=1, the pin acts as /RESET. However, 
+/HOLD or /RESET functions are only available when QE=0. If QE is set to 1, the /HOLD and /RESET functions 
+are disabled, the pin acts as a dedicated data I/O pin. 
+DRV1 & DRV0 bit. 
+The DRV1 & DRV0 bits are non-volatile Read/Write bits which are used to determine the output driver 
+strength for the Read operations. 
+ 
+DRV1, DRV0 Drive Strength 
+0,0 (default) 100% 
+0,1 75% 
+1,0  125% 
+1,1 150% 
+WPS bit. 
+The WPS bit is a non-volatile Read/Write bit in the Configure Register which is used to select which Write 
+Protect scheme should be used. When WPS=0(default), the device will use the combination of CMP, BP [4:0] 
+bits to protect a specific area of the memory array. When WPS=1, the device will utilize the Individual Block 
+Locks to protect any individual sector or blocks. The default value for all Individual Block Lock bits is 1 upon 
+device power on or after reset. 
+DC bit 
+The Dummy Cycle (DC) bit is a volatile bit. The Dummy Cycle (DC) bit can be used to configure the number of 
+dummy clocks for “SPI 2 X IO Read (BBH)” command, “SPI 4X I/O Read (EBH)” command. 
+
+===== PAGE 35 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 35 of 94 
+Table Dummy Cycle Table 
+  DC Number of dummy 
+cycles 
+Max Read Freq. 
+SPI 
+command 
+BB SPI 0(default) 4 104MHz 
+1 8 133MHz 
+EB SPI 0(default) 6 104MHz 
+1 10 133MHz 
+ 
+ 
+10.7 Write Status Register (WRSR) (01H/31H) 
+The Write Status Register (WRSR) command allows new values to be written to the Status Register. Before it 
+can be accepted, a Write Enable (WREN) command must previously have been executed. After the Write 
+Enable (WREN) command has been decoded and executed, the device sets the Write Enable Latch (WEL).  
+The Write Status Register (WRSR) command has no effect on S15, S10, S1 and S0 of the Status Register. 
+CS# must be driven high after the eighth or sixteen bits of the data byte has been latched in. If not, t he Write 
+Status Register (WRSR) command is not executed. If CS# is driven high after eighth bit of the data byte, the 
+S15~S8 bits will keep the previous value. As soon as CS# is driven high, the self-timed Write Status Register 
+cycle (whose duration is tW) is initiated. While the Write Status Register cycle is in progress, the Status 
+Register may still be read to check the value of the Write in Progress (WIP) bit. The Write in Progress (WIP) 
+bit is 1 during the self-timed Write Status Register cycle, and is 0 when it is completed. When the cycle is 
+completed, the Write Enable Latch (WEL) is reset.  
+The Write Status Register (WRSR) command allows the user to change the values of the Block Protect (BP4, 
+BP3, BP2, BP1, and BP0) bits, to define the size of the area that is to be treated as read-only, as defined in 
+Table1. The Write Status Register (WRSR) command also allows the user to set or reset the Status Register 
+Protect (SRP1 and SRP0) bits in accordance with the Write Protect (WP#) signal. The Status Regis ter Protect 
+(SRP1 and SRP0) bits and Write Protect (WP#) signal allow the device to be put in the Hardware Protected 
+Mode. The Write Status Register (WRSR) command is not executed once the Hardware Protected Mode is 
+entered. 
+The sequence of issuing WRSR instruction is: CS# goes low→ sending WRSR instruction code→ Status 
+Register data on SI→CS# goes high. 
+The CS# must go high exactly at the 8 bits or 16 bits data boundary; otherwise, the instruction will be rejected 
+and not executed. The self-timed Write Status Register cycle time (tW) is initiated as soon as Chip Select 
+(CS#) goes high. The Write in Progress (WIP) bit still can be checked during the Write Status Register cycle is 
+in progress. The WIP sets 1 during the tW timing, and sets 0 when Write Status Register Cycle is completed, 
+and the Write Enable Latch (WEL) bit is reset.  
+For compatibility with the old product, both 01H command followed by 2 bytes data and 31H command can 
+allows new values to be written to the Status Register -1. 
+Figure 10-7 Write Status Register (WRSR) Sequence (Command 01H or 31H) 
+
+===== PAGE 36 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 36 of 94 
+Command
+0 1 2 3 4 5 6 7
+01 H or 31H
+CS#
+SCLK
+SI
+SO
+High-Z
+8 9    10    11   12  13   14   15   
+MSB
+7 6 5 4 3 2 1
+Status Register0/1 in
+0
+ 
+ 
+ 
+Figure 10-7a Write Status Register (WRSR) Sequence (QPI) 
+ 
+ 
+ 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+01H or 31H
+0      1      2       3     
+ 4      0    
+ 5      1   
+ 6      2   
+ 7      3    
+Status Register0/1
+ 
+Figure 10-7b Write Status Register (WRSR) Sequence (Command 01, 2 bytes data) 
+Command 
+0 1 2 3 4 5 6 7 
+01H 
+CS# 
+SCLK  
+SI  
+SO  High-Z 
+8 9    10    11   12  13   14   15   16   17   18   19   20    21   22   23 
+MSB 
+7 6 5 4 3 2 1 0    15   14   13   12   11   10    9 
+Status Register -0 
+8  
+Status Register -1
+ 
+Figure 10-7c Write Status Register (WRSR) Sequence (QPI, Command 01, 2 bytes data) 
+
+===== PAGE 37 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 37 of 94 
+ 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+01H
+0      1      2       3      4      5
+ 4      0     12      8
+ 5      1     13      9
+ 6      2     14    10
+ 7      3     15    11   
+Status Register in
+ 
+10.8 Write Configure Register (WRCR) (11H) 
+The Write Configure Register (WRCR) command allows new values to be written to the Configure Register. 
+Before it can be accepted, a Write Enable (WREN) command must previously have been executed. After the 
+Write Enable (WREN) command has been decoded and executed, the device sets the Write Enable Latch 
+(WEL).  
+The sequence of issuing WRCR instruction is: CS# goes low→ sending WRCR instruction code→ Configure 
+Register data on SI→CS# goes high. 
+The CS# must go high exactly at the 8 bits data boundary; otherwise, the instruction will be rejected and not 
+executed. The self-timed Write Status Register cycle time (tW) is initiated as soon as Chip Select (CS#) goes 
+high. The Write in Progress (WIP) bit still can be checked during the Write Status Register cycle is in 
+progress. The WIP sets 1 during the tW timing, and sets 0 when Write Configure Register Cycle is completed, 
+and the Write Enable Latch (WEL) bit is reset.  
+Figure 10-8 Write Configure Register (WRCR) Sequence (Command 11h) 
+Command 
+0  1  2  3  4  5  6  7  
+11H 
+CS# 
+SCLK  
+SI  
+SO  High - Z 
+8  9    10    11   12  13   14   15   
+MSB 
+7  6  5  4  3  2  1  0 
+Configure Register in 
+ 
+ 
+ 
+Figure 10-8a Write Configure Register (WRCR) Sequence (QPI) 
+
+===== PAGE 38 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 38 of 94 
+ 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+11H
+0      1      2       3    
+ 4      0     
+ 5      1    
+ 6      2     
+ 7      3      
+Configure Register in
+ 
+10.9 Read Data Bytes (READ) (03H) 
+The read instruction is for reading data out. The address is latched on rising edge of SCLK, and data shifts out 
+on the falling edge of SCLK at a maximum frequency fR. The first address byte can be at any location. The 
+address is automatically increased to the next higher address after each byte data is shifted out,  so the whole 
+memory can be read out at a single READ instruction. The address counter rolls over to 0 when the highest 
+address has been reached. 
+The sequence of issuing READ instruction is: CS# goes low→ sending READ instruction code→ 3 -byte 
+address on SI→ data out on SO→ to end READ operation can set CS# high at any time during data out.  
+Figure 10-9 Read Data Bytes (READ) Sequence (Command 03H) 
+Command 
+0  1  2  3  4  5  6  7  
+03H 
+CS# 
+SCLK  
+SI 
+SO High - Z 
+8   9   10 28   29   30   31   32   33   34  35   36   37   38   39 
+MSB 
+3  2  1  0  
+ 
+23    22   21 
+MSB 7
+ 
+6  5  4  3  2  1  0  
+24-bit address 
+Data Out1 Data Out2 
+ 
+10.10 Fast Read (FREAD) (0BH) 
+The FAST READ instruction is for quickly reading data out. The address is latched on rising edge of SCLK, 
+and data of each bit shifts out on the falling edge of SCLK at a maximum frequency fC. The first address byte 
+can be at any location. The address is automatically increased to the next higher address afte r each byte data 
+is shifted out, so the whole memory can be read out at a single FREAD instruction. The address counter rolls 
+over to 0 when the highest address has been reached. 
+The sequence of issuing FREAD instruction is: CS# goes low→ sending FREAD ins truction code→3-byte 
+address on SI→ 1-dummy byte address on SI→ data out on SO→ to end FREAD operation can set CS# high 
+at any time during data out.  
+While Program/Erase/Write Status Register cycle is in progress, FREAD instruction is rejected without any 
+impact on the Program/Erase/Write Status Register current cycle. 
+
+===== PAGE 39 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 39 of 94 
+Fast Read in QPI mode 
+The Fast Read command is also supported in QPI mode. In QPI mode, the number of dummy clocks is 
+configured by the “Set Read Parameters (C0H)” command to accommodate a wide range application with 
+different needs for either maximum Fast Read frequency or minimum data access latency. Depending on the 
+Read Parameter Bits P [5:4] setting, the number of dummy clocks can be configured as either 4/6/8.  
+Figure 10-10 Fast Read (FREAD) Sequence (Command 0BH) 
+ 
+Command 
+0  1  2  3  4  5  6  7  
+0BH 
+CS# 
+SCLK  
+SI 
+SO  High - Z 
+8   9   10 28   29   30   31 
+3  2  1  0  23   22    21 
+24-bit address 
+MSB 
+  
+6  5  4  3  2  1  0  
+Data Out1 
+  
+7  
+6  5  4  3  2  1  0  7  
+6  5  7  
+Data Out2 
+CS# 
+SCLK  
+SI 
+SO  
+MSB 
+DummyByte 
+32   33   34   35   36   37   38   39   40 41   42   43   44   45   46   47   48   49
+ 
+ 
+Figure 10-10a Fast Read Sequence (QPI) 
+ CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+0BH  A23-16     A15-8       A7-0                 Dummy*    
+IO switch from 
+input to output
+ Byte1      Byte2*“Set Read Parameters” command (C0H) 
+can set the number of dummy clocks
+20    16    12     8      4      0                                         4      0      4      0      4
+21    17    13     9      5      1                                         5      1      5      1      5
+22    18    14    10     6      2                                         6      2      6      2      6      
+23    19    15    11     7      3                                         7      3      7      3      7
+0      1      2      3      4       5      6      7      8      9                17    18    19    20    21
+ 
+10.11 Dual Read (DREAD) (3BH) 
+The DREAD instruction enables double throughput of Serial NOR Flash in read mode. The address is latched 
+on rising edge of SCLK, and data of every two bits (interleave on 2 I/O pins) shift out on the falling edge of 
+SCLK at a maximum frequency fT. The first address byte can be at any location. The address is automatically 
+increased to the next higher address after each byte data is shifted out, so the whole memory can be read out 
+at a single DREAD instruction. The address counter rolls over to 0 when the highest address has been 
+reached. Once writing DREAD instruction, the following data out will perform as 2-bit instead of previous 1-bit. 
+The sequence of issuing DREAD instruction is: CS# goes low → sending DREAD instruction → 3-byte 
+address on SI → 8-bit dummy cycle → data out interleave on SIO1 & SIO0 → to end DREAD operation 
+can set CS# high at any time during data out. 
+
+===== PAGE 40 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 40 of 94 
+While Program/Erase/Write Status Register cycle is in progress, DREAD instruction is rejected without any 
+impact on the Program/Erase/Write Status Register current cycle. 
+Figure 10-11 Dual Read Mode Sequence (Command 3BH) 
+Command 
+0  1  2  3  4  5  6  7  
+3BH 
+CS# 
+SCLK  
+SI 
+SO  High - Z 
+8   9   10 28   29   30   31 
+3  2  1  0  23    22   21 
+24- bit address 
+MSB 
+ 
+5  3  1  7  5  3  1  
+Data Out1 
+ 
+7  
+Data Out2 
+CS#  
+SCLK  
+SI  
+SO  
+MSB 
+Dummy Clocks 
+4  2  0  6  4  2  0  6  6  
+7  
+32   33   34   35   36   37   38   39   40 41   42   43   44   45   46   47
+ 
+10.12 2IO Read (2READ) (BBH) 
+The 2READ instruction enables Double Transfer Rate of Serial NOR Flash in read mode. The address is 
+latched on rising edge of SCLK, and data of every two bits (interleave on 2 I/O pins) shift out on the falling 
+edge of SCLK at a maximum frequency fT. The first address byte can be at any location. The address is 
+automatically increased to the next higher address after each byte data is shifted out, so the whole m emory 
+can be read out at a single 2READ instruction. The address counter rolls over to 0 when the highest address 
+has been reached. 
+Once writing 2READ instruction, the following address/dummy/data out will perform as 2 -bit instead of 
+previous 1-bit. 
+The sequence of issuing 2READ instruction is: CS# goes low→ sending 2READ instruction→ 24 -bit address 
+interleave on SIO1 & SIO0→ 8-bit dummy cycle on SIO1 & SIO0→ data out interleave on SIO1 & SIO0→ to 
+end 2READ operation can set CS# high at any time during data out. 
+While Program/Erase/Write Status Register cycle is in progress, 2READ instruction is rejected without any 
+impact on the Program/Erase/Write Status Register current cycle. 
+
+===== PAGE 41 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 41 of 94 
+Figure 10-12 2IO Read Sequence (Command BBh M5-4 ≠ (1,0))
+Command 
+0 1 2 3 4 5 6 7 
+BBH
+ 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+8  
+6 4 2 0 6 4 2 0 6 4 2 0 6 4 2 0 
+7 5 3 1 7 5 3 1 7 5 3 1 7 5 3 1 
+A23-16 A15-8 A7-0
+ 
+M7-0/dummy 
+CS# 
+23  24   25  26  27  28   29  30  31  32  33  34   35  36  37   38  39 
+SI(IO0) 
+SO(IO1) 
+6 4 2 0 6 4 2 0 6 4 2 0 6 4 2 0 
+7 5 3 1 7 5 3 1 7 5 3 1 7 5 3 1 
+SCLK 
+6 
+7 
+Byte1 Byte2 Byte3 Byte4 
+ 9    10  11   12   13   14   15   16   17   18   19    20   21   22   23
+Notes: 
+1.M [5-4] = (1,0) is inhibited. 
+2. DC bit can set the number of dummy clocks. 
+ 
+2IO Continuous Read 
+“BBh” command supports 2IO Continuous Read which can further reduce command overhead through setting 
+the “Continuous Read Mode” bits (M7-0) after the input 3-byte address (A23-A0). If the “Continuous Read 
+Mode” bits (M5-4) = (1, 0), then the next 2IO Read command (after CS# is raised and then lowe red) does not 
+require the BBH command code.  
+If the “Continuous Read Mode” bits (M5-4) do not equal (1, 0), the next command requires the first BBH 
+command code, thus returning to normal operation. A “Continuous Read Mode” Reset command can be used 
+to reset (M5-4) before issuing normal command. 
+Figure 10-12a 2IO Continue Read (M5-4 = (1,0)) 
+
+===== PAGE 42 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 42 of 94 
+0 1 2 3 4 5 6 7 
+CS#  
+SCLK 
+8  9   10  11  12  13   14  15  16  17  18   19  20  21   22  23 
+6 4 2 0 6 4 2 0 6 4 2 0 6 4 2 0 
+7 5 3 1 7 5 3 1 7 5 3 1 7 5 3 1 
+A23-16 A15-8 A7-0
+ 
+ 
+ 
+SI(IO0)
+SO(IO1)
+Command 
+0 1 2 3 4 5 6 7 
+BBH
+ 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+8  
+6 4 2 0 6 4 2 0 6 4 2 0 6 4 2 0 
+7 5 3 1 7 5 3 1 7 5 3 1 7 5 3 1 
+A23-16 A15-8 A7-0
+ 
+ 
+CS# 
+23  24   25  26  27  28   29  30  31  32  33  34   35  36  37   38  39 
+SI(IO0) 
+SO(IO1) 
+6 4 2 0 6 4 2 0 6 4 2 0 6 4 2 0 
+7 5 3 1 7 5 3 1 7 5 3 1 7 5 3 1 
+SCLK 
+6 
+7 
+Byte1 Byte2 Byte3 Byte4 
+ 9    10  11   12   13   14   15   16   17   18   19    20   21   22   23
+6 4 2 0 6 4 2 0 
+7 5 3 1 7 5 3 1 
+Byte1 Byte2 
+ 
+6 
+7 
+M7-0/dummy
+M7-0/dummy
+Notes: 
+1. 2IO Continue Read, if M5-4 = 1, 0. If not using Continue Read recommend to set M5-4 ≠ 1, 0. 
+2. DC bit can set the number of dummy clocks. 
+10.13 Quad Read (QREAD) (6BH) 
+The QREAD instruction enable quad throughput of Serial NOR Flash in read mode. A Quad Enable (QE) bit of 
+status Register must be set to "1" before sending the QREAD instruction. The address is latched on rising 
+edge of SCLK, and data of every four bits (interleave on 4 I/O pins) shift out on the falling edge of SCLK at a 
+maximum frequency fC. The first address byte can be at any location. The address is automatically increased 
+to the next higher address after each byte data is shifted out, so the whole memory can be read out at a single 
+QREAD instruction. The address counter rolls over to 0 when the highest address has been reached. Once 
+writing QREAD instruction, the following data out will perform as 4-bit instead of previous 1-bit. 
+The sequence of issuing QREAD instruction is: CS# goes low → sending QREAD instruction → 3-byte 
+address on SI → 8-bit dummy cycle → data out interleave on SIO3, SIO2, SIO1 & SIO0→ to end QREAD 
+operation can set CS# high at any time during data out. 
+While Program/Erase/Write Status Register cycle is in progress, QREAD instruction is rejected without any 
+impact on the Program/Erase/Write Status Register current cycle.  
+Figure 10-13 Quad Read Sequence (Command 6BH) 
+
+===== PAGE 43 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 43 of 94 
+Command 
+0  1  2  3  4  5  6  7  
+6BH 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) High-Z 
+8   9    10 28   29   30   31 
+3  2  1  0  23    22   21 
+24-Bit address 
+32   33   34   35   36   37   38   39   40  
+1  5  1  5  1  5  1  
+Byte1    Byte2     Byte3    Byte4 
+ 41   42   43   44   45   46   47  
+5  
+Dummy Clocks 
+0  4  0  4  0  4  0  4  4  
+5  
+WP#(IO2) High-Z 
+HOLD#(IO3) High-Z 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+2  6  2  6  2  6  2  6  6  
+3  7  3  7  3  7  3  7  7  
+ 
+  
+
+===== PAGE 44 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 44 of 94 
+10.14 4IO Read (4READ) (EBH) 
+The 4READ instruction enable quad throughput of Serial NOR Flash in read mode. A Quad Enable (QE) bit of 
+status Register must be set to "1" before sending the 4READ instruction. The address is latched on rising 
+edge of SCLK, and data of every four bits (interleave on 4 I/O pins) shift out on the falling edge of SCLK at a 
+maximum frequency fC. The first address byte can be at any location. The address is automatically increased 
+to the next higher address after each byte data is shifted out, so the whole memory can be read out at a single 
+4READ instruction. The address counter rolls over to 0 when the highest address has been reached. Once 
+writing 4READ instruction, the following address/dummy/data out will perform as 4 -bit instead of previous 1-
+bit. 
+The sequence of issuing 4READ instruction is: CS# goes low → sending 4READ instruction→ 24-bit address 
+interleave on SIO3, SIO2, SIO1 & SIO0→2+4 dummy cycles→data out interleave on SIO3, SIO2, SIO1 & 
+SIO0→ to end 4READ operation can set CS# high at any time during data out. 
+While Program/Erase/Write Status Register cycle is in progress, 4READ instruction is rejected without any 
+impact on the Program/Erase/Write Status Register current cycle.  
+Figure 10-14 4IO Read Sequence (Command EBH M5-4 ≠ (1,0)) 
+Command 
+0  1  2  3  4  5  6  7  
+EBH 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+8   9    10  11   12   13   14   15   16   17   18   19    20   21   22   23 
+4  0  4  0  4  0  4  0  4  0  4  0  
+5  1  5  1  5  1  5  1  5  1  5  1  
+A23-16 A15-8 A7-0 M7-0  
+6  2  6  2  6  2  6  2  6  2  6  2  
+7  3  7  3  7  3  7  3  7  3  7  3  
+WP#(IO2) 
+HOLD#(IO3)  
+4  
+5  
+6  
+7  
+Dummy Byte1    Byte2 
+ 
+Notes: 
+1. Hi-impedance is inhibited for the two clock cycles. 
+2. M [5-4] = (1,0) is inhibited. 
+3. DC bit can set the number of dummy clocks.  
+  
+
+===== PAGE 45 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 45 of 94 
+4IO Read in QPI mode 
+The 4READ instruction is also supported in QPI mode. When QPI mode is enabled, the number of dummy 
+clocks is configured by the “Set Read Parameters (C0H)” instruction to accommodate a wide range of 
+applications with different needs for either maximum Fast Read frequency or minimum data access latency. 
+Depending on the Read Parameter Bits P [5:4] setting, the number of dummy clocks can be configured as 
+either 4,6, 8 or 10. The default number of dummy clocks upon power up or after a Reset instruction is 2. In 
+QPI mode, the “Continuous Read Mode” bits M7- 0 are also considered as dummy clocks. In the default 
+setting, the data output will follow the Continuous Read Mode bits immediately.  
+“Continuous Read Mode” feature is also available in QPI mode for 4IO Read instruction. Please refer to the 
+description on next pages. 
+“Wrap Around” feature is not available in QPI mode for 4IO Read instruction. To perform a read operation with 
+a fixed data length wrapping around in QPI mode, a dedicated “Burst Read with Wrap” (0CH) instruction must 
+be used. 
+Figure 10-14a 4IO Read in QPI mode Sequence (QPI M5-4 ≠ (1,0)) 
+ CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+EBH  A23-16     A15-8       A7-0         M7-0  
+IO switch from 
+input to output
+ Byte1      Byte2*“Set Read Parameters” command (C0H) 
+can set the number of dummy clocks
+20    16    12     8      4      0       4      0                        4      0      4      0      4
+21    17    13     9      5      1       5      1                        5      1      5      1      5
+22    18    14    10     6      2       6      2                        6      2      6      2      6      
+23    19    15    11     7      3       7      3                        7      3      7      3      7
+0      1      2      3      4       5      6      7      8      9                17    18    19    20    21
+Dummy*  
+ 
+Note: 
+1. Hi-impedance is inhibited for the two clock cycles. 
+2. M [5-4] = (1,0) is inhibited. 
+3. DC bit can set the number of dummy clocks.  
+ 
+  
+
+===== PAGE 46 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 46 of 94 
+4IO Continuous Read 
+“EBH” command supports 4IO Continuous Read which can further reduce command overhead through setting 
+the “Continuous Read Mode” bits (M7-0) after the input 3-byte address (A23-A0). If the “Continuous Read 
+Mode” bits (M5-4) = (1, 0), then the next 4IO Read command (after CS# is raised and then lowe red) does not 
+require the EBH command code.  
+If the “Continuous Read Mode” bits (M5-4) do not equal (1, 0), the next command requires the first EBH 
+command code, thus returning to normal operation. A “Continuous Read Mode” Reset command can be used 
+to reset (M5-4) before issuing normal command. 
+Figure 10-14b 4IO Continuous Read Sequence (M5-4 = (1,0)) 
+Command 
+0  1  2  3  4  5  6  7  
+EBH 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+8   9    10  11   12   13   14   15   16   17   18   19    20   21   22   23 
+4  0  4  0  4  0  4  0  4  0  4  0  
+5  1  5  1  5  1  5  1  5  1  5  1  
+A23-16 A15-8 A7-0 M7-0  
+6  2  6  2  6  2  6  2  6  2  6  2  
+7  3  7  3  7  3  7  3  7  3  7  3  
+WP#(IO2) 
+HOLD#(IO3) 
+4  
+5  
+6  
+7  
+Dummy Byte1    Byte2 
+0  1  2  3  4  5  6  7  
+CS# 
+SCLK 
+8   9    10   11   12  13   14   15 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3)  
+4  0  4  0  
+5  1  5  1  
+6  2  6  2  
+7  3  7  3  
+4  0  4  0  
+5  1  5  1  
+6  2  6  2  
+7  3  7  3  
+4  0  4  0  
+5  1  5  1  
+6  2  6  2  
+7  3  7  3  
+4  
+5  
+6  
+7  
+ M7-0  Dummy Byte1    Byte2 A23-16 A15-8 A7-0
+Note: 
+1. 4IO Continuous Read Mode, if M5-4 = 1, 0. If not using Continuous Read recommend to set M5-4 ≠ 1, 0. 
+2. DC bit can set the number of dummy clocks.  
+ 
+  
+
+===== PAGE 47 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 47 of 94 
+10.15 Set Burst Read(77H) 
+The Set Burst with Wrap command is used in conjunction with “4IO Read (EBH)” , “4IO Word Read (E7H)” 
+commands to access a fixed length of 8/16/32/64-byte section within a 256-byte page, in standard SPI mode.  
+The Set Burst with Wrap command sequence: CS# goes low → Send Set Burst with Wrap command → Send 
+24 dummy bits→ Send 8 bits “Wrap bits” → CS# goes high. 
+ 
+W6, W5 W4=0 W4=1 (default) 
+Wrap Around Wrap Length Wrap Around Wrap Length 
+0,0 Yes 8-byte No N/A 
+0,1 Yes 16-byte No N/A 
+1,0 Yes 32-byte No N/A 
+1,1 Yes 64-byte No N/A 
+If the W6-W4 bits are set by the Set Burst with Wrap command, all the following “4IO Read (EBH)” , “4IO Word 
+Read (E7H)” commands will use the W6-W4 setting to access the 8/16/32/64-byte section within any page. To 
+exit the “Wrap Around” function and return to normal read operation, another Set Burst with Wrap command 
+should be issued to set W4=1. 
+Figure 10-15 Set Burst Read (SBL) Sequence (Command 77H) 
+Command
+0 1 2 3 4 5 6 7
+77H
+CS#
+SCLK
+SI(IO0)
+SO(IO1)
+8  9    10  11   12   13   14   15   
+X X X X X X 4 X
+X X X X X X 5 X
+W6-W4
+X X X X X X 6 X
+X X X X X X X X
+WP#(IO2)
+HOLD#(IO3)
+ 
+  
+
+===== PAGE 48 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 48 of 94 
+10.16 4IO Word Read(E7H) 
+The 4IO Word Read command is similar to the 4 IO Read command except that the lowest address bit (A0) 
+must equal 0 and only 2-dummy clock. The first byte addressed can be at any location. The address is 
+automatically incremented to the next higher address after each byte of data is shifted out. The Quad Enable 
+bit (QE) of Status Register (S9) must be set to enable for the 4IO Word read command.  
+ 
+Figure 10-16 4IO Word Read Sequence (M5-4 ≠ (1,0)) 
+Command 
+0  1  2  3  4  5  6  7  
+E7H 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+8   9    10  11   12   13   14   15   16   17   18   19    20   21   
+4  0  4  0  4  0  4  0  4  0  4  0  
+5  1  5  1  5  1  5  1  5  1  5  1  
+A23-16 A15-8 A7-0 M7-0  
+6  2  6  2  6  2  6  2  6  2  6  2  
+7  3  7  3  7  3  7  3  7  3  7  3  
+WP#(IO2) 
+HOLD#(IO3)  
+4  
+5  
+6  
+7  
+Dummy  Byte1    Byte2 
+ 
+ 
+4IO Word Read with “Continuous Read Mode” 
+The 4IO Word Read command can further reduce command overhead through setting the “Continuous Read 
+Mode” bits (M7-0) after the input 3-byte address (A23-A0). If the “Continuous Read Mode” bits (M5-4) = (1, 0), 
+then the next 4IO Word Read command (after CS# is raised and then lowered) does not require the E7H 
+command code. If the “Continuous Read Mode” bits (M5-4) do not equal to (1, 0), the next command requires 
+the first E7H command code, thus returning to normal operation. A “Continuous Read Mode” Reset comman d 
+can be used to reset (M5-4) before issuing normal command. 
+Figure 10-16a 4IO Word Read Sequence (M5-4 = (1,0)) 
+
+===== PAGE 49 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 49 of 94 
+Command 
+0  1  2  3  4  5  6  7  
+E7H 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+8   9    10  11   12   13   14   15   16   17   18   19    20   21   
+4  0  4  0  4  0  4  0  4  0  4  0  
+5  1  5  1  5  1  5  1  5  1  5  1  
+A23-16 A15-8 A7-0 M7-0  
+6  2  6  2  6  2  6  2  6  2  6  2  
+7  3  7  3  7  3  7  3  7  3  7  3  
+WP#(IO2) 
+HOLD#(IO3) 
+4  
+5  
+6  
+7  
+Dummy Byte1    Byte2 
+0  1  2  3  4  5  6  7  
+CS# 
+SCLK 
+8   9    10   11   12  13   
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3)  
+4  0  4  0  
+5  1  5  1  
+6  2  6  2  
+7  3  7  3  
+4  0  4  0  
+5  1  5  1  
+6  2  6  2  
+7  3  7  3  
+4  0  4  0  
+5  1  5  1  
+6  2  6  2  
+7  3  7  3  
+4  
+5  
+6  
+7  
+ M7-0  Dummy  Byte1    Byte2 A23-16 A15-8 A7-0
+ 
+4IO Word Read with “8/16/32/64-Byte Wrap Around “in Standard SPI mode 
+The 4IO Word Read command can be used to access a specific portion within a page by issuing “Set Burst 
+with Wrap” (77H) commands prior to E7H. The “Set Burst with Wrap” (77H) command can either enable or 
+disable the “Wrap Around “feature for the following E7H commands. When “Wrap Around “is enabled,  the data 
+being accessed can be limited to either an8/16/32/64-byte section of a 256-byte page. The output data starts 
+at the initial address specified in the command, once it reaches the ending boundary of the 8/16/32/64 -byte 
+section, the output will wrap around the beginning boundary automatically until CS# is pulled high to terminate 
+the command. 
+The Burst with Wrap feature allows applications that use cache to quickly fetch a critical address and then fill 
+the cache afterwards within a fixed length (8/16/32/64-byte) of data without issuing multiple read commands. 
+The “Set Burst with Wrap “command allows three “Wrap Bits” W6-W4 to be set. The W4 bit is used to enable 
+or disable the “Wrap Around “operation while W6-W5 issued to specify the length of the wrap around section 
+within a page. 
+ 
+  
+
+===== PAGE 50 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 50 of 94 
+10.17 Set Read Parameters(C0H) 
+In QPI mode, to accommodate a wide range of applications with different needs for either maximum read 
+frequency or minimum data access latency, “Set Read Parameters (C0H)” instruction can be used to 
+configure the number of dummy clocks for “Fast Read (0BH)”, “4IO Read (EBH)”, “Burst Read with Wrap 
+(0CH)”, “Read SFDP Mode (5AH)” instructions, and to configure the number of bytes of “Wrap Length” for the 
+“Burst Read with Wrap (0CH)” instruction. 
+In Standard SPI mode, the “Set Read Parameters (C0H)” instruction is not accepted. The dummy clocks for 
+various Fast Read instructions in Standard/Dual/Quad SPI mode are configured by DC bit. The “Wrap Length” 
+is set by W5-4 bit in the “Set Burst with Wrap (77H)” instruction. This setting will remain unchanged when the 
+device is switched from Standard SPI mode to QPI mode. 
+The default “Wrap Length” after a power up or a Reset instruction is 8 bytes, the default number of dummy 
+clocks is 2. The number of dummy clocks is only programmable for “Fast Read (0BH)”, “4IO Read (EBH)” & 
+“Burst Read with Wrap (0CH)” instructions in the QPI mode. Whenever the device is switched from SPI mode 
+to QPI mode, the number of dummy clocks should be set again, prior to any 0 BH, EBH or 0CH instructions. 
+P5-P4 Dummy Clocks Maximum Read 
+Freq. P1-P0 Wrap Length 
+0,0 10 133MHz 0,0 8-byte 
+0,1 4 70MHz 0,1 16-byte 
+1,0 6 104MHz 1,0 32-byte 
+1,1 8 120MHz 1,1 64-byte 
+ 
+Figure 10-17 Set Read Parameters Sequence (QPI) 
+ 
+Command
+C0H
+0      1       2      3
+P4    P0    
+P5    P1    
+P6    P2    
+P7    P3    
+Read 
+Parameter
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+ 
+  
+
+===== PAGE 51 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 51 of 94 
+10.18 Burst Read with Wrap (0CH) 
+The “Burst Read with Wrap (0CH)” command provides an alternative way to perform the read operation with 
+“Wrap Around” in QPI mode. This command is similar to the “Fast Read (0BH)” command in QPI mode , 
+except the addressing of the read operation will “Wrap Around” to the beginning boundary of the “Wrap 
+Around” once the ending boundary is reached. The “Wrap Length” and the number of dummy clocks can be 
+configured by the “Set Read Parameters (C0H)” command. 
+Figure 10-18 Burst Read with Wrap Sequence (QPI) 
+ CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+0CH  A23-16     A15-8       A7-0               Dummy*    
+IO switch from 
+input to output
+ Byte1      Byte2*“Set Read Parameters” command (C0H) 
+can set the number of dummy clocks
+20    16    12     8      4      0                                         4      0      4      0      4
+21    17    13     9      5      1                                         5      1      5      1      5
+22    18    14    10     6      2                                         6      2      6      2      6      
+23    19    15    11     7      3                                         7      3      7      3      7
+0      1      2      3      4       5      6      7      8      9                17    18    19    20    21
+ 
+ 
+ 
+10.19 Enable QPI (38H) 
+The device support both Standard/Dual/Quad SPI and QPI mode. The “Enable QPI (38H)” command can 
+switch the device from SPI mode to QPI mode. See the command Table 2a for all support QPI commands. In 
+order to switch the device to QPI mode, the Quad Enable (QE) bit in Status Register -1 must be set to 1 first, 
+and “Enable QPI (38H)” command must be issued. If the QE bit is 0, the “Enable QPI (38H)” comman d will be 
+ignored and the device will remain in SPI mode. When the device is switched from SPI mode to QPI mode, 
+the existing Write Enable Latch and Program/Erase Suspend status, and the Wrap Length setting will remain 
+unchanged. 
+Figure 10-19 Enable QPI Sequence (38H) 
+ CS# 
+SCLK
+ 
+SI(IO0) 38H
+ 
+10.20 Disable QPI (FFH) 
+To exit the QPI mode and return to Standard/Dual/Quad SPI mode, the “Disable QPI (FFH)” command must 
+be issued. When the device is switched from QPI mode to SPI mode, the existing Write Enable Lat ch and 
+Program/Erase Suspend status, and the Wrap Length setting will remain unchanged.  
+Figure 10-20 Disable QPI Sequence (QPI) 
+
+===== PAGE 52 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 52 of 94 
+CS#
+SCLK
+SI(IO0)
+SO(IO1)
+WP#(IO2)
+HOLD#(IO3)
+Command
+FFH
+0     1      
+ 
+10.21 Sector Erase (SE) (20H) 
+The Sector Erase (SE) instruction is for erasing the data of the chosen sec tor to be "1". A Write Enable 
+(WREN) Instruction must execute to set the Write Enable Latch (WEL) bit before sending the Sector Erase 
+(SE). Any address of the sector is a valid address for Sector Erase (SE) instruction. The CS# must go high 
+exactly at the byte boundary (the latest eighth of address byte been latched-in); otherwise, the instruction will 
+be rejected and not executed. 
+Address bits [Am-A12] (Am is the most significant address) select the sector address. 
+The sequence of issuing SE instruction is: CS# goes low→ sending SE instruction code→ 3-byte address on 
+SI→ CS# goes high. The SIO [3:1] are don't care. 
+Figure 10-21 Sector Erase (SE) Sequence (Command 20H) 
+Command 
+0  1  2  3  4  5  6  7  
+20H 
+CS# 
+SCLK 
+SI 
+8  9  29   30   31 
+MSB 
+2  1  0  
+24-bit address 
+23   22 
+ 
+ 
+Figure 10-19a Sector Erase (SE) Sequence (QPI) 
+
+===== PAGE 53 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 53 of 94 
+ 
+ 
+Command
+20H  A23-16     A15-8       A7-0       
+20    16    12     8      4      0      
+21    17    13     9      5      1       
+22    18    14    10     6      2     
+23    19    15    11     7      3          
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+0      1      2      3      4       5      6      7     
+ 
+The self-timed Sector Erase Cycle time(tSE) is initiated as soon as Chip Select (CS#) goes high. The Write in 
+progress (WIP) bit still can be check out during the Sector Erase cycle is in progr ess. The WIP sets 1 during 
+the tSE timing, and sets0 when Sector Erase Cycle is completed, and the Write Enable Latch (WEL) bit is 
+reset. If the sector is protected by BP4, BP3, BP2, BP1, BP0 bits, the Sector Erase (SE) instruction will not be 
+executed on the sector. 
+ 
+  
+
+===== PAGE 54 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 54 of 94 
+10.22 Block Erase (BE32K) (52H) 
+The Block Erase (BE32K) instruction is for erasing the data of the chosen block to be "1". The instruction is 
+used for 32K-byte block erase operation. A Write Enable (WREN) instruction must be executed to set the 
+Write Enable Latch (WEL) bit before sending the Block Erase (BE32K). Any address of the block is a valid 
+address for Block Erase (BE32K) instruction. The CS# must go high exactly at the byte boundary (the least 
+significant bit of address byte has been latched-in); otherwise, the instruction will be rejected and not 
+executed. 
+The sequence of issuing BE32K instruction is: CS# goes low → sending BE32K instruction code → 3 -byte 
+address on SI → CS# goes high. The SIO [3:1] are don't care. 
+The self-timed Block Erase Cycle time (tBE1) is initiated as soon as Chip Select (CS#) goes high. The Write in 
+Progress (WIP) bit still can be checked while the Block Erase cycle is in progress. The WIP sets during the 
+tBE1 timing, and clears when Block Erase Cycle is completed, and the Write Enable Latch (WEL) bit is 
+cleared. If the block is protected by BP4, BP3, BP2, BP1, BP0 bits, the array data will be protected (no 
+change) and the WEL bit still be reset. 
+Figure 10-22 Block Erase 32K(BE32K) Sequence (Command 52H) 
+Command 
+0  1  2  3  4  5  6  7  
+52H 
+CS# 
+SCLK 
+SI 
+8  9  29   30   31 
+MSB 
+2  1  0  
+24-bit address 
+23   22 
+Figure 10-20a Block Erase 32K(BE32K) Sequence (QPI) 
+ 
+Command
+52H  A23-16     A15-8       A7-0       
+20    16    12     8      4      0      
+21    17    13     9      5      1       
+22    18    14    10     6      2     
+23    19    15    11     7      3          
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3)
+0      1      2      3      4       5      6      7       
+ 
+  
+
+===== PAGE 55 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 55 of 94 
+10.23 Block Erase (BE) (D8H) 
+The Block Erase (BE) instruction is for erasing the data of the chosen block to be "1". The instruction is used 
+for 64K-byte block erase operation. A Write Enable (WREN) instruction must execute to set the Write Enable 
+Latch (WEL) bit before sending the Block Erase (BE). Any address of the block is a valid address for Block 
+Erase (BE) instruction. The CS# must go high exactly at the byte boundary (the latest eighth of address byte 
+been latched-in); otherwise, the instruction will be rejected and not executed. 
+The sequence of issuing BE instruction is: CS# goes low→ sending BE instruction code→ 3-byte address on 
+SI→CS# goes high. The SIO [3:1] are "don't care".  
+The self-timed Block Erase Cycle time (tBE2) is initiated as soon as Chip Select (CS#) goes high. The Write in 
+Progress (WIP) bit still can be checked during the Block Erase cycle is in progress. The WIP sets 1 during the 
+tBE2 timing, and sets 0 when Block Erase Cycle is completed, and the Write Enable Latch (WEL) bit is reset. 
+If the block is protected by BP4, BP3, BP2, BP1, BP0 bits, the Block Erase (BE) instruction will not be 
+executed on the block. 
+Figure 10-23 Block Erase (BE) Sequence (Command D8H) 
+Command 
+0  1  2  3  4  5  6  7  
+D8H 
+CS# 
+SCLK 
+SI 
+8  9  29   30   31 
+MSB 
+2  1  0  
+24-bit address 
+23   22 
+ 
+Figure 10-23a Block Erase (BE) Sequence (QPI) 
+ 
+Command
+D8H  A23-16     A15-8       A7-0       
+20    16    12     8      4      0      
+21    17    13     9      5      1       
+22    18    14    10     6      2     
+23    19    15    11     7      3          
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3)
+0      1      2      3      4       5      6      7       
+ 
+  
+
+===== PAGE 56 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 56 of 94 
+10.24 Chip Erase (CE) (60H/C7H) 
+The Chip Erase (CE) instruction is for erasing the data of the whole chip to be "1". A Write Enable (WREN) 
+instruction must execute to set the Write Enable Latch (WEL) bit before sending the Chip Erase (CE). The 
+CS# must go high exactly at the byte boundary (the latest eighth of address byte be en latched-in); otherwise, 
+the instruction will be rejected and not executed. 
+The sequence of issuing CE instruction is: CS# goes low → sending CE instruction code → CS# goes high. 
+The SIO [3:1] are "don't care". 
+The self-timed Chip Erase Cycle time (tCE) is initiated as soon as Chip Select (CS#) goes high. The Write in 
+Progress (WIP) bit still can be checked during the Chip Erase cycle is in progress. The WIP sets 1 during the 
+tCE timing, and sets 0 when Chip Erase Cycle is completed, and the Write Enable Latch (WEL) bit is reset. If 
+the chip is protected by BP4, BP3, BP2, BP1, BP0 bits, the Chip Erase (CE) instruction will not be executed. It 
+will be only executed when all Block Protect (BP4, BP3, BP2, BP1, BP0) are set to “None protected”.  
+Figure 10-24 Chip Erase (CE) Sequence (Command 60h or C7H) 
+Command 
+0 1 2 3 4 5 6 7 
+60H or C7H 
+CS# 
+SCLK 
+SI 
+Figure 10-24a Chip Erase (CE) Sequence (QPI) 
+ 
+Command
+C7H or 60H
+0     1
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+ 
+  
+
+===== PAGE 57 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 57 of 94 
+10.25 Page Program (PP) (02H) 
+The Page Program (PP) instruction is for programming the memory to be "0". A Write Enable (WREN) 
+instruction must execute to set the Write Enable Latch (WEL) bit before sending the Page Program (PP).  
+The device programs only the last 256 data bytes sent to the device. If the entire 256 data bytes are going to 
+be programmed, A7-A0(The eight least significant address bits) should be set to 0. If the eight least significant 
+address bits(A7-A0) are not all 0, all transmitted data going beyond the end of the current page are 
+programmed from the start address of the same page (from the address A7-A0 are all 0). If more than 256 
+bytes are sent to the device, the data of the last 256-byte is programmed at the request page and previous 
+data will be disregarded. If less than 256 bytes are sent to the device, the data is programmed at the 
+requested address of the page. 
+For the very best performance, programming should be done in full pages of 256 bytes aligned on 256-byte 
+boundaries with each Page being programmed only once. Using the Page Program (PP) command to load an 
+entire page, within the page boundary, will save overall programming time versus loading less than a page 
+into the program buffer. 
+It is possible to program from one byte up to a page size in each Page programming operation. Please refer to 
+the PY25Q serial flash application note for multiple byte program operation within one page. 
+The sequence of issuing PP instruction is: CS# goes low→ sending PP instruction code→3 -byte address on 
+SI→ at least 1-byte on data on SI→ CS# goes high.  
+The CS# must be kept low during the whole Page Program cycle; The CS# must go high exactly at the byte 
+boundary (the latest eighth bit of data being latched in), otherwise the instruction will be rejected and will not 
+be executed. 
+The self-timed Page Program Cycle time (tPP) is initiated as soon as Chip Select (CS#) goes high. The Write 
+in Progress (WIP) bit still can be checked during the Page Program cycle is in progress. The WIP sets 1 
+during the tPP timing, and sets 0 when Page Program Cycle is completed, and the Write Enable Latch (W EL) 
+bit is reset. If the page is protected by BP4, BP3, BP2, BP1, BP0 bits, the Page Program (PP) instruction will 
+not be executed. The SIO [3:1] are "don't care". 
+Figure 10-25 Page Program (PP) Sequence (Command 02H) 
+Command 
+0 1 2 3 4 5 6 7 
+02H 
+CS# 
+SCLK
+ 
+SI
+ 
+8  9   10 28   29   30  31 32   33  34   35  36  37  38  39 
+3 2 1 0    7 23   22  21 
+24- bit address 
+40   41  42   43  44  45   46  47  48  49  50  51   52  53  54  55 
+6 5 4 3 2 1 0  7 
+CS# 
+SCLK
+ 
+SI
+ 
+MSB
+ 
+Data Byte 2 
+6 5 4 3 2 1 0 
+MSB
+ 
+6 5 4 3 2 1 0 6 5 4 3 2 1 0 7 
+Data Byte 1 
+Data Byte 3 Data Byte 256 
+MSB
+   
+MSB MSB
+7
+2072
+2073
+2074
+2075
+2076
+2077
+2078
+2079
+ 
+  
+
+===== PAGE 58 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 58 of 94 
+Figure 10-25a Page Program (PP) Sequence (QPI) 
+ 
+0  1  2  3  4  5  6  7  
+ 
+CS# 
+SCLK 
+8   9   10  
+     
+A23-16   A15-8    A7-0  
+MSB
+ 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3)  
+4  
+5  
+6  
+7  
+0  4  
+1  5  
+2  6  
+3  7  
+0   
+0   
+2  
+3  
+Byte1     Byte2  
+ 
+ 
+ 
+ 
+4  0  
+5  1  
+6  2  
+7  3  
+4  0  
+5  1  
+6  2  
+7  3  
+Byte256 
+11    12   13   14   15   16   17     
+  
+  
+  
+A23  A19   A15  A11   A7    A3  
+  
+  
+  
+  
+  
+  
+  
+  
+0  4  
+1  5  
+2  6  
+3  7  
+0  
+1  
+2  
+3  
+4  0  
+5  1  
+6  2  
+7  3  
+4  
+5  
+6  
+7  
+A22  A18   A14  A10   A6    A2
+A21  A17   A13   A9    A5     A1
+A20  A16   A12   A8    A4     A0
+516
+517
+518
+519
+Command
+02H
+ 
+ 
+10.26 Quad Page Program (QPP) (32H) 
+The Quad Page Program (QPP) instruction is for programming the memory to be "0". A Write Enable 
+(WREN)instruction must execute to set the Write Enable Latch (WEL) bit and Quad Enable (QE) bit must be 
+set to "1" before sending the Quad Page Program (QPP). The Quad Page Programming takes four pins: 
+SIO0, SIO1, SIO2, and SIO3 as data input, which can improve programmer performance and the 
+effectiveness of application. The QPP operation frequency supports as fast as fC. The other function 
+descriptions are as same as standard page program.  
+The sequence of issuing QPP instruction is: CS# goes low→ sending QPP instruction code→ 3 -byte address 
+on SIO0 → at least 1-byte on data on SIO [3:0] →CS# goes high. 
+Figure 10-26 Quad Page Program (QPP) Sequence (Command 32H) 
+Command 
+0  1  2  3  4  5  6  7  
+32H 
+CS# 
+SCLK 
+8   9   10  
+3  2  1  0  23   22   21 
+24- bit address 
+4  0  
+MSB 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+5  1  
+6  2  
+7  3  
+4  0  
+5  1  
+6  2  
+7  3  
+4  0  
+5  1  
+6  2  
+7  3  
+4  0  
+5  1  
+6  2  
+7  3  
+Byte1    Byte2 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+40   41   42   43   44   45  46   47    48   49   50   51  52   53   54   55  
+4  0  
+5  1  
+6  2  
+7  3  
+4  0  
+5  1  
+6  2  
+7  3  
+4  0  
+5  1  
+6  2  
+7  3  
+4  0  
+5  1  
+6  2  
+7  3  
+4  0  
+5  1  
+6  2  
+7  3  
+4  0  
+5  1  
+6  2  
+7  3  
+4  0  
+5  1  
+6  2  
+7  3  
+Byte11 Byte12 
+4  0  
+5  1  
+6  2  
+7  3  
+4  0  
+5  1  
+6  2  
+7  3  
+Byte253 
+4  0  
+5  1  
+6  2  
+7  3  
+4  0  
+5  1  
+6  2  
+7  3  
+4  0  
+5  1  
+6  2  
+7  3  
+Byte256 
+28   29   30   31   32    33  34   35   36   37   38   39
+536
+537
+538
+539
+540
+541
+542
+543
+  
+
+===== PAGE 59 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 59 of 94 
+10.27 Erase Security Registers (ERSCUR) (44H) 
+The product provides three 1K-byte Security Registers which can be erased and programmed individually. 
+These registers may be used by the system manufacturers to store security and other  important information 
+separately from the main memory array. 
+The Erase Security Registers command is similar to Sector/Block Erase command. A Write Enable (WREN) 
+command must previously have been executed to set the Write Enable Latch (WEL) bit.  
+The Erase Security Registers command sequence: CS# goes low → sending ERSCUR instruction 
+→
+ sending 24-bit address → CS# goes high.  
+CS# must be driven high after the eighth bit of the command code has been latched in, otherwise the Erase 
+Security Registers command is not executed. As soon as CS# is driven high, the self-timed Erase Security 
+Registers cycle (whose duration is tSE) is initiated. While the Erase Security Registers cycle is in progress, 
+the Status Register may be read to check the value of the Write in Progress (WIP) bit. The Write in Progress 
+(WIP) bit is 1 during the self-timed Erase Security Registers cycle, and is 0 when it is completed. The Security 
+Registers Lock Bit (LB3-1) in the Status Register can be used to OTP protect the security registers.  
+Once the LB bit is set to 1, the Security Registers will be permanently locked; the Erase Security Registers 
+command will be ignored. 
+Address A23-16 A15-12 A11-10 A9-0 
+Security Register #1 00H 0001 00 Don’t care 
+Security Register #2 00H 0010 00 Don’t care 
+Security Register #3 00H 0011 00 Don’t care 
+ 
+Figure 10-27 Erase Security Registers (ERSCUR) Sequence (Command 44H) 
+Command 
+0 1 2 3 4 5 6 7 
+44H 
+CS# 
+SCLK 
+SI
+ 
+8 9 29  30   31 
+MSB
+ 
+2 1 0 
+24 bit address 
+23   22 
+ 
+  
+
+===== PAGE 60 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 60 of 94 
+10.28 Program Security Registers (PRSCUR) (42H) 
+The Program Security Registers command is similar to the Page Program command. It allows from 1 to 
+256bytes Security Registers data to be programmed. A Write Enable (WREN) command must previously have 
+been executed to set the Write Enable Latch (WEL) bit before sending the Program Security Registe rs 
+command.  
+The Program Security Registers command sequence: CS# goes low → sending PRSCUR instruction 
+→
+ sending 24-bit address → sending at least one-byte data → CS# goes high. 
+As soon as CS# is driven high, the self-timed Program Security Registers cycle (whose duration is tPP) is 
+initiated. While the Program Security Registers cycle is in progress, the Status Register may be read to check 
+the value of the Write in Progress (WIP) bit. The Write in Progress (WIP) bit is 1 during the self -timed Program 
+Security Registers cycle, and is 0 when it is completed.  
+If the Security Registers Lock Bit (LB3-1) is set to 1, the Security Registers will be permanently locked. 
+Program Security Registers command will be ignored. 
+Address A23-16 A15-12 A11-10 A9-0 
+Security Register #1 00H 0001 00 Byte Address 
+Security Register #2 00H 0010 00 Byte Address 
+Security Register #3 00H 0011 00 Byte Address 
+ 
+Figure 10-28 Program Security Registers (PRSCUR) Sequence (Command 42H) 
+Command 
+0 1 2 3 4 5 6 7 
+42H 
+CS#  
+SCLK 
+SI 
+8 9   10 28   29  30  31  32   33  34  35  36   37  38  39 
+3 2 1 7 23   22  21 
+24- bit address 
+  
+6 5 4 3 2 1 0  7 
+CS#  
+SCLK
+ 
+SI 
+MSB
+ 
+Data Byte 2 
+6 5 4 3 2 1 0 
+MSB
+ 
+6 5 4 3 2 1 0 6 5 4 3 2 1 0 7 
+Data Byte 1 
+Data Byte 3 Data Byte 256 
+   
+0
+MSB MSB MSB
+40   41  42   43  44  45   46  47  48  49  50  51   52  53  54  55
+2072
+2073
+2074
+2075
+2076
+2077
+2078
+2079
+7
+  
+
+===== PAGE 61 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 61 of 94 
+10.29 Read Security Registers (RDSCUR) (48H) 
+The Read Security Registers command is similar to Fast Read command. The command is followed by a 3 -
+byte address (A23-A0) and a dummy byte, each bit being latched-in during the rising edge of SCLK. Then the 
+memory content, at that address, is shifted out on SO, each bit being shifted out, at a Max frequency fC, 
+during the falling edge of SCLK. The first byte addressed can be at any location. The address is automatically 
+incremented to the next higher address after each byte of data is shifted out. Once the A 9-A0 address 
+reaches the last byte of the register (Byte 3FFH), it will reset to 000H, the command is completed by driving 
+CS# high. 
+The sequence of issuing RDSCUR instruction is: CS# goes low → sending RDSCUR instruction → sending 
+24-bit address → 8-bit dummy byte → Security Register data out on SO → CS# goes high.  
+Address A23-16 A15-12 A11-10 A9-0 
+Security Register #1 00H 0001 00 Byte Address 
+Security Register #2 00H 0010 00 Byte Address 
+Security Register #3 00H 0011 00 Byte Address 
+ 
+9Figure 10-27 Read Security Registers (RDSCUR) Sequence (Command 48H) 
+Command 
+0  1  2  3  4  5  6  7  
+48H 
+CS# 
+SCLK 
+SI 
+SO High-Z 
+8   9   10  28   29   30   31 
+3  2  1  0   
+24- bitaddress 
+MSB 
+  
+6  5  4  3  2  1  0  
+Data Out1 
+   
+7  
+6  5  4  3  2  1  0  7  
+6  5  7  
+Data Out2 
+CS# 
+SCLK 
+SI 
+SO 
+MSB 
+DummyByte 
+23   22  21
+32   33   34   35   36   37   38   39   40 41   42   43   44   45   46   47
+ 
+  
+
+===== PAGE 62 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 62 of 94 
+10.30 Deep Power-down (DP) (B9H) 
+The Deep Power-down (DP) instruction is for setting the device on the minimizing the power consumption (to 
+entering the Deep Power-down mode), the standby current is reduced from ISB to IDPD). The Deep Power -
+down mode requires the Deep Power-down (DP) instruction to enter, during the Deep Power-down mode, the 
+device is not active and all Write/Program/Erase instruction are ignored. When CS# goes high, it's only in 
+standby mode not deep power-down mode. It's different from Standby mode. 
+The sequence of issuing DP instruction is: CS# goes low→ sending DP instruction code→ CS# goes high.  
+Once the DP instruction is set, all instruction will be ignored except the Release from Deep Power -down mode 
+(RDP), Read Electronic Signature (RES) instruction, and soft reset instruction (66H, 99H). (RES instruction to 
+allow the ID been read out). When Power- down, the deep power-down mode automatically stops, and when 
+power-up, the device automatically is in standby mode. For RDP instruction the CS# must go high exactly at 
+the byte boundary (the latest eighth bit of instruction code been latched-in); otherwise, the instruction will not 
+be executed. As soon as Chip Select (CS#) goes high, a delay of tDP is required before entering the Deep 
+Power-down mode and reducing the current to IDPD. 
+Figure 10-30 Deep Power-down (DP) Sequence (Command B9H) 
+Command 
+ 0    1    2    3     4    5    6    7    
+B9H
+ 
+CS# 
+SCLK
+ 
+SI
+ 
+tDP
+ 
+Standby mode Deep power-down mode 
+ 
+Figure 10-30a Deep Power-down (DP) Sequence (QPI) 
+ 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+B9H
+0     1
+tDP
+Stand-by mode Deep Power-down mode
+ 
+  
+
+===== PAGE 63 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 63 of 94 
+10.31 Release form Deep Power-Down (RDP), Read Electronic Signature (RES) (ABH) 
+The Release from Deep Power-down (RDP) instruction is terminated by driving Chip Select (CS#) High. When 
+Chip Select (CS#) is driven high, the device is put in the Stand-by Power mode. If the device was not 
+previously in the Deep Power-down mode, the transition to the Stand-by Power mode is immediate. If the 
+device was previously in the Deep Power-down mode, though, the transition to the Stand-by Power mode is 
+delayed by tRES2, and Chip Select (CS#) must remain High for at least tRES2(max). Once in the Stand-by 
+Power mode, the device waits to be selected, so that it can receive, decode and execute instructions.  
+RES instruction is for reading out the old style of 8-bit Electronic Signature, whose values are shown as table 
+of ID Definitions. This is not the same as RDID instruction. It is not recommended to use for new design. For 
+new design, please use RDID instruction. Even in Deep power-down mode, the RDP and RES are also 
+allowed to be executed, and even the device is in progress of program/erase/write cycle; there's no effect on 
+the current program/erase/ write cycle in progress. 
+The RES instruction is ended by CS# goes high after the ID been read out at least once. The ID outputs 
+repeatedly if continuously send the additional clock cycles on SCLK while CS# is at low. If the device was not 
+previously in Deep Power-down mode, the device transition to standby mode is immediate. If the device was 
+previously in Deep Power-down mode, there's a delay of tRES2 to transit to standby mode, and CS# must 
+remain to high at least tRES2 (max). Once in the standby mode, the device waits to be selected, so it can be 
+received code, and execute instruction. 
+The RDP instruction is for releasing from Deep Power-Down Mode. 
+Figure 10-31 Read Electronic Signature (RES) Sequence (Command ABH) 
+Command 
+0  1  2  3  4  5  6  7  
+ABH 
+CS#  
+SCLK  
+SI  
+8  9  29   30  31   32   33  34   35   36  37   38 
+MSB 
+2  1  0  
+3 Dummy Bytes 
+23   22 
+7  6  5  4  3  2  1  0  SO  
+MSB 
+tRES2
+ 
+Standby Mode Deep Power-down mode 
+High-Z Electronic Signature Out 
+Figure 10-31a Read Electronic Signature (RES) Sequence (QPI) 
+ 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+ABH
+tRES2
+0      1      2      3      4       5      6      7       8    
+3 dummy bytes IO switch from 
+input to output
+ 4      0      
+ 5      1             
+ 6      2            
+ 7      3      
+Device ID
+Stand-by modeDeep Power-down mode
+ 
+
+===== PAGE 64 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 64 of 94 
+Figure 10-31b Release from Deep Power-down (RDP) Sequence (Command ABH) 
+Command 
+0  1  2  3  4  5  6  7  
+ABH 
+CS#  
+SCLK  
+SI  
+tRES1
+ 
+Stand-by mode  Deep Power- down mode 
+ 
+Figure 10-31c Release from Deep Power-down (RDP) Sequence (QPI) 
+ 
+Command
+ABH
+0     1
+tRES1
+Stand-by modeDeep Power-down mode
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+ 
+  
+
+===== PAGE 65 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 65 of 94 
+ 
+ 
+10.32 Read Electronic Manufacturer ID & Device ID (REMS) (90H) 
+The REMS instruction returns both the JEDEC assigned manufacturer ID and the device ID. The Device ID 
+values are listed in "Table ID Definitions". 
+The REMS instruction is initiated by driving the CS# pin low and sending the instruction code "90H" followed 
+by two dummy bytes and one address byte (A7~A0). After which the manufacturer ID for PUYA (85H) and the 
+device ID are shifted out on the falling edge of SCLK with the most significant bit (MSB) first. If the address 
+byte is 00H, the manufacturer ID will be output first, followed by the device ID. If the address byte is 01H, then 
+the device ID will be output first, followed by the manufacturer ID. While CS# is low, the manufacturer and 
+device IDs can be read continuously, alternating from one to the other. The instruct ion is completed by driving 
+CS# high. 
+Figure 10-32 Read Electronic Manufacturer & Device ID (REMS) Sequence (Command 90H) 
+ 
+Command 
+        
+90H 
+CS# 
+SCLK  
+SI 
+SO High-Z 
+   
+3  2  1  0  23   22    21 
+2 dummy byte and 
+1 address byte 
+MSB 
+ 
+6  5  4  3  2  1  0  
+  
+7  
+Device ID 
+CS# 
+SCLK  
+SI 
+SO 
+MSB 
+Manufacturer ID 
+6  5  4  3  2  1  0  7  
+0 1 2 3 4 5 6 7 8  9   10 28   29   30   31
+32   33   34   35   36   37   38   39   40 41   42   43   44   45   46   47
+ 
+Figure 10-32a Read Electronic Manufacturer & Device ID (REMS) Sequence (QPI) 
+ 
+20    16    12     8      4      0       4      0      4      0    
+21    17    13     9      5      1       5      1      5      1    
+22    18    14    10     6      2       6      2      6      2      
+23    19    15    11     7      3       7      3      7      3      
+Command
+90H
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+0      1      2      3      4       5      6      7       8      9      10   
+  A23-16     A15-8       A7-0          
+MID        Device ID
+IO switch from 
+input to output
+  
+
+===== PAGE 66 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 66 of 94 
+10.33 Dual I/O Read Electronic Manufacturer ID & Device ID (DREMS) (92H) 
+The DREMS instruction is similar to the REMS command and returns the JEDEC assigned manufacture r ID 
+which takes two pins: SIO0, SIO1 as address input and ID output I/O  
+The instruction is initiated by driving the CS# pin low and shift the instruction code "92h" followed by two 
+dummy bytes and one-byte address (A7~A0). After which, the Manufacturer ID for PUYA (85H) and the 
+Device ID are shifted out on the falling edge of SCLK with most significant bit (MSB) first. If the one -byte 
+address is initially set to 01H, then the device ID will be read first and then followed by the Manufacturer ID. 
+The Manufacturer and Device ID scan be read continuously, alternating from one to the other. The instruction 
+is completed by driving CS# high. 
+Figure 10-33 DUAL I/O Read Electronic Manufacturer & Device ID (DREMS) Sequence (Command 92H) 
+Command 
+        
+92H 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+  
+6  4  2  0  6  4  2  0  6  4  2  0  6  4  2  0  
+7  5  3  1  7  5  3  1  7  5  3  1  7  5  3  1  
+Dummy byte  ADD byte dummy 
+CS# 
+ 
+SI(IO0) 
+SO(IO1) 
+6  4  2  0  6  4  2  0  6  4  2  0  6  4  2  0  
+7  5  3  1  7  5  3  1  7  5  3  1  7  5  3  1  
+SCLK 
+MFRID DeviceID 
+6  4  2  0  
+7  5  3  1  
+6  4  2  0  
+7  5  3  1  
+MFRID 
+(Repeat) 
+DeviceID 
+(Repeat) 
+MFRID 
+(Repeat) 
+DeviceID 
+(Repeat) 
+0 1 2 3 4 5 6 7 8  9    10  11   12   13   14   15   16   17   18   19    20   21   22   23
+23  24   25  26  27  28   29  30  31  32  33  34   35  36  37   38  39  40   41  42  43  44   45  46  47
+Dummy byte
+ 
+  
+
+===== PAGE 67 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 67 of 94 
+10.34 Quad I/O Read Electronic Manufacturer ID & Device ID (QREMS) (94H) 
+The QREMS instruction is similar to the REMS command and returns the JEDEC assigned manufacturer ID 
+which takes four pins: SIO0, SIO1, SIO2, SIO3 as address input and ID output I/O.  
+The instruction is initiated by driving the CS# pin low and shift the instruction code "94H" followed by two 
+dummy bytes and one-byte address (A7~A0). After which, the Manufacturer ID for PUYA (85H) and the 
+Device ID are shifted out on the falling edge of SCLK with most significant bit (MSB)first. If the one-byte 
+address is initially set to 01H, then the device ID will be read first and then followed by the Manufacturer ID. 
+The Manufacturer and Device ID scan be read continuously, alternating from one to th e other. The instruction 
+is completed by driving CS# high. 
+Figure 10-34 QUAD I/O Read Electronic Manufacturer & Device ID (QREMS) Sequence (Command 94H) 
+Command 
+94H 
+CS# 
+SCLK
+ 
+SI(IO0) 
+SO(IO1)  
+4 0 4 0 4 0  4 0 4 0 
+5 1 5 1 5 1   5 1 5 1 
+A23-16 A15-8  
+6 2 6 2 6 2  6 2 6 2 
+7 3 7 3 7 3  7 3 7 3 
+WP#(IO2)  
+HOLD#(IO3)  
+Dummy  MFRID DID
+ 
+CS#  
+SCLK
+ 
+SI(IO0) 
+SO(IO1)  
+WP#(IO2)  
+HOLD#(IO3)  7  
+24  25   26  27  28  29   30  31 
+4 0 4 0 
+5 1 5 1 
+6 2 6 2 
+3 7 3 
+MFRID 
+Repeat   Repeat   Repeat   Repeat  
+DID
+ 
+4 0 4 0 
+5 1 5 1 
+6 2 6 2 
+7 3 7 3 
+MFRID   
+0 1 2 3 4 5 6 7 8  9    10  11   12   13   14   15   16   17   18   19    20   21   22   23
+DID
+A7-0
+ 
+ 
+  
+
+===== PAGE 68 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 68 of 94 
+10.35 Read Identification (RDID) (9FH) 
+The RDID instruction is for reading the manufacturer ID of 1-byte and followed by Device ID of 2-byte. The 
+PUYA Manufacturer ID and Device ID are list as "Table ID Definitions”. 
+The sequence of issuing RDID instruction is: CS# goes low→ sending RDID instruction code → 24-bits ID 
+data out on SO→ to end RDID operation can set CS# high at any time during data out. While Program/Erase 
+operation is in progress, it will not decode the RDID instruction, so there's no effect on the cycle of 
+program/erase operation which is currently in progress. When CS# goes high, the device is at standby stage. 
+Figure 10-35 Read Identification (RDID) Sequence (Command 9FH) 
+0 1 2 3 4 5 6 7 
+CS#  
+SCLK
+ 
+SI
+ 
+SO  
+8 9   10  11   12  13  14  15 
+MSB
+ 
+ 
+6 5 4 3 2 1 0 
+ 
+7 
+Capacity ID  
+CS#  
+SCLK
+ 
+SI 
+SO  
+MSB
+ 
+Memory Type ID  
+6 5 4 3 2 1 0 7 
+9FH
+ 
+6 5 4 3 2 1 0 7 
+Manufacturer ID 
+MSB
+ 
+22  23  24  25   26  27  28   29  30  31        16  17  18   19   20  21   
+Figure 10-35a Read Identification (RDID) Sequence (QPI) 
+ 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+9FH
+IO switch from 
+input to output
+0      1      2      3      4       5      6       
+MID        ID15-8     ID7-0 
+ 4      0     12     8      4      0
+ 5      1     13     9      5     1
+ 6      2     14   10      6     2
+ 7      3     15    11     7     3
+Table ID Definitions 
+PY25Q32HB 
+RDID 
+command 
+manufacturer ID memory type memory density 
+85 20 16 
+RES 
+command 
+electronic ID 
+15 
+REMS 
+command 
+manufacturer ID device ID 
+85 15 
+
+===== PAGE 69 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 69 of 94 
+10.36 Program/Erase Suspend/Resume 
+The Suspend instruction interrupts a Page Program, Sector Erase, or Block Erase operation to allow access 
+to the memory array. After the program or erase operation has entered the suspended state, the memory 
+array can be read except for the page being programmed or the sector or block being erased . 
+Readable Area of Memory While a Program or Erase Operation is Suspended  
+Suspended Operation Readable Region of Memory Array 
+Page Program All but the Page being programmed 
+Sector Erase(4KB) All but the 4KB Sector being erased 
+Block Erase(32KB) All but the 32KB Block being erased 
+Block Erase(64KB) All but the 64KB Block being erased 
+ 
+When the Serial NOR Flash receives the Suspend instruction, there is a latency of tPSL or tESL before the 
+Write Enable Latch (WEL) bit clears to “0” and the SUS sets to “1”, after which the device is ready to accept 
+one of the commands listed in "Table Acceptable Commands During Program/Erase Suspend after 
+tPSL/tESL" (e.g. FAST READ). Refer to " AC Characteristics" for tPSL and tESL timings. "Table Acceptable 
+Commands During Suspend (tPSL/tESL not required)" lists the commands for which the tPSL and tESL 
+latencies do not apply. For example, RDSR, RDSCUR, RSTEN, and RST can be issued at any time after the 
+Suspend instruction. 
+Status Register bit 15 (SUS) can be read to check the suspend status. The SUS (Program/Erase Suspend Bit) 
+sets to “1” when a program or erase operation is suspended. The SUS clears to “0” when the program or 
+erase operation is resumed 
+ 
+Acceptable Commands During Program/Erase Suspend after tPSL/tESL 
+Command name Command 
+Code 
+Suspend Type 
+Program Suspend Erase Suspend 
+READ 03H • • 
+FAST READ 0BH • • 
+DREAD 3BH • • 
+QREAD 6BH • • 
+2READ BBH • • 
+4READ EBH • • 
+Word read E7H • • 
+Burst Read with Wrap 0CH • • 
+QPIEN 38H • • 
+Disable QPI FFH • • 
+RDSFDP 5AH • • 
+RDID 9FH • • 
+REMS 90H • • 
+DREMS 92H • • 
+QREMS 94H • • 
+SBL 77H • • 
+Set Read Parameter C0H • • 
+WREN 06H  • 
+RESUME 7AH • • 
+PP 02H  • 
+QPP 32H  • 
+Erase Security Registers 44H   
+
+===== PAGE 70 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 70 of 94 
+Command name Command 
+Code 
+Suspend Type 
+Program Suspend Erase Suspend 
+Program Security Registers 42H  • 
+read Security Registers 48H • • 
+WRDI 04H • • 
+Acceptable Commands During Suspend（tPSL/tESL not required） 
+Command name Command Code Suspend Type 
+Program Suspend Erase Suspend 
+RDSR 05H • • 
+RDSR1 35H • • 
+RDCR 15H • • 
+RES ABH • • 
+RSTEN 66H • • 
+RST 99H • • 
+NOP 00H • • 
+Figure 10-36 Resume to Suspend Latency 
+Resume CommandCS# 
+ 
+Suspend Command
+tPRS / tERS
+tPRS: Program Resume to another Suspend
+tERS: Erase Resume to another Suspend
+ 
+  
+
+===== PAGE 71 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 71 of 94 
+10.37 Erase Suspend to Program(75H) 
+The “Erase Suspend to Program” feature allows Page Programming while an erase operation is suspended. 
+Page Programming is permitted in any unprotected memory except within the sector of a suspended Sector 
+Erase operation or within the block of a suspended Block Erase operation. The Write Enable (WREN) 
+instruction must be issued before any Page Program instruction. 
+A Page Program operation initiated within a suspended erase cannot itself be suspended and must be 
+allowed to finish before the suspended erase can be resumed. The Status Register can be polled to determine 
+the status of the Page Program operation. The WEL and WIP bits of the Status Register will remain “1” while 
+the Page Program operation is in progress and will both clear to “0” when the Page Program operation 
+completes. 
+Figure 10-37 Suspend to Read/Program Latency 
+Suspend CommandCS# Read/Program command
+tPSL / tESL
+tPSL: Program latency
+tESL: Erase latency
+Command 
+0  1  2  3  4  5  6  7  
+75H 
+SCLK 
+SI 
+Figure 10-37a Suspend to Read/Program Latency (QPI) 
+ 
+Command
+75H
+0     1
+tPSL/tESL
+Read/Program Command
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Notes: 
+1. Please note that Program only available after the Erase-Suspend operation 
+2. To check suspend ready information, please read status register bit15 (SUS). 
+  
+
+===== PAGE 72 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 72 of 94 
+10.38 Program Resume and Erase Resume(7AH) 
+The Resume instruction resumes a suspended Page Program, Sector Erase, or Block Erase operation. Before 
+issuing the Resume instruction to restart a suspended erase operation, make sure that there  is no Page 
+Program operation in progress. 
+Immediately after the Serial NOR Flash receives the Resume instruction, the WEL and WIP bits are set to “1” 
+and the SUS is cleared to “0”. The program or erase operation will continue until finished ("Resume to Re ad 
+Latency") or until another Suspend instruction is received. A resume-to-suspend latency of tPRS or tERS 
+must be observed before issuing another Suspend instruction ("Resume to Suspend Latency").  
+Figure 10-38 Resume to Read Latency 
+Resume CommandCS# 
+tSE / tBE / tPP
+Command 
+0  1  2  3  4  5  6  7  
+7AH 
+SCLK 
+SI 
+Read Command
+Figure 10-38a Resume to Read Latency (QPI) 
+ 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+7AH
+0     1
+Resume previously suspended program or erase
+ 
+10.39 No Operation (NOP) 
+The "No Operation" command is only able to terminate the Reset Enable (RSTEN) command and will not 
+affect any other command. 
+The SIO [3:1] are don't care. 
+  
+
+===== PAGE 73 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 73 of 94 
+10.40 Individual Block Lock (SBLK) (36H) 
+The Individual Block Lock provides an alternative way to protect the memory array from adverse 
+Erase/Program. In order to use the Individual Block Locks, the WPS bit in Configure Register must be set to 1. 
+If WPS=0, the write protection will be determined by the combination of CMP, BP [ 4:0] bits in the Status 
+Registers. The Individual Block Lock bits are volatile bits. The default values after device power up or after a 
+Reset are 1, so the entire memory array is being protected.  
+The SBLK instruction is for write protection a specified block (or sector) of memory, using AMAX-A16 or 
+(AMAX-A12) address bits to assign a 64Kbyte block (or 4K bytes sector) to be protected as read only.   
+The WREN (Write Enable) instruction is required before issuing SBLK instruction.  
+The sequence of issuing SBLK instruction is: CS# goes low → send SBLK (36h) instruction →send 3 -byte 
+address assign one block (or sector) to be protected on SI pin → CS# goes high. The CS# must go high 
+exactly at the byte boundary, otherwise the instruction will be rejected and not be executed.  
+Figure 10-40 Individual Block Lock (Command 36H) 
+Command 
+0  1  2  3  4  5  6  7  
+36H 
+CS# 
+SCLK  
+SI 
+8  9  29   30   31 
+MSB 
+2  1  0  
+24BitsAddress 
+23   22 
+ 
+Figure 10-40a Individual Block Lock (QPI) 
+ 
+Command
+36H  A23-16     A15-8       A7-0       
+20    16    12     8      4      0      
+21    17    13     9      5      1       
+22    18    14    10     6      2     
+23    19    15    11     7      3          
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3)
+0      1      2      3      4       5      6      7       
+ 
+  
+
+===== PAGE 74 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 74 of 94 
+10.41 Individual Block Unlock (SBULK) (39H) 
+The Individual Block Lock provides an alternative way to protect the memory array from adverse 
+Erase/Program. In order to use the Individual Block Locks, the WPS bit in Configure Register must be set to 1. 
+If WPS=0, the write protection will be determined by the combination of CMP, BP [4:0] bits in the Status 
+Registers. The Individual Block Lock bits are volatile bits. The default values after device power up or after a 
+Reset are 1, so the entire memory array is being protected.  
+The SBULK instruction will cancel the block (or sector) write protection state using AMAX-A16 or (AMAX-A12) 
+address bits to assign a 64Kbyte block (or 4K bytes sector) to be unprotected.  
+The WREN (Write Enable) instruction is required before issuing SBULK instruction.  
+The sequence of issuing SBULK instruction is: CS# goes low → send SBULK (39h) instruction →send 3 -byte 
+address assign one block (or sector) to be protected on SI pin → CS# goes high. The CS# must go high 
+exactly at the byte boundary, otherwise the instruction will be rejected and not be executed. 
+Figure 10-41 Individual Block Unlock (Command 39H) 
+Command 
+0  1  2  3  4  5  6  7  
+39H 
+CS# 
+SCLK 
+SI 
+8  9  29   30   31 
+MSB 
+2  1  0  
+24BitsAddress 
+23   22 
+ 
+Figure 10-41a Individual Block Unlock (QPI) 
+ 
+Command
+39H  A23-16     A15-8       A7-0       
+20    16    12     8      4      0      
+21    17    13     9      5      1       
+22    18    14    10     6      2     
+23    19    15    11     7      3          
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3)
+0      1      2      3      4       5      6      7       
+ 
+  
+
+===== PAGE 75 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 75 of 94 
+10.42 Read Block Lock Status (RDBLK) (3DH) 
+The Individual Block Lock provides an alternative way to protect the memory array from adverse 
+Erase/Program. In order to use the Individual Block Locks, the WPS bit in Configure Register must be set to 1. 
+If WPS=0, the write protection will be determined by the combination of CMP, BP [4:0] bits in the Status 
+Registers. The Individual Block Lock bits are volatile bits. The default values after device power up or after a 
+Reset are 1, so the entire memory array is being protected. 
+The RDBLOCK instruction is for reading the status of protection lock of a specified block (or sector), using 
+AMAX-A16 (or AMAX-A12) address bits to assign a 64K bytes block (4K bytes sector) and read protection 
+lock status bit which the first byte of Read-out cycle. The status bit is"1" to indicate that this block has be 
+protected, that user can read only but cannot write/program /erase this block. The status bit is "0" to indicate 
+that this block hasn't be protected, and user can read and write this block.  
+The sequence of issuing RDBLOCK instruction is: CS# goes low → send RDBLOCK (3Dh) instruction → send 
+3-byte address to assign one block on SI pin → read block's protection lock status bit on SO pin → CS# goes 
+high.  
+Both SPI (8 clocks) and QPI (2 clocks) command cycle can accept by this instruction.  
+Figure 10-42 Read Block Lock Status (Command 3DH) 
+Command
+0 1 2 3 4 5 6 7
+3DH
+CS#
+SCLK
+SI
+SO High-Z
+8  9   10 28   29   30   31   32   33   34  35   36   37   38   39
+MSB
+3 2 1 023    22   21
+MSB 7 6 5 4 3 2 1 0
+24- bit address
+Data Byte
+Figure 10-40a Read Block Lock Status (QPI) 
+20    16    12     8      4      0       X     0     X      0    
+21    17    13     9      5      1      X     X     X     X    
+22    18    14    10     6      2      X     X     X     X    
+23    19    15    11     7      3      X     X     X     X         
+Command
+3DH
+CS#
+SCLK
+SI(IO0)
+SO(IO1)
+WP#(IO2)
+HOLD#(IO3)
+0      1      2      3      4       5      6      7       8      9      10   
+  A23-16     A15-8       A7-0          
+Lock Value
+IO switch from 
+input to output
+ 
+  
+
+===== PAGE 76 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 76 of 94 
+10.43 Global Block Lock (GBLK) (7EH) 
+The GBLK instruction is for enable the lock protection block of the whole chip. The WREN (Write Enable) 
+instruction is required before issuing GBLK instruction.  
+The sequence of issuing GBLK instruction is: CS# goes low → send GBLK (7Eh) instruction →CS# g oes high.  
+Both SPI (8 clocks) and QPI (2 clocks) command cycle can accept by this instruction. The SIO [3:1] are "don't 
+care" in SPI mode.  
+The CS# must go high exactly at the byte boundary, otherwise, the instruction will be rejected and not be 
+executed. 
+Figure 10-43 Global Block Lock (Command 7EH) 
+Command 
+0  1  2  3  4  5  6  7  
+7EH 
+CS# 
+SCLK 
+SI 
+SO 
+High-Z 
+Figure 10-43a Global Block Lock (QPI) 
+ 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+7EH
+0     1
+ 
+  
+
+===== PAGE 77 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 77 of 94 
+10.44 Global Block Unlock (GBULK) (98H) 
+The GBULK instruction is for disable the lock protection block of the whole chip. The WREN (Write Enable) 
+instruction is required before issuing GBULK instruction.  
+The sequence of issuing GBULK instruction is: CS# goes low → send GBULK (98h) instruction → CS# goes 
+high. 
+Both SPI (8 clocks) and QPI (2 clocks) command cycle can accept by this instruction. The SIO [3:1] are "don't 
+care" in SPI mode.  
+The CS# must go high exactly at the byte boundary, otherwise, the instruction will be rejected and not be 
+executed. 
+Figure 10-44 Global Block Unlock (Command 98H) 
+Command 
+0  1  2  3  4  5  6  7  
+98H 
+CS# 
+SCLK 
+SI 
+SO 
+High-Z 
+Figure 10-44a Global Block Unlock (QPI) 
+CS#
+SCLK
+SI(IO0)
+SO(IO1)
+WP#(IO2)
+HOLD#(IO3)
+Command
+98H
+0     1
+ 
+  
+
+===== PAGE 78 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 78 of 94 
+10.45 Software Reset (RSTEN/RST) (66H/99H) 
+The Software Reset operation combines two instructions: Reset-Enable (RSTEN) command and Reset (RST) 
+command. It returns the device to a standby mode. All the volatile bits and settings will be cleared then, which 
+makes the device return to the default status as power on. 
+To execute Reset command (RST), the Reset-Enable (RSTEN) command must be executed first to perform 
+the Reset operation. If there is any other command to interrupt after the Reset -Enable command, the Reset-
+Enable will be invalid. 
+The SIO [3:1] are "don't care". 
+If the Reset command is executed during program or erase operation, the operation will be disabled, the data 
+under processing could be damaged or lost. 
+Figure 10-45 Software Reset Recovery 
+ 
+CS#  
+Mode
+  
+tReady
+66H 99H
+Stand-by Mode
+Figure 10-45a Reset Sequence 
+ 
+Command 
+0 1 2 3 4 5 6 7 
+66H 
+CS#  
+SCLK 
+SI 
+SO  High-Z 
+Command 
+0 1 2 3 4 5 6 7 
+99H 
+Figure 10-45b Reset Sequence (QPI) 
+ 
+CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3) 
+Command
+66H
+0     1   
+Command
+99H
+0     1   
+ 
+ 
+
+===== PAGE 79 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 79 of 94 
+10.46 RESET 
+Driving the RESET# pin low for a period of tRLRH or longer will reset the device. After reset cycle, the 
+device is at the following states: 
+- Standby mode 
+- All the volatile bits such as WEL/WIP/SRAM lock bit will return to the default status as power on. 
+If the device is under programming or erasing, driving the RESET# pin low will also terminate the operation 
+and data could be lost. During the resetting cycle, the SO data becomes high im pedance and the current will 
+be reduced to minimum. 
+Figure 10-46 RESET Timing 
+ 
+SCLK  
+CS#  
+RESET#
+ 
+ 
+ 
+ 
+tRLRH
+ 
+ 
+  
+tREADY1/tREADY2
+ 
+tRH tRS
+tRHSL
+ 
+RESET Timing (Power On) 
+Symbol Parameter Min. Typ. Max. Unit 
+tRHSL Reset# high before CS# low 1   us 
+tRS Reset# setup time 15   ns 
+tRH Reset# hold time 15   ns 
+tRLRH Reset# low pulse width 1   us 
+tREADY1 Reset Recovery time 30   us 
+ 
+RESET Timing (Other Operation) 
+Symbol Parameter Min. Typ. Max. Unit 
+tRHSL Reset# high before CS# low 1   us 
+tRS Reset# setup time 15   ns 
+tRH Reset# hold time 15   ns 
+tRLRH Reset# low pulse width 1   us 
+tREADY2 
+Reset Recovery time (except 
+Erase/WRSR/WRCR)   30 us 
+Reset Recovery time (for 
+Erase/WRSR/WRCR) 
+ 8 12 ms 
+ 
+  
+
+===== PAGE 80 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 80 of 94 
+ 
+10.47 Read Unique ID(RUID) (4BH) 
+The Read Unique ID command accesses a factory-set read-only 128bit number that is unique to each 
+PY25Qxx device. The Unique ID can be used in conjunction with user software methods to help prevent 
+copying or cloning of a system.  
+The Read Unique ID command sequence: CS# goes low →sending Read Unique ID command →Dummy 
+Byte1 →Dummy Byte2 →Dummy Byte3 →Dummy Byte4→128bit Unique ID Out →CS# goes high.  
+The command sequence is show below. 
+Figure 10-47 Read Unique ID (RUID) Sequence (Command 4BH) 
+ 
+Command 
+0  1  2  3  4  5  6  7  
+4BH 
+CS# 
+SCLK 
+SI 
+SO High-Z 
+8   9   10 28   29   30   31 
+3 bytes dummy 
+MSB 
+  
+    3  
+128 bit unique serial number 
+  
+127 1  0  2  
+ 
+CS# 
+SCLK 
+SI 
+SO 
+ 
+DummyByte 
+32   33   34   35   36   37   38   39   40 41   42   43   164 165 166   
+126 125 124
+ 
+  
+
+===== PAGE 81 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 81 of 94 
+10.48 Read SFDP Mode (RDSFDP) (5AH) 
+The Serial Flash Discoverable Parameter (SFDP) standard provides a consistent method of describing the 
+functional and feature capabilities of serial flash devices in a standard set of internal parameter tables. These 
+parameter tables can be interrogated by host system software to enable adjustments needed to accommodate 
+divergent features from multiple vendors. The concept is similar to the one found in the Introduction of J EDEC 
+Standard, JESD68 on CFI. 
+The sequence of issuing RDSFDP instruction is same as FREAD: CS# goes low→ send RDSFDP instruction 
+(5AH) →send 3 address bytes on SI pin→ send 1 dummy byte on SI pin→ read SFDP code on SO→ to end 
+RDSFDP operation can set CS# high at any time during data out. 
+SFDP is a JEDEC Standard, JESD216B. 
+Figure 10-48 Read Serial Flash Discoverable Parameter (RDSFDP) Sequence 
+ 
+Command 
+0  1  2  3  4  5  6  7  
+5AH 
+CS# 
+SCLK  
+SI 
+SO  High - Z 
+8   9   10 28   29   30   31 
+3  2  1  0  23   22    21 
+24-bit address 
+MSB 
+  
+6  5  4  3  2  1  0  
+Data Out1 
+  
+7  
+6  5  4  3  2  1  0  7  
+6  5  7  
+Data Out2 
+CS# 
+SCLK  
+SI 
+SO  
+MSB 
+DummyByte 
+32   33   34   35   36   37   38   39   40 41   42   43   44   45   46   47
+ 
+Figure 10-48a Read Serial Flash Discoverable Parameter (RDSFDP) Sequence (QPI) 
+ CS# 
+SCLK 
+SI(IO0) 
+SO(IO1) 
+WP#(IO2) 
+HOLD#(IO3)
+Command
+5AH  A23-16     A15-8       A7-0                 Dummy*    
+IO switch from 
+input to output
+ Byte1      Byte2*“Set Read Parameters” command (C0H) 
+can set the number of dummy clocks
+20    16    12     8      4      0                                         4      0      4      0      4
+21    17    13     9      5      1                                         5      1      5      1      5
+22    18    14    10     6      2                                         6      2      6      2      6      
+23    19    15    11     7      3                                         7      3      7      3      7
+0      1      2      3      4       5      6      7      8      9                17    18    19    20    21
+ 
+ 
+ 
+ 
+  
+
+===== PAGE 82 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 82 of 94 
+Serial Flash Discoverable Parameter (SFDP) Table 
+Table   Signature and Parameter Identification Data Values
+ Description Comment Add(H) 
+(Byte) 
+DW Add 
+(Bit)
+ 
+Data Data 
+SFDP Signature Fixed:50444653H 00H 07:00 53H 53H 
+01H 15:08 46H 46H 
+02H 23:16 44H 44H 
+03H 31:24 50H 50H 
+SFDP Minor Revision Number Start from 00H 04H 07:00 00H 00H 
+SFDP Major Revision Number Start from 01H 05H 15:08 01H 01H 
+Number of Parameters Headers Start from 00H 06H 23:16 01H 01H 
+Unused Contains 0xFFH and can never be 
+changed 
+07H 31:24 FFH FFH 
+ID number (JEDEC) 00H: It indicates a JEDEC specified 
+header 
+08H 07:00 00H 00H 
+Parameter Table Minor Revision 
+Number 
+Start from 0x00H 09H 15:08 00H 00H 
+Parameter Table Major Revision 
+Number 
+Start from 0x01H 0AH
+ 
+23:16 01H 01H 
+Parameter Table Length 
+(in double word) 
+How many DWORDs in the 
+Parameter table 
+0BH
+ 
+31:24 09H 09H 
+Parameter Table Pointer (PTP) First address of JEDEC Flash 
+Parameter table 
+0CH 07:00 30H 30H 
+0DH 15:08 00H 00H 
+0EH 23:16 00H 00H 
+Unused Contains 0xFFH and can never be 
+changed 
+0FH 31:24 FFH FFH 
+ID Number 
+(PUYADevice Manufacturer ID) 
+It is indicates PUYA  
+manufacturer ID 
+10H 07:00 85H 85H 
+Parameter Table Minor Revision 
+Number 
+Start from 0x00H 11H 15:08 00H 00H 
+Parameter Table Major Revision 
+Number 
+Start from 0x01H 12H 23:16 01H 01H 
+Parameter Table Length 
+(in double word) 
+How many DWORDs in the 
+Parameter table 
+13H 31:24 03H 03H 
+Parameter Table Pointer (PTP) First address of PUYA Flash  
+Parameter table 
+14H 07:00 60H 60H 
+15H 15:08 00H 00H 
+16H 23:16 00H 00H 
+Unused Contains 0xFFH and can never be 
+changed 
+17H 31:24 FFH FFH 
+
+===== PAGE 83 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 83 of 94 
+Table     Parameter Table (0): JEDEC Flash Parameter Tables
+Description Comment Add(H) 
+(Byte) 
+DW Add 
+(Bit
+) 
+Data Data 
+Block/Sector Erase Size 
+00: Reserved; 01: 4KB erase; 
+10: Reserved; 
+11: not support 4KB erase 
+30H 
+01:00 01b 
+E5H 
+Write Granularity 0: 1Byte, 1: 64Byte or larger 02 1b 
+Write Enable Instruction 
+Requested for Writing to Volatile 
+Status Registers 
+0: Nonvolatile status bit 
+1: Volatile status bit 
+(BP status register bit) 
+03 0b 
+Write Enable Opcode Select for 
+Writing to Volatile Status Registers 
+0: Use 50H Opcode, 
+1: Use 06H Opcode, 
+Note: If target flash status register is 
+Nonvolatile, then bits 3 and 4 must 
+be set to 00b. 
+04 0b 
+Unused 
+Contains 111b and can never be 
+changed 
+07:05 111b 
+4KB Erase Opcode 31H 15:08 20H 20H 
+(1-1- 2) Fast Read 0=Not support, 1=Support 
+32H 
+16 1b 
+F1H 
+Address Bytes Number used in 
+addressing flash array 
+00: 3Byte only, 01: 3 or 4Byte, 
+10: 4Byte only, 11: Reserved 
+18:17 00b 
+Double Transfer Rate (DTR) 
+clocking 
+0=Not support, 1=Support 19 0b 
+(1-2- 2) Fast Read 0=Not support, 1=Support 20 1b 
+(1-4- 4) Fast Read 0=Not support, 1=Support 21 1b 
+(1-1- 4) Fast Read 0=Not support, 1=Support 22 1b 
+Unused 23 1b 
+Unused 33H 31:24 FFH FFH 
+Flash Memory Density 37H:34H 31:00 01FFFFFFH 
+(1-4- 4) Fast Read Number of Wait 
+states 
+0 0000b: Wait states (Dummy 
+Clocks) not support 
+38H 
+04:00 00100b 
+44H 
+(1-4- 4) Fast Read Number of 
+Mode Bits 
+000b:Mode Bits not support 07:05 010b 
+(1-4- 4) Fast Read Opcode 39H 15:08 EBH EBH 
+(1-1- 4) Fast Read Number of Wait 
+states 
+0 0000b: Wait states (Dummy 
+Clocks) not support 
+3AH
+ 
+20:16 01000b 
+08H 
+(1-1- 4) Fast Read Number of 
+Mode Bits 
+000b:Mode Bits not support 23:21 000b 
+(1-1- 4) Fast Read Opcode 3BH
+ 
+31:24 6BH
+ 
+6BH
+ 
+
+===== PAGE 84 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 84 of 94 
+ 
+Description Comment 
+Add(H) 
+(Byte) 
+DW Add 
+(Bit)
+ 
+Data Data 
+(1-1- 2) Fast Read Number of Wait             0 0000b: Wait states (Dummy 
+states Clocks) not support 
+3CH 
+04:00 01000b 
+08H 
+(1-1- 2) Fast Read Number 
+of Mode Bits 
+000b: Mode Bits not support 07:05 000b 
+(1-1- 2) Fast Read Opcode 3DH 15:08 3BH
+ 
+3BH
+ 
+(1-2- 2) Fast Read Number 
+of Wait states 
+0 0000b: Wait states (Dummy 
+Clocks) not support 
+3EH 
+20:16 00000b 
+80H 
+(1-2- 2) Fast Read Number 
+of Mode Bits 
+000b: Mode Bits not support 23:21 100b 
+(1-2- 2) Fast Read Opcode 3FH 31:24 BBH
+ 
+BBH
+ 
+(2-2- 2) Fast Read 0=not support      1=support
+ 
+40H 
+00 0b 
+FEH 
+Unused 03:01 111b 
+(4-4- 4) Fast Read 0=not support      1=support
+ 
+04 1b 
+Unused 07:05 111b 
+Unused 43H:41H 31:08 0xFFH 0xFFH 
+Unused 45H:44H 15:00 0xFFH 0xFFH 
+(2-2- 2) Fast Read Number 
+of Wait states 
+0 0000b: Wait states (Dummy 
+Clocks) not support 
+46H 
+20:16 00000b 
+00H 
+(2-2- 2) Fast Read Number 
+of Mode Bits 
+000b: Mode Bits not support 23:21 000b 
+(2-2- 2) Fast Read Opcode 47H 31:24 FFH FFH 
+Unused 49H:48H 15:00 0xFFH 0xFFH 
+(4-4- 4) Fast Read Number of Wait             0 0000b: Wait states (Dummy 
+states Clocks) not support 
+4AH
+ 
+20:16 00100b 
+44H 
+(4-4- 4) Fast Read Number 
+of Mode Bits 
+000b: Mode Bits not support 23:21 010b 
+(4-4- 4) Fast Read Opcode 4BH
+ 
+31:24 EBH EBH 
+Sector Type 1 Size 
+Sector/block size=2^N bytes 
+0x00b: this sector type don t exist 
+4CH 07:00 0CH 0CH 
+Sector Type 1 erase Opcode 4DH 15:08 20H 20H 
+Sector Type 2 Size 
+Sector/block size=2^N bytes 
+0x00b: this sector type don t exist 
+4EH 23:16 0FH 0FH 
+Sector Type 2 erase Opcode 4FH 31:24 52H 52H 
+Sector Type 3 Size 
+Sector/block size=2^N bytes 
+0x00b: this sector type don t exist 
+50H 07:00 10H 10H 
+Sector Type 3 erase Opcode 51H 15:08 D8H D8H 
+Sector Type 4 Size 
+Sector/block size=2^N bytes 
+0x00b: this sector type don t exist 
+52H 23:16 00H 00H 
+Sector Type 4 erase Opcode 53H 31:24 81H 81H 
+ 
+
+===== PAGE 85 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 85 of 94 
+Table    Parameter Table (1): PUYA Flash Parameter Tables
+ 
+Description Comment 
+Add(H) 
+(Byte) 
+DW Add 
+(Bit)
+ 
+Data Data 
+Vcc Supply Maximum Voltage 
+2000H=2.000V 
+2700H=2.700V 
+3600H=3.600V 
+61H:60H 15:00 3600H 3600H 
+Vcc Supply Minimum Voltage 
+1650H=1.650V 
+2250H=2.250V 
+2350H=2.350V 
+2700H=2.700V 
+63H:62H 31:16 2700H 2700H 
+HW Reset# pin 0=not support    1=support
+ 
+65H:64H 
+00 0b 
+F99EH 
+HW Hold# pin 0=not support    1=support
+ 
+01 1b 
+Deep Power Down Mode 0=not support    1=support
+ 
+02 1b 
+SW Reset 0=not support    1=support
+ 
+03 1b 
+SW Reset Opcode 
+Should be issue Reset Enable(66H) 
+before Reset cmd. 
+11:04 
+1001 1001b 
+(99H) 
+Program Suspend/Resume 0=not support    1=support
+ 
+12 1b 
+Erase Suspend/Resume 0=not support    1=support
+ 
+13 1b 
+Unused 14 1b 
+Wrap Around Read mode 0=not support    1=support
+ 
+15 1b 
+Wrap - Around Read mode Opcode 66H 23:16 77H 77H 
+Wrap - Around Read data length 
+08H:support 8B wrap- around read 
+16H:8B&16B 
+32H:8B&16B&32B 
+64H:8B&16B&32B&64B 
+67H 31:24 64H 64H 
+Individual block lock 0=not support    1=support 
+6BH:68H 
+00 1b 
+C8D9H 
+Individual block lock bit 
+(Volatile/Nonvolatile) 
+0=Volatile      
+1=Nonvolatile 
+01 0b 
+Individual block lock Opcode 09:02 36H 
+Individual block lock Volatile 
+protect bit default protect status 
+0=protect      1=unprotect
+ 
+10 0b 
+Secured OTP 0=not support    1=support
+ 
+11 1b 
+Read Lock 0=not support    1=support
+ 
+12 0b 
+Permanent Lock 0=not support    1=support
+ 
+13 0b 
+Unused 15:14 11b 
+Unused 31:16 FFFFH FFFFH 
+ 
+
+===== PAGE 86 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 86 of 94 
+11 Ordering Information 
+PY = Puya Semiconductor
+ PY25 Q 32 B– SS H–  I  T
+Company Designator
+25 = SPI interface flash 
+Product Family
+Q =  Q serial
+Product Serial
+32 = 32Mb
+Memory Density
+B=Gen.B
+Generation
+Package Type
+H: RoHS Compliant, Halogen-free, Antimony- free 
+Plating Technology
+I = - 40 ~ 85C
+Device Grade
+K = - 40 ~ 105C
+SS = SOP8 150mil           WX = WSON8 6x5x0.75mm
+SU = SOP8 208mil           NX = USON8 3x4x0.55mm
+TS = TSSOP8                     UX = USON8 3x2x0.55mm
+WF = WAFER
+T = TUBE
+Packing Type
+R = TAPE & REEL
+Y = TRAY
+H
+H = 2.7V~3.6V
+Operation Voltage
+W = WAFER
+ 
+ 
+  
+
+===== PAGE 87 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 87 of 94 
+12 Valid Part Numbers and Top Marking 
+The following table provides the valid part numbers for the PY25Q32H Flash Memory. Please contact PUYA 
+for specific availability by density and package type. PUYA Flash memories use a 14-digit Product Number for 
+ordering.  
+Package Type Product Number Density Top Side 
+Marking Temp. Packing 
+Type 
+SS 
+SOP8 150mil PY25Q32HB-SSH-IT 32M-bit PY25Q32HB 
+xxxxxxx 85C Tube 
+SS 
+SOP8 150mil PY25Q32HB-SSH-IR 32M-bit PY25Q32HB 
+xxxxxxx 85C Reel 
+SU* 
+SOP8 208mil PY25Q32HB-SUH-IT 32M-bit PY25Q32HB 
+xxxxxxx 85C Tube 
+SU* 
+SOP8 208mil PY25Q32HB-SUH-IR 32M-bit PY25Q32HB 
+xxxxxxx 85C Reel 
+TS* 
+TSSOP8 PY25Q32HB-TSH-IT 32M-bit PY25Q32HB 
+xxxxxxx 85C Tube 
+TS* 
+TSSOP8 PY25Q32HB-TSH-IR 32M-bit PY25Q32HB 
+xxxxxxx 85C Reel 
+UX* 
+USON8 3x2mm PY25Q32HB-UXH-IR 32M-bit PY25Q32HB  
+xxxxxxx 85C Reel 
+NX* 
+USON8 3x4mm PY25Q32HB-NXH-IR 32M-bit PY25Q32HB  
+xxxxxxx 85C Reel 
+WX* 
+WSON8 6x5mm PY25Q32HB-WXH-IR 32M-bit PY25Q32HB  
+xxxxxxx 85C Reel 
+Note：There is no mass production of the package marked with "*", if necessary, please contact Puya sales 
+ 
+
+===== PAGE 88 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 88 of 94 
+13 Package Information 
+13.1 8-Lead SOP(150mil) 
+REV
+A
+Symbol Min Typ Max
+A
+A1
+A2
+b
+c
+D
+e
+E
+E1
+L
+h
+1.250
+0.280
+0.170
+4.800
+3.800
+-
+0.400
+-
+4.900
+6.000
+3.900
+1.270
+-
+1.750
+0.480
+0.230
+5.000
+4.000
+-
+0.500
+1.270
+-
+0.100
+5.800 6.200
+-
+Note：1. Di m ensi ons are not to scal e
+k 8°
+0.250
+0°
+A2
+b e
+A
+D
+E
+1
+8
+h x45°
+C
+A1
+L1
+L
+k
+GAUGE PLANE
+0.25mm
+L1
+0.250
+1.040
+-
+-
+-
+-
+-
+-
+-
+-
+Common Dimensions
+(Unit of Measure=millimeters)
+E1
+TITLE
+8-lead SOP
+DRAWING NO.
+SP-8
+ 
+
+===== PAGE 89 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 89 of 94 
+13.2 8-Lead SOP(208mil) 
+REV
+A
+Symbol Min Typ Max
+A
+A1
+A2
+b
+c
+D
+e
+E
+E1
+L
+1.700
+0.350
+0.100
+5.130
+5.180
+-
+0.500
+-
+1.270
+-
+2.150
+0.500
+0.250
+5.330
+5.380
+-
+0.850
+-
+0.050
+7.700 8.100
+-
+Note：1. Di m ensi ons are not to scal e
+k 8°0°
+A2
+b e
+A
+D
+E
+1
+8
+C
+A1
+L
+k
+GAUGE PLANE
+0.25mm
+0.250-
+-
+-
+-
+1.900
+Common Dimensions
+(Unit of Measure=millimeters)
+E1
+TITLE
+8-lead SOP(200mil)
+DRAWING NO.
+SP-8
+-
+ 
+ 
+  
+
+===== PAGE 90 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 90 of 94 
+13.3 8-Lead TSSOP 
+REV
+A
+TITLE
+8-lead TSSOP
+DRAWING NO.
+TS-8
+1 4
+58
+E E1
+D
+C
+A1
+L1
+ L α
+A A2
+b
+CP
+Symbol Min Typ Max
+A
+A1
+A2
+b
+c
+CP
+D
+e
+E
+E1
+L
+L1
+α
+0.050
+0.800
+0.190
+0.090
+2.900
+6.200
+4.300
+0.450
+0°
+-
+1.000
+3.000
+0.650
+6.400
+4.400
+0.600
+1.000
+1.200
+0.150
+1.050
+0.300
+0.200
+0.100
+3.100
+6.600
+4.500
+0.750
+8°
+-
+-
+-
+-
+--
+- -
+-
+-
+Note：1. Di m ensi ons are not to scal e
+e
+Common Dimensions
+(Unit of Measure=millimeters)
+ 
+ 
+ 
+
+===== PAGE 91 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 91 of 94 
+13.4 8-Land USON(3x2x0.55mm) 
+ 
+
+
+===== PAGE 92 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 92 of 94 
+13.5 8-Land USON(3x4x0.55mm) 
+ 
+
+
+===== PAGE 93 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 93 of 94 
+13.6 8-Land WSON(6x5x0.75mm) 
+ 
+
+
+===== PAGE 94 =====
+PY25Q32HB Datasheet  
+Puya Semiconductor Page 94 of 94 
+14 Revision History 
+Rev. Date Description Note 
+V1.0 2022-08-17 Initial release - 
+   - 
+   - 
+ 
+ 
+IMPORTANT NOTICE 
+Puya Semiconductor reserves the right to make changes without further notice to any 
+products or specifications herein. Puya Semiconductor does not assume any responsibility 
+for use of any its products for any particular purpose, nor does Puya Semiconductor 
+assume any liability arising out of the application or use of any its products or circuits. 
+Puya Semiconductor does not convey any license under its patent rights or other rights 
+nor the rights of others. 
+ 
+Puya Semiconductor Co., Ltd. 
+ 
+ 

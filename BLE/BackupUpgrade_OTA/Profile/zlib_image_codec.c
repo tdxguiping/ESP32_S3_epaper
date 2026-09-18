@@ -415,7 +415,11 @@ int zlib_image_codec_pump(const UINT8 *data, UINT16 length, UINT16 *consumed)
     if(!consumed || (!data && length) || zic.state == ZIC_BAD) return -1;
     *consumed = 0;
     zic.in = data; zic.in_left = length;
-    zic_budget_end = zic.raw + (ZIC_OUT_BUFFER - zic.out_len);
+    {
+        UINT32 remaining = ZIC_OUT_BUFFER - zic.out_len;
+        UINT32 budget = remaining > TDX_STREAM_WORK_LIMIT ? TDX_STREAM_WORK_LIMIT : remaining;
+        zic_budget_end = zic.raw + budget;
+    }
     zic_budgeted = 1;
     rc = zic_run();
     zic_budgeted = 0;

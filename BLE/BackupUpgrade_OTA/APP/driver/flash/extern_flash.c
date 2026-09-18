@@ -7,6 +7,11 @@
 #include "flash_driver.h"
 #include "commoninfo.h"
 #include "Display_EPD_W21_spi.h"
+#include "release_trace.h"
+
+static UINT8 flash_power_ready = 0;
+static UINT8 flash_wait_ok = 1;
+static UINT8 flash_ready_failed = 0;
 
 void Set_Spi1_output_init(void)
 {
@@ -60,7 +65,7 @@ UINT8 SPI0_MasterRecvByte(void);
 UINT8 SPI_FLASH_ByteRead(UINT32 ReadAddr);
 UINT8 SPI_FLASH_FasttRead(UINT32 ReadAddr);
 void SPI_FLASH_BufferRead(UINT8* pBuffer, UINT32 ReadAddr, UINT16 NumByteToRead);
-void SPI_FLASH_SectorErase(UINT32 SectorAddr);
+UINT8 SPI_FLASH_SectorErase(UINT32 SectorAddr);
 void SPI_FLASH_BulkErase(UINT32 BlockAddr);
 void SPI_FLASH_ChipErase(void);
 void SPI_FLASH_PowerDown();
@@ -71,6 +76,7 @@ UINT32 SPI_FLASH_ReadJedecID(void);
 void SPI_FLASH_ByteWrite(UINT8 Byte, UINT32 WriteAddr);
 void SPI_FLASH_PageWrite(UINT8* pBuffer, UINT32 WriteAddr, UINT16 NumByteToWrite);
 void SPI_FLASH_WaitForWriteEnd(void);
+static UINT8 SPI_FLASH_WaitForWriteEndTimeout(UINT32 timeout_ms);
 
 #define SPI_FLASH_CS_LOW()          GPIOB_ResetBits(GPIO_Pin_12)
 #define SPI_FLASH_CS_HIGH()         GPIOB_SetBits(GPIO_Pin_12)
@@ -194,18 +200,28 @@ void SPI_FLASH_BufferRead(UINT8* pBuffer, UINT32 ReadAddr, UINT16 NumByteToRead)
 	SPI_FLASH_CS_HIGH();
 }
 
-void SPI_FLASH_SectorErase(UINT32 SectorAddr)
+UINT8 SPI_FLASH_SectorErase(UINT32 SectorAddr)
 {
     UINT32 perf_start = IP_Start(IP_ERASE);
+    UINT8 status;
+    UINT8 result;
 	SPI_FLASH_WriteEnable();
+    status = SPI_Flash_ReadStatusRegister();
+    if((status & 0x02U) == 0) {
+        BOOT_LOG_TEXT("FLASH WEL fail\r\n");
+        BOOT_LOG_HEX8("FLASH SR=", status);
+        IP_Toc(IP_ERASE, perf_start);
+        return 1;
+    }
 	SPI_FLASH_CS_LOW();
 	SPI1_MasterSendByte(SectorErace);
 	SPI1_MasterSendByte((SectorAddr & 0xFF0000) >> 16);
 	SPI1_MasterSendByte((SectorAddr & 0xFF00) >> 8);
 	SPI1_MasterSendByte(SectorAddr & 0xFF);
 	SPI_FLASH_CS_HIGH();
-	SPI_FLASH_WaitForWriteEnd();
+	result = SPI_FLASH_WaitForWriteEndTimeout(1000U);
     IP_Toc(IP_ERASE, perf_start);
+    return result;
 }
 
 void SPI_FLASH_BulkErase(UINT32 BlockAddr)
@@ -218,7 +234,7 @@ void SPI_FLASH_BulkErase(UINT32 BlockAddr)
 	SPI1_MasterSendByte((BlockAddr & 0xFF00) >> 8);
 	SPI1_MasterSendByte(BlockAddr & 0xFF);
 	SPI_FLASH_CS_HIGH();
-	SPI_FLASH_WaitForWriteEnd();
+	SPI_FLASH_WaitForWriteEndTimeout(5000U);
 }
 
 void SPI_FLASH_ChipErase(void)
@@ -227,7 +243,7 @@ void SPI_FLASH_ChipErase(void)
 	SPI_FLASH_CS_LOW();
 	SPI1_MasterSendByte(ChipErace);
 	SPI_FLASH_CS_HIGH();
-	SPI_FLASH_WaitForWriteEnd();
+	SPI_FLASH_WaitForWriteEndTimeout(120000U);
 }
 
 void SPI_FLASH_PowerDown()
@@ -336,36 +352,54 @@ void SPI_FLASH_PageWrite(UINT8* pBuffer, UINT32 WriteAddr, UINT16 NumByteToWrite
 
 void SPI_FLASH_WaitForWriteEnd(void)
 {
-	UINT8 FLASH_Status = 0;
-	UINT16 counter;
-
-	counter=0;
-	do
-	{
-		DelayMs(1);//At least 10ms delay 
-		WWDG_SetCounter(0);//喂狗 , 不可以在这里， 没有效果    
-
-		FLASH_Status= SPI_Flash_ReadStatusRegister();
-		//if(FLASH_Status != 0xFF)
-		//{printf("Dat=%x (%d)\r\n",FLASH_Status,counter);}
-		counter++;
-		if(counter >1000)
-		{
-			printf("flash w er \r\n");
-			break;
-		}
-	} while((FLASH_Status & WriteStatusRegister) == SET);
-
-  	SPI_FLASH_CS_HIGH();
+    SPI_FLASH_WaitForWriteEndTimeout(20U);
 }
 
-void TDX_SPI_FLASH_E_4096Bytes(UINT16 PIC_Number,UINT16 Block_Number,UINT16 F_type)
+static UINT32 flash_wait_elapsed(UINT32 start)
+{
+    UINT32 now = RTC_GetCycle32k();
+    return now >= start ? now - start : RTC_MAX_COUNT - start + now;
+}
+
+static UINT8 SPI_FLASH_WaitForWriteEndTimeout(UINT32 timeout_ms)
+{
+    UINT8 flash_status;
+    UINT32 start = RTC_GetCycle32k();
+    UINT32 timeout_ticks = (CAB_LSIFQ * timeout_ms + 999U) / 1000U;
+    UINT32 count = 0;
+
+    do
+    {
+        WWDG_SetCounter(0);
+        flash_status = SPI_Flash_ReadStatusRegister();
+        count++;
+        if((flash_status & WriteStatusRegister) != SET) {
+            flash_wait_ok = 1;
+            SPI_FLASH_CS_HIGH();
+            return 0;
+        }
+#if TDX_FLASH_WIP_LEGACY_DELAY
+        DelayMs(1);
+#endif
+    } while(flash_wait_elapsed(start) < timeout_ticks);
+
+    SPI_FLASH_CS_HIGH();
+    flash_wait_ok = 0;
+    BOOT_LOG_TEXT("FLASH wait-timeout\r\n");
+    BOOT_LOG_HEX8("FLASH status=", flash_status);
+    BOOT_LOG_HEX32("FLASH count=", count);
+    BOOT_LOG_HEX32("FLASH limit=", timeout_ms);
+    return 1;
+}
+
+UINT8 TDX_SPI_FLASH_E_4096Bytes(UINT16 PIC_Number,UINT16 Block_Number,UINT16 F_type)
 {
 	UINT32 Addr;
+	if(flash_ready_failed) return 1;
 
 	Addr=(1024*F_type)*PIC_Number+Block_Number*256;  
 	printf("TDX_SPI_FLASH_E_4096Bytes E-Addr=%X\r\n",Addr);
-	SPI_FLASH_SectorErase(Addr);
+	return SPI_FLASH_SectorErase(Addr);
 }
 
 // 以 256bytes 为单位，一次最少写 256 bytes
@@ -401,11 +435,13 @@ void TDX_SPI_FLASH_W_256Bytes_xt(UINT8* pBuffer,UINT16 PIC_Number,UINT16 Block_N
 
 // 以 256bytes 为单位，一次最少写 256 bytes
 // Addr = 表示 第几个 256 块
-void TDX_SPI_FLASH_W_256Bytes(UINT8* pBuffer,UINT16 PIC_Number,UINT16 Block_Number,UINT16 F_type)
+UINT8 TDX_SPI_FLASH_W_256Bytes(UINT8* pBuffer,UINT16 PIC_Number,UINT16 Block_Number,UINT16 F_type)
 {
     UINT32 perf_start = IP_Start(IP_WRITE);
+    UINT8 result;
 	UINT32 Addr;
-	UINT16 NumByteToWrite;  
+	UINT16 NumByteToWrite;
+	if(flash_ready_failed) return 1;
 
 	Addr=(1024*F_type)*PIC_Number+Block_Number*256;
 	//printf("W-Addr=%X\r\n",Addr);
@@ -425,8 +461,9 @@ void TDX_SPI_FLASH_W_256Bytes(UINT8* pBuffer,UINT16 PIC_Number,UINT16 Block_Numb
 		pBuffer++; 
 	}
 	SPI_FLASH_CS_HIGH();
-	SPI_FLASH_WaitForWriteEnd();
+	result = SPI_FLASH_WaitForWriteEndTimeout(20U);
     IP_Toc(IP_WRITE, perf_start);
+    return result;
 }
 
 // 以 256bytes 为单位，一次最少写 256 bytes
@@ -468,6 +505,8 @@ void Stop_Flash_power(void)
     R32_PA_OUT |= GPIO_Pin_6; //骞茬數姹犳柟妗堬紝鐢垫簮鍙嶇疆
 #endif
     SPI_FLASH_Init(); 
+    flash_power_ready = 0;
+    flash_ready_failed = 0;
 	Print_I3("Stop_Flash_power @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@");
 }
 
@@ -568,11 +607,35 @@ int buffer_offset = 0;
 
 void initExternFlashDriver()
 {
+    UINT32 jedec, ready_start;
 	Start_Flash_power();
 	Set_Spi1_output_init();  
+    if(!flash_power_ready) {
 #if ((defined(ENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6))) //6鑹查瀛樺垏鎹㈤棶棰橈紝鍗曠嫭鍋氬欢鏃跺鐞?
-	delay_ms(200);
+	#if TDX_FLASH_POWERUP_DELAY_MS
+	delay_ms(TDX_FLASH_POWERUP_DELAY_MS);
+        BOOT_LOG_HEX32("FLASH powerMs=", TDX_FLASH_POWERUP_DELAY_MS);
+	#endif
 #endif	
+        ready_start = RTC_GetCycle32k();
+        do {
+            jedec = SPI_FLASH_ReadJedecID();
+            if(jedec == EXTERN_FLASH_ID) {
+                flash_power_ready = 1;
+                flash_ready_failed = 0;
+                BOOT_LOG_HEX32("FLASH jedec=", jedec);
+                BOOT_LOG_HEX32("FLASH readyMs=", (flash_wait_elapsed(ready_start) * 1000U) / CAB_LSIFQ);
+                break;
+            }
+            WWDG_SetCounter(0);
+        } while(flash_wait_elapsed(ready_start) < (CAB_LSIFQ / 5U));
+        if(!flash_power_ready) {
+            flash_ready_failed = 1;
+            BOOT_LOG_TEXT("FLASH ready-timeout\r\n");
+            BOOT_LOG_HEX32("FLASH jedec=", jedec);
+            BOOT_LOG_HEX32("FLASH readyMs=", (flash_wait_elapsed(ready_start) * 1000U) / CAB_LSIFQ);
+        }
+    }
 	SPI_FLASH_ReadManuID_DeviceID(0x000000);
 	WWDG_SetCounter(0);//喂狗 , 不可以在这里， 没有效果
 }

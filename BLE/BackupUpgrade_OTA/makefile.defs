@@ -1,0 +1,10 @@
+# Included by obj/makefile after source lists, before link prerequisites.
+# Keep all objects in clean so switching products also removes stale drivers.
+ifeq ($(filter clean,$(MAKECMDGOALS)),)
+ifneq ($(filter -DENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6,$(USER_CFLAGS)),)
+EPD_UNUSED_OBJS := $(filter-out ./APP/driver/epd/SPD1657_400_600_color6.o,$(filter ./APP/driver/epd/%.o,$(OBJS)))
+OBJS := $(filter-out $(EPD_UNUSED_OBJS),$(OBJS))
+C_DEPS := $(filter-out $(EPD_UNUSED_OBJS:.o=.d),$(C_DEPS))
+C_SRCS := $(filter-out $(patsubst ./%.o,../%.c,$(EPD_UNUSED_OBJS)),$(C_SRCS))
+endif
+endif

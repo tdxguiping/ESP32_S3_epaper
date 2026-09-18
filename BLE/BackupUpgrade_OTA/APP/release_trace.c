@@ -11,27 +11,23 @@ void release_trace_write(const UINT8 *data, UINT16 length)
     release_uart0_write(data, length);
 }
 
-static void release_trace_nibble(UINT8 value)
+/* Internal log helper: digits is 2 (HEX8) or 8 (HEX32). */
+void release_trace_hex_line(const UINT8 *label, UINT16 length, UINT32 value, UINT8 digits)
 {
-    static const char digits[] = "0123456789ABCDEF";
-    UINT8 text = (UINT8)digits[value & 0x0fU];
-    release_trace_write(&text, 1);
-}
+    static const char hex[] = "0123456789ABCDEF";
+    UINT8 text[10];
+    UINT8 i = digits;
 
-void release_trace_hex8(UINT8 value)
-{
-    release_trace_nibble(value >> 4);
-    release_trace_nibble(value);
-}
-
-void release_trace_hex32(UINT32 value)
-{
-    UINT8 shift;
-    for(shift = 28; ; shift -= 4){
-        release_trace_nibble((UINT8)(value >> shift));
-        if(shift == 0) break;
+    while(i != 0U) {
+        text[--i] = (UINT8)hex[value & 0x0fU];
+        value >>= 4;
     }
+    text[digits] = '\r';
+    text[digits + 1U] = '\n';
+    release_trace_write(label, length);
+    release_trace_write(text, (UINT16)(digits + 2U));
 }
+
 #endif
 
 #include "img_perf.h"
@@ -39,11 +35,11 @@ void release_trace_hex32(UINT32 value)
 /* One current receive/display session; two output sides retain separate totals. */
 static struct {
     UINT32 ticks[IP_COUNT], calls[IP_COUNT];
-    UINT32 begin, rx_enter, rx_last, queue_at, refresh_at, tail_at, replay_at;
+    UINT32 begin, rx_enter, rx_last, queue_at, refresh_at, tail_at, replay_at, flow_ticks;
     UINT32 rx_bytes, zip_bytes, spi_bytes, spi_calls, pass_spi, pass_bytes;
     struct { UINT32 ticks, spi, bytes; UINT8 side; } pass[2];
     UINT8 active, rx_open, rx_closed, queued, refreshing, seen, tail_ready;
-    UINT8 pending, result, source, pixels, passes, stage, flow_frozen;
+    UINT8 pending, result, source, pixels, passes, stage, flow_frozen, flow_marked;
 } ip;
 
 UINT32 IP_Now(void) { return ip.active ? RTC_GetCycle32k() : 0; }
@@ -91,6 +87,7 @@ void IP_Stop(UINT8 status)
     BOOT_LOG_HEX32("SPI n=", ip.spi_calls);
     BOOT_LOG_HEX32("SPI bytes=", ip.spi_bytes);
     BOOT_LOG_HEX32("SPI ms=", ip_ms(ip.ticks[IP_SPI]));
+    if(ip.flow_marked) BOOT_LOG_HEX32("FLOW ms=", ip_ms(ip.flow_ticks));
     for(i = 0; i < IP_COUNT; i++) {
         if(!ip.calls[i]) continue;
         BOOT_LOG_HEX8("P id=", i);
@@ -125,6 +122,7 @@ void IP_RxExit(UINT8 error)
 void IP_RxDone(void)
 {
     if(!ip.active || ip.rx_closed) return;
+    ip.rx_last = IP_Now();
     IP_Add(IP_RX_SPAN, IP_Diff(ip.rx_last, ip.begin));
     ip.rx_closed = 1;
 }
@@ -207,7 +205,8 @@ void IP_Disconnect(void)
 void IP_FlowFreeze(void)
 {
     if(!ip.active || ip.rx_open) return;
-    IP_Toc(IP_TOTAL, ip.begin);
+    ip.flow_ticks = IP_Diff(IP_Now(), ip.begin);
+    ip.flow_marked = 1;
     ip.active = ip.pixels = 0;
     ip.flow_frozen = 1;
 }
@@ -224,6 +223,12 @@ void IP_FlowReport(void)
     BOOT_LOG_HEX32("SPI n=", ip.spi_calls);
     BOOT_LOG_HEX32("SPI bytes=", ip.spi_bytes);
     BOOT_LOG_HEX32("SPI ms=", ip_ms(ip.ticks[IP_SPI]));
-    BOOT_LOG_HEX32("FLOW ms=", ip_ms(ip.ticks[IP_TOTAL]));
+    BOOT_LOG_HEX32("FLOW ms=", ip_ms(ip.flow_ticks));
+}
+void IP_FlowMark(void)
+{
+    if(!ip.active || ip.rx_open || ip.flow_marked) return;
+    ip.flow_ticks = IP_Diff(IP_Now(), ip.begin);
+    ip.flow_marked = 1;
 }
 #endif

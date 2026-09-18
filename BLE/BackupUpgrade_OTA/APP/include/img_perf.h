@@ -15,13 +15,31 @@
 #define IMG_PANEL_SPI_DIV 8U
 #endif
 #ifndef IMG_ZLIB_BATCH
-#define IMG_ZLIB_BATCH 2048U
+#define IMG_ZLIB_BATCH 4095U
 #endif
 #if TDX_STORE_ZLIB && (IMG_ZLIB_BATCH < 1 || IMG_ZLIB_BATCH > 32768U)
 #error IMG_ZLIB_BATCH_must_fit_imageBatchBuffer
 #endif
 #ifndef IMG_COLOR_LUT
 #define IMG_COLOR_LUT 1
+#endif
+#ifndef TDX_LARGE_RAW_COLOR_DISABLE
+#define TDX_LARGE_RAW_COLOR_DISABLE 0
+#endif
+#ifndef TDX_LARGE_RAW_DIRECT
+#define TDX_LARGE_RAW_DIRECT 0
+#endif
+#ifndef TDX_DISABLE_EPD_DELAY
+#define TDX_DISABLE_EPD_DELAY 0
+#endif
+#ifndef TDX_DISABLE_FLASH_DELAY
+#define TDX_DISABLE_FLASH_DELAY 0
+#endif
+#ifndef TDX_FLASH_POWERUP_DELAY_MS
+#define TDX_FLASH_POWERUP_DELAY_MS 10U
+#endif
+#ifndef TDX_FLASH_WIP_LEGACY_DELAY
+#define TDX_FLASH_WIP_LEGACY_DELAY 0
 #endif
 
 /* P id is hexadecimal; P ms is elapsed milliseconds, also hexadecimal.
@@ -61,6 +79,7 @@ void IP_FinishTail(void);
 void IP_Disconnect(void);
 void IP_FlowFreeze(void);
 void IP_FlowReport(void);
+void IP_FlowMark(void);
 #else
 #define IP_Now() 0U
 #define IP_Start(i) 0U
@@ -87,5 +106,6 @@ void IP_FlowReport(void);
 #define IP_Disconnect() ((void)0)
 #define IP_FlowFreeze() ((void)0)
 #define IP_FlowReport() ((void)0)
+#define IP_FlowMark() ((void)0)
 #endif
 #endif

@@ -12,7 +12,6 @@
 #include "CH58x_common.h"
 #include "app_cfg.h"
 #include "commoninfo.h"
-#include <math.h>
 #include "util.h"
 
 //PA8：通用双向数字 I/0 引脚。
@@ -29,17 +28,20 @@
 
 #define  Temp_number   (16)
 uint32_t average_adc_value;
-float battle_adv[101]={
-	4.14, 4.121, 4.101, 4.095, 4.084, 4.08, 4.077, 4.068, 4.06, 4.051,
-	4.045, 4.041, 4.035, 4.033, 4.031, 4.0293, 4.028, 4.024, 4.021, 4.019,
-	4.016, 4.013, 4.01, 4.008, 4.004, 4, 3.998, 3.995, 3.992, 3.988,
-	3.985, 3.9798, 3.9737, 3.9676, 3.9615, 3.9554, 3.9493, 3.9432, 3.9371, 3.931,
-	3.9249, 3.9188, 3.9127, 3.9066, 3.9005, 3.8944, 3.8883, 3.8822, 3.8761, 3.87,
-	3.8667, 3.8634, 3.8601, 3.8568, 3.8535, 3.8502, 3.8469, 3.8436, 3.8403, 3.837,
-	3.8309, 3.8248, 3.8187, 3.8126, 3.8065, 3.8004, 3.7943, 3.7882, 3.7821, 3.776,
-	3.765, 3.754, 3.743, 3.732, 3.721, 3.71, 3.699, 3.688, 3.677, 3.666, 3.6544,
-	3.6428, 3.6312, 3.6196, 3.608, 3.5964, 3.5848, 3.5732, 3.5616, 3.55, 3.5381,
-	3.5262, 3.5143, 3.5024, 3.4905, 3.4786, 3.4667, 3.4548, 3.4429, 3.431, 3.428};
+/* Battery voltage in 0.1 mV units; preserve all 101 original entries. */
+static const uint16_t battery_voltage_01mv[101] = {
+    41400, 41210, 41010, 40950, 40840, 40800, 40770, 40680, 40600, 40510,
+    40450, 40410, 40350, 40330, 40310, 40293, 40280, 40240, 40210, 40190,
+    40160, 40130, 40100, 40080, 40040, 40000, 39980, 39950, 39920, 39880,
+    39850, 39798, 39737, 39676, 39615, 39554, 39493, 39432, 39371, 39310,
+    39249, 39188, 39127, 39066, 39005, 38944, 38883, 38822, 38761, 38700,
+    38667, 38634, 38601, 38568, 38535, 38502, 38469, 38436, 38403, 38370,
+    38309, 38248, 38187, 38126, 38065, 38004, 37943, 37882, 37821, 37760,
+    37650, 37540, 37430, 37320, 37210, 37100, 36990, 36880, 36770, 36660,
+    36544, 36428, 36312, 36196, 36080, 35964, 35848, 35732, 35616, 35500,
+    35381, 35262, 35143, 35024, 34905, 34786, 34667, 34548, 34429, 34310,
+    34280
+};
 
 /*float charg_battle_adv[100]={
 	4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008, 4.0008,
@@ -62,8 +64,8 @@ UINT8  ADC(void)
     UINT8      i;
     UINT32  u32Dat;
     signed short RoughCalib_Value = 0; // ADC粗调偏差值
-    float voltage;
-	float min_diff = 1000;
+    uint32_t voltage_01mv;
+    uint32_t min_diff = 0xffffffffUL;
 	UINT8 closest_index = 0; 
 
     /* 温度采样并输出 */
@@ -100,35 +102,19 @@ UINT8  ADC(void)
     
     u32Dat = (348 * average_adc_value)/1633;
 
-	voltage = (float)u32Dat / 100.0;
-	
-	float voltage_tmp = (float)(voltage * 10) / 10.0;	// 结果为3.6
-
-	for (i = 0; i <= 100; i++) {
-		float diff;
-		/*if(global_DEVICE_STATUS.fIsCharg == Is_Yes){
-			diff = fabs(voltage_tmp - battle_adv[i]);
-		}else{
-			diff = fabs(voltage_tmp - battle_adv[i]);
-		}*/
-		diff = fabs(voltage_tmp - battle_adv[i]);
-		
-		if (diff < min_diff) {
-			min_diff = diff;
-			closest_index = i;
-		}
-	}
-
-	i = 100 - closest_index;
-
-	uint16_t voltage_int = (uint16_t)(voltage_tmp * 100);  // 转为整数（保留2位小数）
-	uint16_t ref_voltage_int = (uint16_t)(battle_adv[closest_index] * 10000);  // 保留4位小数
-
-	/*Print_I3("ADC=%d, voltage=%d.%02dV, battle_adv=%d.%04dV, precent=%d%%\r\n", 
-       average_adc_value, 
-       voltage_int / 100, voltage_int % 100,  // 整数部分和小数部分
-       ref_voltage_int / 10000, ref_voltage_int % 10000, 
-       i);*/
+    /* u32Dat is in 10 mV units. Avoid pulling in soft-float helpers. */
+    voltage_01mv = u32Dat * 100U;
+    for (i = 0; i < sizeof(battery_voltage_01mv) / sizeof(battery_voltage_01mv[0]); i++) {
+        uint32_t reference = battery_voltage_01mv[i];
+        uint32_t diff = voltage_01mv >= reference ?
+                        voltage_01mv - reference : reference - voltage_01mv;
+        /* Keep the first (higher charge) entry on an exact tie. */
+        if (diff < min_diff) {
+            min_diff = diff;
+            closest_index = i;
+        }
+    }
+    i = 100 - closest_index;
 
     ADC_DisableTSPower();
     R8_ADC_CONVERT = 0;

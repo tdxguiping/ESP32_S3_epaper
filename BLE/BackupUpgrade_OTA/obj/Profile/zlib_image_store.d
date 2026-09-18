@@ -24,7 +24,8 @@ Profile/zlib_image_store.o: ../Profile/zlib_image_store.c \
  F:\project\CH585\project_3\BLE\HAL\include/CONFIG.h \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/img_perf.h \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/flash_api.h \
- F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/epd_driver.h
+ F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/epd_driver.h \
+ F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/release_trace.h
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/zlib_image_store.h:
 F:\project\CH585\project_3\BLE\HAL\include/app_cfg.h:
 F:\project\CH585\project_3\SRC\StdPeriphDriver\inc/CH58x_common.h:
@@ -51,3 +52,4 @@ F:\project\CH585\project_3\BLE\HAL\include/CONFIG.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/img_perf.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/flash_api.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/epd_driver.h:
+F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/release_trace.h:
