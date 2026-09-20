@@ -331,6 +331,10 @@ void TdxInfo_ClearDisplayBusyProtect(void);
  */
 static uint8_t s_tdx_display_busy_protect = 0;
 static uint32_t s_tdx_busy_drop_packets = 0;
+static uint16 s_refresh_notify_conn;
+static uint8 s_refresh_notify_type;
+static uint8 s_refresh_notify_count;
+static uint8 s_refresh_notify_pending;
 
 /*********************************************************************
  * Profile Attributes - variables
@@ -749,6 +753,7 @@ static void zlib_receive_fail(uint16 connHandle)
 {
     if(s_zlib_image_aborted) return;
     s_zlib_image_aborted = 1;
+    TdxInfo_CancelRefreshNotify();
     IP_Stop(1);
     uint8_t notify_buf[6]; uint16_t notify_len = 0;
     TRANSFER_LOG_TEXT("ZLIB aborted\r\n");
@@ -783,6 +788,7 @@ static void TdxInfo_HandleConnStatusCB ( uint16 connHandle, uint8 changeType )
                 ( ( changeType == LINKDB_STATUS_UPDATE_STATEFLAGS ) &&
                   ( !linkDB_Up( connHandle ) ) ) )
         {
+            TdxInfo_CancelRefreshNotify();
             //ble_uart_TxCCCD[0].value = 0;
             GATTServApp_InitCharCfg( INVALID_CONNHANDLE, tdxInfoBind_cccd );
             GATTServApp_InitCharCfg( INVALID_CONNHANDLE, tdxInfoBindIv_cccd );
@@ -1116,7 +1122,7 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 
 #if TDX_SMALL_STREAM_ENABLE
                     s_image_session_mode = g_tdx_image_transfer_mode;
-                    BOOT_LOG_TEXT("IMG SW=V12\r\n");
+                    BOOT_LOG_TEXT("IMG SW=V36\r\n");
                     BOOT_LOG_HEX8("IMG MODE=", s_image_session_mode);
                     if(s_image_session_mode == TDX_IMAGE_SMALL_STREAM) {
                         s_small_stream_aborted = 0;
@@ -1925,10 +1931,8 @@ int InitFirstPackage(uint16 connHandle){
 
 int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
 {
-    uint8_t notify_buf[6], notify_retry;
-    uint16_t notify_len;
     int result;
-    UINT32 perf_commit, perf_notify;
+    UINT32 perf_commit;
     IP_ZipBytes((UINT16)dataLen);
 #if TDX_STORE_ZLIB
     result = s_zlib_image_active ? zlib_image_store_feed(adData, (UINT16)dataLen) : -1;
@@ -1982,21 +1986,9 @@ int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
     global_EXTERN_FLASH_INFO.fBlockNum = EXTERN_FLASH_BLOCK_FIRST_ADDR;
     global_DEVICE_STATUS.fDataSendSuccess = Is_Yes;
     IP_Toc(IP_COMMIT, perf_commit);
-    perf_notify = IP_Start(IP_NOTIFY);
-    notitySendEnd(connHandle, 0x01, global_TDX_AES_DATA_INFO.fScreenType, notify_buf, &notify_len);
-    // for(notify_retry = 0; notify_retry < 5; notify_retry++) {
-    //     notitySendFunc(connHandle, notify_buf, &notify_len);
-    //     if(notify_retry < 4) delay_ms(50);
-    // }
-
-	 // by_lgp
-     notitySendFunc(connHandle, notify_buf, &notify_len);
-
-
-
-
-    IP_Toc(IP_NOTIFY, perf_notify);
     if(global_TDX_AES_DATA_INFO.fScreenType != OP_TYPE_IMG_DIFF_A) {
+        TdxInfo_ArmRefreshNotify(connHandle, global_TDX_AES_DATA_INFO.fScreenType,
+                                global_TDX_AES_DATA_INFO.fScreenType == OP_TYPE_IMG_DIFF_B ? 2 : 1);
         s_tdx_display_busy_protect = 1;
         s_tdx_busy_drop_packets = 0;
         /* DeInitFlashDriver leaves Flash powered; avoid another 200 ms init. */
@@ -2004,6 +1996,14 @@ int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
         IP_Queue();
         tmos_start_task(main_task_ID, EVENT_Get_Battle_Charge, 100);
     } else {
+        uint8_t notify_buf[6];
+        uint16_t notify_len = 0;
+        UINT32 perf_notify = IP_Start(IP_NOTIFY);
+        /* A different-image A packet is only stored.  The APP needs this ACK
+         * before it can send B, so it cannot wait for a refresh command. */
+        notitySendEnd(connHandle, 0x01, global_TDX_AES_DATA_INFO.fScreenType, notify_buf, &notify_len);
+        notitySendFunc(connHandle, notify_buf, &notify_len);
+        IP_Toc(IP_NOTIFY, perf_notify);
         IP_Stop(4); /* Stored A side; its later replay is a separate pass. */
     }
     return 0;
@@ -2075,6 +2075,42 @@ void notitySendFunc(uint16 connHandle, uint8_t *out_buf, uint16_t *out_len)
 	}
 }
 
+void TdxInfo_ArmRefreshNotify(uint16 connHandle, uint8 type, uint8 refresh_count)
+{
+    s_refresh_notify_conn = connHandle;
+    s_refresh_notify_type = type;
+    s_refresh_notify_count = refresh_count ? refresh_count : 1;
+    s_refresh_notify_pending = 1;
+}
+
+void TdxInfo_RefreshCommandIssued(void)
+{
+    uint8_t notify_buf[6];
+    uint16_t notify_len = 0;
+    UINT32 perf_notify;
+
+    if(!s_refresh_notify_pending) return;
+    if(s_refresh_notify_count > 1) {
+        s_refresh_notify_count--;
+        return;
+    }
+
+    /* Clear first so another display call cannot duplicate this transaction. */
+    s_refresh_notify_pending = 0;
+    s_refresh_notify_count = 0;
+    perf_notify = IP_Start(IP_NOTIFY);
+    notitySendEnd(s_refresh_notify_conn, 0x01, s_refresh_notify_type,
+                  notify_buf, &notify_len);
+    notitySendFunc(s_refresh_notify_conn, notify_buf, &notify_len);
+    IP_Toc(IP_NOTIFY, perf_notify);
+}
+
+void TdxInfo_CancelRefreshNotify(void)
+{
+    s_refresh_notify_pending = 0;
+    s_refresh_notify_count = 0;
+}
+
 /*********************************************************************
  * @fn      notifyDeviceBound
  *
@@ -2111,7 +2147,7 @@ void notifyDeviceBound(uint16 connHandle)
 UINT8 TdxInfo_DisplayBusy(void) { return s_tdx_display_busy_protect; }
 void TdxInfo_StreamResult(UINT16 conn, UINT8 type, UINT8 error)
 {
-    UINT8 notify_buf[6], retry;
+    UINT8 notify_buf[6];
     UINT16 notify_len = 0;
     u8IsFirstPackage = TDX_DATA_FIRST;
     IsDecryptFlag = Is_No;
@@ -2124,11 +2160,13 @@ void TdxInfo_StreamResult(UINT16 conn, UINT8 type, UINT8 error)
         BOOT_LOG_TEXT("S refresh-start\r\n");
         s_small_stream_trace_logged = 0;
     }
-    if(error == 0xff) return; /* Link is gone; reset state without notification. */
-    notitySendEnd(conn, error ? 0x04 : 0x01, type, notify_buf, &notify_len);
-    for(retry = 0; retry < (error ? 1 : 5); retry++) {
-        notitySendFunc(conn, notify_buf, &notify_len);
-        if(!error && retry < 4) delay_ms(50);
+    if(error == 0xff) {
+        TdxInfo_CancelRefreshNotify();
+        return; /* Link is gone; reset state without notification. */
     }
+    if(!error) return; /* Success was sent immediately after the EPD refresh command. */
+    TdxInfo_CancelRefreshNotify();
+    notitySendEnd(conn, error ? 0x04 : 0x01, type, notify_buf, &notify_len);
+    notitySendFunc(conn, notify_buf, &notify_len);
 }
 #endif

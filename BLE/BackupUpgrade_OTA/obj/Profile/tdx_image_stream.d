@@ -21,6 +21,7 @@ Profile/tdx_image_stream.o: ../Profile/tdx_image_stream.c \
  F:\project\CH585\project_3\SRC\StdPeriphDriver\inc/ISP585.h \
  F:\project\CH585\project_3\BLE\HAL\include/app_cfg.h \
  F:\project\CH585\project_3\BLE\HAL\include/CONFIG.h \
+ F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/tdxinfoservice.h \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/commoninfo.h \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/epd_busy.h \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/peripheral.h \
@@ -51,6 +52,7 @@ F:\project\CH585\project_3\SRC\StdPeriphDriver\inc/CH58x_usbhost.h:
 F:\project\CH585\project_3\SRC\StdPeriphDriver\inc/ISP585.h:
 F:\project\CH585\project_3\BLE\HAL\include/app_cfg.h:
 F:\project\CH585\project_3\BLE\HAL\include/CONFIG.h:
+F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/tdxinfoservice.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/commoninfo.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/epd_busy.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/peripheral.h:

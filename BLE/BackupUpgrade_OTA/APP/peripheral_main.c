@@ -536,21 +536,32 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 	if(global_DEVICE_STATUS.fImageType == 1){
 		// 异显模式：需要刷两次（A�?B面）
 		// 普通刷图的异显模式：不管内外置flash，都直接�?/1（不加偏移）
+        /* Initialize both controllers once.  Each side is selected separately
+         * while its own image data is replayed. */
+        if(EPD_PrepareABDiff() != Is_OK){
+#ifdef ENABLE_SOFTWARE_TO_TDX
+            TdxInfo_CancelRefreshNotify();
+#endif
+            global_DEVICE_STATUS.fWorked = Is_No;
+            return events ^ EVENT_Get_Battle_Charge;
+        }
+
         // First refresh: A side.
         global_DEVICE_STATUS.fInitDriver = Is_Yes;
 		global_DEVICE_STATUS.fImageDataLen = 0;
 		global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_A;
+		global_DEVICE_STATUS.fIsNeedStandby = 0;
 		global_EXTERN_FLASH_INFO.fImageIndex = SCREEN_B_COMMON_INDEX; // 1
 		
 		if(preSaveDisplayColor(0, 0, DEVICE_PRE_SAVE) == -1){
 			PRINT("send pre save  error \r\n");	
 			global_DEVICE_STATUS.fWorked =Is_No;
+			EPD_CancelABDiffPrepare();
+#ifdef ENABLE_SOFTWARE_TO_TDX
+			TdxInfo_CancelRefreshNotify();
+#endif
+			return events ^ EVENT_Get_Battle_Charge;
 		}
-    {
-        UINT32 perf_wait = IP_Start(IP_SIDE_WAIT);
-		//mDelaymS(2000);// by_lgp
-        IP_Toc(IP_SIDE_WAIT, perf_wait);
-    }
 		
         // Second refresh: B side.
         global_DEVICE_STATUS.fScreenType = SCREEN_TYPE_IMG_B;
@@ -564,6 +575,10 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 		if(preSaveDisplayColor(0, 0, DEVICE_PRE_SAVE) == -1){
 			PRINT("send pre save  error \r\n");	
 			global_DEVICE_STATUS.fWorked =Is_No;
+			EPD_CancelABDiffPrepare();
+#ifdef ENABLE_SOFTWARE_TO_TDX
+			TdxInfo_CancelRefreshNotify();
+#endif
 		}
 		else{
 			// AB双屏刷新成功，标记成功（在EVENT_Low_Power统一保存）Save_LastRefresh_Info_To_Flash用到
@@ -576,6 +591,9 @@ tmosEvents Main_Event(tmosTaskID task_id, tmosEvents events)
 		if(preSaveDisplayColor(global_DEVICE_STATUS.fBoardCastGroup, global_DEVICE_STATUS.fBoardCastRoom, DEVICE_PRE_SAVE) == -1){
 			PRINT("send pre save  error \r\n"); 
 			global_DEVICE_STATUS.fWorked =Is_No;
+#ifdef ENABLE_SOFTWARE_TO_TDX
+			TdxInfo_CancelRefreshNotify();
+#endif
 		}
 		else{
 			// 预存刷屏成功，标记成功（在EVENT_Low_Power统一保存）Save_LastRefresh_Info_To_Flash用到

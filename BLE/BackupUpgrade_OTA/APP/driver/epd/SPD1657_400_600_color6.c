@@ -6,7 +6,6 @@
 #include "epd_busy.h"
 #include "release_trace.h"
 #include "img_perf.h"
-#include "img_perf.h"
 
 #ifdef ENABLE_INK_SCREEN_SPD1657_800X480_COLOR_6
 UINT8 EPD_Driver_GetBusyConfig(EPD_BUSY_CONFIG *cfg)
@@ -138,7 +137,7 @@ void Display_EPD_Driver(void)
 
     IP_Refresh();
     IP_Refresh();
-	EPD_W21_WriteCMD(0x12);   //DISPLAY REFRESH   
+    EPD_W21_WriteCMD(0x12);   //DISPLAY REFRESH
     EPD_W21_WriteDATA(0x00);   
 	EPD_Busy_PrepareObserve();
 	{

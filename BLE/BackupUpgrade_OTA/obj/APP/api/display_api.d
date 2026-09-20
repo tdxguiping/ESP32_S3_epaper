@@ -27,7 +27,8 @@ APP/api/display_api.o: ../APP/api/display_api.c \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/rledecode.h \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/release_trace.h \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/img_perf.h \
- F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/tdx_image_stream.h
+ F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/tdx_image_stream.h \
+ F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/tdxinfoservice.h
 F:\project\CH585\project_3\BLE\HAL\include/app_cfg.h:
 F:\project\CH585\project_3\SRC\StdPeriphDriver\inc/CH58x_common.h:
 F:\project\CH585\project_3\SRC\StdPeriphDriver\inc/CH585SFR.h:
@@ -57,3 +58,4 @@ F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/rledecode.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/release_trace.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/img_perf.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/tdx_image_stream.h:
+F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/tdxinfoservice.h:

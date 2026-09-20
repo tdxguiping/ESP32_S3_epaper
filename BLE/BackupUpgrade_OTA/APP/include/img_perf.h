@@ -12,7 +12,7 @@
 #endif
 #endif
 #ifndef IMG_PANEL_SPI_DIV
-#define IMG_PANEL_SPI_DIV 8U
+#define IMG_PANEL_SPI_DIV 6U
 #endif
 #ifndef IMG_ZLIB_BATCH
 #define IMG_ZLIB_BATCH 4095U

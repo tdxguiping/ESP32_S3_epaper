@@ -139,6 +139,9 @@ bStatus_t TdxInfo_SetParameter(uint8_t param, uint8_t len, void *value);
 extern bStatus_t TdxInfo_GetParameter(uint8_t param, void *value);
 
 extern void TdxInfo_ClearDisplayBusyProtect(void);
+void TdxInfo_ArmRefreshNotify(uint16 connHandle, uint8 type, uint8 refresh_count);
+void TdxInfo_RefreshCommandIssued(void);
+void TdxInfo_CancelRefreshNotify(void);
 
 /*********************************************************************
 *********************************************************************/

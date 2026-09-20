@@ -328,6 +328,10 @@ int preSaveDisplayColor(uint8_t group, uint8_t room, int type) {
             IP_ReplayEnd();
             if(result != 0) {
                 FAULT_LOG_TEXT("FAULT img replay; no refresh\r\n");
+#ifdef ENABLE_SOFTWARE_TO_TDX
+                TdxInfo_CancelRefreshNotify();
+#endif
+                EPD_CancelABDiffPrepare();
                 global_DEVICE_STATUS.fDataSendSuccess = Is_No;
                 global_DEVICE_STATUS.fWorked = Is_No;
                 global_DEVICE_STATUS.fInitDriver = Is_Yes;

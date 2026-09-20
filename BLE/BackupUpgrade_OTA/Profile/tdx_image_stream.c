@@ -1,6 +1,9 @@
 #include <string.h>
 #include "tdx_image_stream.h"
 #if TDX_SMALL_STREAM_ENABLE
+#ifdef ENABLE_SOFTWARE_TO_TDX
+#include "tdxinfoservice.h"
+#endif
 #include "commoninfo.h"
 #include "peripheral.h"
 #include "epd_driver.h"
@@ -9,14 +12,16 @@
 #include "img_perf.h"
 #include "release_trace.h"
 
-TDX_IMAGE_MODE g_tdx_image_transfer_mode = TDX_IMAGE_SMALL_STREAM;
+// TDX_IMAGE_MODE g_tdx_image_transfer_mode = TDX_IMAGE_SMALL_STREAM;
+TDX_IMAGE_MODE g_tdx_image_transfer_mode = TDX_IMAGE_LARGE_FLASH;
 extern uint8_t Peripheral_TaskID;
 
 /* The inflater has its own 4 KiB history and 2 KiB output. This is only the
  * compressed-input FIFO. All producers/consumers run cooperatively in TMOS. */
 static UINT8 zip_fifo[TDX_SMALL_ZIP_BUFFER_SIZE];
 static struct {
-    UINT16 read, used, conn, last;
+    UINT32 read, used;
+    UINT16 conn, last;
     UINT32 packets, received, bytes, batches, last_rx;
     UINT32 flow_start, final_at, rx_ticks, decode_ticks, decode_only_ticks, spi_ticks;
     UINT32 finish_ticks, refresh_ticks, pump_max_ticks;
@@ -175,7 +180,7 @@ int TIS_Begin(UINT16 conn, UINT8 type, UINT8 side, UINT32 packets)
 
 int TIS_Push(const UINT8 *data, UINT16 length)
 {
-    UINT16 write, first;
+    UINT32 write, first;
     UINT8 fail_reason = 0;
     if(!stream.active) fail_reason = 1;
     else if(!data || !length) fail_reason = 2;
@@ -221,6 +226,7 @@ int TIS_Push(const UINT8 *data, UINT16 length)
 UINT16 TIS_Process(void)
 {
     UINT16 length, consumed = 0;
+    UINT32 available;
     int rc = 0;
     UINT8 slices = 0;
     UINT32 process_start = RTC_GetCycle32k();
@@ -228,8 +234,9 @@ UINT16 TIS_Process(void)
     if(!stream.active) return 0;
     if(elapsed(stream.last_rx) > 30U * CAB_LSIFQ && !stream.final) { TIS_Abort(3, 1); return 0; }
     while(slices < TDX_STREAM_SLICES_PER_EVENT) {
-        length = TDX_SMALL_ZIP_BUFFER_SIZE - stream.read;
-        if(length > stream.used) length = stream.used;
+        available = TDX_SMALL_ZIP_BUFFER_SIZE - stream.read;
+        if(available > stream.used) available = stream.used;
+        length = available > 65535U ? 65535U : (UINT16)available;
         if(!length) break;
         {
             UINT32 decode_start = RTC_GetCycle32k();
@@ -277,13 +284,16 @@ UINT16 TIS_Process(void)
         global_DEVICE_STATUS.fDataSendSuccess = Is_Yes;
         EPD_SetRefreshDeferred(0);
         IP_FlowFreeze();
+#ifdef ENABLE_SOFTWARE_TO_TDX
+        TdxInfo_ArmRefreshNotify(stream.conn, stream.type, 1);
+#endif
         {
             UINT32 refresh_start = RTC_GetCycle32k();
             Display_EPD_AB();
             stream.refresh_ticks = elapsed(refresh_start);
         }
         /* Printing and BLE notifications cannot delay the measured endpoint. */
-        BOOT_LOG_TEXT("IMG SW=V35\r\n");
+        BOOT_LOG_TEXT("IMG SW=V36\r\n");
         BOOT_LOG_HEX8("MODE=", TDX_IMAGE_SMALL_STREAM);
         BOOT_LOG_HEX8("SIDE=", stream.side);
         BOOT_LOG_HEX32("T RX=", milliseconds(stream.rx_ticks));

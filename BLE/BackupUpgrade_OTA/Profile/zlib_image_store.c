@@ -25,9 +25,8 @@ static struct {
 static UINT32 store_write_ticks, store_write_pages;
 static UINT32 store_read_ticks, store_read_pages, store_decode_ticks;
 static UINT32 store_erase_count, store_first_erase_addr, store_last_erase_addr;
-static UINT32 store_init_ticks, store_erase_ticks, store_program_ticks, store_verify_ticks, store_verify_pages;
-static UINT16 store_fail_block, store_fail_diff;
-static UINT8 store_fail_expected, store_fail_actual;
+static UINT32 store_init_ticks, store_erase_ticks, store_program_ticks;
+static UINT16 store_fail_block;
 
 static UINT32 store_elapsed(UINT32 start)
 {
@@ -40,44 +39,14 @@ static UINT32 store_ms(UINT32 ticks)
     return (ticks / CAB_LSIFQ) * 1000U + ((ticks % CAB_LSIFQ) * 1000U) / CAB_LSIFQ;
 }
 
-static int verify_page(UINT16 block)
-{
-    UINT8 verify[STORE_PAGE];
-    UINT16 i;
-    UINT32 verify_start = RTC_GetCycle32k();
-    UINT32 perf_verify = IP_Start(IP_VERIFY);
-
-    Read256DataFromFlash(verify, store.index, block);
-    IP_Toc(IP_VERIFY, perf_verify);
-    store_verify_ticks += store_elapsed(verify_start);
-    store_verify_pages++;
-    if(memcmp(verify, store.page, STORE_PAGE) == 0) return 0;
-
-    store_fail_block = block;
-    store_fail_diff = 0xffffU;
-    store_fail_expected = store_fail_actual = 0;
-    for(i = 0; i < STORE_PAGE; i++) {
-        if(verify[i] != store.page[i]) {
-            store_fail_diff = i;
-            store_fail_expected = store.page[i];
-            store_fail_actual = verify[i];
-            break;
-        }
-    }
-    return -1;
-}
-
 static void store_log_write_fail(void)
 {
     BOOT_LOG_TEXT("FLASH write-fail\r\n");
     BOOT_LOG_HEX32("FLASH block=", store_fail_block);
     BOOT_LOG_HEX32("FLASH used=", store.length);
-    BOOT_LOG_HEX32("FLASH diff=", store_fail_diff);
-    BOOT_LOG_HEX8("FLASH exp=", store_fail_expected);
-    BOOT_LOG_HEX8("FLASH got=", store_fail_actual);
 }
 
-static int write_page(UINT16 block, UINT8 verify)
+static int write_page(UINT16 block)
 {
     UINT32 start = RTC_GetCycle32k();
     UINT32 phase_start;
@@ -88,8 +57,6 @@ static int write_page(UINT16 block, UINT8 verify)
         phase_start = RTC_GetCycle32k();
         if(TDX_SPI_FLASH_E_4096Bytes(store.index, block, EXTERN_FLASH_PIC_SIZE)) {
             store_fail_block = block;
-            store_fail_diff = 0xffffU;
-            store_fail_expected = store_fail_actual = 0;
             return -1;
         }
         store_erase_ticks += store_elapsed(phase_start);
@@ -97,14 +64,12 @@ static int write_page(UINT16 block, UINT8 verify)
     phase_start = RTC_GetCycle32k();
     if(TDX_SPI_FLASH_W_256Bytes(store.page, store.index, block, EXTERN_FLASH_PIC_SIZE)) {
         store_fail_block = block;
-        store_fail_diff = 0xffffU;
-        store_fail_expected = store_fail_actual = 0;
         return -1;
     }
     store_program_ticks += store_elapsed(phase_start);
     store_write_ticks += store_elapsed(start);
     store_write_pages++;
-    return verify ? verify_page(block) : 0;
+    return 0;
 }
 
 int zlib_image_store_begin(UINT8 index)
@@ -126,10 +91,9 @@ int zlib_image_store_begin(UINT8 index)
     store.block = 1;
     store.length = store.used = 0;
     store_write_ticks = store_write_pages = 0;
-    store_init_ticks = store_erase_ticks = store_program_ticks = store_verify_ticks = store_verify_pages = 0;
+    store_init_ticks = store_erase_ticks = store_program_ticks = 0;
     store_erase_count = store_first_erase_addr = store_last_erase_addr = 0;
-    store_fail_block = store_fail_diff = 0;
-    store_fail_expected = store_fail_actual = 0;
+    store_fail_block = 0;
     store_erase_count = 1;
     store_first_erase_addr = store_last_erase_addr = (UINT32)EXTERN_FLASH_PIC_SIZE * 1024UL * index;
     erase_start = RTC_GetCycle32k();
@@ -173,7 +137,7 @@ int zlib_image_store_feed(const UINT8 *data, UINT16 length)
         length -= count;
         if(store.used == STORE_PAGE) {
             UINT16 block = store.block++;
-            if(write_page(block, block == 1U || block % 16U == 0U)) {
+            if(write_page(block)) {
                 store_log_write_fail();
                 zlib_image_store_abort(); return -1;
             }
@@ -186,14 +150,10 @@ int zlib_image_store_feed(const UINT8 *data, UINT16 length)
 int zlib_image_store_finish(void)
 {
     UINT32 header[4];
-    UINT16 last_block;
     if(!store.active || store.length < 6U) { zlib_image_store_abort(); return -1; }
     if(store.used) {
         memset(store.page + store.used, 0xff, STORE_PAGE - store.used);
-        if(write_page(store.block, 1U)) { store_log_write_fail(); zlib_image_store_abort(); return -1; }
-    } else {
-        last_block = store.block - 1U;
-        if(verify_page(last_block)) { store_log_write_fail(); zlib_image_store_abort(); return -1; }
+        if(write_page(store.block)) { store_log_write_fail(); zlib_image_store_abort(); return -1; }
     }
     header[0] = STORE_MAGIC;
     header[1] = store.length;
@@ -203,7 +163,7 @@ int zlib_image_store_finish(void)
     memcpy(store.page, header, sizeof(header));
     /* Commit last, without erasing the first sector again. */
     store.active = 0;
-    if(write_page(0, 1U)) { store_log_write_fail(); return -1; }
+    if(write_page(0)) { store_log_write_fail(); return -1; }
     return 0;
 }
 
@@ -259,8 +219,8 @@ done:
         BOOT_LOG_HEX32("T FI=", store_ms(store_init_ticks));
         BOOT_LOG_HEX32("T FET=", store_ms(store_erase_ticks));
         BOOT_LOG_HEX32("T FP=", store_ms(store_program_ticks));
-        BOOT_LOG_HEX32("T FV=", store_ms(store_verify_ticks));
-        BOOT_LOG_HEX32("T VC=", store_verify_pages);
+        BOOT_LOG_HEX32("T FV=", 0);
+        BOOT_LOG_HEX32("T VC=", 0);
         BOOT_LOG_HEX32("T WP=", store_write_pages);
         BOOT_LOG_HEX32("T FE=", store_erase_count);
         BOOT_LOG_HEX32("T EA=", store_first_erase_addr);

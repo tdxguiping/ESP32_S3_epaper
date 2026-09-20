@@ -4,6 +4,8 @@
 
 void EPD_W21_Init(void);
 void Display_EPD_AB(void);
+UINT8 EPD_PrepareABDiff(void);
+void EPD_CancelABDiffPrepare(void);
 #if TDX_STORE_ZLIB
 void EPD_SetRefreshDeferred(UINT8 deferred);
 #endif
