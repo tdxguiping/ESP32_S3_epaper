@@ -40,6 +40,7 @@ APP/peripheral_main.o: ../APP/peripheral_main.c \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/epd_busy.h \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/flash_api.h \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/adc_api.h \
+ F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/Display_EPD_W21_spi.h \
  F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/tdxinfoservice.h \
  ../APP/debug/Epd_Driver_Debug.h
 F:\project\CH585\project_3\BLE\HAL\include/app_cfg.h:
@@ -83,5 +84,6 @@ F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/commoninfo.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/epd_busy.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/flash_api.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/adc_api.h:
+F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\APP\include/Display_EPD_W21_spi.h:
 F:\project\CH585\project_3\BLE\BackupUpgrade_OTA\Profile\include/tdxinfoservice.h:
 ../APP/debug/Epd_Driver_Debug.h:

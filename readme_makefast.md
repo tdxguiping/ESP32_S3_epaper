@@ -14,18 +14,21 @@
 - [4. 为缩短耗时做的修改](#sec-4)
   - [4.1 解压输出和写屏](#sec-4-1)
   - [4.2 EPD 驱动和初始化](#sec-4-2)
-  - [4.3 大小文件统一成功通知](#sec-4-3)
+  - [4.3 大小文件通知概况（旧版路径说明）](#sec-4-3)
   - [4.4 AB 同图与 AB 异图时序](#sec-4-4)
   - [4.5 SPI Flash](#sec-4-5)
+  - [4.6 大、小文件模式的通知路径](#sec-4-6)
 - [5. 内存分配](#sec-5)
 - [6. 当前小文件耗时参考](#sec-6)
+- [7. 两组小文件模式测试耗时对比](#sec-7)
+- [8. 测试信息](#sec-8)
 
 > 使用说明：点击目录项可直接跳到对应正文；正文每个章节末尾均提供 **[↩ 返回目录](#toc)** 链接。
 
 <a id="sec-1"></a>
 ## 大文件格式与小文件格式
 
-当前工程编译时启用 `TDX_SMALL_STREAM_ENABLE=1`，同时保留两种图像接收路径。路径选择在一张图的首包读取并固定到该次会话。
+当前工程编译时启用 `TDX_SMALL_STREAM_ENABLE=1`，小文件与大文件两种接收路径都会编译进固件。正常默认使用小文件模式；当前为了测试大文件模式，运行时默认值临时设为大文件模式。路径选择在一张图的首包读取并固定到该次会话。
 
 - `TDX_IMAGE_SMALL_STREAM = 0`：小文件格式，压缩数据进入 RAM 环形 FIFO，边接收边解压并写屏，不把图像压缩数据存入 SPI Flash。
 - `TDX_IMAGE_LARGE_FLASH = 1`：大文件格式，压缩数据先存入 SPI Flash，收包结束后再从 Flash 读出、解压并写屏。
@@ -38,17 +41,17 @@
 <a id="sec-1-1"></a>
 ### 如何切换
 
-当前选择变量在 [tdx_image_stream.c](BLE/BackupUpgrade_OTA/Profile/tdx_image_stream.c) 中初始化：
+选择变量在 [tdx_image_stream.c](BLE/BackupUpgrade_OTA/Profile/tdx_image_stream.c) 中初始化。正常默认值应为：
 
 ```c
 TDX_IMAGE_MODE g_tdx_image_transfer_mode = TDX_IMAGE_SMALL_STREAM;
 ```
 
-要让固件默认走大文件路径，将初始化值改为 `TDX_IMAGE_LARGE_FLASH` 后重新编译；恢复小文件路径则改回 `TDX_IMAGE_SMALL_STREAM`。选择在 `tdxInfo_WriteAttrCB()` 收到首包时复制到 `s_image_session_mode`，所以必须在一张图的首包到达前确定。
+当前源码为了测试大文件路径，临时将初始化值设为 `TDX_IMAGE_LARGE_FLASH`。测试固件应在首包打印 `IMG MODE=01`；测试完成后，将值恢复为 `TDX_IMAGE_SMALL_STREAM`，重新编译即可恢复正常默认模式。选择在 `tdxInfo_WriteAttrCB()` 收到首包时复制到 `s_image_session_mode`，所以每张图的模式在首包到达时确定。
+
+构建脚本保持 `-DTDX_SMALL_STREAM_ENABLE=1`，这样两个模式都会编译进固件，只由上述初始化值选择默认运行路径。不要为了切换默认模式把该编译宏改为 `0`；设为 `0` 会编译掉小文件流实现，使固件只走大文件 Flash 路径。日志中 `IMG MODE=00` 表示小文件模式，`IMG MODE=01` 表示大文件模式。
 
 当前代码没有提供 BLE 命令来切换 `g_tdx_image_transfer_mode`。`TDXINFO_SWITCH_MODE` 修改 EEPROM 中的设备工作模式，不选择图像大/小文件路径。`TIS_UseLarge()` 用于停止/清理小文件流状态，也不会修改上述选择变量。
-
-如果构建时设为 `TDX_SMALL_STREAM_ENABLE=0`，小文件流实现会被编译掉，图像接收走大文件 Flash 路径。
 
 [↩ 返回目录](#toc)
 
@@ -184,7 +187,9 @@ Flash 回放和写屏
 [↩ 返回目录](#toc)
 
 <a id="sec-4-3"></a>
-### 大小文件统一成功通知
+### 旧版（V38 及以前）：大小文件统一成功通知
+
+本节记录原先大小文件共用延迟通知路径的实现，已由 V39 的模式分流取代。当前大、小文件的通知时序见 [4.6 大、小文件模式的通知路径](#sec-4-6)。
 
 大小文件模式的图像显示成功通知共用 `TdxInfo_ArmRefreshNotify()` 和 `TdxInfo_RefreshCommandIssued()`。成功通知不再在蓝牙数据刚接收完成时提前发送，也不再由小文件模式连续发送 5 次。通知发生在 SPD1657 的 `0x12` 刷新命令及其参数已经送上 SPI 总线、驱动返回并撤销片选之后，但仍在 `Display_EPD_AB()` 返回之前，不等待 BUSY 结束。
 
@@ -280,6 +285,52 @@ AB 异图流程取消了 A、B 两屏之间固定的 `mDelaymS(2000)`。B 屏开
 
 [↩ 返回目录](#toc)
 
+<a id="sec-4-6"></a>
+### 大、小文件模式的通知路径
+
+图像模式在每张图的首包中确定：IMG MODE=00 表示小文件模式，IMG MODE=01 表示大文件模式。两种模式共用通知内容和 BLE 发送函数，但成功通知的触发时机分开。
+
+大文件模式的当前时序：
+
+~~~text
+Profile/tdxinfoservice.c: tdxInfo_WriteAttrCB()
+  |-- 读取首包并锁定 TDX_IMAGE_LARGE_FLASH
+  |-- 后续数据包 -> InitOtherPackage()
+  |     |-- zlib_image_store_feed()
+  |     |-- 最后一包后：zlib_image_store_finish()
+  |     |-- 提交保存信息、关闭 Flash、标记数据接收成功
+  |     |-- 设置 EPD 忙状态保护并排队 EVENT_Get_Battle_Charge
+  |     `-- notitySendEnd() -> notitySendFunc()：立即发一次成功通知
+  `-- BLE 写入回调返回
+
+APP/peripheral_main.c: EVENT_Get_Battle_Charge
+  `-- APP/api/presave_api.c: preSaveDisplayColor()
+        |-- zlib_image_store_replay()：Flash 读取、解压并写屏
+        `-- APP/api/display_api.c: Display_EPD_AB()
+              `-- 发出 EPD 刷新命令；此处不再触发大文件成功通知
+~~~
+
+小文件模式保持原有时序：
+
+~~~text
+Profile/tdxinfoservice.c: tdxInfo_WriteAttrCB()
+  |-- 读取首包并锁定 TDX_IMAGE_SMALL_STREAM
+  `-- 后续数据包 -> Profile/tdx_image_stream.c: TIS_Push()
+        `-- FIFO / TIS_Process() / 解压 / 写屏
+              |-- TdxInfo_ArmRefreshNotify()
+              `-- APP/api/display_api.c: Display_EPD_AB()
+                    |-- 发出 EPD 刷新命令
+                    `-- TdxInfo_RefreshCommandIssued()
+                          `-- notitySendEnd() -> notitySendFunc()：发一次成功通知
+~~~
+
+大文件通知表示“图像已完整接收并提交到 Flash”，不表示 EPD 已完成回放或物理刷新。Flash 写入、结束校验或提交失败时不发送成功通知；通知后仍会独立执行 EPD 回放。忙状态保护在通知前设置，以免 APP 紧接着发送下一张图并覆盖正在进行的回放。APP 需要把传输成功和 EPD 忙状态分开处理。
+
+OP_TYPE_IMG_DIFF_A 保持原有例外：A 图存入 Flash 后立即通知 APP，以便 APP 继续发送 B 图。其他大文件目标在提交后通知；OP_TYPE_IMG_DIFF_B 的通知因此会早于 A/B 两屏的回放和刷新。小文件模式的处理代码及通知时机不变。
+
+测试时，大文件应显示 IMG MODE=01、N ms、N rc 和 N try；普通大文件完成路径不再出现 N arm。小文件显示 IMG MODE=00，仍在刷新命令发出时通知。N rc=00 表示 BLE 栈接受发送，N try=01 表示只尝试一次；这不等于手机 APP 已确认收到。
+[↑ 返回目录](#toc)
+
 <a id="sec-5"></a>
 ## 内存分配
 
@@ -330,3 +381,52 @@ AB 异图流程取消了 A、B 两屏之间固定的 `mDelaymS(2000)`。B 屏开
 
 [↩ 返回目录](#toc)
 
+<a id="sec-7"></a>
+## 两组小文件模式测试耗时对比
+
+以下记录比较两组包数相同的 192000 字节图像测试。日志里的计时值是十六进制打印，表中已换算为十进制毫秒。
+
+| 包数 | 第一组 `T RX / T FLOW` | 第二组 `T RX / T FLOW` | 两组 `T ZIP+OUT` |
+|---|---:|---:|---:|
+| `0x1A`（26 包） | 1544 / 2684 ms | 1350 / 2705 ms | 均为 2188 ms |
+| `0x197`（407 包） | 11490 / 12074 ms | 12120 / 12216 ms | 均为 5809 ms |
+
+两组日志的模式标记都为 `MODE=00`，因此这里记录的是小文件流式模式对比，不是大文件 Flash 模式测试。第一组使用 `IMG SW=V12` / `V35` 标记，第二组使用 `IMG SW=V36`；版本标记变化没有改变 `MODE`。
+
+相同包数下，两组 `T ZIP+OUT` 完全相同，说明测得的解压与输出累计时间没有显示出明显变化。`T RX` 和 `T FLOW` 有小幅变化：26 包测试的总流程第二组慢 21 ms；407 包测试第二组慢 142 ms。接收跨度、解压过程和最后一包后的处理会互相重叠，因此不能把 `T RX` 与 `T ZIP+OUT` 相加，也不能仅凭这些差异认定解压速度变快或变慢。
+
+同一批日志中的第三次测试包数不同（第一组 `0x129`，第二组 `0xB4`），压缩输入量也不同，不列入这张同包数对比表。第二组最后一次日志只贴到 `S refresh-start`，没有贴出 `S refresh-done`，因此该次不能仅凭当前摘录确认 BUSY 刷新已完成。
+
+[↩ 返回目录](#toc)
+
+<a id="sec-8"></a>
+## 测试信息
+
+以下为小文件模式两次测试记录。日志中的计时值以十六进制打印，表中已换算为十进制毫秒；`T ZIN` 为压缩输入字节数。
+
+| 项目 | 第一次 | 第二次 |
+|---|---:|---:|
+| 模式 / 固件标记 | 小文件 `MODE=00` / `V39` | 小文件 `MODE=00` / `V39` |
+| 包数 `S begin-ok` | 324 | 370 |
+| 压缩输入 `T ZIN` | 77,035 字节 | 87,883 字节 |
+| 收包阶段 `T RX` | 9,536 ms | 10,235 ms |
+| 解压与输出 `T ZIP+OUT` | 4,965 ms | 5,448 ms |
+| 解压部分 `T DECODE` | 4,486 ms | 4,968 ms |
+| 写屏函数累计 `T SPI` | 490 ms | 490 ms |
+| 最后一包后的处理 `T FINAL` | 480 ms | 1,043 ms |
+| 总流程 `T FLOW` | 10,015 ms | 11,278 ms |
+
+### 大文件模式（V41）
+
+以下为两次大文件模式测试的 Flash 回放与写屏统计。日志计时值已从十六进制换算为十进制毫秒。
+
+| 指标 | 第一次 | 第二次 |
+|---|---:|---:|
+| `T ALL` 回放流程 | 6,254 ms | 5,368 ms |
+| `T FD` 解压输入处理 | 5,887 ms | 5,054 ms |
+| `T FR` Flash 读取 | 314 ms | 261 ms |
+| `T WRITE` 写屏路径累计 | 490 ms | 490 ms |
+| `T REF` 刷新命令调用 | 2 ms | 2 ms |
+| `T SINKN / T SINKB` 输出 | 47 次 / 192,000 字节 | 47 次 / 192,000 字节 |
+
+[↩ 返回目录](#toc)

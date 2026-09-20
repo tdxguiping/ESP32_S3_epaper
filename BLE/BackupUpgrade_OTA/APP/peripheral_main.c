@@ -20,6 +20,7 @@
 #include "commoninfo.h"
 #include "flash_api.h"
 #include "adc_api.h"
+#include "Display_EPD_W21_spi.h"
 #ifdef ENABLE_SOFTWARE_TO_TDX
 #include "tdxinfoservice.h"
 #endif

@@ -335,6 +335,21 @@ static uint16 s_refresh_notify_conn;
 static uint8 s_refresh_notify_type;
 static uint8 s_refresh_notify_count;
 static uint8 s_refresh_notify_pending;
+static uint8 s_refresh_notify_trace;
+static uint8 s_refresh_notify_rx_valid;
+static UINT32 s_refresh_notify_rx_ticks;
+static uint8 s_large_refresh_log_pending;
+static uint8 s_large_refresh_log_started;
+
+static UINT32 refresh_notify_elapsed_ms(void)
+{
+    UINT32 now = RTC_GetCycle32k();
+    UINT32 ticks = now >= s_refresh_notify_rx_ticks ?
+                   now - s_refresh_notify_rx_ticks :
+                   RTC_MAX_COUNT - s_refresh_notify_rx_ticks + now;
+    return (ticks / CAB_LSIFQ) * 1000U +
+           ((ticks % CAB_LSIFQ) * 1000U) / CAB_LSIFQ;
+}
 
 /*********************************************************************
  * Profile Attributes - variables
@@ -1122,7 +1137,7 @@ static bStatus_t tdxInfo_WriteAttrCB( uint16 connHandle, gattAttribute_t *pAttr,
 
 #if TDX_SMALL_STREAM_ENABLE
                     s_image_session_mode = g_tdx_image_transfer_mode;
-                    BOOT_LOG_TEXT("IMG SW=V36\r\n");
+                    BOOT_LOG_TEXT("IMG SW=V41\r\n");
                     BOOT_LOG_HEX8("IMG MODE=", s_image_session_mode);
                     if(s_image_session_mode == TDX_IMAGE_SMALL_STREAM) {
                         s_small_stream_aborted = 0;
@@ -1848,6 +1863,11 @@ void processGapBroadcastAdData(){
 void TdxInfo_ClearDisplayBusyProtect(void)
 {
     TIS_RefreshComplete();
+	if(s_large_refresh_log_started) {
+		BOOT_LOG_TEXT("S refresh-done\r\n");
+		s_large_refresh_log_pending = 0;
+		s_large_refresh_log_started = 0;
+	}
 	s_tdx_display_busy_protect = 0;
 	s_tdx_busy_drop_packets = 0;
 	u8IsFirstPackage = TDX_DATA_FIRST;
@@ -1879,6 +1899,9 @@ int getPresaveImageIndex(uint16 connHandle){
 }
 
 int InitFirstPackage(uint16 connHandle){
+	s_refresh_notify_rx_valid = 0;
+	s_refresh_notify_trace = 0;
+	s_large_refresh_log_pending = 0;
 	global_DEVICE_STATUS.fInitDriver = Is_Yes;
 	global_DEVICE_STATUS.fPackageCnt = 0;
 	global_DEVICE_STATUS.fDataSendSuccess = Is_No;
@@ -1933,6 +1956,11 @@ int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
 {
     int result;
     UINT32 perf_commit;
+    if(global_DEVICE_STATUS.fPackageCnt + 1U == global_TDX_AES_DATA_INFO.fPackageNum &&
+       global_TDX_AES_DATA_INFO.fScreenType != OP_TYPE_IMG_DIFF_A) {
+        s_refresh_notify_rx_ticks = RTC_GetCycle32k();
+        s_refresh_notify_rx_valid = 1;
+    }
     IP_ZipBytes((UINT16)dataLen);
 #if TDX_STORE_ZLIB
     result = s_zlib_image_active ? zlib_image_store_feed(adData, (UINT16)dataLen) : -1;
@@ -1987,14 +2015,28 @@ int InitOtherPackage(uint16 connHandle, UINT8 *adData, UINT32 dataLen)
     global_DEVICE_STATUS.fDataSendSuccess = Is_Yes;
     IP_Toc(IP_COMMIT, perf_commit);
     if(global_TDX_AES_DATA_INFO.fScreenType != OP_TYPE_IMG_DIFF_A) {
-        TdxInfo_ArmRefreshNotify(connHandle, global_TDX_AES_DATA_INFO.fScreenType,
-                                global_TDX_AES_DATA_INFO.fScreenType == OP_TYPE_IMG_DIFF_B ? 2 : 1);
-        s_tdx_display_busy_protect = 1;
-        s_tdx_busy_drop_packets = 0;
+        uint8_t notify_buf[6];
+        uint16_t notify_len = 0;
+        UINT32 perf_notify = IP_Start(IP_NOTIFY);
+
+        /* Large-file success means the complete image is committed to Flash.
+         * Notify now; the EPD replay remains queued and protected below. */
+		s_tdx_display_busy_protect = 1;
+		s_tdx_busy_drop_packets = 0;
+		s_large_refresh_log_pending = 1;
         /* DeInitFlashDriver leaves Flash powered; avoid another 200 ms init. */
         global_DEVICE_STATUS.fImageType = (global_TDX_AES_DATA_INFO.fScreenType == OP_TYPE_IMG_DIFF_B) ? 1 : 0;
         IP_Queue();
         tmos_start_task(main_task_ID, EVENT_Get_Battle_Charge, 100);
+        notitySendEnd(connHandle, 0x01, global_TDX_AES_DATA_INFO.fScreenType,
+                      notify_buf, &notify_len);
+        if(s_refresh_notify_rx_valid)
+            BOOT_LOG_HEX32("N ms=", refresh_notify_elapsed_ms());
+        s_refresh_notify_trace = 1;
+        notitySendFunc(connHandle, notify_buf, &notify_len);
+        s_refresh_notify_trace = 0;
+        s_refresh_notify_rx_valid = 0;
+        IP_Toc(IP_NOTIFY, perf_notify);
     } else {
         uint8_t notify_buf[6];
         uint16_t notify_len = 0;
@@ -2044,6 +2086,7 @@ void notitySendFunc(uint16 connHandle, uint8_t *out_buf, uint16_t *out_len)
 	// 修复：带重试机制的notify发送，避免应用层收不到消息
 	bStatus_t send_ret;
 	uint8_t send_retry = 0;
+	uint8_t send_attempts = 0;
 	const uint8_t SEND_MAX_RETRY = 3;
 
 	if (out_len == NULL) {
@@ -2051,6 +2094,7 @@ void notitySendFunc(uint16 connHandle, uint8_t *out_buf, uint16_t *out_len)
     }
 	
 	do {
+		send_attempts++;
 		send_ret = ble_send_tdxInfo(connHandle, out_buf, *out_len, TDXINFO_NOTITY_SEND_RESULT_INFO-1, tdxInfoBind_cccd);
 		if (send_ret == SUCCESS) {
 			PRINT("Notify send success on attempt %d\r\n", send_retry + 1);
@@ -2073,6 +2117,10 @@ void notitySendFunc(uint16 connHandle, uint8_t *out_buf, uint16_t *out_len)
 	if (send_ret != SUCCESS) {
 		PRINT("WARNING: Notify failed after %d attempts, error=0x%02x\r\n", send_retry, send_ret);
 	}
+	if(s_refresh_notify_trace) {
+		BOOT_LOG_HEX8("N rc=", send_ret);
+		BOOT_LOG_HEX8("N try=", send_attempts);
+	}
 }
 
 void TdxInfo_ArmRefreshNotify(uint16 connHandle, uint8 type, uint8 refresh_count)
@@ -2081,6 +2129,7 @@ void TdxInfo_ArmRefreshNotify(uint16 connHandle, uint8 type, uint8 refresh_count
     s_refresh_notify_type = type;
     s_refresh_notify_count = refresh_count ? refresh_count : 1;
     s_refresh_notify_pending = 1;
+    BOOT_LOG_HEX8("N arm=", s_refresh_notify_count);
 }
 
 void TdxInfo_RefreshCommandIssued(void)
@@ -2088,6 +2137,12 @@ void TdxInfo_RefreshCommandIssued(void)
     uint8_t notify_buf[6];
     uint16_t notify_len = 0;
     UINT32 perf_notify;
+
+    if(s_large_refresh_log_pending) {
+        s_large_refresh_log_pending = 0;
+        s_large_refresh_log_started = 1;
+        BOOT_LOG_TEXT("S refresh-start\r\n");
+    }
 
     if(!s_refresh_notify_pending) return;
     if(s_refresh_notify_count > 1) {
@@ -2101,7 +2156,12 @@ void TdxInfo_RefreshCommandIssued(void)
     perf_notify = IP_Start(IP_NOTIFY);
     notitySendEnd(s_refresh_notify_conn, 0x01, s_refresh_notify_type,
                   notify_buf, &notify_len);
+    if(s_refresh_notify_rx_valid)
+        BOOT_LOG_HEX32("N ms=", refresh_notify_elapsed_ms());
+    s_refresh_notify_trace = 1;
     notitySendFunc(s_refresh_notify_conn, notify_buf, &notify_len);
+    s_refresh_notify_trace = 0;
+    s_refresh_notify_rx_valid = 0;
     IP_Toc(IP_NOTIFY, perf_notify);
 }
 
@@ -2109,6 +2169,9 @@ void TdxInfo_CancelRefreshNotify(void)
 {
     s_refresh_notify_pending = 0;
     s_refresh_notify_count = 0;
+	s_refresh_notify_trace = 0;
+	s_refresh_notify_rx_valid = 0;
+	s_large_refresh_log_pending = 0;
 }
 
 /*********************************************************************

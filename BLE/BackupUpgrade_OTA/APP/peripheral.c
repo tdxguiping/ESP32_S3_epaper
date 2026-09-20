@@ -1153,7 +1153,7 @@ UINT16  Debug_info_OTA=Is_Zero;
 void Rec_OTA_IAP_DataDeal(void)
 {
 
-    #if 0
+    #if 1
     Debug_info_OTA++;
     switch(iap_rec_data.other.buf[0])
     {

@@ -12,8 +12,11 @@
 #include "img_perf.h"
 #include "release_trace.h"
 
-// TDX_IMAGE_MODE g_tdx_image_transfer_mode = TDX_IMAGE_SMALL_STREAM;
-TDX_IMAGE_MODE g_tdx_image_transfer_mode = TDX_IMAGE_LARGE_FLASH;
+
+TDX_IMAGE_MODE g_tdx_image_transfer_mode = TDX_IMAGE_SMALL_STREAM;
+// TDX_IMAGE_MODE g_tdx_image_transfer_mode = TDX_IMAGE_LARGE_FLASH;
+
+
 extern uint8_t Peripheral_TaskID;
 
 /* The inflater has its own 4 KiB history and 2 KiB output. This is only the
@@ -293,7 +296,7 @@ UINT16 TIS_Process(void)
             stream.refresh_ticks = elapsed(refresh_start);
         }
         /* Printing and BLE notifications cannot delay the measured endpoint. */
-        BOOT_LOG_TEXT("IMG SW=V36\r\n");
+        BOOT_LOG_TEXT("IMG SW=V41\r\n");
         BOOT_LOG_HEX8("MODE=", TDX_IMAGE_SMALL_STREAM);
         BOOT_LOG_HEX8("SIDE=", stream.side);
         BOOT_LOG_HEX32("T RX=", milliseconds(stream.rx_ticks));
